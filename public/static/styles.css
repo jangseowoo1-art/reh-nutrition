@@ -1,0 +1,188 @@
+/* 병원 급식 예산 관리 - 메인 스타일 */
+/* 진녹색 메인 컬러: #1a4731(어둠) #166534(기본) #15803d #16a34a #22c55e(밝음) */
+
+/* 사이드바 */
+.sidebar {
+  background: linear-gradient(180deg, #1a4731 0%, #15502b 50%, #123d22 100%);
+  box-shadow: 4px 0 15px rgba(0,0,0,0.2);
+}
+
+/* 메뉴 아이템 */
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: rgba(255,255,255,0.65);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+.menu-item:hover { background: rgba(255,255,255,0.1); color: white; }
+.menu-item.active { background: rgba(255,255,255,0.18); color: white; font-weight: 600; }
+.menu-item .icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.1); font-size: 13px; flex-shrink: 0; }
+.menu-item.active .icon { background: rgba(255,255,255,0.28); }
+.menu-section-title { font-size: 10px; font-weight: 700; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 1px; padding: 12px 12px 4px; }
+
+/* 카드 */
+.stat-card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.04); }
+.stat-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.1); transform: translateY(-1px); transition: all 0.2s; }
+
+/* 진행률 바 */
+.progress-bar { height: 8px; border-radius: 4px; background: #e5e7eb; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+.progress-green { background: linear-gradient(90deg, #16a34a, #15803d); }
+.progress-yellow { background: linear-gradient(90deg, #f59e0b, #d97706); }
+.progress-red { background: linear-gradient(90deg, #ef4444, #dc2626); }
+.progress-blue { background: linear-gradient(90deg, #166534, #15803d); }
+
+/* 테이블 */
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.data-table th { background: #f0fdf4; padding: 10px 14px; text-align: left; font-size: 12px; font-weight: 600; color: #166534; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #bbf7d0; }
+.data-table th:first-child { border-radius: 8px 0 0 0; }
+.data-table th:last-child { border-radius: 0 8px 0 0; }
+.data-table td { padding: 12px 14px; border-bottom: 1px solid #f1f5f9; font-size: 14px; color: #374151; }
+.data-table tr:hover td { background: #f0fdf4; }
+.data-table tr:last-child td { border-bottom: none; }
+
+/* 입력 필드 */
+.form-input { width: 100%; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 14px; transition: all 0.2s; outline: none; background: white; }
+.form-input:focus { border-color: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,0.12); }
+.form-input-sm { padding: 6px 10px; font-size: 13px; border-radius: 8px; }
+.form-input.amount-input { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 버튼 */
+.btn { padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; border: none; }
+.btn-primary { background: #16a34a; color: white; }
+.btn-primary:hover { background: #15803d; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(21,128,61,0.35); }
+.btn-success { background: #22c55e; color: white; }
+.btn-success:hover { background: #16a34a; }
+.btn-danger { background: #ef4444; color: white; }
+.btn-danger:hover { background: #dc2626; }
+.btn-secondary { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.btn-secondary:hover { background: #e2e8f0; }
+.btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
+
+/* 배지 */
+.badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.badge-green { background: #dcfce7; color: #166534; }
+.badge-yellow { background: #fef9c3; color: #a16207; }
+.badge-red { background: #fee2e2; color: #dc2626; }
+.badge-blue { background: #dcfce7; color: #166534; }
+.badge-gray { background: #f1f5f9; color: #64748b; }
+.badge-purple { background: #f3e8ff; color: #7c3aed; }
+
+/* 탭 */
+.tab-btn { padding: 8px 16px; font-size: 13px; font-weight: 500; border-radius: 8px; cursor: pointer; transition: all 0.2s; color: #64748b; background: transparent; border: none; }
+.tab-btn.active { background: #16a34a; color: white; }
+.tab-btn:hover:not(.active) { background: #f0fdf4; color: #166534; }
+
+/* 식수 입력 테이블 */
+.meal-table { font-size: 13px; }
+.meal-table th { background: #166534; color: white; text-align: center; padding: 8px 6px; font-size: 12px; font-weight: 500; }
+.meal-table td { padding: 6px 4px; border: 1px solid #e2e8f0; text-align: center; }
+.meal-table .section-header { background: #dcfce7; color: #166534; font-weight: 700; text-align: center; }
+.meal-table .weekend-row { background: #fffbeb; }
+.meal-table .holiday-row { background: #fef2f2; }
+.meal-table input[type="number"] { width: 52px; text-align: center; padding: 4px 2px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; }
+.meal-table input[type="number"]:focus { border-color: #16a34a; outline: none; }
+
+/* 발주 입력 테이블 */
+.order-table { font-size: 13px; }
+.order-table th { background: #166534; color: white; padding: 8px 8px; font-size: 11px; text-align: center; }
+.order-table td { padding: 5px 4px; border: 1px solid #e2e8f0; }
+.order-table .date-col { background: #f8fafc; font-weight: 600; font-size: 12px; text-align: center; color: #374151; }
+.order-table .weekend-row td.date-col { background: #fef9c3; color: #92400e; }
+.order-table .holiday-row td.date-col { background: #fee2e2; color: #991b1b; }
+.order-table input[type="number"] { width: 90px; text-align: right; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; }
+.order-table input[type="number"]:focus { border-color: #16a34a; outline: none; }
+.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; }
+
+/* 스케줄 */
+.schedule-cell { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; border: 1px solid transparent; }
+.schedule-a { background: #dcfce7; color: #166534; }
+.schedule-b { background: #f0fdf4; color: #15803d; }
+.schedule-c { background: #fce7f3; color: #be185d; }
+.schedule-za { background: #e0e7ff; color: #4338ca; }
+.schedule-zb { background: #f0fdf4; color: #166534; }
+.schedule-F { background: #fee2e2; color: #b91c1c; }
+.schedule-rest { background: #fef9c3; color: #92400e; }
+.schedule-annual { background: #fce7f3; color: #9d174d; }
+.schedule-empty { background: #f1f5f9; color: #94a3b8; }
+.schedule-cell:hover { opacity: 0.8; transform: scale(1.05); }
+
+/* 알림 토스트 */
+.toast { position: fixed; bottom: 24px; right: 24px; padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 500; z-index: 9999; display: flex; align-items: center; gap: 10px; box-shadow: 0 8px 25px rgba(0,0,0,0.15); animation: slideIn 0.3s ease; }
+.toast-success { background: #16a34a; color: white; }
+.toast-error { background: #ef4444; color: white; }
+.toast-warning { background: #f59e0b; color: white; }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* 로딩 */
+.loading-spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #e5e7eb; border-radius: 50%; border-top-color: #16a34a; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 모달 */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal-box { background: white; border-radius: 20px; box-shadow: 0 25px 60px rgba(0,0,0,0.2); width: 100%; max-height: 90vh; overflow-y: auto; }
+
+/* 숫자 포맷 */
+.num-positive { color: #15803d; font-weight: 600; }
+.num-negative { color: #dc2626; font-weight: 600; }
+.num-warning { color: #d97706; font-weight: 600; }
+
+/* 반응형 */
+@media (max-width: 768px) {
+  .sidebar { position: fixed; left: -256px; top: 0; bottom: 0; z-index: 50; transition: left 0.3s; }
+  .sidebar.open { left: 0; }
+}
+
+/* 다일치 발주 셀 */
+.multi-day-cell { background: #fef3c7 !important; border-left: 3px solid #f59e0b !important; font-style: italic; }
+.multi-day-cell::after { content: ' *'; color: #d97706; }
+
+/* 토스트 페이드아웃 */
+.toast.fade-out { animation: slideOut 0.3s ease forwards; }
+@keyframes slideOut { to { transform: translateX(100%); opacity: 0; } }
+
+/* 발주 입력 테이블 weekend 행 */
+.order-table .weekend-row td { background: #fefce8; }
+.order-table .holiday-row td { background: #fff1f2; }
+
+/* 스크롤바 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #a7f3d0; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6ee7b7; }
+
+/* 헤더 악센트 라인 */
+header { border-bottom: 2px solid #dcfce7 !important; }
+
+/* 진행률 색상 보조 */
+.text-green-primary { color: #166534; }
+.bg-green-primary { background-color: #16a34a; }
+.border-green-primary { border-color: #16a34a; }
+
+/* 보고서 슬라이드 */
+.report-slide { page-break-inside: avoid; }
+.report-slide-title { font-size: 18px; font-weight: 700; color: #1f2937; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid #dcfce7; }
+
+/* 인쇄 스타일 */
+@media print {
+  .no-print { display: none !important; }
+  .sidebar { display: none !important; }
+  header { display: none !important; }
+  main { overflow: visible !important; margin-left: 0 !important; }
+  #pageContent { overflow: visible !important; padding: 0 !important; }
+  .report-slide { page-break-after: always; border-radius: 0 !important; box-shadow: none !important; margin-bottom: 0 !important; }
+  .report-slide:last-child { page-break-after: auto; }
+  body { background: white !important; }
+  canvas { max-width: 100% !important; }
+  table { width: 100% !important; font-size: 11px !important; }
+  th, td { padding: 4px 6px !important; }
+  .progress-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .progress-fill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .bg-gradient-to-br { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

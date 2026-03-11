@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hospital-meal-budget",
+  "compatibility_date": "2024-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hospital-meal-production",
+      "database_id": "8cd39977b63bb3122ba4bce948af09ffc1cd80e74253123a1208272811ea0b15"
+    }
+  ]
+}
