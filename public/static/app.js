@@ -1413,7 +1413,7 @@ async function renderSettings() {
       <ul class="text-sm text-gray-500 space-y-2">
         <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>예산 목표 설정과 업체 관리는 <strong class="text-gray-700">관리자</strong>가 직접 설정합니다</li>
         <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>발주 입력은 <strong class="text-gray-700">발주 입력</strong> 메뉴에서 진행하세요</li>
-        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>마감 요청 후 관리자 승인 전까지는 발주 입력이 가능합니다</li>
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>관리자가 마감을 <strong class="text-gray-700">승인하면 다음 달로 전환</strong>됩니다</li>
         <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>문의사항은 관리자에게 연락하세요</li>
       </ul>
     </div>
