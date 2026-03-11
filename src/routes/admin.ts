@@ -386,12 +386,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         issues.push({ type: 'budget_warn', level: 'warning',
           msg: `[예산경고] 월 예산 ${(totalUsed/totalBudget*100).toFixed(1)}% 사용` })
       }
-      // 3. 하루 발주 초과
+      // 3. 하루 발주 초과 (100% 초과 = warning, 110% 초과 = danger)
       for (const d of (dailyOrders.results || [])) {
-        if (dailyBudget > 0 && d.daily_total > dailyBudget * 1.3) {
+        if (dailyBudget > 0 && d.daily_total > dailyBudget) {
           const pct = ((d.daily_total - dailyBudget) / dailyBudget * 100).toFixed(1)
-          issues.push({ type: 'daily_over', level: 'warning',
-            msg: `[일발주초과] ${d.order_date} ${pct}% 초과` })
+          const level = d.daily_total > dailyBudget * 1.1 ? 'danger' : 'warning'
+          issues.push({ type: 'daily_over', level,
+            msg: `[일발주초과] ${d.order_date} 일예산 ${pct}% 초과 (${(d.daily_total/10000).toFixed(0)}만원)` })
         }
       }
       // 4. 식단가 초과
