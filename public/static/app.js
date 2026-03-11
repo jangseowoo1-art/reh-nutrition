@@ -13,9 +13,49 @@ const App = {
   charts: {}
 }
 
+// 마감 승인 폴링 타이머 ID (전역에 선언해 navigateTo에서 접근 가능)
+let _closingPollTimer = null
+function stopClosingPoll() {
+  if (_closingPollTimer) {
+    clearInterval(_closingPollTimer)
+    _closingPollTimer = null
+  }
+}
+function startClosingPoll(approvedYear, approvedMonth) {
+  stopClosingPoll()
+  _closingPollTimer = setInterval(async () => {
+    try {
+      const am = await api('GET', '/api/settings/active-month')
+      if (!am) return
+      const isAdvanced = (am.year > approvedYear) ||
+        (am.year === approvedYear && am.month > approvedMonth)
+      if (isAdvanced || (am.closingStatus === 'open' && am.year === approvedYear && am.month === approvedMonth)) {
+        stopClosingPoll()
+        App.currentYear = am.year
+        App.currentMonth = am.month
+        updateMonthDisplay()
+        showToast(`관리자가 마감을 승인했습니다. ${am.year}년 ${am.month}월로 전환됩니다.`, 'success')
+        renderSettings()
+      }
+    } catch (e) {}
+  }, 20000) // 20초마다 확인
+}
+
 // ── 초기화 ────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   if (!App.token) { window.location.href = '/login'; return }
+
+  // 병원 계정이면 DB의 활성 월(current_year/month)로 App 상태 동기화
+  if (App.role !== 'admin') {
+    try {
+      const am = await api('GET', '/api/settings/active-month')
+      if (am?.year) {
+        App.currentYear = am.year
+        App.currentMonth = am.month
+      }
+    } catch(e) {}
+  }
+
   initSidebar()
   const path = window.location.pathname
   const pageMap = {
@@ -70,7 +110,7 @@ function getHospitalMenus() {
     { id: 'meals', icon: 'fa-utensils', label: '식수 입력', section: null },
     { id: 'schedule', icon: 'fa-calendar-alt', label: '스케줄 관리', section: null },
     { id: 'analysis', icon: 'fa-chart-bar', label: '연간 분석', section: '분석' },
-    { id: 'settings', icon: 'fa-cog', label: '설정', section: '관리' }
+    { id: 'settings', icon: 'fa-flag-checkered', label: '마감 요청', section: '관리' }
   ]
 }
 
@@ -113,7 +153,7 @@ function navigateTo(page) {
     meals: { title: '식수 입력', sub: '조식/중식/석식 식수 현황' },
     schedule: { title: '스케줄 관리', sub: '직원 근무 스케줄' },
     analysis: { title: '연간 분석', sub: '월별 비교 및 추이 그래프' },
-    settings: { title: '설정', sub: '업체 관리 및 목표금액 설정' },
+    settings: { title: '마감 요청', sub: '월 마감 요청 및 현황' },
     admin: { title: '전체 병원 현황', sub: '관리자 - 실시간 모니터링' },
     'hospital-manage': { title: '병원 관리', sub: '병원 정보 및 예산 설정' },
     'holiday-manage': { title: '공휴일 관리', sub: '공휴일 조회 및 수동 추가' },
@@ -128,6 +168,9 @@ function navigateTo(page) {
 
   Object.values(App.charts).forEach(c => c?.destroy?.())
   App.charts = {}
+
+  // 다른 페이지로 이동 시 마감 폴링 중단
+  if (page !== 'settings') stopClosingPoll()
 
   const pages = {
     dashboard: renderDashboard, orders: renderOrders, meals: renderMeals,
@@ -1323,20 +1366,26 @@ async function renderAnalysis(selectedHospitalId = null) {
 // ══════════════════════════════════════════════════════════════
 //  설정 페이지
 // ══════════════════════════════════════════════════════════════
+
 async function renderSettings() {
+  stopClosingPoll()
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
   // 마감 현황 + 활성 월 정보 로드
-  const [activeMonth, closingInfo] = await Promise.all([
-    api('GET', '/api/settings/active-month'),
-    api('GET', '/api/settings/closing-status')
-  ])
+  const activeMonth = await api('GET', '/api/settings/active-month')
 
   const activeYear = activeMonth?.year || App.currentYear
   const activeMon = activeMonth?.month || App.currentMonth
   const closingStatus = activeMonth?.closingStatus || 'open'
   const closingReqAt = activeMonth?.closingRequestedAt
+
+  // App 상태와 사이드바 월 표시를 DB 기준으로 동기화
+  if (activeMonth?.year) {
+    App.currentYear = activeMonth.year
+    App.currentMonth = activeMonth.month
+    updateMonthDisplay()
+  }
 
   content.innerHTML = `
   <div class="max-w-2xl mx-auto space-y-5">
@@ -1411,14 +1460,18 @@ async function renderSettings() {
     <div class="bg-gray-50 rounded-2xl border border-gray-100 p-5">
       <h3 class="font-semibold text-gray-600 mb-3 text-sm"><i class="fas fa-info-circle text-gray-400 mr-1"></i>안내</h3>
       <ul class="text-sm text-gray-500 space-y-2">
-        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>예산 목표 설정과 업체 관리는 <strong class="text-gray-700">관리자</strong>가 직접 설정합니다</li>
-        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>발주 입력은 <strong class="text-gray-700">발주 입력</strong> 메뉴에서 진행하세요</li>
-        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>관리자가 마감을 <strong class="text-gray-700">승인하면 다음 달로 전환</strong>됩니다</li>
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>이번 달 발주 입력이 완료되면 <strong class="text-gray-700">마감 요청</strong>을 보내세요</li>
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>관리자가 승인하면 <strong class="text-gray-700">다음 달로 자동 전환</strong>됩니다</li>
         <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>문의사항은 관리자에게 연락하세요</li>
       </ul>
     </div>
 
   </div>`
+
+  // 마감 요청 중일 때 자동 감지 폴링 시작 (20초마다 승인 여부 확인)
+  if (closingStatus === 'requested') {
+    startClosingPoll(activeYear, activeMon)
+  }
 }
 
 async function submitClosingRequest(year, month) {
