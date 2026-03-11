@@ -158,26 +158,16 @@ function updateMonthDisplay() {
 }
 
 function navigateTo(page, forceReload = false) {
-  // 발주/식수 페이지: 이미 렌더된 경우 재렌더 방지 (입력값 보존)
-  // App._renderedPage[key] = {year, month} 로 렌더 완료 추적
   if (!App._renderedPage) App._renderedPage = {}
   const noReloadPages = ['orders', 'meals']
   const cacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
-  if (!forceReload && noReloadPages.includes(page) && App._renderedPage[cacheKey]) {
-    // 메뉴 활성화만 업데이트하고 재렌더 스킵
-    document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
-    const activeMenu = document.getElementById(`menu-${page}`)
-    if (activeMenu) activeMenu.classList.add('active')
-    App.currentPage = page
-    history.pushState(null, '', `/${page === 'dashboard' ? '' : page}`)
-    return
-  }
-  // 렌더 완료 플래그 초기화 (다른 페이지 이동 시 해당 페이지 캐시 유지)
-  App.currentPage = page
+
+  // 메뉴 활성화 업데이트 (항상)
   document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
   const activeMenu = document.getElementById(`menu-${page}`)
   if (activeMenu) activeMenu.classList.add('active')
 
+  // 페이지 타이틀 업데이트 (항상)
   const titles = {
     dashboard: { title: '월별 대시보드', sub: '예산 현황 및 업체별 진행률' },
     orders: { title: '발주 입력', sub: '일별 업체별 발주금액 입력' },
@@ -190,17 +180,23 @@ function navigateTo(page, forceReload = false) {
     'holiday-manage': { title: '공휴일 관리', sub: '공휴일 조회 및 수동 추가' },
     report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' }
   }
-
   const t = titles[page] || { title: page, sub: '' }
   const titleEl = document.getElementById('pageTitle')
   const subEl = document.getElementById('pageSubtitle')
   if (titleEl) titleEl.textContent = t.title
   if (subEl) subEl.textContent = t.sub
 
+  history.pushState(null, '', `/${page === 'dashboard' ? '' : page}`)
+  App.currentPage = page
+
+  // 발주/식수: 이미 렌더된 경우 재렌더 완전 스킵 (DOM 그대로 유지)
+  if (!forceReload && noReloadPages.includes(page) && App._renderedPage[cacheKey]) {
+    return
+  }
+
   Object.values(App.charts).forEach(c => c?.destroy?.())
   App.charts = {}
 
-  // 다른 페이지로 이동 시 마감 폴링 중단
   if (page !== 'settings') stopClosingPoll()
 
   const pages = {
@@ -213,19 +209,14 @@ function navigateTo(page, forceReload = false) {
   }
 
   if (pages[page]) {
-    const result = pages[page]()
-    // 렌더 완료 플래그 저장 (orders, meals만)
+    // 발주/식수: 렌더 시작 즉시 캐시 플래그 세팅 (비동기 완료 기다리지 않음)
     if (noReloadPages.includes(page)) {
-      if (result && typeof result.then === 'function') {
-        result.then(() => { App._renderedPage[cacheKey] = true })
-      } else {
-        App._renderedPage[cacheKey] = true
-      }
+      App._renderedPage[cacheKey] = true
     }
+    pages[page]()
+  } else {
+    document.getElementById('pageContent').innerHTML = '<div class="text-center text-gray-400 py-20">준비 중입니다</div>'
   }
-  else document.getElementById('pageContent').innerHTML = '<div class="text-center text-gray-400 py-20">준비 중입니다</div>'
-  
-  history.pushState(null, '', `/${page === 'dashboard' ? '' : page}`)
 }
 
 function changeMonth(delta) {
