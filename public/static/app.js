@@ -157,7 +157,12 @@ function updateMonthDisplay() {
   if (el2) el2.textContent = m
 }
 
-function navigateTo(page) {
+function navigateTo(page, forceReload = false) {
+  // 발주/식수 페이지: 같은 페이지 재진입 시 재렌더링 방지 (입력값 보존)
+  const noReloadPages = ['orders', 'meals']
+  if (!forceReload && noReloadPages.includes(page) && App.currentPage === page) {
+    return  // 이미 해당 페이지면 재렌더 스킵
+  }
   App.currentPage = page
   document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
   const activeMenu = document.getElementById(`menu-${page}`)
@@ -494,25 +499,28 @@ async function renderDashboard() {
         <span class="font-bold text-lg text-gray-800">${fmt(totalMeals)}<span class="text-xs font-normal text-gray-400 ml-1">식</span></span>
       </div>
       <!-- 식단가 3종 -->
-      ${totalMeals > 0 ? `
       <div class="mt-3 space-y-2">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-semibold text-gray-600"><i class="fas fa-utensils mr-1 text-blue-400"></i>식단가 현황</span>
+          ${targetMealPrice>0?`<span class="text-xs text-gray-400">목표: ${fmt(targetMealPrice)}원/식</span>`:''}
+        </div>
         <div class="flex items-center justify-between p-2.5 ${mpOver?'bg-red-50 border border-red-200':'bg-blue-50'} rounded-xl">
           <div>
             <span class="text-xs font-medium ${mpOver?'text-red-600':'text-blue-600'}">전체 식단가</span>
-            ${targetMealPrice>0?`<span class="text-xs text-gray-400 ml-1">(목표 ${fmt(targetMealPrice)}원)</span>`:''}
             ${mpOver?`<span class="text-xs text-red-500 ml-1 font-bold">▲초과</span>`:''}
           </div>
-          <span class="font-bold text-lg ${mpOver?'text-red-600':'text-blue-700'}">${fmt(mealPriceTotal)}<span class="text-xs font-normal ml-1">원/식</span></span>
+          <span class="font-bold text-lg ${mpOver?'text-red-600':'text-blue-700'}">${totalMeals>0?fmt(mealPriceTotal):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
         </div>
         <div class="flex items-center justify-between p-2.5 bg-purple-50 rounded-xl">
-          <span class="text-xs font-medium text-purple-600">직원식 제외 식단가</span>
-          <span class="font-bold text-purple-700">${fmt(mealPriceNoStaff)}<span class="text-xs font-normal ml-1">원/식</span></span>
+          <span class="text-xs font-medium text-purple-600">직원식 제외</span>
+          <span class="font-bold text-purple-700">${totalMeals>0?fmt(mealPriceNoStaff):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
         </div>
         <div class="flex items-center justify-between p-2.5 bg-orange-50 rounded-xl">
-          <span class="text-xs font-medium text-orange-600">소모품 제외 식단가</span>
-          <span class="font-bold text-orange-700">${fmt(mealPriceNoSupply)}<span class="text-xs font-normal ml-1">원/식</span></span>
+          <span class="text-xs font-medium text-orange-600">소모품 제외</span>
+          <span class="font-bold text-orange-700">${totalMeals>0?fmt(mealPriceNoSupply):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
         </div>
-      </div>` : ''}
+      </div>
+
       <!-- 잔반 현황 -->
       <div class="mt-3 border-t border-gray-100 pt-3">
         <div class="flex items-center justify-between mb-2">
@@ -1085,8 +1093,10 @@ function updateBudgetProgressPanel() {
     const total = t + Math.round(t*0.1) + e
     monthTotal += total
     if (date === todayStr) todayTotal += total
-    const od = new Date(date)
-    if (od >= weekStart && od <= weekEnd) weekTotal += total
+    // 날짜 문자열로 비교 (시간대 문제 방지)
+    const weekStartStr2 = weekStart instanceof Date ? weekStart.toISOString().split('T')[0] : weekStart
+    const weekEndStr2 = weekEnd instanceof Date ? weekEnd.toISOString().split('T')[0] : weekEnd
+    if (date >= weekStartStr2 && date <= weekEndStr2) weekTotal += total
   })
 
   const monthPct = totalBudget > 0 ? Math.round(monthTotal / totalBudget * 100) : 0
@@ -1218,15 +1228,15 @@ async function renderMeals() {
   <!-- 월 합계 요약 -->
   <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
     ${[
-      { label: '환자식', val: monthTotal.p, color: 'blue' },
-      { label: '직원식', val: monthTotal.s, color: 'green' },
-      { label: '비급여', val: monthTotal.n, color: 'purple' },
-      { label: '보호자', val: monthTotal.g, color: 'orange' },
-      { label: '총 식수', val: monthTotal.p+monthTotal.s+monthTotal.n+monthTotal.g, color: 'gray', bold: true }
+      { label: '환자식', val: monthTotal.p, color: 'blue', id: 'mealSummary-p' },
+      { label: '직원식', val: monthTotal.s, color: 'green', id: 'mealSummary-s' },
+      { label: '비급여', val: monthTotal.n, color: 'purple', id: 'mealSummary-n' },
+      { label: '보호자', val: monthTotal.g, color: 'orange', id: 'mealSummary-g' },
+      { label: '총 식수', val: monthTotal.p+monthTotal.s+monthTotal.n+monthTotal.g, color: 'gray', id: 'mealSummary-total', bold: true }
     ].map(item => `
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-3 text-center">
         <div class="text-xs text-gray-500 font-medium mb-1">${item.label}</div>
-        <div class="text-xl font-bold text-${item.color}-600">${fmt(item.val)}</div>
+        <div class="text-xl font-bold text-${item.color}-600" id="${item.id}">${fmt(item.val)}</div>
         <div class="text-xs text-gray-400">식</div>
       </div>
     `).join('')}
@@ -1367,6 +1377,28 @@ function updateMealRowTotals(date) {
   set(`bf-sum-${date}`,bp+bs+bn+bg2); set(`l-sum-${date}`,lp+ls+ln+lg); set(`d-sum-${date}`,dp+ds+dn+dg)
   set(`t-p-${date}`,bp+lp+dp); set(`t-s-${date}`,bs+ls+ds); set(`t-n-${date}`,bn+ln+dn); set(`t-g-${date}`,bg2+lg+dg)
   set(`t-total-${date}`,(bp+bs+bn+bg2)+(lp+ls+ln+lg)+(dp+ds+dn+dg))
+  // 상단 요약 카드 실시간 업데이트
+  updateMealSummaryCards()
+}
+
+function updateMealSummaryCards() {
+  // 전체 테이블에서 각 카테고리 합산
+  let tp=0, ts=0, tn=0, tg=0
+  document.querySelectorAll('#mealTableBody tr[data-date]').forEach(row => {
+    const date = row.dataset.date
+    const g = (k) => getMealVal(k, date)
+    tp += g('bf_p')+g('l_p')+g('d_p')
+    ts += g('bf_s')+g('l_s')+g('d_s')
+    tn += g('bf_n')+g('l_n')+g('d_n')
+    tg += g('bf_g')+g('l_g')+g('d_g')
+  })
+  // 상단 카드 ID로 업데이트
+  const setCard = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=fmt(v) }
+  setCard('mealSummary-p', tp)
+  setCard('mealSummary-s', ts)
+  setCard('mealSummary-n', tn)
+  setCard('mealSummary-g', tg)
+  setCard('mealSummary-total', tp+ts+tn+tg)
 }
 
 async function saveMealBatch() {
