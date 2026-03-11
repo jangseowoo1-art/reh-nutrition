@@ -324,6 +324,7 @@ async function renderDashboard() {
   const s = data.summary
   const vendors = data.vendors || []
   const ms = data.mealStats || {}
+  const pm = data.prevMonth || {}  // 전월 데이터
   const totalMeals = (ms.total_patient||0)+(ms.total_staff||0)+(ms.total_noncovered||0)+(ms.total_guardian||0)
   const mealPrice = totalMeals > 0 && s.totalUsed > 0 ? Math.round(s.totalUsed / totalMeals) : (data.settings?.meal_price || 0)
   // 식단가 3종 (API에서 제공)
@@ -333,6 +334,16 @@ async function renderDashboard() {
   const targetMealPrice = data.settings?.meal_price || 0
   const mpOver = targetMealPrice > 0 && mealPriceTotal > targetMealPrice
   const overBudget = data.overBudgetVendors || []
+
+  // 전월 비교 계산 헬퍼
+  function mpDiff(cur, prev) {
+    if (!prev || !cur) return ''
+    const diff = cur - prev
+    const pct = prev > 0 ? ((diff / prev) * 100).toFixed(1) : '0.0'
+    if (diff > 0) return `<span class="text-red-500 text-xs font-semibold">▲${fmt(diff)}원 (+${pct}%)</span>`
+    if (diff < 0) return `<span class="text-green-600 text-xs font-semibold">▼${fmt(Math.abs(diff))}원 (${pct}%)</span>`
+    return `<span class="text-gray-400 text-xs">변동없음</span>`
+  }
   
   // 현재 날짜 기준 남은 일수 계산
   const today = new Date()
@@ -556,6 +567,53 @@ async function renderDashboard() {
           <span class="font-bold text-orange-700">${totalMeals>0?fmt(mealPriceNoSupply):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
         </div>
       </div>
+
+      <!-- 전월 대비 식단가 비교 -->
+      ${pm.mealPriceTotal !== undefined ? `
+      <div class="mt-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-bold text-gray-600"><i class="fas fa-exchange-alt mr-1 text-indigo-400"></i>전월(${pm.year}년 ${pm.month}월) 대비</span>
+          <span class="text-xs text-gray-400">식단가 변동</span>
+        </div>
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-blue-600 font-medium">전체 식단가</span>
+            <div class="flex items-center gap-2">
+              <span class="text-gray-400">${pm.mealPriceTotal>0?fmt(pm.mealPriceTotal)+'원':'자료없음'}</span>
+              <span class="text-gray-300">→</span>
+              <span class="font-bold text-blue-700">${totalMeals>0?fmt(mealPriceTotal)+'원':'집계중'}</span>
+              ${totalMeals>0&&pm.mealPriceTotal>0?mpDiff(mealPriceTotal,pm.mealPriceTotal):''}
+            </div>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-purple-600 font-medium">직원식 제외</span>
+            <div class="flex items-center gap-2">
+              <span class="text-gray-400">${pm.mealPriceNoStaff>0?fmt(pm.mealPriceNoStaff)+'원':'자료없음'}</span>
+              <span class="text-gray-300">→</span>
+              <span class="font-bold text-purple-700">${totalMeals>0?fmt(mealPriceNoStaff)+'원':'집계중'}</span>
+              ${totalMeals>0&&pm.mealPriceNoStaff>0?mpDiff(mealPriceNoStaff,pm.mealPriceNoStaff):''}
+            </div>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-orange-600 font-medium">소모품 제외</span>
+            <div class="flex items-center gap-2">
+              <span class="text-gray-400">${pm.mealPriceNoSupply>0?fmt(pm.mealPriceNoSupply)+'원':'자료없음'}</span>
+              <span class="text-gray-300">→</span>
+              <span class="font-bold text-orange-700">${totalMeals>0?fmt(mealPriceNoSupply)+'원':'집계중'}</span>
+              ${totalMeals>0&&pm.mealPriceNoSupply>0?mpDiff(mealPriceNoSupply,pm.mealPriceNoSupply):''}
+            </div>
+          </div>
+          <div class="flex items-center justify-between text-xs pt-1 border-t border-gray-200">
+            <span class="text-gray-500 font-medium">총 식수</span>
+            <div class="flex items-center gap-2">
+              <span class="text-gray-400">${pm.totalMeals>0?fmt(pm.totalMeals)+'식':'자료없음'}</span>
+              <span class="text-gray-300">→</span>
+              <span class="font-bold text-gray-700">${fmt(totalMeals)}식</span>
+              ${pm.totalMeals>0?mpDiff(totalMeals,pm.totalMeals):''}
+            </div>
+          </div>
+        </div>
+      </div>` : ''}
 
       <!-- 잔반 현황 -->
       <div class="mt-3 border-t border-gray-100 pt-3">
@@ -1554,13 +1612,12 @@ async function saveMealBatch() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  연간 분석 페이지
+//  연간/월간 비교분석 페이지 (영양사+관리자 공통)
 // ══════════════════════════════════════════════════════════════
-async function renderAnalysis(selectedHospitalId = null) {
+async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // admin이면 병원 목록 먼저 로드
   let hospitals = []
   if (App.role === 'admin') {
     const hList = await api('GET', '/api/admin/hospitals')
@@ -1568,139 +1625,455 @@ async function renderAnalysis(selectedHospitalId = null) {
     if (!selectedHospitalId && hospitals.length > 0) selectedHospitalId = hospitals[0].id
   }
 
-  const url = App.role === 'admin'
+  const annualUrl = App.role === 'admin'
     ? `/api/dashboard/annual/${App.currentYear}?hospitalId=${selectedHospitalId}`
     : `/api/dashboard/annual/${App.currentYear}`
+  const summaryUrl = App.role === 'admin'
+    ? `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}?hospitalId=${selectedHospitalId}`
+    : `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`
 
-  const data = await api('GET', url)
-  if (!data) {
-    content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'
-    return
-  }
+  const [data, summaryData] = await Promise.all([
+    api('GET', annualUrl),
+    api('GET', summaryUrl)
+  ])
+  if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
 
   const months = Array.from({length:12}, (_,i) => `${i+1}월`)
-  const usedByMonth = Array(12).fill(0)
-  const budgetByMonth = Array(12).fill(0)
-  const mealsByMonth = Array(12).fill(0)
-  const mealPriceByMonth = Array(12).fill(0)
+  // 연간 배열 구성
+  const usedByMonth    = Array(12).fill(0)
+  const budgetByMonth  = Array(12).fill(0)
+  const mealsByMonth   = Array(12).fill(0)
+  const patientByMonth = Array(12).fill(0)
+  const staffByMonth   = Array(12).fill(0)
+  const noncovByMonth  = Array(12).fill(0)
+  const guardByMonth   = Array(12).fill(0)
+  const targetMpByMonth= Array(12).fill(0)
+  const wasteKgByMonth = Array(12).fill(0)
+  const wasteCostByMonth=Array(12).fill(0)
+  const supplyByMonth  = Array(12).fill(0)
 
-  ;(data.monthly||[]).forEach(m => { usedByMonth[parseInt(m.month)-1] = m.total_used })
-  ;(data.settings||[]).forEach(m => { budgetByMonth[m.month-1] = m.total_budget })
+  ;(data.monthly||[]).forEach(m => { usedByMonth[parseInt(m.month)-1] = m.total_used || 0 })
+  ;(data.settings||[]).forEach(m => {
+    budgetByMonth[m.month-1] = m.total_budget || 0
+    targetMpByMonth[m.month-1] = m.meal_price || 0
+  })
   ;(data.mealMonthly||[]).forEach(m => {
-    const idx = parseInt(m.month)-1
-    mealsByMonth[idx] = m.total_meals
-    if (m.total_meals > 0 && usedByMonth[idx] > 0) {
-      mealPriceByMonth[idx] = Math.round(usedByMonth[idx] / m.total_meals)
-    }
+    const i = parseInt(m.month)-1
+    mealsByMonth[i]   = m.total_meals || 0
+    patientByMonth[i] = m.total_patient || 0
+    staffByMonth[i]   = m.total_staff || 0
+    noncovByMonth[i]  = m.total_noncovered || 0
+    guardByMonth[i]   = m.total_guardian || 0
+  })
+  ;(data.wasteAnnual||[]).forEach(m => {
+    const i = parseInt(m.month)-1
+    wasteKgByMonth[i]  = parseFloat(m.total_waste||0)
+    wasteCostByMonth[i]= m.total_cost||0
+  })
+  // supply 월별
+  const supplyMap = {}
+  ;(data.supplyAnnual||[]).forEach(m => { supplyMap[parseInt(m.month)-1] = m.total_supply || 0 })
+  // staff cost 추정 (직원식 비율 × 월사용액)
+  const staffCostByMonth = Array(12).fill(0)
+  ;(data.staffAnnual||[]).forEach(m => {
+    const i = parseInt(m.month)-1
+    if (m.total_meals > 0) staffCostByMonth[i] = Math.round(usedByMonth[i] * m.total_staff / m.total_meals)
   })
 
-  const totalUsed = usedByMonth.reduce((s,v)=>s+v,0)
-  const totalBudget = budgetByMonth.reduce((s,v)=>s+v,0)
-  const totalMeals = mealsByMonth.reduce((s,v)=>s+v,0)
-  const avgMealPrice = totalMeals > 0 ? Math.round(totalUsed / totalMeals) : 0
+  // 식단가 3종 월별 계산
+  const mpTotalByMonth   = Array(12).fill(0)
+  const mpNoStaffByMonth = Array(12).fill(0)
+  const mpNoSupplyByMonth= Array(12).fill(0)
+  for (let i=0; i<12; i++) {
+    const tm = mealsByMonth[i], used = usedByMonth[i]
+    const staffM = staffByMonth[i], staffCost = staffCostByMonth[i]
+    const supCost= supplyMap[i]||0
+    if (tm > 0 && used > 0) {
+      mpTotalByMonth[i]   = Math.round(used / tm)
+      mpNoStaffByMonth[i] = (tm-staffM)>0 ? Math.round((used-staffCost)/(tm-staffM)) : 0
+      mpNoSupplyByMonth[i]= Math.round((used-supCost)/tm)
+    }
+  }
 
-  // admin 병원 선택 셀렉트
+  // 전년도 비교
+  const prevYearMp = Array(12).fill(0)
+  const prevYearMeals = Array(12).fill(0)
+  ;(data.prevYearMeals||[]).forEach(m => { prevYearMeals[parseInt(m.month)-1] = m.total_meals||0 })
+  const prevYearOrders = Array(12).fill(0)
+  ;(data.prevYearOrders||[]).forEach(m => { prevYearOrders[parseInt(m.month)-1] = m.total_used||0 })
+  for (let i=0; i<12; i++) {
+    if (prevYearMeals[i]>0 && prevYearOrders[i]>0) prevYearMp[i] = Math.round(prevYearOrders[i]/prevYearMeals[i])
+  }
+
+  // 합계
+  const totalUsed    = usedByMonth.reduce((s,v)=>s+v,0)
+  const totalBudget  = budgetByMonth.reduce((s,v)=>s+v,0)
+  const totalMeals   = mealsByMonth.reduce((s,v)=>s+v,0)
+  const totalWasteKg = wasteKgByMonth.reduce((s,v)=>s+v,0)
+  const totalWasteCost=wasteCostByMonth.reduce((s,v)=>s+v,0)
+  const avgMealPrice = totalMeals>0 ? Math.round(totalUsed/totalMeals) : 0
+
+  // 전월(현재 선택월 기준) 데이터
+  const pm = summaryData?.prevMonth || {}
+  const curMp = data.mealPriceTotal || (summaryData?.mealPriceTotal||0)
+
+  // 업체별 연간 집계
+  const vendorTotals = {}
+  ;(data.vendorAnnual||[]).forEach(v => {
+    if (!vendorTotals[v.name]) vendorTotals[v.name] = { name:v.name, category:v.category, monthly:Array(12).fill(0), total:0 }
+    vendorTotals[v.name].monthly[parseInt(v.month)-1] = v.total_used||0
+    vendorTotals[v.name].total += v.total_used||0
+  })
+  const vendors = Object.values(vendorTotals).sort((a,b)=>b.total-a.total)
+
   const hospitalSelectHtml = App.role === 'admin' && hospitals.length > 0 ? `
-  <div class="mb-4 flex items-center gap-3">
+  <div class="flex items-center gap-3 flex-wrap">
     <label class="text-sm font-semibold text-gray-600">병원 선택</label>
     <select id="analysisHospitalSelect" onchange="renderAnalysis(this.value)"
       class="form-input" style="width:auto;min-width:180px">
-      ${hospitals.map(h => `<option value="${h.id}" ${h.id == selectedHospitalId ? 'selected' : ''}>${h.name}</option>`).join('')}
+      ${hospitals.map(h => `<option value="${h.id}" ${h.id==selectedHospitalId?'selected':''}>${h.name}</option>`).join('')}
     </select>
-    <span class="text-sm text-gray-400">${App.currentYear}년 연간 분석</span>
   </div>` : ''
 
   content.innerHTML = `
-  ${hospitalSelectHtml}
-
-  <!-- 연간 요약 -->
-  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
-    <div class="stat-card">
-      <div class="text-xs text-gray-500 mb-1">연간 총 사용</div>
-      <div class="text-xl font-bold text-green-700">${fmtMan(totalUsed)}원</div>
-      <div class="text-xs text-gray-400">예산: ${fmtMan(totalBudget)}원</div>
+  <!-- 헤더 -->
+  <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
+    ${hospitalSelectHtml}
+    <div class="flex gap-1">
+      <button id="anaTab-annual" onclick="switchAnaTab('annual')" class="px-3 py-1.5 text-sm font-medium rounded-lg bg-green-600 text-white">
+        <i class="fas fa-calendar mr-1"></i>연간 분석
+      </button>
+      <button id="anaTab-monthly" onclick="switchAnaTab('monthly')" class="px-3 py-1.5 text-sm font-medium rounded-lg bg-white border text-gray-600 hover:bg-gray-50">
+        <i class="fas fa-chart-bar mr-1"></i>월간 비교
+      </button>
     </div>
-    <div class="stat-card">
-      <div class="text-xs text-gray-500 mb-1">연간 진행률</div>
-      <div class="text-xl font-bold ${totalBudget>0&&totalUsed>totalBudget?'text-red-600':'text-green-600'}">
-        ${totalBudget > 0 ? ((totalUsed/totalBudget)*100).toFixed(1) : 0}%
+  </div>
+
+  <!-- ════ 연간 분석 탭 ════ -->
+  <div id="anaContent-annual">
+    <!-- 연간 요약 카드 -->
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+      <div class="stat-card border-l-4 border-green-500">
+        <div class="text-xs text-gray-500">연간 총 사용</div>
+        <div class="text-lg font-bold text-green-700">${fmtMan(totalUsed)}원</div>
+        <div class="text-xs text-gray-400">예산 ${fmtMan(totalBudget)}원</div>
+      </div>
+      <div class="stat-card border-l-4 border-blue-500">
+        <div class="text-xs text-gray-500">연간 달성률</div>
+        <div class="text-lg font-bold ${totalBudget>0&&totalUsed>totalBudget?'text-red-600':'text-blue-600'}">${totalBudget>0?((totalUsed/totalBudget)*100).toFixed(1):0}%</div>
+        <div class="text-xs text-gray-400">잔여 ${fmtMan(Math.max(0,totalBudget-totalUsed))}원</div>
+      </div>
+      <div class="stat-card border-l-4 border-purple-500">
+        <div class="text-xs text-gray-500">연간 총 식수</div>
+        <div class="text-lg font-bold text-purple-600">${fmt(totalMeals)}식</div>
+        <div class="text-xs text-gray-400">환자 ${fmt(patientByMonth.reduce((s,v)=>s+v,0))} / 직원 ${fmt(staffByMonth.reduce((s,v)=>s+v,0))}</div>
+      </div>
+      <div class="stat-card border-l-4 border-orange-500">
+        <div class="text-xs text-gray-500">연평균 식단가</div>
+        <div class="text-lg font-bold text-orange-600">${fmt(avgMealPrice)}원</div>
+        <div class="text-xs text-gray-400">전년대비 ${prevYearMp.some(v=>v>0)?'비교가능':'데이터없음'}</div>
+      </div>
+      <div class="stat-card border-l-4 border-amber-500">
+        <div class="text-xs text-gray-500">연간 잔반</div>
+        <div class="text-lg font-bold text-amber-600">${totalWasteKg.toFixed(1)}kg</div>
+        <div class="text-xs text-gray-400">${fmtMan(totalWasteCost)}원</div>
       </div>
     </div>
-    <div class="stat-card">
-      <div class="text-xs text-gray-500 mb-1">연간 총 식수</div>
-      <div class="text-xl font-bold text-purple-600">${fmt(totalMeals)}식</div>
+
+    <!-- 월별 미니 카드 -->
+    <div class="grid grid-cols-4 lg:grid-cols-12 gap-1.5 mb-4">
+      ${months.map((m,i) => {
+        const used=usedByMonth[i], budget=budgetByMonth[i]
+        const pct=budget>0?(used/budget*100):null
+        const isCur=(i+1)===App.currentMonth
+        return `<div class="bg-white rounded-lg border ${isCur?'border-green-400 ring-1 ring-green-300':'border-gray-100'} p-1.5 text-center">
+          <div class="text-xs font-bold ${isCur?'text-green-700':'text-gray-600'}">${m}</div>
+          <div class="text-xs font-semibold text-gray-800 mt-0.5">${used>0?fmtMan(used):'―'}</div>
+          ${pct!==null?`<div class="text-xs ${pct>=100?'text-red-500':pct>=90?'text-amber-500':'text-green-600'}">${pct.toFixed(0)}%</div>`:'<div class="text-xs text-gray-200">-</div>'}
+        </div>`
+      }).join('')}
     </div>
-    <div class="stat-card">
-      <div class="text-xs text-gray-500 mb-1">평균 식단가</div>
-      <div class="text-xl font-bold text-orange-600">${fmt(avgMealPrice)}원</div>
+
+    <!-- 차트 그리드 -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+      <!-- ① 예산 vs 사용금액 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-won-sign text-green-500 mr-1"></i>월별 예산 vs 사용금액</h3>
+        <canvas id="chart-budget" height="180"></canvas>
+      </div>
+      <!-- ② 식단가 3종 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-utensils text-blue-500 mr-1"></i>월별 식단가 3종 + 전년 비교</h3>
+        <canvas id="chart-mealPrice" height="180"></canvas>
+      </div>
+      <!-- ③ 식수 구성 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-users text-teal-500 mr-1"></i>월별 식수 구성 (치료식/직원식/비급여/보호자)</h3>
+        <canvas id="chart-meals" height="180"></canvas>
+      </div>
+      <!-- ④ 업체별 발주금액 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-store text-purple-500 mr-1"></i>업체별 월별 발주금액</h3>
+        <canvas id="chart-vendor" height="180"></canvas>
+      </div>
+      <!-- ⑤ 잔반 kg + 비용 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-trash text-amber-500 mr-1"></i>월별 잔반 (kg + 비용)</h3>
+        <canvas id="chart-waste" height="180"></canvas>
+      </div>
+      <!-- ⑥ 업체별 연간 합계 파이 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-chart-pie text-indigo-500 mr-1"></i>업체별 연간 비중</h3>
+        <canvas id="chart-vendorPie" height="180"></canvas>
+      </div>
+    </div>
+
+    <!-- 업체별 상세 테이블 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
+      <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-table text-gray-500 mr-1"></i>업체별 월별 발주 상세</h3>
+      <div class="overflow-x-auto">
+        <table class="data-table w-full text-xs">
+          <thead>
+            <tr>
+              <th class="text-left pl-3 sticky left-0 bg-gray-800">업체명</th>
+              ${months.map(m=>`<th>${m}</th>`).join('')}
+              <th class="bg-green-800">연간합계</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${vendors.map(v => `
+            <tr>
+              <td class="pl-3 font-medium sticky left-0 bg-white">${v.name}</td>
+              ${v.monthly.map(val=>`<td class="text-right pr-2">${val>0?fmtMan(val)+'만':''}</td>`).join('')}
+              <td class="text-right pr-2 font-bold text-green-700">${fmtMan(v.total)}만</td>
+            </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="bg-green-50 font-bold">
+              <td class="pl-3 sticky left-0 bg-green-50">합계</td>
+              ${usedByMonth.map(v=>`<td class="text-right pr-2">${v>0?fmtMan(v)+'만':''}</td>`).join('')}
+              <td class="text-right pr-2 text-green-700">${fmtMan(totalUsed)}만</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   </div>
 
-  <!-- 월별 카드 -->
-  <div class="grid grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
-    ${months.map((m, i) => {
-      const used = usedByMonth[i]
-      const budget = budgetByMonth[i]
-      const pct = budget > 0 ? (used/budget*100) : null
-      const isCurrentMonth = (i+1) === App.currentMonth
-      return `<div class="stat-card ${isCurrentMonth?'ring-2 ring-green-500':''}">
-        <div class="flex justify-between items-center mb-1">
-          <span class="font-semibold text-sm ${isCurrentMonth?'text-green-700':''}">${m}</span>
-          <span class="badge ${pct!==null?getBadgeColor(pct):'badge-gray'}" style="font-size:9px">${pct!==null?pct.toFixed(0)+'%':'-'}</span>
-        </div>
-        <div class="font-bold text-gray-800 text-sm">${used>0?fmtMan(used)+'원':'-'}</div>
-        ${budget > 0 ? `<div class="mt-1 progress-bar h-1.5">
-          <div class="progress-fill ${getProgressColor(pct||0)}" style="width:${Math.min(pct||0,100)}%"></div>
-        </div>` : ''}
-      </div>`
-    }).join('')}
-  </div>
-
-  <!-- 차트들 -->
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-      <h2 class="font-bold text-gray-800 mb-4">${App.currentYear}년 월별 예산 vs 사용금액</h2>
-      <canvas id="annualChart"></canvas>
+  <!-- ════ 월간 비교 탭 ════ -->
+  <div id="anaContent-monthly" class="hidden">
+    <!-- 전월 대비 식단가 비교 카드 -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+      ${[
+        { label:'전체 식단가', cur: mpTotalByMonth[App.currentMonth-1], prev: mpTotalByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'blue' },
+        { label:'직원식 제외', cur: mpNoStaffByMonth[App.currentMonth-1], prev: mpNoStaffByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'purple' },
+        { label:'소모품 제외', cur: mpNoSupplyByMonth[App.currentMonth-1], prev: mpNoSupplyByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'orange' }
+      ].map(item => {
+        const diff = item.cur - item.prev
+        const pct = item.prev>0 ? (diff/item.prev*100).toFixed(1) : null
+        const up = diff > 0
+        return `
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+          <div class="text-xs text-gray-500 mb-2">${item.label} · 전월 대비</div>
+          <div class="flex items-end justify-between">
+            <div>
+              <div class="text-2xl font-bold text-${item.color}-600">${item.cur>0?fmt(item.cur):'집계중'}<span class="text-sm font-normal ml-1">원/식</span></div>
+              <div class="text-xs text-gray-400 mt-1">전월: ${item.prev>0?fmt(item.prev)+'원':'자료없음'}</div>
+            </div>
+            ${pct!==null&&item.cur>0?`
+            <div class="text-right">
+              <div class="text-lg font-bold ${up?'text-red-500':'text-green-600'}">${up?'▲':'▼'}${Math.abs(diff).toLocaleString()}원</div>
+              <div class="text-xs ${up?'text-red-400':'text-green-500'}">${up?'+':''}${pct}%</div>
+            </div>`:''}
+          </div>
+          <div class="mt-2 h-1 bg-gray-100 rounded-full overflow-hidden">
+            <div class="h-full rounded-full bg-${item.color}-400" style="width:${item.cur>0&&item.prev>0?Math.min((item.cur/item.prev)*100,150).toFixed(0):50}%"></div>
+          </div>
+        </div>`
+      }).join('')}
     </div>
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-      <h2 class="font-bold text-gray-800 mb-4">월별 식수 추이 & 식단가</h2>
-      <canvas id="mealChart"></canvas>
+
+    <!-- 월간 상세 비교 차트 -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-utensils text-blue-500 mr-1"></i>식단가 3종 월별 추이 (당해 + 전년)</h3>
+        <canvas id="chart-mpMonthly" height="220"></canvas>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-users text-teal-500 mr-1"></i>식수 구성 변화 (월별 스택)</h3>
+        <canvas id="chart-mealStack" height="220"></canvas>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-won-sign text-green-500 mr-1"></i>예산 달성률 월별 추이</h3>
+        <canvas id="chart-budgetPct" height="220"></canvas>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-trash text-amber-500 mr-1"></i>잔반 발생량 vs 비용 추이</h3>
+        <canvas id="chart-wasteMonthly" height="220"></canvas>
+      </div>
     </div>
   </div>`
 
-  App.charts.annual = new Chart(document.getElementById('annualChart'), {
-    type: 'bar',
-    data: {
-      labels: months,
-      datasets: [
-        { label: '사용금액', data: usedByMonth, backgroundColor: 'rgba(22,163,74,0.75)', borderRadius: 6 },
-        { label: '목표예산', data: budgetByMonth, type: 'line', borderColor: '#ef4444', borderDash: [5,5], borderWidth: 2, pointRadius: 3, fill: false }
+  // ── 공통 차트 색상
+  const COLORS = ['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6','#a855f7']
+
+  // ── ① 예산 vs 사용금액
+  new Chart(document.getElementById('chart-budget'), {
+    type:'bar', data:{
+      labels:months,
+      datasets:[
+        { label:'사용금액', data:usedByMonth, backgroundColor:'rgba(22,163,74,0.7)', borderRadius:5 },
+        { label:'목표예산', data:budgetByMonth, type:'line', borderColor:'#ef4444', borderDash:[5,5], borderWidth:2, pointRadius:3, fill:false }
       ]
     },
-    options: {
-      responsive: true,
-      plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
-      scales: { y: { ticks: { callback: v => `${(v/10000000).toFixed(0)}천만` } } }
-    }
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ y:{ ticks:{ callback:v=>`${(v/1e7).toFixed(0)}천만` } } } }
   })
 
-  App.charts.meal = new Chart(document.getElementById('mealChart'), {
-    type: 'bar',
-    data: {
-      labels: months,
-      datasets: [
-        { label: '식수', data: mealsByMonth, backgroundColor: 'rgba(16,185,129,0.6)', borderRadius: 4, yAxisID: 'y' },
-        { label: '식단가', data: mealPriceByMonth, type: 'line', borderColor: '#f59e0b', borderWidth: 2, pointRadius: 4, fill: false, yAxisID: 'y1' }
+  // ── ② 식단가 3종 + 전년 비교
+  new Chart(document.getElementById('chart-mealPrice'), {
+    type:'line', data:{
+      labels:months,
+      datasets:[
+        { label:'전체식단가(당해)', data:mpTotalByMonth, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', borderWidth:2, pointRadius:3, fill:true, tension:0.3 },
+        { label:'직원제외(당해)',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:2, pointRadius:3, fill:false, tension:0.3 },
+        { label:'소모품제외(당해)', data:mpNoSupplyByMonth, borderColor:'#f59e0b', borderWidth:2, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3] },
+        { label:`전체식단가(${parseInt(App.currentYear)-1}년)`, data:prevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[6,3] },
+        { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
       ]
     },
-    options: {
-      responsive: true,
-      plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
-      scales: {
-        y: { ticks: { callback: v => `${v}식` }, position: 'left' },
-        y1: { ticks: { callback: v => `${(v/1000).toFixed(1)}천원` }, position: 'right', grid: { drawOnChartArea: false } }
-      }
-    }
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ y:{ ticks:{ callback:v=>`${(v/1000).toFixed(1)}천원` } } } }
+  })
+
+  // ── ③ 식수 구성 (스택 바)
+  new Chart(document.getElementById('chart-meals'), {
+    type:'bar', data:{
+      labels:months,
+      datasets:[
+        { label:'치료식(환자)', data:patientByMonth, backgroundColor:'rgba(37,99,235,0.75)', borderRadius:3 },
+        { label:'직원식',       data:staffByMonth,  backgroundColor:'rgba(22,163,74,0.7)',  borderRadius:3 },
+        { label:'비급여',       data:noncovByMonth, backgroundColor:'rgba(147,51,234,0.65)', borderRadius:3 },
+        { label:'보호자',       data:guardByMonth,  backgroundColor:'rgba(249,115,22,0.65)', borderRadius:3 }
+      ]
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ x:{ stacked:true }, y:{ stacked:true, ticks:{callback:v=>`${v}식`} } } }
+  })
+
+  // ── ④ 업체별 월별 (상위 6개)
+  const topVendors = vendors.slice(0,6)
+  new Chart(document.getElementById('chart-vendor'), {
+    type:'bar', data:{
+      labels:months,
+      datasets: topVendors.map((v,i) => ({
+        label: v.name, data: v.monthly,
+        backgroundColor: COLORS[i%COLORS.length]+'bb', borderRadius:3
+      }))
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ x:{stacked:true}, y:{stacked:true, ticks:{callback:v=>`${(v/1e6).toFixed(0)}백만`}} } }
+  })
+
+  // ── ⑤ 잔반 kg + 비용
+  new Chart(document.getElementById('chart-waste'), {
+    type:'bar', data:{
+      labels:months,
+      datasets:[
+        { label:'잔반량(kg)', data:wasteKgByMonth, backgroundColor:'rgba(245,158,11,0.7)', borderRadius:4, yAxisID:'y' },
+        { label:'잔반비용',  data:wasteCostByMonth, type:'line', borderColor:'#ef4444', borderWidth:2, pointRadius:3, fill:false, yAxisID:'y1' }
+      ]
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{
+        y:{ ticks:{callback:v=>`${v}kg`}, position:'left' },
+        y1:{ ticks:{callback:v=>`${(v/1e4).toFixed(0)}만`}, position:'right', grid:{drawOnChartArea:false} }
+      } }
+  })
+
+  // ── ⑥ 업체별 파이
+  new Chart(document.getElementById('chart-vendorPie'), {
+    type:'doughnut', data:{
+      labels: vendors.map(v=>v.name),
+      datasets:[{ data:vendors.map(v=>v.total), backgroundColor:COLORS.map(c=>c+'cc'), borderWidth:1 }]
+    },
+    options:{ responsive:true, plugins:{ legend:{ position:'right', labels:{boxWidth:12,font:{size:10}} } } }
+  })
+
+  // ── 월간 비교 탭 차트들
+  // ── 식단가 3종 월별 (mpMonthly)
+  new Chart(document.getElementById('chart-mpMonthly'), {
+    type:'line', data:{
+      labels:months,
+      datasets:[
+        { label:'전체식단가', data:mpTotalByMonth, borderColor:'#2563eb', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+        { label:'직원제외',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+        { label:'소모품제외', data:mpNoSupplyByMonth, borderColor:'#f59e0b', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+        { label:`${parseInt(App.currentYear)-1}년 식단가`, data:prevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[5,3] },
+        { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
+      ]
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } }
+  })
+
+  // ── 식수 스택
+  new Chart(document.getElementById('chart-mealStack'), {
+    type:'bar', data:{
+      labels:months,
+      datasets:[
+        { label:'치료식(환자)', data:patientByMonth, backgroundColor:'rgba(37,99,235,0.8)', borderRadius:3 },
+        { label:'직원식',       data:staffByMonth,  backgroundColor:'rgba(22,163,74,0.8)',  borderRadius:3 },
+        { label:'비급여',       data:noncovByMonth, backgroundColor:'rgba(147,51,234,0.75)',borderRadius:3 },
+        { label:'보호자',       data:guardByMonth,  backgroundColor:'rgba(249,115,22,0.75)',borderRadius:3 }
+      ]
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ x:{stacked:true}, y:{stacked:true, ticks:{callback:v=>`${v}식`}} } }
+  })
+
+  // ── 예산 달성률
+  const pctByMonth = budgetByMonth.map((b,i)=>b>0?parseFloat((usedByMonth[i]/b*100).toFixed(1)):null)
+  new Chart(document.getElementById('chart-budgetPct'), {
+    type:'bar', data:{
+      labels:months,
+      datasets:[
+        { label:'달성률(%)', data:pctByMonth, backgroundColor: pctByMonth.map(p=>p===null?'#e5e7eb':p>=100?'rgba(239,68,68,0.75)':p>=90?'rgba(245,158,11,0.75)':'rgba(22,163,74,0.75)'), borderRadius:5 },
+        { label:'100% 기준', data:Array(12).fill(100), type:'line', borderColor:'#ef4444', borderDash:[5,5], borderWidth:1.5, pointRadius:0, fill:false }
+      ]
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{ y:{ ticks:{callback:v=>`${v}%`}, suggestedMax:130 } } }
+  })
+
+  // ── 잔반 월간
+  new Chart(document.getElementById('chart-wasteMonthly'), {
+    type:'bar', data:{
+      labels:months,
+      datasets:[
+        { label:'잔반량(kg)', data:wasteKgByMonth, backgroundColor:'rgba(245,158,11,0.7)', borderRadius:4, yAxisID:'y' },
+        { label:'잔반비용',  data:wasteCostByMonth, type:'line', borderColor:'#f97316', borderWidth:2, pointRadius:4, fill:false, yAxisID:'y1' }
+      ]
+    },
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{
+        y:{ ticks:{callback:v=>`${v}kg`}, position:'left' },
+        y1:{ ticks:{callback:v=>`${(v/1e4).toFixed(0)}만`}, position:'right', grid:{drawOnChartArea:false} }
+      } }
+  })
+
+  // 초기 탭
+  if (activeTab === 'monthly') switchAnaTab('monthly')
+}
+
+window.switchAnaTab = (tab) => {
+  ;['annual','monthly'].forEach(t => {
+    const btn = document.getElementById(`anaTab-${t}`)
+    const cnt = document.getElementById(`anaContent-${t}`)
+    if (btn) btn.className = t===tab
+      ? 'px-3 py-1.5 text-sm font-medium rounded-lg bg-green-600 text-white'
+      : 'px-3 py-1.5 text-sm font-medium rounded-lg bg-white border text-gray-600 hover:bg-gray-50'
+    if (cnt) cnt.classList.toggle('hidden', t!==tab)
   })
 }
 
@@ -2118,6 +2491,27 @@ async function renderAdminDashboard() {
                 <div class="text-xs text-gray-300">-</div>
               </div>
             </div>
+            <!-- 전월 대비 식단가 비교 -->
+            ${h.prevMonth && h.prevMonth.mealPriceTotal > 0 ? (() => {
+              const pm = h.prevMonth
+              const diff1 = h.mealPriceTotal - pm.mealPriceTotal
+              const diff2 = h.mealPriceNoStaff - pm.mealPriceNoStaff
+              const arrowCls = (d) => d > 0 ? 'text-red-500' : d < 0 ? 'text-green-600' : 'text-gray-400'
+              const arrowSym = (d) => d > 0 ? '▲' : d < 0 ? '▼' : '—'
+              return `<div class="mt-1.5 pt-1.5 border-t border-blue-100">
+                <div class="text-xs text-indigo-500 font-semibold mb-1"><i class="fas fa-exchange-alt mr-1"></i>전월(${pm.year}년 ${pm.month}월) 대비</div>
+                <div class="grid grid-cols-2 gap-1 text-xs">
+                  <div class="flex items-center justify-between bg-white rounded-lg px-2 py-1 border border-indigo-50">
+                    <span class="text-gray-500">전체</span>
+                    <span class="${arrowCls(diff1)} font-bold">${arrowSym(diff1)} ${Math.abs(diff1).toLocaleString()}원</span>
+                  </div>
+                  <div class="flex items-center justify-between bg-white rounded-lg px-2 py-1 border border-indigo-50">
+                    <span class="text-gray-500">직원제외</span>
+                    <span class="${arrowCls(diff2)} font-bold">${arrowSym(diff2)} ${Math.abs(diff2).toLocaleString()}원</span>
+                  </div>
+                </div>
+              </div>`
+            })() : ''}
           </div>
 
           <!-- ③ 오늘 식수 현황 -->
@@ -3567,10 +3961,10 @@ async function renderReport(selectedHospitalId = null) {
       <h2 class="report-slide-title"><i class="fas fa-utensils text-green-600 mr-2"></i>식수 현황 통계</h2>
       <div class="grid grid-cols-4 gap-4 mb-6">
         ${[
-          { label:'환자식', val:fmt((ms.total_patient||0)), icon:'fa-procedures', color:'bg-blue-50 text-blue-700' },
+          { label:'환자식(치료식)', val:fmt((ms.total_patient||0)), icon:'fa-procedures', color:'bg-blue-50 text-blue-700' },
           { label:'직원식', val:fmt((ms.total_staff||0)), icon:'fa-user-md', color:'bg-green-50 text-green-700' },
           { label:'비급여식', val:fmt((ms.total_noncovered||0)), icon:'fa-user', color:'bg-purple-50 text-purple-700' },
-          { label:'전체', val:fmt((ms.total_patient||0)+(ms.total_staff||0)+(ms.total_noncovered||0)), icon:'fa-users', color:'bg-gray-50 text-gray-700' }
+          { label:'보호자식', val:fmt((ms.total_guardian||0)), icon:'fa-users', color:'bg-orange-50 text-orange-700' }
         ].map(item => `
           <div class="rounded-xl p-4 text-center ${item.color.split(' ')[0]}">
             <i class="fas ${item.icon} text-2xl ${item.color.split(' ')[1]} mb-2"></i>
@@ -3581,22 +3975,76 @@ async function renderReport(selectedHospitalId = null) {
       <canvas id="rpt-mealMonthChart" style="max-height:220px"></canvas>
     </div>
 
-    <!-- 슬라이드 6: 식단가 분석 -->
+    <!-- 슬라이드 6: 식단가 분석 (3종 + 전월비교) -->
     <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-coins text-green-600 mr-2"></i>식단가 월별 비교 분석</h2>
-      <canvas id="rpt-mealPriceChart" style="max-height:250px"></canvas>
-      <div class="mt-4 grid grid-cols-3 gap-4">
+      <h2 class="report-slide-title"><i class="fas fa-coins text-green-600 mr-2"></i>식단가 월별 비교 분석 (3종)</h2>
+      <canvas id="rpt-mealPriceChart" style="max-height:220px"></canvas>
+      <div class="mt-4 grid grid-cols-4 gap-3">
+        ${[
+          { label:'전체 식단가', val:summaryData?.mealPriceTotal||0, color:'text-blue-700' },
+          { label:'직원식 제외', val:summaryData?.mealPriceNoStaff||0, color:'text-purple-700' },
+          { label:'소모품 제외', val:summaryData?.mealPriceNoSupply||0, color:'text-orange-700' },
+          { label:'목표 식단가', val:s.targetMealPrice||0, color:'text-green-700' }
+        ].map(item=>`
         <div class="bg-gray-50 rounded-xl p-3 text-center">
-          <div class="text-xs text-gray-500 mb-1">이번달 식단가</div>
-          <div class="text-lg font-bold text-green-700">${fmtWon(s.mealPrice||0)}</div>
+          <div class="text-xs text-gray-500 mb-1">${item.label}</div>
+          <div class="text-lg font-bold ${item.color}">${item.val>0?fmtWon(item.val):'집계중'}</div>
+        </div>`).join('')}
+      </div>
+      <!-- 전월 비교 -->
+      ${summaryData?.prevMonth?.mealPriceTotal>0?`
+      <div class="mt-4 p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+        <div class="text-xs font-bold text-indigo-700 mb-2"><i class="fas fa-exchange-alt mr-1"></i>전월(${summaryData.prevMonth.year}년 ${summaryData.prevMonth.month}월) 대비 변동</div>
+        <div class="grid grid-cols-3 gap-2 text-xs">
+          ${[
+            { label:'전체', cur:summaryData.mealPriceTotal, prev:summaryData.prevMonth.mealPriceTotal },
+            { label:'직원제외', cur:summaryData.mealPriceNoStaff, prev:summaryData.prevMonth.mealPriceNoStaff },
+            { label:'소모품제외', cur:summaryData.mealPriceNoSupply, prev:summaryData.prevMonth.mealPriceNoSupply }
+          ].map(item=>{
+            const diff=item.cur-item.prev
+            const pct=item.prev>0?(diff/item.prev*100).toFixed(1):null
+            return `<div class="bg-white rounded-lg p-2 text-center">
+              <div class="text-gray-500">${item.label}</div>
+              <div class="font-bold ${diff>0?'text-red-600':diff<0?'text-green-600':'text-gray-700'}">${diff>0?'▲':'▼'} ${Math.abs(diff).toLocaleString()}원</div>
+              ${pct?`<div class="text-gray-400">${diff>0?'+':''}${pct}%</div>`:''}
+            </div>`
+          }).join('')}
         </div>
-        <div class="bg-gray-50 rounded-xl p-3 text-center">
-          <div class="text-xs text-gray-500 mb-1">목표 식단가</div>
-          <div class="text-lg font-bold text-gray-700">${fmtWon(s.targetMealPrice||0)}</div>
+      </div>` : ''}
+    </div>
+
+    <!-- 슬라이드 7: 연간 식단가 3종 + 예산 추이 -->
+    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h2 class="report-slide-title"><i class="fas fa-chart-line text-indigo-600 mr-2"></i>${reportYear}년 연간 비교분석 — 식단가 3종 추이</h2>
+      <canvas id="rpt-annualMpChart" style="max-height:260px"></canvas>
+    </div>
+
+    <!-- 슬라이드 8: 연간 식수 구성 + 업체별 -->
+    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h2 class="report-slide-title"><i class="fas fa-chart-bar text-teal-600 mr-2"></i>${reportYear}년 연간 식수 구성 & 업체별 발주</h2>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <p class="text-xs text-gray-500 mb-2">식수 구성 월별</p>
+          <canvas id="rpt-annualMealChart" style="max-height:220px"></canvas>
         </div>
-        <div class="bg-gray-50 rounded-xl p-3 text-center">
-          <div class="text-xs text-gray-500 mb-1">전월 대비 차액</div>
-          <div class="text-lg font-bold ${(s.mealPriceDiff||0)>0?'text-red-600':(s.mealPriceDiff||0)<0?'text-green-600':'text-gray-700'}">${(s.mealPriceDiff||0)>0?'+':''}${fmtWon(s.mealPriceDiff||0)}</div>
+        <div>
+          <p class="text-xs text-gray-500 mb-2">업체별 발주 비중</p>
+          <canvas id="rpt-annualVendorPie" style="max-height:220px"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 슬라이드 9: 연간 예산 달성률 + 잔반 -->
+    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h2 class="report-slide-title"><i class="fas fa-chart-area text-green-600 mr-2"></i>${reportYear}년 예산 달성률 & 잔반 추이</h2>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <p class="text-xs text-gray-500 mb-2">월별 예산 달성률(%)</p>
+          <canvas id="rpt-annualBudgetPct" style="max-height:220px"></canvas>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 mb-2">잔반량(kg) & 비용</p>
+          <canvas id="rpt-annualWaste" style="max-height:220px"></canvas>
         </div>
       </div>
     </div>
@@ -3632,45 +4080,137 @@ async function renderReport(selectedHospitalId = null) {
     }
   })
 
-  // 월별 식수 차트
-  const mMonths = Array.from({length:12}, (_,i)=>`${i+1}월`)
-  const mMealsData = Array(12).fill(0)
-  const mPriceData = Array(12).fill(0)
-  const mUsedData = Array(12).fill(0)
-  const mBudgetData = Array(12).fill(0)
-  monthlyMeals.forEach(m=>{ mMealsData[parseInt(m.month)-1] = m.total_meals })
-  monthlyUsed.forEach(m=>{ mUsedData[parseInt(m.month)-1] = m.total_used })
-  monthlySettings.forEach(m=>{ mBudgetData[m.month-1] = m.total_budget })
-  mMealsData.forEach((meals, i)=>{ if(meals>0&&mUsedData[i]>0) mPriceData[i] = Math.round(mUsedData[i]/meals) })
+  // 연간 데이터 계산
+  const rMonths = Array.from({length:12}, (_,i)=>`${i+1}월`)
+  const rUsed = Array(12).fill(0); (annualData?.monthly||[]).forEach(m=>{ rUsed[parseInt(m.month)-1]=m.total_used||0 })
+  const rBudget = Array(12).fill(0); (annualData?.settings||[]).forEach(m=>{ rBudget[m.month-1]=m.total_budget||0 })
+  const rMeals = Array(12).fill(0), rPatient=Array(12).fill(0), rStaff=Array(12).fill(0), rNoncov=Array(12).fill(0), rGuard=Array(12).fill(0)
+  ;(annualData?.mealMonthly||[]).forEach(m=>{ const i=parseInt(m.month)-1; rMeals[i]=m.total_meals||0; rPatient[i]=m.total_patient||0; rStaff[i]=m.total_staff||0; rNoncov[i]=m.total_noncovered||0; rGuard[i]=m.total_guardian||0 })
+  const rWasteKg = Array(12).fill(0), rWasteCost = Array(12).fill(0)
+  ;(annualData?.wasteAnnual||[]).forEach(m=>{ const i=parseInt(m.month)-1; rWasteKg[i]=parseFloat(m.total_waste||0); rWasteCost[i]=m.total_cost||0 })
+  const rSupplyMap = {}; (annualData?.supplyAnnual||[]).forEach(m=>{ rSupplyMap[parseInt(m.month)-1]=m.total_supply||0 })
+  const rStaffCost = Array(12).fill(0); (annualData?.staffAnnual||[]).forEach(m=>{ const i=parseInt(m.month)-1; if(m.total_meals>0) rStaffCost[i]=Math.round(rUsed[i]*m.total_staff/m.total_meals) })
+  const rMpTotal=Array(12).fill(0), rMpNoStaff=Array(12).fill(0), rMpNoSupply=Array(12).fill(0), rTargetMp=Array(12).fill(0)
+  ;(annualData?.settings||[]).forEach(m=>{ rTargetMp[m.month-1]=m.meal_price||0 })
+  for(let i=0;i<12;i++){
+    if(rMeals[i]>0&&rUsed[i]>0){
+      rMpTotal[i]=Math.round(rUsed[i]/rMeals[i])
+      rMpNoStaff[i]=(rMeals[i]-rStaff[i])>0?Math.round((rUsed[i]-rStaffCost[i])/(rMeals[i]-rStaff[i])):0
+      rMpNoSupply[i]=Math.round((rUsed[i]-(rSupplyMap[i]||0))/rMeals[i])
+    }
+  }
+  const rPrevYearMp = Array(12).fill(0)
+  const rPrevMeals = Array(12).fill(0), rPrevOrders = Array(12).fill(0)
+  ;(annualData?.prevYearMeals||[]).forEach(m=>{ rPrevMeals[parseInt(m.month)-1]=m.total_meals||0 })
+  ;(annualData?.prevYearOrders||[]).forEach(m=>{ rPrevOrders[parseInt(m.month)-1]=m.total_used||0 })
+  for(let i=0;i<12;i++){ if(rPrevMeals[i]>0&&rPrevOrders[i]>0) rPrevYearMp[i]=Math.round(rPrevOrders[i]/rPrevMeals[i]) }
 
+  const rVendorTotals = {}
+  ;(annualData?.vendorAnnual||[]).forEach(v=>{
+    if(!rVendorTotals[v.name]) rVendorTotals[v.name]={name:v.name,total:0}
+    rVendorTotals[v.name].total += v.total_used||0
+  })
+  const rVendors = Object.values(rVendorTotals).sort((a,b)=>b.total-a.total)
+
+  // 월별 식수 차트 (구성 스택)
   App.charts.rptMealMonth = new Chart(document.getElementById('rpt-mealMonthChart'), {
-    type: 'bar',
-    data: {
-      labels: mMonths,
-      datasets: [
-        { label:'전체 식수', data:mMealsData, backgroundColor:'rgba(22,163,74,0.6)', borderRadius:4, yAxisID:'y' }
+    type: 'bar', data:{
+      labels: rMonths,
+      datasets:[
+        { label:'치료식', data:rPatient, backgroundColor:'rgba(37,99,235,0.75)', borderRadius:3 },
+        { label:'직원식', data:rStaff,   backgroundColor:'rgba(22,163,74,0.7)',  borderRadius:3 },
+        { label:'비급여', data:rNoncov,  backgroundColor:'rgba(147,51,234,0.65)',borderRadius:3 },
+        { label:'보호자', data:rGuard,   backgroundColor:'rgba(249,115,22,0.65)',borderRadius:3 }
       ]
     },
-    options: { responsive:true,
-      plugins:{ legend:{ labels:{ font:{size:11} } } },
-      scales:{ y:{ ticks:{ callback:v=>`${v}식` }, position:'left' } }
-    }
+    options:{ responsive:true, plugins:{legend:{labels:{font:{size:10},boxWidth:10}}},
+      scales:{ x:{stacked:true}, y:{stacked:true, ticks:{callback:v=>`${v}식`}} } }
   })
 
+  // 식단가 3종 차트
   App.charts.rptMealPrice = new Chart(document.getElementById('rpt-mealPriceChart'), {
-    type: 'line',
-    data: {
-      labels: mMonths,
-      datasets: [
-        { label:'식단가', data:mPriceData, borderColor:'#16a34a', backgroundColor:'rgba(22,163,74,0.1)', fill:true, tension:0.4, pointRadius:5 },
-        { label:'예산 기준가', data:mBudgetData.map((b,i)=>mMealsData[i]>0?Math.round(b/mMealsData[i]):0),
-          borderColor:'#ef4444', borderDash:[5,5], borderWidth:2, pointRadius:3, fill:false }
+    type: 'line', data:{
+      labels: rMonths,
+      datasets:[
+        { label:'전체 식단가', data:rMpTotal, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', fill:true, tension:0.4, pointRadius:4 },
+        { label:'직원식 제외', data:rMpNoStaff, borderColor:'#9333ea', borderWidth:2, pointRadius:3, fill:false, tension:0.3 },
+        { label:'소모품 제외', data:rMpNoSupply, borderColor:'#f59e0b', borderWidth:2, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3] },
+        { label:'목표식단가',  data:rTargetMp, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[6,4] }
       ]
     },
-    options: { responsive:true,
-      plugins:{ legend:{ labels:{ font:{size:11} } } },
-      scales:{ y:{ ticks:{ callback:v=>`${v.toLocaleString()}원` } } }
-    }
+    options:{ responsive:true, plugins:{legend:{labels:{font:{size:10},boxWidth:10}}},
+      scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } }
+  })
+
+  // 슬라이드 7: 연간 식단가 3종 추이
+  new Chart(document.getElementById('rpt-annualMpChart'), {
+    type:'line', data:{
+      labels:rMonths,
+      datasets:[
+        { label:'전체식단가', data:rMpTotal, borderColor:'#2563eb', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+        { label:'직원제외',   data:rMpNoStaff, borderColor:'#9333ea', borderWidth:2, pointRadius:3, fill:false, tension:0.3 },
+        { label:'소모품제외', data:rMpNoSupply, borderColor:'#f59e0b', borderWidth:2, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3] },
+        { label:`전년도 식단가`, data:rPrevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[6,3] },
+        { label:'목표식단가', data:rTargetMp, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
+      ]
+    },
+    options:{ responsive:true, plugins:{legend:{labels:{font:{size:11},boxWidth:10}}},
+      scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } }
+  })
+
+  // 슬라이드 8: 식수구성
+  new Chart(document.getElementById('rpt-annualMealChart'), {
+    type:'bar', data:{
+      labels:rMonths,
+      datasets:[
+        { label:'치료식', data:rPatient, backgroundColor:'rgba(37,99,235,0.75)', borderRadius:3 },
+        { label:'직원식', data:rStaff,   backgroundColor:'rgba(22,163,74,0.7)',  borderRadius:3 },
+        { label:'비급여', data:rNoncov,  backgroundColor:'rgba(147,51,234,0.65)',borderRadius:3 },
+        { label:'보호자', data:rGuard,   backgroundColor:'rgba(249,115,22,0.65)',borderRadius:3 }
+      ]
+    },
+    options:{ responsive:true, plugins:{legend:{labels:{font:{size:10},boxWidth:8}}},
+      scales:{ x:{stacked:true}, y:{stacked:true, ticks:{callback:v=>`${v}식`}} } }
+  })
+
+  // 업체별 연간 파이
+  new Chart(document.getElementById('rpt-annualVendorPie'), {
+    type:'doughnut', data:{
+      labels:rVendors.map(v=>v.name),
+      datasets:[{ data:rVendors.map(v=>v.total),
+        backgroundColor:['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6'].map(c=>c+'cc'), borderWidth:1 }]
+    },
+    options:{ responsive:true, plugins:{legend:{position:'right', labels:{font:{size:10},boxWidth:8}}} }
+  })
+
+  // 예산 달성률
+  const rPct = rBudget.map((b,i)=>b>0?parseFloat((rUsed[i]/b*100).toFixed(1)):null)
+  new Chart(document.getElementById('rpt-annualBudgetPct'), {
+    type:'bar', data:{
+      labels:rMonths,
+      datasets:[
+        { label:'달성률(%)', data:rPct, backgroundColor:rPct.map(p=>p===null?'#e5e7eb':p>=100?'rgba(239,68,68,0.75)':p>=90?'rgba(245,158,11,0.75)':'rgba(22,163,74,0.75)'), borderRadius:4 },
+        { label:'100%기준', data:Array(12).fill(100), type:'line', borderColor:'#ef4444', borderDash:[5,5], borderWidth:1.5, pointRadius:0, fill:false }
+      ]
+    },
+    options:{ responsive:true, plugins:{legend:{labels:{font:{size:10},boxWidth:8}}},
+      scales:{ y:{ ticks:{callback:v=>`${v}%`}, suggestedMax:130 } } }
+  })
+
+  // 잔반 추이
+  new Chart(document.getElementById('rpt-annualWaste'), {
+    type:'bar', data:{
+      labels:rMonths,
+      datasets:[
+        { label:'잔반(kg)', data:rWasteKg, backgroundColor:'rgba(245,158,11,0.7)', borderRadius:4, yAxisID:'y' },
+        { label:'비용',     data:rWasteCost, type:'line', borderColor:'#f97316', borderWidth:2, pointRadius:3, fill:false, yAxisID:'y1' }
+      ]
+    },
+    options:{ responsive:true, plugins:{legend:{labels:{font:{size:10},boxWidth:8}}},
+      scales:{
+        y:{ ticks:{callback:v=>`${v}kg`}, position:'left' },
+        y1:{ ticks:{callback:v=>`${(v/1e4).toFixed(0)}만`}, position:'right', grid:{drawOnChartArea:false} }
+      } }
   })
 }
 
@@ -3727,6 +4267,30 @@ async function exportReportPPT(hospitalName, year, month) {
   if (canvas4) {
     s5.addImage({ data: canvas4.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
   }
+
+  // 슬라이드 6: 연간 식단가 3종 추이
+  const s6 = pptx.addSlide()
+  s6.addText(`${year}년 연간 식단가 3종 추이`, { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'1d4ed8' })
+  const canvas5 = document.getElementById('rpt-annualMpChart')
+  if (canvas5) {
+    s6.addImage({ data: canvas5.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
+  }
+
+  // 슬라이드 7: 연간 식수 구성 (좌) + 업체별 파이 (우)
+  const s7 = pptx.addSlide()
+  s7.addText(`${year}년 연간 식수 구성 & 업체별 발주 비중`, { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'0f766e' })
+  const canvas6 = document.getElementById('rpt-annualMealChart')
+  const canvas7 = document.getElementById('rpt-annualVendorPie')
+  if (canvas6) s7.addImage({ data: canvas6.toDataURL('image/png'), x:0.5, y:1.0, w:6, h:4.5 })
+  if (canvas7) s7.addImage({ data: canvas7.toDataURL('image/png'), x:7, y:1.0, w:5.5, h:4.5 })
+
+  // 슬라이드 8: 예산 달성률 (좌) + 잔반 추이 (우)
+  const s8 = pptx.addSlide()
+  s8.addText(`${year}년 예산 달성률 & 잔반 추이`, { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'15803d' })
+  const canvas8 = document.getElementById('rpt-annualBudgetPct')
+  const canvas9 = document.getElementById('rpt-annualWaste')
+  if (canvas8) s8.addImage({ data: canvas8.toDataURL('image/png'), x:0.5, y:1.0, w:6, h:4.5 })
+  if (canvas9) s8.addImage({ data: canvas9.toDataURL('image/png'), x:7, y:1.0, w:5.5, h:4.5 })
 
   pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
   showToast('PPT 다운로드 완료!', 'success')

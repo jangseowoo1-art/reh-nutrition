@@ -364,6 +364,38 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 
       const targetMealPrice = h.target_meal_price || settings?.meal_price || 0
 
+      // 전월 식단가 계산
+      const prevMonthNum = parseInt(month) === 1 ? 12 : parseInt(month) - 1
+      const prevYearStr  = parseInt(month) === 1 ? String(parseInt(year) - 1) : year
+      const prevMealStats = await c.env.DB.prepare(`
+        SELECT COALESCE(SUM(breakfast_patient+lunch_patient+dinner_patient),0) as total_patient,
+               COALESCE(SUM(breakfast_staff+lunch_staff+dinner_staff),0) as total_staff,
+               COALESCE(SUM(breakfast_noncovered+lunch_noncovered+dinner_noncovered),0) as total_noncovered,
+               COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
+        FROM daily_meals WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
+      `).bind(h.id, prevYearStr, prevMonthNum).first<any>()
+      const prevOrders = await c.env.DB.prepare(`
+        SELECT COALESCE(SUM(total_amount),0) as total_used FROM daily_orders
+        WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)
+      `).bind(h.id, prevYearStr, prevMonthNum).first<any>()
+      const prevSupply = await c.env.DB.prepare(`
+        SELECT COALESCE(SUM(d.total_amount),0) as supply_used
+        FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+        WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=? AND strftime('%m',d.order_date)=printf('%02d',?)
+          AND (v.category='supply' OR v.category='card')
+      `).bind(h.id, prevYearStr, prevMonthNum).first<any>()
+      const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
+      const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_noncovered||0)+(pms.total_guardian||0)
+      const prevTotalUsed  = prevOrders?.total_used || 0
+      const prevSupplyUsed = prevSupply?.supply_used || 0
+      const prevStaffRatio = prevTotalMeals > 0 ? (pms.total_staff||0) / prevTotalMeals : 0
+      const prevStaffCost  = Math.round(prevTotalUsed * prevStaffRatio)
+      const prevMealPriceTotal   = prevTotalMeals > 0 ? Math.round(prevTotalUsed / prevTotalMeals) : 0
+      const prevMealPriceNoStaff = (prevTotalMeals-(pms.total_staff||0)) > 0
+        ? Math.round((prevTotalUsed-prevStaffCost)/(prevTotalMeals-(pms.total_staff||0))) : 0
+      const prevMealPriceNoSupply= prevTotalMeals > 0
+        ? Math.round((prevTotalUsed-prevSupplyUsed)/prevTotalMeals) : 0
+
       // 이슈 목록 생성
       const issues: any[] = []
       // 1. 예산 초과 업체
@@ -426,7 +458,15 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         online: onlineMap[h.id] || null,
         closingStatus: h.closing_status || 'open',
         activeYear: h.current_year || parseInt(year),
-        activeMonth: h.current_month || parseInt(month)
+        activeMonth: h.current_month || parseInt(month),
+        prevMonth: {
+          month: prevMonthNum, year: parseInt(prevYearStr),
+          mealPriceTotal: prevMealPriceTotal,
+          mealPriceNoStaff: prevMealPriceNoStaff,
+          mealPriceNoSupply: prevMealPriceNoSupply,
+          totalMeals: prevTotalMeals,
+          totalUsed: prevTotalUsed
+        }
       }
     })
   )

@@ -109,6 +109,46 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const mealPriceNoSupply = totalMeals > 0
     ? Math.round((totalUsed - supplyCardUsed) / totalMeals) : 0
 
+  // 전월 식단가 비교용 데이터
+  const prevMonth = parseInt(month) === 1 ? 12 : parseInt(month) - 1
+  const prevYear2 = parseInt(month) === 1 ? String(parseInt(year) - 1) : year
+  const prevMealStats = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(breakfast_patient+lunch_patient+dinner_patient),0) as total_patient,
+            COALESCE(SUM(breakfast_staff+lunch_staff+dinner_staff),0) as total_staff,
+            COALESCE(SUM(breakfast_noncovered+lunch_noncovered+dinner_noncovered),0) as total_noncovered,
+            COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
+     FROM daily_meals WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)`
+  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
+
+  const prevOrders = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(total_amount),0) as total_used FROM daily_orders
+     WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)`
+  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
+
+  const prevSupply = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(d.total_amount),0) as supply_used
+     FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+     WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=? AND strftime('%m',d.order_date)=printf('%02d',?)
+       AND (v.category='supply' OR v.category='card')`
+  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
+
+  const prevSettings = await c.env.DB.prepare(
+    `SELECT total_budget, meal_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
+
+  // 전월 식단가 계산
+  const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
+  const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_noncovered||0)+(pms.total_guardian||0)
+  const prevTotalUsed = prevOrders?.total_used || 0
+  const prevSupplyUsed = prevSupply?.supply_used || 0
+  const prevStaffRatio = prevTotalMeals > 0 ? (pms.total_staff||0) / prevTotalMeals : 0
+  const prevStaffCost = Math.round(prevTotalUsed * prevStaffRatio)
+  const prevMealPriceTotal = prevTotalMeals > 0 ? Math.round(prevTotalUsed / prevTotalMeals) : 0
+  const prevMealPriceNoStaff = (prevTotalMeals - (pms.total_staff||0)) > 0
+    ? Math.round((prevTotalUsed - prevStaffCost) / (prevTotalMeals - (pms.total_staff||0))) : 0
+  const prevMealPriceNoSupply = prevTotalMeals > 0
+    ? Math.round((prevTotalUsed - prevSupplyUsed) / prevTotalMeals) : 0
+
   return c.json({
     settings,
     vendors: vendors.results,
@@ -119,6 +159,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealPriceNoStaff,
     mealPriceNoSupply,
     totalMeals,
+    prevMonth: {
+      month: prevMonth, year: parseInt(prevYear2),
+      totalUsed: prevTotalUsed, totalMeals: prevTotalMeals,
+      mealPriceTotal: prevMealPriceTotal,
+      mealPriceNoStaff: prevMealPriceNoStaff,
+      mealPriceNoSupply: prevMealPriceNoSupply,
+      totalBudget: prevSettings?.total_budget || 0,
+      targetMealPrice: prevSettings?.meal_price || 0
+    },
     summary: {
       totalUsed,
       totalBudget,
@@ -188,7 +237,7 @@ dashboard.get('/annual/:year', async (c) => {
 
   // 업체별 연간 합계
   const vendorAnnual = await c.env.DB.prepare(
-    `SELECT v.name, v.category,
+    `SELECT v.id, v.name, v.category,
             strftime('%m', d.order_date) as month,
             SUM(d.total_amount) as total_used
      FROM daily_orders d
@@ -198,11 +247,57 @@ dashboard.get('/annual/:year', async (c) => {
      ORDER BY v.sort_order, month`
   ).bind(hospitalId, year).all<any>()
 
+  // 잔반 연간 합계
+  const wasteAnnual = await c.env.DB.prepare(
+    `SELECT month, SUM(waste_amount) as total_waste, SUM(waste_cost) as total_cost
+     FROM food_waste_records
+     WHERE hospital_id = ? AND year = ?
+     GROUP BY month ORDER BY month`
+  ).bind(hospitalId, year).all<any>()
+
+  // 전년도 같은 기간 식단가 비교용
+  const prevYear = String(parseInt(year) - 1)
+  const prevYearMeals = await c.env.DB.prepare(
+    `SELECT strftime('%m', meal_date) as month,
+            SUM(breakfast_patient+lunch_patient+dinner_patient+breakfast_staff+lunch_staff+dinner_staff+breakfast_noncovered+lunch_noncovered+dinner_noncovered+breakfast_guardian+lunch_guardian+dinner_guardian) as total_meals,
+            SUM(breakfast_patient+lunch_patient+dinner_patient) as total_patient,
+            SUM(breakfast_staff+lunch_staff+dinner_staff) as total_staff
+     FROM daily_meals WHERE hospital_id=? AND strftime('%Y',meal_date)=?
+     GROUP BY month ORDER BY month`
+  ).bind(hospitalId, prevYear).all<any>()
+
+  const prevYearOrders = await c.env.DB.prepare(
+    `SELECT strftime('%m',order_date) as month, SUM(total_amount) as total_used
+     FROM daily_orders WHERE hospital_id=? AND strftime('%Y',order_date)=?
+     GROUP BY month ORDER BY month`
+  ).bind(hospitalId, prevYear).all<any>()
+
+  // supply/card 카테고리 연간 월별
+  const supplyAnnual = await c.env.DB.prepare(
+    `SELECT strftime('%m',d.order_date) as month, SUM(d.total_amount) as total_supply
+     FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+     WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=? AND (v.category='supply' OR v.category='card')
+     GROUP BY month ORDER BY month`
+  ).bind(hospitalId, year).all<any>()
+
+  const staffAnnual = await c.env.DB.prepare(
+    `SELECT strftime('%m',meal_date) as month,
+            SUM(breakfast_staff+lunch_staff+dinner_staff) as total_staff,
+            SUM(breakfast_patient+lunch_patient+dinner_patient+breakfast_staff+lunch_staff+dinner_staff+breakfast_noncovered+lunch_noncovered+dinner_noncovered+breakfast_guardian+lunch_guardian+dinner_guardian) as total_meals
+     FROM daily_meals WHERE hospital_id=? AND strftime('%Y',meal_date)=?
+     GROUP BY month ORDER BY month`
+  ).bind(hospitalId, year).all<any>()
+
   return c.json({
     monthly: monthly.results,
     mealMonthly: mealMonthly.results,
     settings: settings.results,
-    vendorAnnual: vendorAnnual.results
+    vendorAnnual: vendorAnnual.results,
+    wasteAnnual: wasteAnnual.results || [],
+    prevYearMeals: prevYearMeals.results || [],
+    prevYearOrders: prevYearOrders.results || [],
+    supplyAnnual: supplyAnnual.results || [],
+    staffAnnual: staffAnnual.results || []
   })
 })
 
