@@ -101,4 +101,64 @@ settings.get('/holidays/:year/:month', async (c) => {
   return c.json(holidays.results)
 })
 
+// ── 세션 heartbeat (활성 상태 + 현재 페이지 업데이트) ──────────
+settings.post('/session/heartbeat', async (c) => {
+  try {
+    const user = c.get('user')
+    if (!user || user.role !== 'hospital') return c.json({ ok: true })
+    let body: any = {}
+    try { body = await c.req.json() } catch {}
+    const page = body?.page || 'dashboard'
+    const hospitalId = Number(user.hospitalId)
+    const userId = Number(user.userId)
+    const username = String(user.username || '')
+    
+    // 최근 세션 업데이트 (10분 내 세션이 있으면 갱신, 없으면 신규)
+    const recent = await c.env.DB.prepare(
+      `SELECT id FROM hospital_sessions WHERE hospital_id=? AND user_id=? AND last_active_at >= datetime('now', '-10 minutes') ORDER BY last_active_at DESC LIMIT 1`
+    ).bind(hospitalId, userId).first<any>()
+    
+    if (recent?.id) {
+      await c.env.DB.prepare(
+        `UPDATE hospital_sessions SET last_active_at=datetime('now'), last_page=?, is_active=1 WHERE id=?`
+      ).bind(page, Number(recent.id)).run()
+    } else {
+      await c.env.DB.prepare(
+        `INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, is_active) VALUES (?, ?, ?, datetime('now'), ?, 1)`
+      ).bind(hospitalId, userId, username, page).run()
+    }
+    return c.json({ ok: true })
+  } catch (e: any) {
+    console.error('Heartbeat error:', e?.message)
+    return c.json({ ok: false, error: String(e?.message) })
+  }
+})
+
+// ── 잔반 기록 조회 ─────────────────────────────────────────────
+settings.get('/food-waste/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId
+  const records = await c.env.DB.prepare(`
+    SELECT * FROM food_waste_records WHERE hospital_id=? AND year=? AND month=?
+    ORDER BY week
+  `).bind(hospitalId, year, month).all<any>()
+  return c.json(records.results || [])
+})
+
+// ── 잔반 기록 저장 ─────────────────────────────────────────────
+settings.post('/food-waste', async (c) => {
+  const user = c.get('user')
+  const { year, month, week, waste_amount, waste_cost, memo } = await c.req.json()
+  const hospitalId = user.hospitalId
+  await c.env.DB.prepare(`
+    INSERT INTO food_waste_records (hospital_id, year, month, week, waste_amount, waste_cost, memo, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(hospital_id, year, month, week) DO UPDATE SET
+      waste_amount=excluded.waste_amount, waste_cost=excluded.waste_cost,
+      memo=excluded.memo, updated_at=CURRENT_TIMESTAMP
+  `).bind(hospitalId, year, month, week, waste_amount||0, waste_cost||0, memo||'').run()
+  return c.json({ success: true })
+})
+
 export default settings

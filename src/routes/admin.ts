@@ -217,7 +217,203 @@ adminRouter.post('/notifications/read-all', async (c) => {
   return c.json({ success: true })
 })
 
-// ── 병원별 업체 목록 조회 (관리자용) ──────────────────────────
+// ── 온라인 중인 병원 목록 ─────────────────────────────────────
+adminRouter.get('/online-hospitals', async (c) => {
+  try {
+    const sessions = await c.env.DB.prepare(`
+      SELECT hs.hospital_id, hs.username, hs.last_page, hs.last_active_at,
+             h.name as hospital_name
+      FROM hospital_sessions hs
+      JOIN hospitals h ON hs.hospital_id = h.id
+      WHERE hs.last_active_at >= datetime('now', '-5 minutes')
+      GROUP BY hs.hospital_id
+      ORDER BY hs.last_active_at DESC
+    `).all<any>()
+    return c.json(sessions.results || [])
+  } catch (e: any) {
+    console.error('online-hospitals error:', e?.message)
+    return c.json([])
+  }
+})
+
+// ── 전체 현황 상세 (식단가, 이슈 포함) ───────────────────────
+adminRouter.get('/dashboard/:year/:month', async (c) => {
+  const { year, month } = c.req.param()
+  const today = new Date().toISOString().split('T')[0]
+  const nowDate = new Date()
+  const dayOfWeek = nowDate.getDay()
+  const weekStartDate = new Date(nowDate)
+  weekStartDate.setDate(nowDate.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
+  const weekEndDate = new Date(weekStartDate)
+  weekEndDate.setDate(weekStartDate.getDate() + 6)
+  const weekStartStr = weekStartDate.toISOString().split('T')[0]
+  const weekEndStr = weekEndDate.toISOString().split('T')[0]
+
+  const hospitals = await c.env.DB.prepare(`
+    SELECT h.*, hi.closing_status, hi.current_year, hi.current_month,
+           hi.licensed_beds, hi.hospital_type, hi.target_meal_price,
+           hi.meals_per_day, hi.supply_method
+    FROM hospitals h
+    LEFT JOIN hospital_info hi ON h.id = hi.hospital_id
+    ORDER BY h.id
+  `).all<any>()
+
+  // 온라인 세션 (5분 기준)
+  const onlineSessions = await c.env.DB.prepare(`
+    SELECT hospital_id, username, last_page, last_active_at
+    FROM hospital_sessions
+    WHERE last_active_at >= datetime('now', '-5 minutes')
+    GROUP BY hospital_id
+  `).all<any>()
+  const onlineMap: Record<number, any> = {}
+  for (const s of (onlineSessions.results || [])) {
+    onlineMap[s.hospital_id] = s
+  }
+
+  const results = await Promise.all(
+    (hospitals.results || []).map(async (h: any) => {
+      const settings = await c.env.DB.prepare(
+        `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+      ).bind(h.id, year, month).first<any>()
+
+      // 업체별 사용액 (이슈 분석용)
+      const vendors = await c.env.DB.prepare(`
+        SELECT v.id, v.name, v.category, v.monthly_budget,
+               COALESCE(SUM(d.total_amount),0) as used
+        FROM vendors v
+        LEFT JOIN daily_orders d ON v.id=d.vendor_id
+          AND strftime('%Y',d.order_date)=? AND strftime('%m',d.order_date)=printf('%02d',?)
+        WHERE v.hospital_id=? AND v.is_active=1
+        GROUP BY v.id
+      `).bind(year, month, h.id).all<any>()
+
+      // 식수 통계
+      const mealStats = await c.env.DB.prepare(`
+        SELECT
+          COALESCE(SUM(breakfast_patient+lunch_patient+dinner_patient),0) as total_patient,
+          COALESCE(SUM(breakfast_staff+lunch_staff+dinner_staff),0) as total_staff,
+          COALESCE(SUM(breakfast_noncovered+lunch_noncovered+dinner_noncovered),0) as total_noncovered,
+          COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
+        FROM daily_meals
+        WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
+      `).bind(h.id, year, month).first<any>()
+
+      // 오늘/이번주 발주
+      const todayUsed = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date=?`
+      ).bind(h.id, today).first<any>()
+      const weekUsed = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date>=? AND order_date<=?`
+      ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+
+      // 일별 발주 (최근 7일 이슈 분석용)
+      const dailyOrders = await c.env.DB.prepare(`
+        SELECT order_date, COALESCE(SUM(total_amount),0) as daily_total
+        FROM daily_orders
+        WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)
+        GROUP BY order_date ORDER BY order_date
+      `).bind(h.id, year, month).all<any>()
+
+      // 잔반 기록
+      const foodWaste = await c.env.DB.prepare(`
+        SELECT SUM(waste_amount) as total_waste, SUM(waste_cost) as total_cost
+        FROM food_waste_records WHERE hospital_id=? AND year=? AND month=?
+      `).bind(h.id, year, month).first<any>()
+
+      const totalBudget = settings?.total_budget || 0
+      const workingDays = settings?.working_days || 30
+      const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
+      const weekBudget = dailyBudget * 5
+
+      const totalUsed = (vendors.results || []).reduce((s: number, v: any) => s + v.used, 0)
+      const progress = totalBudget > 0 ? ((totalUsed / totalBudget) * 100) : 0
+
+      // 식단가 계산 (3종)
+      const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
+      const totalMeals = ms.total_patient + ms.total_staff + ms.total_noncovered + ms.total_guardian
+      // supply/card 카테고리 제외 금액
+      const supplyCardUsed = (vendors.results || [])
+        .filter((v: any) => v.category === 'supply' || v.category === 'card')
+        .reduce((s: number, v: any) => s + v.used, 0)
+      const staffUsed = Math.round(totalUsed * (totalMeals > 0 ? ms.total_staff / totalMeals : 0))
+
+      const mealPriceTotal = totalMeals > 0 ? Math.round(totalUsed / totalMeals) : 0
+      const mealPriceNoStaff = (totalMeals - ms.total_staff) > 0
+        ? Math.round((totalUsed - staffUsed) / (totalMeals - ms.total_staff)) : 0
+      const mealPriceNoSupply = totalMeals > 0
+        ? Math.round((totalUsed - supplyCardUsed) / totalMeals) : 0
+
+      const targetMealPrice = h.target_meal_price || settings?.meal_price || 0
+
+      // 이슈 목록 생성
+      const issues: any[] = []
+      // 1. 예산 초과 업체
+      for (const v of (vendors.results || [])) {
+        if (v.monthly_budget > 0 && v.used > v.monthly_budget) {
+          const pct = ((v.used - v.monthly_budget) / v.monthly_budget * 100).toFixed(1)
+          issues.push({ type: 'vendor_over', level: 'danger',
+            msg: `[업체초과] ${v.name} ${pct}% 초과` })
+        } else if (v.monthly_budget > 0 && v.used > v.monthly_budget * 0.9) {
+          const pct = (v.used / v.monthly_budget * 100).toFixed(1)
+          issues.push({ type: 'vendor_warn', level: 'warning',
+            msg: `[업체경고] ${v.name} 목표의 ${pct}% 사용` })
+        }
+      }
+      // 2. 월 예산 초과
+      if (totalBudget > 0 && totalUsed > totalBudget) {
+        const pct = ((totalUsed - totalBudget) / totalBudget * 100).toFixed(1)
+        issues.push({ type: 'budget_over', level: 'danger', msg: `[예산초과] 월 예산 ${pct}% 초과` })
+      } else if (totalBudget > 0 && totalUsed > totalBudget * 0.9) {
+        issues.push({ type: 'budget_warn', level: 'warning',
+          msg: `[예산경고] 월 예산 ${(totalUsed/totalBudget*100).toFixed(1)}% 사용` })
+      }
+      // 3. 하루 발주 초과
+      for (const d of (dailyOrders.results || [])) {
+        if (dailyBudget > 0 && d.daily_total > dailyBudget * 1.3) {
+          const pct = ((d.daily_total - dailyBudget) / dailyBudget * 100).toFixed(1)
+          issues.push({ type: 'daily_over', level: 'warning',
+            msg: `[일발주초과] ${d.order_date} ${pct}% 초과` })
+        }
+      }
+      // 4. 식단가 초과
+      if (targetMealPrice > 0 && mealPriceTotal > targetMealPrice) {
+        const pct = ((mealPriceTotal - targetMealPrice) / targetMealPrice * 100).toFixed(1)
+        issues.push({ type: 'meal_price_over', level: 'danger',
+          msg: `[식단가초과] 실제 ${mealPriceTotal.toLocaleString()}원 (목표대비 ${pct}% 초과)` })
+      }
+
+      return {
+        hospital: h,
+        totalBudget,
+        totalUsed,
+        progress: progress.toFixed(1),
+        remaining: totalBudget - totalUsed,
+        mealPriceTotal,
+        mealPriceNoStaff,
+        mealPriceNoSupply,
+        targetMealPrice,
+        totalMeals,
+        mealStats: ms,
+        todayUsed: todayUsed?.t || 0,
+        weekUsed: weekUsed?.t || 0,
+        dailyBudget,
+        weekBudget,
+        vendors: vendors.results || [],
+        dailyOrders: dailyOrders.results || [],
+        foodWaste: { totalWaste: foodWaste?.total_waste||0, totalCost: foodWaste?.total_cost||0 },
+        issues,
+        online: onlineMap[h.id] || null,
+        closingStatus: h.closing_status || 'open',
+        activeYear: h.current_year || parseInt(year),
+        activeMonth: h.current_month || parseInt(month)
+      }
+    })
+  )
+
+  return c.json({ hospitals: results, year, month, today })
+})
+
+// ── 병원별 업체 목록 (관리자용) ───────────────────────────────
 adminRouter.get('/hospitals/:id/vendors', async (c) => {
   const id = c.req.param('id')
   const vendors = await c.env.DB.prepare(`

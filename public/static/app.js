@@ -54,6 +54,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         App.currentMonth = am.month
       }
     } catch(e) {}
+    // heartbeat 시작 (60초마다 현재 페이지 서버에 전달)
+    startHeartbeat()
   }
 
   initSidebar()
@@ -66,6 +68,20 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   navigateTo(pageMap[path] || 'dashboard')
 })
+
+// ── 세션 heartbeat (병원 계정 전용) ─────────────────────────
+let _heartbeatTimer = null
+function startHeartbeat() {
+  if (_heartbeatTimer) clearInterval(_heartbeatTimer)
+  sendHeartbeat()
+  _heartbeatTimer = setInterval(sendHeartbeat, 60000) // 60초마다
+}
+async function sendHeartbeat() {
+  if (App.role === 'admin') return
+  try {
+    await api('POST', '/api/settings/session/heartbeat', { page: App.currentPage })
+  } catch(e) {}
+}
 
 function initSidebar() {
   document.getElementById('hospitalNameDisplay').textContent = App.hospitalName || '병원'
@@ -269,6 +285,12 @@ async function renderDashboard() {
   const ms = data.mealStats || {}
   const totalMeals = (ms.total_patient||0)+(ms.total_staff||0)+(ms.total_noncovered||0)+(ms.total_guardian||0)
   const mealPrice = totalMeals > 0 && s.totalUsed > 0 ? Math.round(s.totalUsed / totalMeals) : (data.settings?.meal_price || 0)
+  // 식단가 3종 (API에서 제공)
+  const mealPriceTotal = data.mealPriceTotal || mealPrice
+  const mealPriceNoStaff = data.mealPriceNoStaff || 0
+  const mealPriceNoSupply = data.mealPriceNoSupply || 0
+  const targetMealPrice = data.settings?.meal_price || 0
+  const mpOver = targetMealPrice > 0 && mealPriceTotal > targetMealPrice
   const overBudget = data.overBudgetVendors || []
   
   // 현재 날짜 기준 남은 일수 계산
@@ -277,6 +299,12 @@ async function renderDashboard() {
   const daysInMonth = getDaysInMonth(App.currentYear, App.currentMonth)
   const currentDay = isCurrentMonth ? today.getDate() : daysInMonth
   const remainingDays = daysInMonth - currentDay
+
+  // 잔반 데이터 비동기 로드
+  let foodWasteData = []
+  try {
+    foodWasteData = await api('GET', `/api/settings/food-waste/${App.currentYear}/${App.currentMonth}`) || []
+  } catch(e) {}
 
   content.innerHTML = `
   <!-- 예산 초과 알림 -->
@@ -465,11 +493,48 @@ async function renderDashboard() {
         <span class="text-sm font-medium text-gray-600">총 식수</span>
         <span class="font-bold text-lg text-gray-800">${fmt(totalMeals)}<span class="text-xs font-normal text-gray-400 ml-1">식</span></span>
       </div>
+      <!-- 식단가 3종 -->
       ${totalMeals > 0 ? `
-      <div class="flex items-center justify-between p-3 mt-2 bg-blue-50 rounded-xl">
-        <span class="text-sm font-medium text-blue-600">실제 식단가</span>
-        <span class="font-bold text-lg text-blue-700">${fmt(mealPrice)}<span class="text-xs font-normal ml-1">원/식</span></span>
+      <div class="mt-3 space-y-2">
+        <div class="flex items-center justify-between p-2.5 ${mpOver?'bg-red-50 border border-red-200':'bg-blue-50'} rounded-xl">
+          <div>
+            <span class="text-xs font-medium ${mpOver?'text-red-600':'text-blue-600'}">전체 식단가</span>
+            ${targetMealPrice>0?`<span class="text-xs text-gray-400 ml-1">(목표 ${fmt(targetMealPrice)}원)</span>`:''}
+            ${mpOver?`<span class="text-xs text-red-500 ml-1 font-bold">▲초과</span>`:''}
+          </div>
+          <span class="font-bold text-lg ${mpOver?'text-red-600':'text-blue-700'}">${fmt(mealPriceTotal)}<span class="text-xs font-normal ml-1">원/식</span></span>
+        </div>
+        <div class="flex items-center justify-between p-2.5 bg-purple-50 rounded-xl">
+          <span class="text-xs font-medium text-purple-600">직원식 제외 식단가</span>
+          <span class="font-bold text-purple-700">${fmt(mealPriceNoStaff)}<span class="text-xs font-normal ml-1">원/식</span></span>
+        </div>
+        <div class="flex items-center justify-between p-2.5 bg-orange-50 rounded-xl">
+          <span class="text-xs font-medium text-orange-600">소모품 제외 식단가</span>
+          <span class="font-bold text-orange-700">${fmt(mealPriceNoSupply)}<span class="text-xs font-normal ml-1">원/식</span></span>
+        </div>
       </div>` : ''}
+      <!-- 잔반 현황 -->
+      <div class="mt-3 border-t border-gray-100 pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold text-gray-700"><i class="fas fa-recycle text-amber-500 mr-1"></i>잔반 월별 현황</span>
+          <button onclick="showFoodWasteModal(${App.currentYear},${App.currentMonth})" class="text-xs text-blue-500 hover:underline">입력/수정 →</button>
+        </div>
+        ${foodWasteData.length > 0 ? `
+        <div class="space-y-1.5">
+          ${foodWasteData.map(w=>`
+          <div class="flex items-center justify-between text-xs bg-amber-50 rounded-lg px-3 py-1.5">
+            <span class="text-gray-600">${w.week}주차</span>
+            <span class="font-semibold text-amber-700">${w.waste_amount}kg</span>
+            ${w.waste_cost>0?`<span class="text-gray-500">${fmtMan(w.waste_cost)}원</span>`:''}
+            ${w.memo?`<span class="text-gray-400 truncate max-w-20">${w.memo}</span>`:''}
+          </div>`).join('')}
+          <div class="flex items-center justify-between text-xs font-bold bg-amber-100 rounded-lg px-3 py-1.5">
+            <span class="text-amber-800">합계</span>
+            <span class="text-amber-800">${foodWasteData.reduce((s,w)=>s+w.waste_amount,0).toFixed(1)}kg</span>
+            <span class="text-amber-700">${fmtMan(foodWasteData.reduce((s,w)=>s+w.waste_cost,0))}원</span>
+          </div>
+        </div>` : `<div class="text-xs text-gray-400 py-2 text-center">잔반 기록 없음 · <button onclick="showFoodWasteModal(${App.currentYear},${App.currentMonth})" class="text-blue-500 hover:underline">입력하기</button></div>`}
+      </div>
     </div>
 
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
@@ -554,10 +619,11 @@ async function renderOrders() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [vendors, orderData, settingsData] = await Promise.all([
+  const [vendors, orderData, settingsData, dashData] = await Promise.all([
     api('GET', '/api/vendors'),
     api('GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/settings/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/settings/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`)
   ])
 
   if (!vendors) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
@@ -573,6 +639,9 @@ async function renderOrders() {
   const totalBudget = settings.total_budget || 0
   const workingDays = settings.working_days || getDaysInMonth(App.currentYear, App.currentMonth)
   const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
+  // 식단가 관련 데이터
+  const mealStats = dashData?.mealStats || {}
+  const targetMealPrice = settings.meal_price || 0
 
   // 오늘 날짜 계산
   const today = new Date()
@@ -606,6 +675,32 @@ async function renderOrders() {
   function barColor(p) { return p >= 100 ? 'progress-red' : p >= 80 ? 'progress-yellow' : 'progress-green' }
 
   content.innerHTML = `
+  <!-- ── 식단가 실시간 패널 ── -->
+  <div id="mealPricePanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-utensils text-blue-500 mr-1"></i>실시간 식단가</h3>
+      <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt((mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_noncovered||0)+(mealStats.total_guardian||0))}</strong>식</span>
+    </div>
+    <div class="grid grid-cols-3 gap-3">
+      <div id="mpCard-total" class="rounded-xl p-3 ${targetMealPrice > 0 && dashData?.mealPriceTotal > targetMealPrice ? 'bg-red-50 border-2 border-red-300' : 'bg-blue-50'}">
+        <div class="text-xs text-blue-600 mb-1 font-medium">전체 식단가</div>
+        <div class="text-lg font-bold" id="mpVal-total">${fmt(dashData?.mealPriceTotal||0)}<span class="text-xs font-normal ml-0.5">원/식</span></div>
+        ${targetMealPrice > 0 ? `<div class="text-xs text-gray-400">목표: ${fmt(targetMealPrice)}원</div>` : ''}
+        <div class="text-xs font-semibold mt-1" id="mpDiff-total">${targetMealPrice > 0 && dashData?.mealPriceTotal > 0 ? (dashData.mealPriceTotal > targetMealPrice ? `<span class="text-red-500">▲ +${fmt(dashData.mealPriceTotal-targetMealPrice)}원 초과</span>` : `<span class="text-green-600">▼ ${fmt(targetMealPrice-dashData.mealPriceTotal)}원 여유</span>`) : ''}</div>
+      </div>
+      <div class="bg-purple-50 rounded-xl p-3">
+        <div class="text-xs text-purple-600 mb-1 font-medium">직원식 제외</div>
+        <div class="text-lg font-bold text-purple-700" id="mpVal-nostaff">${fmt(dashData?.mealPriceNoStaff||0)}<span class="text-xs font-normal ml-0.5">원/식</span></div>
+        <div class="text-xs text-purple-400">직원: ${fmt(mealStats.total_staff||0)}식 제외</div>
+      </div>
+      <div class="bg-orange-50 rounded-xl p-3">
+        <div class="text-xs text-orange-600 mb-1 font-medium">소모품 제외</div>
+        <div class="text-lg font-bold text-orange-700" id="mpVal-nosupply">${fmt(dashData?.mealPriceNoSupply||0)}<span class="text-xs font-normal ml-0.5">원/식</span></div>
+        <div class="text-xs text-orange-400">소모품/카드 제외</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── 예산 진행률 실시간 패널 ── -->
   <div id="budgetProgressPanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
     <div class="flex items-center justify-between mb-3">
@@ -802,6 +897,12 @@ async function renderOrders() {
   // 전역에 예산 데이터 저장 (실시간 업데이트용)
   window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd }
   window._ordersData = orderData || []
+  window._ordersMealStats = {
+    totalMeals: (mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_noncovered||0)+(mealStats.total_guardian||0),
+    totalStaff: mealStats.total_staff||0,
+    targetMealPrice,
+    vendors: vendors || []
+  }
 
   bindOrderInputEvents()
 }
@@ -918,10 +1019,12 @@ function bindOrderInputEvents() {
       const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
       if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
       updateDayTotal(date)
-      await api('POST', '/api/orders/save', {
+      showAutoSaveIndicator('saving')
+      const res = await api('POST', '/api/orders/save', {
         vendorId: parseInt(vendorId), orderDate: date,
         taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat
       })
+      showAutoSaveIndicator(res?.success ? 'saved' : 'error')
       updateBudgetProgressPanel()
     })
     // 엔터키로 다음 셀 이동
@@ -933,6 +1036,31 @@ function bindOrderInputEvents() {
       }
     })
   })
+}
+
+// 자동저장 인디케이터
+let _autoSaveTimer = null
+function showAutoSaveIndicator(state) {
+  let el = document.getElementById('autoSaveIndicator')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'autoSaveIndicator'
+    el.style.cssText = 'position:fixed;bottom:20px;right:20px;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;z-index:9999;transition:opacity 0.3s;pointer-events:none;'
+    document.body.appendChild(el)
+  }
+  if (_autoSaveTimer) clearTimeout(_autoSaveTimer)
+  if (state === 'saving') {
+    el.style.background = '#f59e0b'; el.style.color = '#fff'; el.style.opacity = '1'
+    el.innerHTML = '<i class="fas fa-sync-alt fa-spin mr-1"></i>저장 중...'
+  } else if (state === 'saved') {
+    el.style.background = '#10b981'; el.style.color = '#fff'; el.style.opacity = '1'
+    el.innerHTML = '<i class="fas fa-check mr-1"></i>자동 저장됨'
+    _autoSaveTimer = setTimeout(() => { el.style.opacity = '0' }, 2000)
+  } else {
+    el.style.background = '#ef4444'; el.style.color = '#fff'; el.style.opacity = '1'
+    el.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i>저장 실패'
+    _autoSaveTimer = setTimeout(() => { el.style.opacity = '0' }, 3000)
+  }
 }
 
 function updateBudgetProgressPanel() {
@@ -993,6 +1121,57 @@ function updateBudgetProgressPanel() {
   const mPctEl = document.getElementById('monthPctDisplay')
   if (mTotalEl) mTotalEl.textContent = fmtMan(monthTotal)
   if (mPctEl) mPctEl.textContent = `${monthPct}%`
+
+  // 실시간 식단가 업데이트
+  const ms = window._ordersMealStats
+  if (ms && ms.totalMeals > 0) {
+    // 소모품/카드 카테고리 업체들의 합계
+    const supplyTotal = ms.vendors
+      .filter(v => v.category === 'supply' || v.category === 'card')
+      .reduce((s, v) => {
+        const vInputs = document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`)
+        let vTotal = 0
+        const seen = new Set()
+        vInputs.forEach(inp => {
+          const date = inp.dataset.date
+          if (seen.has(date)) return; seen.add(date)
+          const taxEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${date}"]`)
+          const exEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${date}"]`)
+          const t = parseInt(taxEl?.value||0)||0
+          const e = parseInt(exEl?.value||0)||0
+          vTotal += t + Math.round(t*0.1) + e
+        })
+        return s + vTotal
+      }, 0)
+
+    const staffRatio = ms.totalMeals > 0 ? ms.totalStaff / ms.totalMeals : 0
+    const staffTotal = Math.round(monthTotal * staffRatio)
+
+    const mp1 = Math.round(monthTotal / ms.totalMeals)
+    const mp2 = (ms.totalMeals - ms.totalStaff) > 0 ? Math.round((monthTotal - staffTotal) / (ms.totalMeals - ms.totalStaff)) : 0
+    const mp3 = Math.round((monthTotal - supplyTotal) / ms.totalMeals)
+    const tgt = ms.targetMealPrice
+
+    const mp1El = document.getElementById('mpVal-total')
+    const mp2El = document.getElementById('mpVal-nostaff')
+    const mp3El = document.getElementById('mpVal-nosupply')
+    const mpDiffEl = document.getElementById('mpDiff-total')
+    const mpCardEl = document.getElementById('mpCard-total')
+
+    if (mp1El) mp1El.innerHTML = `${fmt(mp1)}<span class="text-xs font-normal ml-0.5">원/식</span>`
+    if (mp2El) mp2El.innerHTML = `${fmt(mp2)}<span class="text-xs font-normal ml-0.5">원/식</span>`
+    if (mp3El) mp3El.innerHTML = `${fmt(mp3)}<span class="text-xs font-normal ml-0.5">원/식</span>`
+
+    if (mpDiffEl && tgt > 0) {
+      if (mp1 > tgt) {
+        mpDiffEl.innerHTML = `<span class="text-red-500">▲ +${fmt(mp1-tgt)}원 초과</span>`
+        if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-red-50 border-2 border-red-300'
+      } else {
+        mpDiffEl.innerHTML = `<span class="text-green-600">▼ ${fmt(tgt-mp1)}원 여유</span>`
+        if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-blue-50'
+      }
+    }
+  }
 }
 
 function updateDayTotal(date) {
@@ -1474,6 +1653,74 @@ async function renderSettings() {
   }
 }
 
+// ── 잔반 입력 모달 ─────────────────────────────────────────────
+window.showFoodWasteModal = async function(year, month) {
+  const existing = await api('GET', `/api/settings/food-waste/${year}/${month}`) || []
+  const weeks = [1,2,3,4,5]
+  const wMap = {}
+  existing.forEach(w => { wMap[w.week] = w })
+
+  let modal = document.getElementById('foodWasteModal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'foodWasteModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;display:flex;align-items:center;justify-content:center;'
+    document.body.appendChild(modal)
+  }
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-gray-800"><i class="fas fa-recycle text-amber-500 mr-2"></i>잔반 기록 - ${year}년 ${month}월</h3>
+      <button onclick="document.getElementById('foodWasteModal').remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="space-y-3">
+      ${weeks.map(w => {
+        const d = wMap[w] || {}
+        return `
+        <div class="p-3 bg-gray-50 rounded-xl">
+          <div class="font-semibold text-sm text-gray-700 mb-2">${w}주차</div>
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-gray-500">잔반량(kg)</label>
+              <input type="number" id="fw-amount-${w}" class="form-input text-sm" step="0.1" min="0" value="${d.waste_amount||''}" placeholder="0.0">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">비용(원)</label>
+              <input type="number" id="fw-cost-${w}" class="form-input text-sm" min="0" value="${d.waste_cost||''}" placeholder="0">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">메모</label>
+              <input type="text" id="fw-memo-${w}" class="form-input text-sm" value="${d.memo||''}" placeholder="">
+            </div>
+          </div>
+        </div>`
+      }).join('')}
+    </div>
+    <div class="flex gap-3 mt-5">
+      <button onclick="saveFoodWaste(${year},${month})" class="btn btn-primary flex-1"><i class="fas fa-save mr-1"></i>저장</button>
+      <button onclick="document.getElementById('foodWasteModal').remove()" class="btn btn-secondary">취소</button>
+    </div>
+  </div>`
+  modal.style.display = 'flex'
+}
+
+window.saveFoodWaste = async function(year, month) {
+  const weeks = [1,2,3,4,5]
+  let saved = 0
+  for (const w of weeks) {
+    const amount = parseFloat(document.getElementById(`fw-amount-${w}`)?.value || 0) || 0
+    const cost = parseInt(document.getElementById(`fw-cost-${w}`)?.value || 0) || 0
+    const memo = document.getElementById(`fw-memo-${w}`)?.value || ''
+    if (amount > 0 || cost > 0) {
+      await api('POST', '/api/settings/food-waste', { year, month, week: w, waste_amount: amount, waste_cost: cost, memo })
+      saved++
+    }
+  }
+  document.getElementById('foodWasteModal')?.remove()
+  showToast(`잔반 기록 ${saved}건 저장됨`, 'success')
+  renderDashboard()
+}
+
 async function submitClosingRequest(year, month) {
   const memo = document.getElementById('closingMemo')?.value || ''
   if (!confirm(`${year}년 ${month}월 마감 요청을 보내시겠습니까?\n관리자 승인 후 다음 달로 전환됩니다.`)) return
@@ -1554,197 +1801,412 @@ async function renderAdminDashboard() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const data = await api('GET', `/api/dashboard/admin/overview/${App.currentYear}/${App.currentMonth}`)
+  const data = await api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`)
   if (!data) return
 
-  const totalUsed = data.hospitals.reduce((s,h)=>s+h.totalUsed, 0)
-  const totalBudget = data.hospitals.reduce((s,h)=>s+h.totalBudget, 0)
-  const avgProgress = data.hospitals.filter(h=>h.totalBudget>0).length > 0
-    ? data.hospitals.filter(h=>h.totalBudget>0).reduce((s,h)=>s+parseFloat(h.progress),0) / data.hospitals.filter(h=>h.totalBudget>0).length
-    : 0
+  const hospitals = data.hospitals || []
+  const onlineCount = hospitals.filter(h => h.online).length
+  const issueCount = hospitals.reduce((s,h) => s + h.issues.filter(i=>i.level==='danger').length, 0)
+  const overCount = hospitals.filter(h => h.totalBudget > 0 && h.totalUsed > h.totalBudget).length
 
   content.innerHTML = `
-  <!-- 전체 요약 -->
-  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
-    <div class="stat-card">
+  <!-- 상단 요약 카드 4개 -->
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+    <div class="stat-card border-l-4 border-green-500">
       <div class="text-xs text-gray-500 mb-1">관리 병원</div>
-      <div class="text-3xl font-bold text-green-700">${data.hospitals.length}<span class="text-sm font-normal text-gray-400 ml-1">개</span></div>
+      <div class="text-3xl font-bold text-green-700">${hospitals.length}<span class="text-sm font-normal text-gray-400 ml-1">개</span></div>
+      <div class="text-xs text-gray-400 mt-1">온라인: <span class="text-green-600 font-semibold">${onlineCount}개</span></div>
     </div>
-    <div class="stat-card">
-      <div class="text-xs text-gray-500 mb-1">이달 총 사용</div>
-      <div class="text-xl font-bold text-gray-800">${fmtMan(totalUsed)}<span class="text-xs text-gray-400 ml-1">원</span></div>
-      <div class="text-xs text-gray-400">예산: ${fmtMan(totalBudget)}원</div>
+    <div class="stat-card border-l-4 border-blue-500">
+      <div class="text-xs text-gray-500 mb-1">오늘 총 발주</div>
+      <div class="text-lg font-bold text-gray-800">${fmtMan(hospitals.reduce((s,h)=>s+h.todayUsed,0))}원</div>
+      <div class="text-xs text-gray-400 mt-1">이번 주: ${fmtMan(hospitals.reduce((s,h)=>s+h.weekUsed,0))}원</div>
     </div>
-    <div class="stat-card">
-      <div class="text-xs text-gray-500 mb-1">평균 진행률</div>
-      <div class="text-xl font-bold ${avgProgress>=100?'text-red-600':avgProgress>=80?'text-yellow-600':'text-green-600'}">${avgProgress.toFixed(1)}%</div>
-    </div>
-    <div class="stat-card">
+    <div class="stat-card border-l-4 ${overCount>0?'border-red-500':'border-green-500'}">
       <div class="text-xs text-gray-500 mb-1">예산 초과 병원</div>
-      <div class="text-xl font-bold ${data.hospitals.filter(h=>h.totalUsed>h.totalBudget&&h.totalBudget>0).length>0?'text-red-600':'text-gray-800'}">
-        ${data.hospitals.filter(h=>h.totalUsed>h.totalBudget&&h.totalBudget>0).length}개
-      </div>
+      <div class="text-2xl font-bold ${overCount>0?'text-red-600':'text-green-700'}">${overCount}개</div>
+      <div class="text-xs text-gray-400 mt-1">위험 이슈: <span class="${issueCount>0?'text-red-500 font-semibold':'text-gray-400'}">${issueCount}건</span></div>
+    </div>
+    <div class="stat-card border-l-4 border-amber-500">
+      <div class="text-xs text-gray-500 mb-1">마감 요청 대기</div>
+      <div class="text-2xl font-bold text-amber-600">${hospitals.filter(h=>h.closingStatus==='requested').length}건</div>
+      <div class="text-xs text-gray-400 mt-1">${App.currentYear}년 ${App.currentMonth}월 기준</div>
     </div>
   </div>
 
   <!-- 탭 -->
-  <div class="flex gap-2 mb-4 border-b border-gray-200">
-    <button id="adminTab-overview" onclick="switchAdminTab('overview')" class="px-4 py-2 text-sm font-medium border-b-2 border-green-600 text-green-700">
-      <i class="fas fa-th-large mr-1"></i>병원 현황
+  <div class="flex gap-1 mb-4 border-b border-gray-200">
+    <button id="adminTab-cards" onclick="switchAdminTab('cards')" class="px-4 py-2 text-sm font-medium border-b-2 border-green-600 text-green-700">
+      <i class="fas fa-th-large mr-1"></i>병원별 현황
     </button>
-    <button id="adminTab-orders" onclick="switchAdminTab('orders')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
-      <i class="fas fa-chart-bar mr-1"></i>발주 현황 (전 병원)
+    <button id="adminTab-issues" onclick="switchAdminTab('issues')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+      <i class="fas fa-exclamation-triangle mr-1 text-amber-500"></i>데일리 이슈
+    </button>
+    <button id="adminTab-chart" onclick="switchAdminTab('chart')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+      <i class="fas fa-chart-bar mr-1"></i>발주 비교
     </button>
   </div>
 
-  <!-- 병원 현황 탭 -->
-  <div id="adminContent-overview">
-    <!-- 병원별 카드 -->
+  <!-- 병원별 카드 탭 -->
+  <div id="adminContent-cards">
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      ${data.hospitals.map(h => {
+      ${hospitals.map(h => {
         const pct = parseFloat(h.progress)
         const over = h.totalBudget > 0 && h.totalUsed > h.totalBudget
+        const warn = !over && h.totalBudget > 0 && pct >= 90
+        const borderColor = over ? 'border-red-300' : warn ? 'border-amber-200' : 'border-gray-100'
+        const iconBg = over ? 'bg-red-50' : 'bg-green-50'
+        const iconColor = over ? 'text-red-500' : 'text-green-600'
+        // 식단가 색상
+        const mpColor = h.targetMealPrice > 0 && h.mealPriceTotal > h.targetMealPrice ? 'text-red-600 font-bold' : 'text-green-700'
+        const dangerIssues = h.issues.filter(i=>i.level==='danger')
+        const warnIssues = h.issues.filter(i=>i.level==='warning')
         return `
-        <div class="bg-white rounded-2xl shadow-sm border ${over?'border-red-200':'border-gray-100'} p-5 hover:shadow-md transition-shadow">
+        <div class="bg-white rounded-2xl shadow-sm border-2 ${borderColor} p-4">
+          <!-- 헤더 -->
           <div class="flex items-center justify-between mb-3">
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-xl ${over?'bg-red-50':'bg-green-50'} flex items-center justify-center">
-                <i class="fas fa-hospital ${over?'text-red-500':'text-green-600'}"></i>
+            <div class="flex items-center gap-2">
+              <div class="w-9 h-9 rounded-xl ${iconBg} flex items-center justify-center">
+                <i class="fas fa-hospital ${iconColor} text-sm"></i>
               </div>
               <div>
-                <div class="font-bold text-gray-800">${h.hospital.name}</div>
-                <div class="text-xs text-gray-400">${h.hospital.code} · 오늘 ${fmtMan(h.todayUsed)}원</div>
+                <div class="font-bold text-gray-800 text-sm">${h.hospital.name}</div>
+                <div class="text-xs text-gray-400">${h.activeYear}년 ${h.activeMonth}월 운영 중</div>
               </div>
             </div>
-            <div class="text-right">
-              <span class="badge ${getBadgeColor(pct)}">${h.progress}%</span>
-              ${over?'<div class="text-xs text-red-500 mt-1 font-semibold">예산 초과</div>':''}
+            <div class="flex items-center gap-2">
+              ${h.online ? `
+              <span class="flex items-center gap-1 text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-200">
+                <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                온라인 · ${h.online.last_page}
+              </span>` : `<span class="text-xs text-gray-300">오프라인</span>`}
+              ${h.closingStatus==='requested'?`<span class="badge badge-yellow text-xs">마감요청</span>`:''}
             </div>
           </div>
-          <div class="grid grid-cols-3 gap-3 text-sm mb-3">
-            <div class="text-center p-2 bg-gray-50 rounded-lg">
+          <!-- 예산 진행 -->
+          <div class="grid grid-cols-3 gap-2 text-center mb-3">
+            <div class="p-2 bg-gray-50 rounded-lg">
               <div class="text-xs text-gray-400">사용</div>
-              <div class="font-semibold text-green-700">${fmtMan(h.totalUsed)}원</div>
+              <div class="text-sm font-bold text-green-700">${fmtMan(h.totalUsed)}원</div>
             </div>
-            <div class="text-center p-2 bg-gray-50 rounded-lg">
+            <div class="p-2 bg-gray-50 rounded-lg">
               <div class="text-xs text-gray-400">목표</div>
-              <div class="font-semibold">${h.totalBudget>0?fmtMan(h.totalBudget)+'원':'-'}</div>
+              <div class="text-sm font-semibold">${h.totalBudget>0?fmtMan(h.totalBudget)+'원':'-'}</div>
             </div>
-            <div class="text-center p-2 ${h.remaining<0?'bg-red-50':'bg-green-50'} rounded-lg">
-              <div class="text-xs ${h.remaining<0?'text-red-400':'text-gray-400'}">잔여</div>
-              <div class="font-semibold ${h.remaining<0?'text-red-600':'text-green-600'}">${fmtMan(h.remaining)}원</div>
+            <div class="p-2 ${over?'bg-red-50':'bg-green-50'} rounded-lg">
+              <div class="text-xs ${over?'text-red-400':'text-gray-400'}">잔여</div>
+              <div class="text-sm font-bold ${over?'text-red-600':'text-green-600'}">${fmtMan(h.remaining)}원</div>
             </div>
           </div>
-          <div class="progress-bar">
+          <div class="progress-bar mb-2">
             <div class="progress-fill ${getProgressColor(pct)}" style="width:${Math.min(pct,100)}%"></div>
           </div>
-          ${h.totalMeals>0?`<div class="mt-2 text-xs text-gray-400 text-right">총 식수: ${fmt(h.totalMeals)}식 · 식단가: ${fmt(h.mealPrice)}원</div>`:''}
+          <!-- 식단가 3종 -->
+          ${h.totalMeals > 0 ? `
+          <div class="grid grid-cols-3 gap-1 mb-2">
+            <div class="text-center p-1.5 bg-blue-50 rounded-lg">
+              <div class="text-xs text-blue-400">전체식단가</div>
+              <div class="text-xs font-bold ${mpColor}">${h.mealPriceTotal.toLocaleString()}원</div>
+              ${h.targetMealPrice>0?`<div class="text-xs text-gray-400">목표 ${h.targetMealPrice.toLocaleString()}원</div>`:''}
+            </div>
+            <div class="text-center p-1.5 bg-purple-50 rounded-lg">
+              <div class="text-xs text-purple-400">직원식 제외</div>
+              <div class="text-xs font-bold text-purple-700">${h.mealPriceNoStaff.toLocaleString()}원</div>
+            </div>
+            <div class="text-center p-1.5 bg-orange-50 rounded-lg">
+              <div class="text-xs text-orange-400">소모품 제외</div>
+              <div class="text-xs font-bold text-orange-700">${h.mealPriceNoSupply.toLocaleString()}원</div>
+            </div>
+          </div>` : ''}
+          <!-- 오늘/주간 -->
+          <div class="flex gap-2 text-xs text-gray-500 mb-2">
+            <span>오늘: <strong class="text-gray-700">${fmtMan(h.todayUsed)}원</strong></span>
+            <span>·</span>
+            <span>이번주: <strong class="text-gray-700">${fmtMan(h.weekUsed)}원</strong></span>
+            <span>·</span>
+            <span>식수: <strong class="text-gray-700">${fmt(h.totalMeals)}식</strong></span>
+          </div>
+          <!-- 잔반 -->
+          ${h.foodWaste.totalWaste > 0 ? `
+          <div class="text-xs text-gray-500 mb-2">
+            잔반: <strong class="text-amber-600">${h.foodWaste.totalWaste.toFixed(1)}kg</strong>
+            ${h.foodWaste.totalCost>0?`(${fmtMan(h.foodWaste.totalCost)}원)`:''}
+          </div>` : ''}
+          <!-- 이슈 -->
+          ${dangerIssues.length > 0 ? `
+          <div class="space-y-1">
+            ${dangerIssues.map(i=>`
+            <div class="flex items-center gap-1 text-xs bg-red-50 text-red-700 px-2 py-1 rounded-lg">
+              <i class="fas fa-exclamation-circle text-red-400"></i>${i.msg}
+            </div>`).join('')}
+          </div>` : ''}
+          ${warnIssues.length > 0 ? `
+          <div class="space-y-1 mt-1">
+            ${warnIssues.slice(0,2).map(i=>`
+            <div class="flex items-center gap-1 text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
+              <i class="fas fa-exclamation-triangle text-amber-400"></i>${i.msg}
+            </div>`).join('')}
+            ${warnIssues.length>2?`<div class="text-xs text-gray-400 text-right">+${warnIssues.length-2}건 더</div>`:''}
+          </div>` : ''}
         </div>`
       }).join('')}
     </div>
   </div>
 
-  <!-- 발주 현황 탭 -->
-  <div id="adminContent-orders" class="hidden">
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="font-bold text-gray-700"><i class="fas fa-chart-bar text-green-600 mr-2"></i>${App.currentYear}년 ${App.currentMonth}월 전 병원 발주 현황</h3>
-        <button onclick="loadAdminOrdersView()" class="btn btn-secondary btn-sm"><i class="fas fa-sync mr-1"></i>새로고침</button>
+  <!-- 데일리 이슈 탭 -->
+  <div id="adminContent-issues" class="hidden">
+    ${hospitals.every(h=>h.issues.length===0) ? `
+    <div class="text-center py-12 text-gray-400">
+      <i class="fas fa-check-circle text-green-400 text-4xl mb-3"></i>
+      <div class="font-semibold">현재 이슈 없음</div>
+      <div class="text-sm mt-1">모든 병원이 정상 범위 내에서 운영 중입니다</div>
+    </div>` : `
+    <!-- 이슈 요약 카드 -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div class="bg-red-50 rounded-xl p-3 border border-red-200">
+        <div class="text-xs text-red-500 mb-1">예산 초과 병원</div>
+        <div class="text-2xl font-bold text-red-600">${hospitals.filter(h=>h.issues.some(i=>i.type==='budget_over')).length}개</div>
       </div>
-      <div id="adminOrdersContent">
-        <div class="flex items-center justify-center h-32"><div class="loading-spinner"></div></div>
+      <div class="bg-amber-50 rounded-xl p-3 border border-amber-200">
+        <div class="text-xs text-amber-500 mb-1">업체 초과</div>
+        <div class="text-2xl font-bold text-amber-600">${hospitals.reduce((s,h)=>s+h.issues.filter(i=>i.type==='vendor_over').length,0)}건</div>
       </div>
+      <div class="bg-orange-50 rounded-xl p-3 border border-orange-200">
+        <div class="text-xs text-orange-500 mb-1">일 발주 초과</div>
+        <div class="text-2xl font-bold text-orange-600">${hospitals.reduce((s,h)=>s+h.issues.filter(i=>i.type==='daily_over').length,0)}건</div>
+      </div>
+      <div class="bg-purple-50 rounded-xl p-3 border border-purple-200">
+        <div class="text-xs text-purple-500 mb-1">식단가 초과</div>
+        <div class="text-2xl font-bold text-purple-600">${hospitals.filter(h=>h.issues.some(i=>i.type==='meal_price_over')).length}개</div>
+      </div>
+    </div>
+    <!-- 병원별 상세 이슈 -->
+    <div class="space-y-4">
+      ${hospitals.filter(h=>h.issues.length>0).map(h => {
+        const dangerIssues = h.issues.filter(i=>i.level==='danger')
+        const warnIssues = h.issues.filter(i=>i.level==='warning')
+        // 일별 초과 발주 목록
+        const dailyOverList = h.dailyOrders.filter(d => h.dailyBudget > 0 && d.daily_total > h.dailyBudget * 1.0)
+          .sort((a,b) => b.daily_total - a.daily_total)
+        // 초과 업체 목록
+        const overVendors = h.vendors.filter(v => v.monthly_budget > 0 && v.used > v.monthly_budget)
+        return `
+        <div class="bg-white rounded-xl shadow-sm border-l-4 ${dangerIssues.length>0?'border-red-400':'border-amber-400'} p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              ${h.online?`<span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>`:`<span class="w-2 h-2 bg-gray-300 rounded-full"></span>`}
+              <span class="font-bold text-gray-800">${h.hospital.name}</span>
+              ${h.online?`<span class="text-xs text-green-600 bg-green-50 px-1.5 py-0.5 rounded">${h.online.username} · ${h.online.last_page}</span>`:''}
+            </div>
+            <div class="flex items-center gap-2">
+              ${dangerIssues.length>0?`<span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-semibold">위험 ${dangerIssues.length}건</span>`:''}
+              ${warnIssues.length>0?`<span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">경고 ${warnIssues.length}건</span>`:''}
+            </div>
+          </div>
+          
+          <!-- 이슈 배지 목록 -->
+          <div class="flex flex-wrap gap-1.5 mb-3">
+            ${h.issues.map(i=>`
+            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg font-medium ${i.level==='danger'?'bg-red-100 text-red-700':'bg-amber-100 text-amber-700'}">
+              <i class="fas ${i.level==='danger'?'fa-exclamation-circle':'fa-exclamation-triangle'}"></i>
+              ${i.msg}
+            </span>`).join('')}
+          </div>
+
+          <!-- 일별 발주 초과 상세 테이블 -->
+          ${dailyOverList.length > 0 ? `
+          <div class="mb-3">
+            <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-calendar-day mr-1 text-orange-400"></i>일별 발주 현황 (일목표: ${fmtWon(h.dailyBudget)})</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs">
+                <thead><tr class="bg-gray-50">
+                  <th class="text-left px-2 py-1">날짜</th>
+                  <th class="text-right px-2 py-1">발주액</th>
+                  <th class="text-right px-2 py-1">목표대비</th>
+                  <th class="text-left px-2 py-1 w-24">진행</th>
+                </tr></thead>
+                <tbody>
+                  ${dailyOverList.slice(0,7).map(d => {
+                    const pct = h.dailyBudget > 0 ? Math.round(d.daily_total/h.dailyBudget*100) : 0
+                    const over = pct >= 100
+                    return `<tr class="${over?'bg-red-50':'bg-amber-50'}">
+                      <td class="px-2 py-1 font-mono">${d.order_date}</td>
+                      <td class="text-right px-2 py-1 font-semibold ${over?'text-red-600':'text-amber-700'}">${fmt(d.daily_total)}원</td>
+                      <td class="text-right px-2 py-1 font-bold ${over?'text-red-600':'text-amber-600'}">${pct}%</td>
+                      <td class="px-2 py-1"><div class="h-1.5 bg-gray-200 rounded-full"><div class="h-full rounded-full ${over?'bg-red-400':'bg-amber-400'}" style="width:${Math.min(pct,100)}%"></div></div></td>
+                    </tr>`
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>` : ''}
+
+          <!-- 초과 업체 상세 -->
+          ${overVendors.length > 0 ? `
+          <div>
+            <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-store mr-1 text-red-400"></i>예산 초과 업체</div>
+            <div class="flex flex-wrap gap-1.5">
+              ${overVendors.map(v => {
+                const pct = Math.round(v.used/v.monthly_budget*100)
+                const over = v.used - v.monthly_budget
+                return `<div class="bg-red-50 border border-red-200 rounded-lg px-2 py-1.5 text-xs">
+                  <div class="font-semibold text-red-700">${v.name}</div>
+                  <div class="text-red-500">${fmt(v.used)}원 / ${fmt(v.monthly_budget)}원</div>
+                  <div class="text-red-600 font-bold">+${fmt(over)}원 (${pct}%)</div>
+                </div>`
+              }).join('')}
+            </div>
+          </div>` : ''}
+        </div>`
+      }).join('')}
+    </div>`}
+  </div>
+
+  <!-- 발주 비교 탭 -->
+  <div id="adminContent-chart" class="hidden">
+    <!-- 병원별 비교 차트 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
+      <h3 class="font-bold text-gray-700 mb-1"><i class="fas fa-chart-bar text-green-600 mr-2"></i>${App.currentYear}년 ${App.currentMonth}월 병원별 예산 대비 사용현황</h3>
+      <p class="text-xs text-gray-400 mb-4">막대: 실제 사용 / 배경: 목표예산</p>
+      <canvas id="adminCompareChart" height="80"></canvas>
+    </div>
+    <!-- 식단가 비교 차트 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
+      <h3 class="font-bold text-gray-700 mb-1"><i class="fas fa-utensils text-purple-500 mr-2"></i>병원별 식단가 비교</h3>
+      <p class="text-xs text-gray-400 mb-4">전체 식단가 / 직원식 제외 / 소모품 제외</p>
+      <canvas id="adminMealPriceChart" height="80"></canvas>
+    </div>
+    <!-- 요약 테이블 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 overflow-x-auto">
+      <h3 class="font-bold text-gray-700 mb-3"><i class="fas fa-table text-gray-500 mr-2"></i>병원별 전체 현황 요약</h3>
+      <table class="data-table w-full text-sm">
+        <thead>
+          <tr>
+            <th class="text-left pl-3">병원</th>
+            <th class="text-center">상태</th>
+            <th class="text-center">일발주/목표</th>
+            <th class="text-center">주발주/목표</th>
+            <th class="text-center">월사용/목표</th>
+            <th class="text-center">전체식단가</th>
+            <th class="text-center">직원제외</th>
+            <th class="text-center">소모품제외</th>
+            <th class="text-center">잔반</th>
+            <th class="text-center">진행률</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${hospitals.map(h=>{
+            const pct = parseFloat(h.progress)
+            const mp = h.mealPriceTotal
+            const mpOver = h.targetMealPrice > 0 && mp > h.targetMealPrice
+            const todayPct = h.dailyBudget > 0 ? Math.round(h.todayUsed/h.dailyBudget*100) : 0
+            const weekPct = h.weekBudget > 0 ? Math.round(h.weekUsed/h.weekBudget*100) : 0
+            return `
+            <tr class="${pct>=100&&h.totalBudget>0?'bg-red-50':''}">
+              <td class="font-semibold pl-3 py-2">${h.hospital.name}</td>
+              <td class="text-center py-2">${h.online?`<span class="inline-flex items-center gap-1 text-xs text-green-600"><span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>온라인</span>`:'<span class="text-xs text-gray-300">오프라인</span>'}</td>
+              <td class="text-center text-xs py-2">${fmtMan(h.todayUsed)}원<br><span class="${todayPct>=100?'text-red-500 font-bold':'text-gray-400'}">${todayPct}%</span></td>
+              <td class="text-center text-xs py-2">${fmtMan(h.weekUsed)}원<br><span class="${weekPct>=100?'text-red-500 font-bold':'text-gray-400'}">${weekPct}%</span></td>
+              <td class="text-center text-xs py-2">${fmtMan(h.totalUsed)} / ${h.totalBudget>0?fmtMan(h.totalBudget):'-'}원</td>
+              <td class="text-center text-xs py-2 ${mpOver?'text-red-600 font-bold':''}">${mp>0?mp.toLocaleString()+'원':'-'}${mpOver?'<br><span class="text-red-400 text-xs">▲초과</span>':''}</td>
+              <td class="text-center text-xs py-2 text-purple-600">${h.mealPriceNoStaff>0?h.mealPriceNoStaff.toLocaleString()+'원':'-'}</td>
+              <td class="text-center text-xs py-2 text-orange-600">${h.mealPriceNoSupply>0?h.mealPriceNoSupply.toLocaleString()+'원':'-'}</td>
+              <td class="text-center text-xs py-2">${h.foodWaste.totalWaste>0?h.foodWaste.totalWaste.toFixed(1)+'kg':'-'}</td>
+              <td class="text-center py-2">
+                <span class="font-bold ${pct>=100?'text-red-600':pct>=90?'text-amber-500':'text-green-700'}">${pct.toFixed(1)}%</span>
+              </td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
     </div>
   </div>`
 
-  // 발주 현황 초기 로드
-  loadAdminOrdersView()
+  // 차트 렌더링
+  renderAdminCompareChart(hospitals)
+  switchAdminTab('cards')
 }
 
 window.switchAdminTab = (tab) => {
-  ;['overview','orders'].forEach(t => {
+  ;['cards','issues','chart'].forEach(t => {
     document.getElementById(`adminContent-${t}`)?.classList.toggle('hidden', t !== tab)
     const btn = document.getElementById(`adminTab-${t}`)
     if (btn) {
-      if (t === tab) {
-        btn.className = 'px-4 py-2 text-sm font-medium border-b-2 border-green-600 text-green-700'
-      } else {
-        btn.className = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700'
-      }
+      btn.className = t === tab
+        ? 'px-4 py-2 text-sm font-medium border-b-2 border-green-600 text-green-700'
+        : 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700'
     }
   })
-  if (tab === 'orders') loadAdminOrdersView()
+  if (tab === 'chart') {
+    setTimeout(() => {
+      if (App.charts.adminCompare) App.charts.adminCompare.resize()
+      if (App.charts.adminMealPrice) App.charts.adminMealPrice.resize()
+    }, 100)
+  }
 }
 
-async function loadAdminOrdersView() {
-  const container = document.getElementById('adminOrdersContent')
-  if (!container) return
-  container.innerHTML = '<div class="flex items-center justify-center h-32"><div class="loading-spinner"></div></div>'
+function renderAdminCompareChart(hospitals) {
+  // 예산 비교 차트
+  const ctx = document.getElementById('adminCompareChart')
+  if (ctx) {
+    if (App.charts.adminCompare) { App.charts.adminCompare.destroy(); App.charts.adminCompare = null }
+    const labels = hospitals.map(h => h.hospital.name)
+    const used = hospitals.map(h => h.totalUsed)
+    const budget = hospitals.map(h => h.totalBudget)
+    const colors = hospitals.map(h => {
+      const pct = h.totalBudget > 0 ? h.totalUsed/h.totalBudget*100 : 0
+      return pct >= 100 ? 'rgba(239,68,68,0.75)' : pct >= 90 ? 'rgba(245,158,11,0.75)' : 'rgba(34,197,94,0.75)'
+    })
+    App.charts.adminCompare = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: '사용금액', data: used, backgroundColor: colors, borderRadius: 4 },
+          { label: '목표예산', data: budget, backgroundColor: 'rgba(156,163,175,0.25)', borderRadius: 4, borderColor: 'rgba(156,163,175,0.5)', borderWidth: 1 }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'top' },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmt(ctx.raw)}원` } }
+        },
+        scales: { y: { ticks: { callback: v => fmtMan(v)+'원' } } }
+      }
+    })
+  }
 
-  const data = await api('GET', `/api/dashboard/admin/overview/${App.currentYear}/${App.currentMonth}`)
-  if (!data) { container.innerHTML = '<div class="text-red-500 p-4">데이터 로드 실패</div>'; return }
-
-  const hospitals = data.hospitals || []
-
-  // 전체 요약 표
-  const tableRows = hospitals.map(h => {
-    const pct = parseFloat(h.progress)
-    const todayPct = h.dailyBudget > 0 ? Math.round(h.todayUsed / h.dailyBudget * 100) : 0
-    const weekPct = h.weekBudget > 0 ? Math.round(h.weekUsed / h.weekBudget * 100) : 0
-    const over = h.totalBudget > 0 && h.totalUsed > h.totalBudget
-    return `
-    <tr class="${over?'bg-red-50':''}">
-      <td class="font-semibold text-sm">${h.hospital.name}</td>
-      <td class="text-center">
-        <div class="text-xs font-bold ${todayPct>=100?'text-red-600':todayPct>=80?'text-yellow-600':'text-green-700'}">${todayPct}%</div>
-        <div class="text-xs text-gray-400">${fmtMan(h.todayUsed)}원</div>
-      </td>
-      <td class="text-center">
-        <div class="text-xs font-bold ${weekPct>=100?'text-red-600':weekPct>=80?'text-yellow-600':'text-green-700'}">${weekPct}%</div>
-        <div class="text-xs text-gray-400">${fmtMan(h.weekUsed||0)}원</div>
-      </td>
-      <td class="text-center">
-        <div class="text-xs font-bold ${pct>=100?'text-red-600':pct>=80?'text-yellow-600':'text-green-700'}">${pct.toFixed(1)}%</div>
-        <div class="progress-bar h-1.5 mt-1 mb-1"><div class="progress-fill ${getProgressColor(pct)}" style="width:${Math.min(pct,100)}%"></div></div>
-        <div class="text-xs text-gray-400">${fmtMan(h.totalUsed)} / ${h.totalBudget>0?fmtMan(h.totalBudget):'-'}원</div>
-      </td>
-      <td class="text-center">
-        <span class="text-xs ${h.remaining<0?'text-red-600 font-semibold':'text-green-700'}">${fmtMan(h.remaining)}원</span>
-      </td>
-    </tr>`
-  }).join('')
-
-  container.innerHTML = `
-  <div class="overflow-x-auto rounded-xl border border-gray-100">
-    <table class="data-table w-full">
-      <thead>
-        <tr>
-          <th class="text-left pl-4">병원명</th>
-          <th class="text-center">일별 달성률</th>
-          <th class="text-center">주별 달성률</th>
-          <th class="text-center">월별 달성률</th>
-          <th class="text-center">잔여예산</th>
-        </tr>
-      </thead>
-      <tbody>${tableRows}</tbody>
-    </table>
-  </div>
-  <div class="mt-4 grid grid-cols-1 gap-3">
-    ${hospitals.map(h => {
-      const pct = parseFloat(h.progress)
-      return `
-      <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
-        <div class="w-24 text-xs font-semibold text-gray-700 truncate">${h.hospital.name}</div>
-        <div class="flex-1">
-          <div class="progress-bar h-3">
-            <div class="progress-fill ${getProgressColor(pct)}" style="width:${Math.min(pct,100)}%"></div>
-          </div>
-        </div>
-        <div class="text-xs font-bold w-12 text-right ${pct>=100?'text-red-600':pct>=80?'text-yellow-600':'text-green-700'}">${pct.toFixed(1)}%</div>
-        <div class="text-xs text-gray-400 w-20 text-right">${fmtMan(h.totalUsed)}원</div>
-      </div>`
-    }).join('')}
-  </div>`
+  // 식단가 비교 차트
+  const ctx2 = document.getElementById('adminMealPriceChart')
+  if (ctx2) {
+    if (App.charts.adminMealPrice) { App.charts.adminMealPrice.destroy(); App.charts.adminMealPrice = null }
+    const labels = hospitals.map(h => h.hospital.name)
+    const mp1 = hospitals.map(h => h.mealPriceTotal)
+    const mp2 = hospitals.map(h => h.mealPriceNoStaff)
+    const mp3 = hospitals.map(h => h.mealPriceNoSupply)
+    const targets = hospitals.map(h => h.targetMealPrice)
+    App.charts.adminMealPrice = new Chart(ctx2, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: '전체 식단가', data: mp1, backgroundColor: 'rgba(59,130,246,0.7)', borderRadius: 4 },
+          { label: '직원식 제외', data: mp2, backgroundColor: 'rgba(139,92,246,0.7)', borderRadius: 4 },
+          { label: '소모품 제외', data: mp3, backgroundColor: 'rgba(249,115,22,0.7)', borderRadius: 4 },
+          { type: 'line', label: '목표 식단가', data: targets, borderColor: '#ef4444', borderDash: [5,5], borderWidth: 2, pointRadius: 4, pointBackgroundColor: '#ef4444', fill: false }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'top' },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmt(ctx.raw)}원/식` } }
+        },
+        scales: { y: { ticks: { callback: v => `${fmt(v)}원` } } }
+      }
+    })
+  }
 }
 
 // ══════════════════════════════════════════════════════════════

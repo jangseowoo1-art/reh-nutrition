@@ -91,12 +91,32 @@ dashboard.get('/summary/:year/:month', async (c) => {
     v.monthly_budget > 0 && v.total_used > v.monthly_budget
   )
 
+  // 식단가 3종 계산
+  const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
+  const totalMeals = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_noncovered||0) + (ms.total_guardian||0)
+  // 소모품/카드 제외 금액
+  const supplyCardUsed = (vendors.results || [])
+    .filter((v: any) => v.category === 'supply' || v.category === 'card')
+    .reduce((s: number, v: any) => s + v.total_used, 0)
+  // 직원식 비율로 추정
+  const staffRatio = totalMeals > 0 ? (ms.total_staff||0) / totalMeals : 0
+  const staffEstimatedCost = Math.round(totalUsed * staffRatio)
+  const mealPriceTotal = totalMeals > 0 ? Math.round(totalUsed / totalMeals) : 0
+  const mealPriceNoStaff = (totalMeals - (ms.total_staff||0)) > 0
+    ? Math.round((totalUsed - staffEstimatedCost) / (totalMeals - (ms.total_staff||0))) : 0
+  const mealPriceNoSupply = totalMeals > 0
+    ? Math.round((totalUsed - supplyCardUsed) / totalMeals) : 0
+
   return c.json({
     settings,
     vendors: vendors.results,
     dailyOrders: dailyOrders.results,
     mealStats,
     overBudgetVendors,
+    mealPriceTotal,
+    mealPriceNoStaff,
+    mealPriceNoSupply,
+    totalMeals,
     summary: {
       totalUsed,
       totalBudget,

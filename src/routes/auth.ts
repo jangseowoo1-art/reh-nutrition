@@ -24,6 +24,14 @@ auth.post('/login', async (c) => {
     return c.json({ error: '아이디 또는 비밀번호가 올바르지 않습니다' }, 401)
   }
 
+  // 병원 계정이면 온라인 세션 기록
+  if (user.role === 'hospital' && user.hospital_id) {
+    await c.env.DB.prepare(`
+      INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, is_active)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'dashboard', 1)
+    `).bind(user.hospital_id, user.id, user.username).run()
+  }
+
   const token = await createToken({
     userId: user.id,
     hospitalId: user.hospital_id,
