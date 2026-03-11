@@ -107,7 +107,7 @@ adminRouter.post('/hospitals/:id/budget/:year/:month', async (c) => {
   const body = await c.req.json()
   const {
     totalBudget, eventBudget, mealPrice, foodWasteBudget,
-    workingDays, supplyBudget, cardBudget, categoryBudgets
+    workingDays, supplyBudget, cardBudget, vendorBudgets, categoryBudgets
   } = body
 
   // monthly_settings upsert
@@ -125,7 +125,16 @@ adminRouter.post('/hospitals/:id/budget/:year/:month', async (c) => {
   `).bind(id, year, month, totalBudget||0, eventBudget||0, mealPrice||0,
     foodWasteBudget||0, workingDays||0, supplyBudget||0, cardBudget||0).run()
 
-  // category_budgets upsert
+  // 업체별 목표금액 저장 (vendors 테이블의 monthly_budget 업데이트)
+  if (vendorBudgets && Array.isArray(vendorBudgets)) {
+    for (const vb of vendorBudgets) {
+      await c.env.DB.prepare(`
+        UPDATE vendors SET monthly_budget=? WHERE id=? AND hospital_id=?
+      `).bind(vb.budget||0, vb.vendorId, id).run()
+    }
+  }
+
+  // category_budgets upsert (하위 호환성 유지)
   if (categoryBudgets && Array.isArray(categoryBudgets)) {
     for (const cb of categoryBudgets) {
       await c.env.DB.prepare(`
@@ -202,6 +211,56 @@ adminRouter.get('/notifications', async (c) => {
 // ── 알림 읽음 처리 ─────────────────────────────────────────────
 adminRouter.post('/notifications/read-all', async (c) => {
   await c.env.DB.prepare(`UPDATE notifications SET is_read=1`).run()
+  return c.json({ success: true })
+})
+
+// ── 병원별 업체 목록 조회 (관리자용) ──────────────────────────
+adminRouter.get('/hospitals/:id/vendors', async (c) => {
+  const id = c.req.param('id')
+  const vendors = await c.env.DB.prepare(`
+    SELECT id, name, category, tax_type, monthly_budget, sort_order
+    FROM vendors
+    WHERE hospital_id=? AND is_active=1
+    ORDER BY sort_order, id
+  `).bind(id).all<any>()
+  return c.json(vendors.results || [])
+})
+
+// ── 병원별 업체 추가 (관리자용) ───────────────────────────────
+adminRouter.post('/hospitals/:id/vendors', async (c) => {
+  const hospitalId = c.req.param('id')
+  const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
+  if (!name?.trim()) return c.json({ error: '업체명을 입력하세요' }, 400)
+  await c.env.DB.prepare(`
+    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active)
+    VALUES (?,?,?,?,?,?,1)
+  `).bind(
+    hospitalId, name.trim(), category||'general',
+    taxType||'mixed', monthlyBudget||0, sortOrder||99
+  ).run()
+  return c.json({ success: true })
+})
+
+// ── 병원별 업체 수정 (관리자용) ───────────────────────────────
+adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
+  const { id: hospitalId, vid } = c.req.param()
+  const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
+  await c.env.DB.prepare(`
+    UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?
+    WHERE id=? AND hospital_id=?
+  `).bind(
+    name, category||'general', taxType||'mixed',
+    monthlyBudget||0, sortOrder||99, vid, hospitalId
+  ).run()
+  return c.json({ success: true })
+})
+
+// ── 병원별 업체 삭제 (관리자용) ───────────────────────────────
+adminRouter.delete('/hospitals/:id/vendors/:vid', async (c) => {
+  const { id: hospitalId, vid } = c.req.param()
+  await c.env.DB.prepare(`
+    UPDATE vendors SET is_active=0 WHERE id=? AND hospital_id=?
+  `).bind(vid, hospitalId).run()
   return c.json({ success: true })
 })
 

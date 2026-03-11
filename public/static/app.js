@@ -42,15 +42,22 @@ async function loadNotificationBadge() {
   const data = await api('GET', '/api/admin/notifications')
   if (!data) return
   const cnt = data.unreadCount || 0
-  // 병원 관리 메뉴에 배지 추가
+  // 병원 관리 메뉴에 배지 추가/업데이트
   const menuEl = document.getElementById('menu-hospital-manage')
-  if (menuEl && cnt > 0) {
+  if (menuEl) {
     const existing = menuEl.querySelector('.notif-badge')
-    if (!existing) {
-      const badge = document.createElement('span')
-      badge.className = 'notif-badge ml-auto bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold'
-      badge.textContent = cnt > 9 ? '9+' : cnt
-      menuEl.appendChild(badge)
+    if (cnt > 0) {
+      if (existing) {
+        existing.textContent = cnt > 9 ? '9+' : cnt
+      } else {
+        const badge = document.createElement('span')
+        badge.className = 'notif-badge ml-auto bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold'
+        badge.textContent = cnt > 9 ? '9+' : cnt
+        menuEl.appendChild(badge)
+      }
+    } else {
+      // 읽지 않은 알림이 없으면 배지 제거
+      if (existing) existing.remove()
     }
   }
   App.unreadNotifCount = cnt
@@ -1320,30 +1327,111 @@ async function renderSettings() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [vendors, settingsRes] = await Promise.all([
-    api('GET', '/api/vendors'),
-    api('GET', `/api/settings/${App.currentYear}/${App.currentMonth}`)
+  // 마감 현황 + 활성 월 정보 로드
+  const [activeMonth, closingInfo] = await Promise.all([
+    api('GET', '/api/settings/active-month'),
+    api('GET', '/api/settings/closing-status')
   ])
-  const settings = settingsRes?.settings || settingsRes || {}
+
+  const activeYear = activeMonth?.year || App.currentYear
+  const activeMon = activeMonth?.month || App.currentMonth
+  const closingStatus = activeMonth?.closingStatus || 'open'
+  const closingReqAt = activeMonth?.closingRequestedAt
 
   content.innerHTML = `
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <!-- 월 목표 설정 -->
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+  <div class="max-w-2xl mx-auto space-y-5">
+
+    <!-- 현재 활성 월 안내 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
       <h2 class="font-bold text-gray-800 mb-4">
-        <i class="fas fa-bullseye text-green-600 mr-2"></i>${App.currentYear}년 ${App.currentMonth}월 목표 설정
+        <i class="fas fa-calendar-check text-green-600 mr-2"></i>현재 운영 월
       </h2>
-      <div class="space-y-4">
-        ${[
-          { key: 'totalBudget', label: '월 총 목표금액 (원)', val: settings?.total_budget, icon: 'fa-won-sign', placeholder: '90000000' },
-          { key: 'eventBudget', label: '이벤트 예산 (원)', val: settings?.event_budget, icon: 'fa-star', placeholder: '5000000' },
-          { key: 'mealPrice', label: '목표 식단가 (원/식)', val: settings?.meal_price, icon: 'fa-utensils', placeholder: '7490' },
-          { key: 'foodWasteBudget', label: '잔반 목표금액 (원)', val: settings?.food_waste_budget, icon: 'fa-leaf', placeholder: '1100000' },
-          { key: 'workingDays', label: '해당월 영업일수 (일)', val: settings?.working_days, icon: 'fa-calendar', placeholder: '31' }
-        ].map(f => `
-          <div>
-            <label class="block text-sm font-medium text-gray-600 mb-1">
-              <i class="fas ${f.icon} text-gray-400 mr-1.5"></i>${f.label}
+      <div class="flex items-center gap-4">
+        <div class="w-16 h-16 rounded-2xl bg-green-100 flex items-center justify-center">
+          <i class="fas fa-calendar-alt text-green-600 text-2xl"></i>
+        </div>
+        <div>
+          <div class="text-3xl font-bold text-green-700">${activeYear}년 ${activeMon}월</div>
+          <div class="text-sm text-gray-500 mt-1">현재 발주 입력 및 관리 중인 월</div>
+        </div>
+        <div class="ml-auto">
+          <span class="badge ${closingStatus==='requested'?'badge-yellow':closingStatus==='closed'?'badge-green':'badge-gray'} text-sm px-3 py-1">
+            ${closingStatus==='requested'?'마감 요청중':closingStatus==='closed'?'마감완료':'운영중'}
+          </span>
+        </div>
+      </div>
+      ${closingReqAt ? `<div class="mt-3 text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+        <i class="fas fa-clock mr-1"></i>마감 요청일: ${closingReqAt?.split('T')[0]} · 관리자 승인 대기 중
+      </div>` : ''}
+    </div>
+
+    <!-- 마감 요청 카드 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h2 class="font-bold text-gray-800 mb-2">
+        <i class="fas fa-flag-checkered text-green-600 mr-2"></i>월 마감 요청
+      </h2>
+      <p class="text-sm text-gray-500 mb-5">
+        이번 달 발주 입력이 완료되면 관리자에게 마감 요청을 보내세요.<br>
+        관리자가 승인하면 다음 달로 자동 전환됩니다.
+      </p>
+
+      ${closingStatus === 'requested' ? `
+      <!-- 이미 요청됨 -->
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+        <i class="fas fa-hourglass-half text-amber-500 text-xl"></i>
+        <div>
+          <div class="font-semibold text-amber-800">${activeYear}년 ${activeMon}월 마감 요청 완료</div>
+          <div class="text-sm text-amber-600">관리자의 승인을 기다리고 있습니다</div>
+        </div>
+      </div>
+      ` : closingStatus === 'closed' ? `
+      <!-- 마감 완료 -->
+      <div class="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
+        <i class="fas fa-check-circle text-green-500 text-xl"></i>
+        <div>
+          <div class="font-semibold text-green-800">마감 완료</div>
+          <div class="text-sm text-green-600">다음 달로 전환되었습니다</div>
+        </div>
+      </div>
+      ` : `
+      <!-- 마감 요청 폼 -->
+      <div class="space-y-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">마감 메모 (선택)</label>
+          <textarea id="closingMemo" class="form-input" rows="3" placeholder="특이사항, 인수인계 내용 등을 입력하세요"></textarea>
+        </div>
+        <button onclick="submitClosingRequest(${activeYear},${activeMon})" class="btn btn-primary w-full">
+          <i class="fas fa-paper-plane mr-2"></i>${activeYear}년 ${activeMon}월 마감 요청 보내기
+        </button>
+      </div>
+      `}
+    </div>
+
+    <!-- 안내 사항 -->
+    <div class="bg-gray-50 rounded-2xl border border-gray-100 p-5">
+      <h3 class="font-semibold text-gray-600 mb-3 text-sm"><i class="fas fa-info-circle text-gray-400 mr-1"></i>안내</h3>
+      <ul class="text-sm text-gray-500 space-y-2">
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>예산 목표 설정과 업체 관리는 <strong class="text-gray-700">관리자</strong>가 직접 설정합니다</li>
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>발주 입력은 <strong class="text-gray-700">발주 입력</strong> 메뉴에서 진행하세요</li>
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>마감 요청 후 관리자 승인 전까지는 발주 입력이 가능합니다</li>
+        <li><i class="fas fa-check text-green-500 mr-2 text-xs"></i>문의사항은 관리자에게 연락하세요</li>
+      </ul>
+    </div>
+
+  </div>`
+}
+
+async function submitClosingRequest(year, month) {
+  const memo = document.getElementById('closingMemo')?.value || ''
+  if (!confirm(`${year}년 ${month}월 마감 요청을 보내시겠습니까?\n관리자 승인 후 다음 달로 전환됩니다.`)) return
+  const res = await api('POST', '/api/settings/closing-request', { year, month, memo })
+  if (res?.success) {
+    showToast('마감 요청이 전송되었습니다. 관리자 승인을 기다려 주세요.', 'success')
+    renderSettings()
+  } else {
+    showToast('마감 요청 실패', 'error')
+  }
+}
             </label>
             <input type="number" id="set-${f.key}" value="${f.val||''}" placeholder="${f.placeholder}" class="form-input" min="0">
           </div>
@@ -1975,33 +2063,24 @@ async function approveClosing(hospitalId, year, month) {
 }
 
 async function openHospitalDetail(hospitalId) {
-  const [hosp, budget] = await Promise.all([
+  const [hosp, budget, vendorList] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}`),
-    api('GET', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
   ])
   if (!hosp) return
 
   const s = budget?.settings || {}
-  const catBudgets = budget?.categoryBudgets || []
-  const vendors = budget?.vendors || []
+  const vendors = vendorList || []
 
-  const catMap = {}
-  catBudgets.forEach(cb => { catMap[cb.category] = cb.monthly_budget })
-
-  const categories = [
-    { key:'major', label:'대기업급식' }, { key:'meat', label:'육류' },
-    { key:'seafood', label:'해산물' }, { key:'fruit', label:'청과' },
-    { key:'organic', label:'유기농' }, { key:'delivery', label:'인터넷배송' },
-    { key:'market', label:'시장' }, { key:'event', label:'이벤트' },
-    { key:'supply', label:'소모품' }, { key:'card', label:'법인카드' },
-    { key:'general', label:'기타' }
-  ]
+  // 현재 관리 중인 hospitalId를 전역에 저장 (업체 추가/수정에 사용)
+  window._adminHospitalId = hospitalId
 
   const modal = document.createElement('div')
   modal.className = 'modal-overlay'
   modal.id = 'hospDetailModal'
   modal.innerHTML = `
-  <div class="modal-box" style="max-width:780px">
+  <div class="modal-box" style="max-width:820px">
     <div class="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
       <h2 class="font-bold text-xl text-gray-800"><i class="fas fa-hospital text-green-600 mr-2"></i>${hosp.name}</h2>
       <button onclick="document.getElementById('hospDetailModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100">✕</button>
@@ -2015,6 +2094,9 @@ async function openHospitalDetail(hospitalId) {
         </button>
         <button class="tab-btn" id="tab-budget" onclick="switchHospTab('budget')">
           <i class="fas fa-won-sign mr-1"></i>예산설정
+        </button>
+        <button class="tab-btn" id="tab-vendors" onclick="switchHospTab('vendors')">
+          <i class="fas fa-store mr-1"></i>업체관리
         </button>
       </div>
 
@@ -2145,17 +2227,33 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>
 
-        <!-- 카테고리별 목표금액 -->
+        <!-- 업체별 목표금액 -->
         <div class="border-t border-gray-100 pt-4">
-          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-tags text-green-600 mr-1"></i>카테고리별 목표금액</h3>
-          <div class="grid grid-cols-2 gap-3">
-            ${categories.map(cat => `
-              <div>
-                <label class="block text-xs font-semibold text-gray-500 mb-1">${cat.label} (원)</label>
-                <input id="hbc-${cat.key}" type="number" class="form-input" value="${catMap[cat.key]||0}">
-              </div>
-            `).join('')}
-          </div>
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-store text-green-600 mr-1"></i>업체별 월 목표금액</h3>
+          ${vendors.length === 0 ? `
+            <div class="text-center py-8 text-gray-400">
+              <i class="fas fa-store text-3xl mb-2 block text-gray-300"></i>
+              <p class="text-sm">등록된 업체가 없습니다</p>
+              <p class="text-xs mt-1">업체관리 탭에서 업체를 먼저 추가하세요</p>
+            </div>
+          ` : `
+            <div class="space-y-2">
+              ${vendors.map(v => `
+                <div class="flex items-center gap-3 py-2 border-b border-gray-50">
+                  <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
+                  <div class="flex-1 min-w-0">
+                    <span class="font-medium text-sm">${v.name}</span>
+                    <span class="text-xs text-gray-400 ml-2">${getCategoryLabel(v.category)}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input id="hvb-${v.id}" type="number" class="form-input w-40 text-right text-sm py-1.5"
+                      value="${v.monthly_budget||0}" placeholder="0">
+                    <span class="text-xs text-gray-400 whitespace-nowrap">원</span>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
         </div>
         <div class="mt-4 flex justify-end">
           <button onclick="saveHospitalBudget(${hospitalId})" class="btn btn-primary">
@@ -2164,9 +2262,154 @@ async function openHospitalDetail(hospitalId) {
         </div>
       </div>
 
+      <!-- 업체관리 탭 -->
+      <div id="hospTab-vendors" class="hidden">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-semibold text-gray-700"><i class="fas fa-store text-green-600 mr-1"></i>등록 업체 목록</h3>
+          <button onclick="showAdminAddVendorModal()" class="btn btn-success btn-sm">
+            <i class="fas fa-plus mr-1"></i>업체 추가
+          </button>
+        </div>
+        <div id="adminVendorList">
+          ${renderAdminVendorRows(vendors)}
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 업체 추가/수정 모달 (관리자용) -->
+  <div id="adminVendorModal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[200]">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 mx-4">
+      <h3 class="font-bold text-lg mb-4" id="adminVendorModalTitle">업체 추가</h3>
+      <input type="hidden" id="adminVendorId">
+      <div class="space-y-3">
+        <div>
+          <label class="text-sm font-medium text-gray-600">업체명 *</label>
+          <input type="text" id="adminVendorName" class="form-input mt-1" placeholder="예: 삼성 웰스토리">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-600">카테고리</label>
+            <select id="adminVendorCategory" class="form-input mt-1">
+              <option value="major">대기업급식</option>
+              <option value="meat">육류</option>
+              <option value="seafood">해산물</option>
+              <option value="fruit">청과</option>
+              <option value="organic">유기농/한살림</option>
+              <option value="market">시장/유통</option>
+              <option value="delivery">인터넷배송</option>
+              <option value="card">법인카드</option>
+              <option value="event">이벤트</option>
+              <option value="general">기타</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-600">세금 구분</label>
+            <select id="adminVendorTaxType" class="form-input mt-1">
+              <option value="mixed">과세+면세</option>
+              <option value="taxable">과세만</option>
+              <option value="exempt">면세만</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-600">월 목표금액 (원)</label>
+          <input type="number" id="adminVendorBudget" class="form-input mt-1" placeholder="0 (없으면 0)">
+        </div>
+      </div>
+      <div class="flex gap-2 mt-5">
+        <button onclick="saveAdminVendor()" class="btn btn-primary flex-1">저장</button>
+        <button onclick="document.getElementById('adminVendorModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>
+      </div>
     </div>
   </div>`
+
   document.body.appendChild(modal)
+}
+
+function renderAdminVendorRows(vendors) {
+  if (!vendors || vendors.length === 0) {
+    return `<div class="text-center py-10 text-gray-400">
+      <i class="fas fa-store text-4xl mb-3 block text-gray-300"></i>
+      <p class="text-sm">등록된 업체가 없습니다</p>
+      <p class="text-xs mt-1 text-gray-300">업체 추가 버튼을 눌러 업체를 등록하세요</p>
+    </div>`
+  }
+  return `<div class="divide-y divide-gray-50">
+    ${vendors.map((v, idx) => `
+      <div class="flex items-center gap-3 py-3 hover:bg-gray-50 px-2 rounded-lg" id="avendor-row-${v.id}">
+        <span class="text-gray-400 text-xs w-5 text-center">${idx+1}</span>
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium text-sm">${v.name}</div>
+          <div class="text-xs text-gray-400">${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)}</div>
+        </div>
+        <div class="text-sm text-gray-600 font-medium">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'목표없음'}</div>
+        <div class="flex gap-1">
+          <button onclick="editAdminVendor(${v.id},'${v.name.replace(/'/g,"\\'")}','${v.category}','${v.tax_type}',${v.monthly_budget})"
+            class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
+          <button onclick="deleteAdminVendor(${v.id})"
+            class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
+        </div>
+      </div>
+    `).join('')}
+  </div>`
+}
+
+function showAdminAddVendorModal() {
+  document.getElementById('adminVendorModalTitle').textContent = '업체 추가'
+  document.getElementById('adminVendorId').value = ''
+  document.getElementById('adminVendorName').value = ''
+  document.getElementById('adminVendorCategory').value = 'general'
+  document.getElementById('adminVendorTaxType').value = 'mixed'
+  document.getElementById('adminVendorBudget').value = ''
+  document.getElementById('adminVendorModal').classList.remove('hidden')
+}
+
+function editAdminVendor(id, name, category, taxType, budget) {
+  document.getElementById('adminVendorModalTitle').textContent = '업체 수정'
+  document.getElementById('adminVendorId').value = id
+  document.getElementById('adminVendorName').value = name
+  document.getElementById('adminVendorCategory').value = category
+  document.getElementById('adminVendorTaxType').value = taxType
+  document.getElementById('adminVendorBudget').value = budget
+  document.getElementById('adminVendorModal').classList.remove('hidden')
+}
+
+async function saveAdminVendor() {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) return
+  const vid = document.getElementById('adminVendorId').value
+  const data = {
+    name: document.getElementById('adminVendorName').value.trim(),
+    category: document.getElementById('adminVendorCategory').value,
+    taxType: document.getElementById('adminVendorTaxType').value,
+    monthlyBudget: parseInt(document.getElementById('adminVendorBudget').value||0)||0
+  }
+  if (!data.name) { showToast('업체명을 입력하세요', 'error'); return }
+  const res = vid
+    ? await api('PUT', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`, data)
+    : await api('POST', `/api/admin/hospitals/${hospitalId}/vendors`, data)
+  if (res?.success) {
+    document.getElementById('adminVendorModal').classList.add('hidden')
+    showToast(vid ? '업체가 수정되었습니다' : '업체가 추가되었습니다', 'success')
+    // 업체 목록 새로고침
+    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+    document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
+async function deleteAdminVendor(vid) {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) return
+  if (!confirm('업체를 삭제하시겠습니까?\n(해당 업체의 발주 데이터는 유지됩니다)')) return
+  await api('DELETE', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`)
+  showToast('업체가 삭제되었습니다', 'success')
+  const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+  document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
 }
 
 function getDefaultWorkingDays(year, month) {
@@ -2174,7 +2417,7 @@ function getDefaultWorkingDays(year, month) {
 }
 
 function switchHospTab(tab) {
-  ['info','budget'].forEach(t => {
+  ['info','budget','vendors'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
   })
@@ -2206,11 +2449,13 @@ async function saveHospitalInfo(hospitalId) {
 }
 
 async function saveHospitalBudget(hospitalId) {
-  const categories = ['major','meat','seafood','fruit','organic','delivery','market','event','supply','card','general']
-  const categoryBudgets = categories.map(k => ({
-    category: k,
-    budget: parseInt(document.getElementById(`hbc-${k}`)?.value)||0
-  }))
+  // 업체별 목표금액 수집 (hvb-{vendorId} 형식의 입력 필드)
+  const vendorBudgets = []
+  document.querySelectorAll('[id^="hvb-"]').forEach(el => {
+    const vid = el.id.replace('hvb-', '')
+    vendorBudgets.push({ vendorId: parseInt(vid), budget: parseInt(el.value||0)||0 })
+  })
+
   const body = {
     totalBudget: parseInt(document.getElementById('hb-total').value)||0,
     eventBudget: parseInt(document.getElementById('hb-event').value)||0,
@@ -2219,7 +2464,7 @@ async function saveHospitalBudget(hospitalId) {
     workingDays: parseInt(document.getElementById('hb-workdays').value)||0,
     supplyBudget: parseInt(document.getElementById('hb-supply').value)||0,
     cardBudget: parseInt(document.getElementById('hb-card').value)||0,
-    categoryBudgets
+    vendorBudgets
   }
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`, body)
   if (res?.success) showToast('예산설정이 저장되었습니다', 'success')
