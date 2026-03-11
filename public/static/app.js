@@ -1945,11 +1945,9 @@ async function renderHospitalManage() {
 
   const pendingClosings = closingReqs || []
 
-  // 알림 읽음 처리
-  if (pendingClosings.length > 0) {
-    await api('POST', '/api/admin/notifications/read-all')
-    loadNotificationBadge()
-  }
+  // 병원 관리 페이지 진입 시 항상 알림 읽음 처리 (배지 초기화)
+  await api('POST', '/api/admin/notifications/read-all')
+  loadNotificationBadge()
 
   content.innerHTML = `
   <!-- 마감 요청 알림 -->

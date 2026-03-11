@@ -203,8 +203,10 @@ adminRouter.get('/notifications', async (c) => {
     ORDER BY n.created_at DESC
     LIMIT 50
   `).all<any>()
+  // 관리자 배지는 병원이 보낸 마감 요청(closing_request)만 카운트
+  // closing_approved는 병원에게 보내는 알림이므로 관리자 배지에서 제외
   const unread = await c.env.DB.prepare(`
-    SELECT COUNT(*) as cnt FROM notifications WHERE is_read=0
+    SELECT COUNT(*) as cnt FROM notifications WHERE is_read=0 AND type='closing_request'
   `).first<any>()
   return c.json({ notifications: notifs.results, unreadCount: unread?.cnt || 0 })
 })
