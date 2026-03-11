@@ -157,17 +157,37 @@ function updateMonthDisplay() {
   if (el2) el2.textContent = m
 }
 
-function navigateTo(page, forceReload = false) {
-  if (!App._renderedPage) App._renderedPage = {}
-  const noReloadPages = ['orders', 'meals']
-  const cacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
+// 패널 전환 헬퍼 - orders/meals는 전용 패널, 나머지는 pageContent
+function _showPanel(page) {
+  const mainPanel   = document.getElementById('pageContent')
+  const ordersPanel = document.getElementById('orders-panel')
+  const mealsPanel  = document.getElementById('meals-panel')
+  if (!mainPanel) return
+  // style.display 직접 제어 (Tailwind hidden 클래스 충돌 방지)
+  if (page === 'orders') {
+    mainPanel.style.display   = 'none'
+    if (mealsPanel)  mealsPanel.style.display  = 'none'
+    if (ordersPanel) ordersPanel.style.display = ''
+  } else if (page === 'meals') {
+    mainPanel.style.display   = 'none'
+    if (ordersPanel) ordersPanel.style.display = 'none'
+    if (mealsPanel)  mealsPanel.style.display  = ''
+  } else {
+    if (ordersPanel) ordersPanel.style.display = 'none'
+    if (mealsPanel)  mealsPanel.style.display  = 'none'
+    mainPanel.style.display   = ''
+  }
+}
 
-  // 메뉴 활성화 업데이트 (항상)
+function navigateTo(page, forceReload = false) {
+  if (!App._panelReady) App._panelReady = {}
+
+  // 메뉴 활성화
   document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
   const activeMenu = document.getElementById(`menu-${page}`)
   if (activeMenu) activeMenu.classList.add('active')
 
-  // 페이지 타이틀 업데이트 (항상)
+  // 타이틀
   const titles = {
     dashboard: { title: '월별 대시보드', sub: '예산 현황 및 업체별 진행률' },
     orders: { title: '발주 입력', sub: '일별 업체별 발주금액 입력' },
@@ -182,50 +202,53 @@ function navigateTo(page, forceReload = false) {
   }
   const t = titles[page] || { title: page, sub: '' }
   const titleEl = document.getElementById('pageTitle')
-  const subEl = document.getElementById('pageSubtitle')
+  const subEl   = document.getElementById('pageSubtitle')
   if (titleEl) titleEl.textContent = t.title
-  if (subEl) subEl.textContent = t.sub
+  if (subEl)   subEl.textContent   = t.sub
 
   history.pushState(null, '', `/${page === 'dashboard' ? '' : page}`)
   App.currentPage = page
 
-  // 발주/식수: 이미 렌더된 경우 재렌더 완전 스킵 (DOM 그대로 유지)
-  if (!forceReload && noReloadPages.includes(page) && App._renderedPage[cacheKey]) {
+  // 패널 전환 (orders/meals는 전용 패널 표시)
+  _showPanel(page)
+
+  // orders / meals: 이미 렌더된 경우 재렌더 스킵 (DOM 보존)
+  const cacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
+  if (!forceReload && (page === 'orders' || page === 'meals') && App._panelReady[cacheKey]) {
     return
   }
 
-  Object.values(App.charts).forEach(c => c?.destroy?.())
-  App.charts = {}
-
+  // 차트 정리 (orders/meals 제외)
+  if (page !== 'orders' && page !== 'meals') {
+    Object.values(App.charts).forEach(c => c?.destroy?.())
+    App.charts = {}
+  }
   if (page !== 'settings') stopClosingPoll()
 
   const pages = {
     dashboard: renderDashboard, orders: renderOrders, meals: renderMeals,
-    schedule: renderSchedule, analysis: renderAnalysis,
-    settings: renderSettings, admin: renderAdminDashboard,
+    schedule: renderSchedule,  analysis: renderAnalysis,
+    settings: renderSettings,  admin: renderAdminDashboard,
     'hospital-manage': renderHospitalManage,
-    'holiday-manage': renderHolidayManage,
+    'holiday-manage':  renderHolidayManage,
     report: renderReport
   }
 
   if (pages[page]) {
-    // 발주/식수: 렌더 시작 즉시 캐시 플래그 세팅 (비동기 완료 기다리지 않음)
-    if (noReloadPages.includes(page)) {
-      App._renderedPage[cacheKey] = true
-    }
+    if (page === 'orders' || page === 'meals') App._panelReady[cacheKey] = true
     pages[page]()
   } else {
-    document.getElementById('pageContent').innerHTML = '<div class="text-center text-gray-400 py-20">준비 중입니다</div>'
+    document.getElementById('pageContent').innerHTML =
+      '<div class="text-center text-gray-400 py-20">준비 중입니다</div>'
   }
 }
 
 function changeMonth(delta) {
   App.currentMonth += delta
   if (App.currentMonth > 12) { App.currentMonth = 1; App.currentYear++ }
-  if (App.currentMonth < 1) { App.currentMonth = 12; App.currentYear-- }
+  if (App.currentMonth < 1)  { App.currentMonth = 12; App.currentYear-- }
   updateMonthDisplay()
-  // 월 변경 시 캐시 초기화
-  App._renderedPage = {}
+  App._panelReady = {}  // 월 변경 시 캐시 초기화
   navigateTo(App.currentPage)
 }
 
@@ -637,7 +660,7 @@ async function renderDashboard() {
 //  발주 입력 페이지 (v2.0 - 다일치 발주 지원)
 // ══════════════════════════════════════════════════════════════
 async function renderOrders() {
-  const content = document.getElementById('pageContent')
+  const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
   const [vendors, orderData, settingsData, dashData] = await Promise.all([
@@ -769,11 +792,14 @@ async function renderOrders() {
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
       <div>
         <h2 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 발주 입력</h2>
-        <p class="text-xs text-gray-400 mt-0.5">업체별 과세/면세 금액 입력 후 자동 저장 | 주말/공휴일 다수일 발주 시 하단 버튼 사용</p>
+        <p class="text-xs text-gray-400 mt-0.5">입력 후 자동 저장됨 | 수동 저장은 저장 버튼 클릭</p>
       </div>
       <div class="flex gap-2 flex-wrap">
+        <button onclick="saveAllOrders()" class="btn btn-success btn-sm">
+          <i class="fas fa-save mr-1"></i> 전체 저장
+        </button>
         <button onclick="showQuickMultiDay()" class="btn btn-primary btn-sm">
-          <i class="fas fa-calendar-plus mr-1"></i> 다수일 발주 입력
+          <i class="fas fa-calendar-plus mr-1"></i> 다수일 발주
         </button>
         <button onclick="refreshOrders()" class="btn btn-secondary btn-sm">
           <i class="fas fa-sync"></i> 새로고침
@@ -928,6 +954,44 @@ async function renderOrders() {
   bindOrderInputEvents()
 }
 
+// ── 발주 전체 수동 저장 ────────────────────────────────────────
+window.saveAllOrders = async () => {
+  const inputs = document.querySelectorAll('.order-input')
+  if (inputs.length === 0) { showToast('저장할 발주 데이터가 없습니다', 'warning'); return }
+
+  showAutoSaveIndicator('saving')
+  const seen = new Set()
+  const promises = []
+
+  inputs.forEach(inp => {
+    const vendorId = inp.dataset.vendor
+    const date = inp.dataset.date
+    const key = `${vendorId}-${date}`
+    if (seen.has(key)) return
+    seen.add(key)
+
+    const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
+    const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
+    const taxable = parseInt(taxableEl?.value||0)||0
+    const exempt  = parseInt(exemptEl?.value||0)||0
+    if (taxable === 0 && exempt === 0) return  // 빈 칸은 스킵
+
+    const vat   = Math.round(taxable * 0.1)
+    promises.push(api('POST', '/api/orders/save', {
+      vendorId: parseInt(vendorId), orderDate: date,
+      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat
+    }))
+  })
+
+  if (promises.length === 0) { showToast('입력된 발주 데이터가 없습니다', 'warning'); showAutoSaveIndicator('saved'); return }
+
+  const results = await Promise.all(promises)
+  const ok = results.every(r => r?.success)
+  showAutoSaveIndicator(ok ? 'saved' : 'error')
+  showToast(ok ? `${promises.length}건 발주 저장 완료!` : '일부 저장 실패', ok ? 'success' : 'error')
+  updateBudgetProgressPanel()
+}
+
 window.showQuickMultiDay = () => {
   document.getElementById('quickMultiDayPanel').classList.remove('hidden')
   document.getElementById('quickMultiDayPanel').scrollIntoView({ behavior: 'smooth' })
@@ -988,10 +1052,8 @@ window.saveQuickMultiDay = async () => {
 }
 
 window.refreshOrders = () => {
-  // 강제 새로고침: 캐시 초기화 후 재렌더
-  if (App._renderedPage) {
-    const key = `orders-${App.currentYear}-${App.currentMonth}`
-    delete App._renderedPage[key]
+  if (App._panelReady) {
+    delete App._panelReady[`orders-${App.currentYear}-${App.currentMonth}`]
   }
   renderOrders()
 }
@@ -1234,7 +1296,7 @@ function updateDayTotal(date) {
 //  식수 입력 페이지
 // ══════════════════════════════════════════════════════════════
 async function renderMeals() {
-  const content = document.getElementById('pageContent')
+  const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
   const mealData = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
