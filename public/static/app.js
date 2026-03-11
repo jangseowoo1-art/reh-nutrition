@@ -1854,15 +1854,38 @@ async function renderAdminDashboard() {
         const pct = parseFloat(h.progress)
         const over = h.totalBudget > 0 && h.totalUsed > h.totalBudget
         const warn = !over && h.totalBudget > 0 && pct >= 90
-        const borderColor = over ? 'border-red-300' : warn ? 'border-amber-200' : 'border-gray-100'
+        const borderColor = over ? 'border-red-400' : warn ? 'border-amber-300' : 'border-gray-100'
         const iconBg = over ? 'bg-red-50' : 'bg-green-50'
         const iconColor = over ? 'text-red-500' : 'text-green-600'
         // 식단가 색상
-        const mpColor = h.targetMealPrice > 0 && h.mealPriceTotal > h.targetMealPrice ? 'text-red-600 font-bold' : 'text-green-700'
+        const mpOver = h.targetMealPrice > 0 && h.mealPriceTotal > h.targetMealPrice
+        const mpWarn = !mpOver && h.targetMealPrice > 0 && h.mealPriceTotal > h.targetMealPrice * 0.95
+        const mpColor = mpOver ? 'text-red-600' : mpWarn ? 'text-amber-600' : 'text-green-700'
         const dangerIssues = h.issues.filter(i=>i.level==='danger')
         const warnIssues = h.issues.filter(i=>i.level==='warning')
+        const totalIssues = dangerIssues.length + warnIssues.length
+        // 오늘 식수 계산
+        const tm = h.todayMeals || {}
+        const todayBreakfast = (tm.bp||0)+(tm.bs||0)+(tm.bn||0)+(tm.bg||0)
+        const todayLunch     = (tm.lp||0)+(tm.ls||0)+(tm.ln||0)+(tm.lg||0)
+        const todayDinner    = (tm.dp||0)+(tm.ds||0)+(tm.dn||0)+(tm.dg||0)
+        const todayTotalMeals = todayBreakfast + todayLunch + todayDinner
+        // 오늘 치료식(일반 환자식) = breakfast_patient + lunch_patient + dinner_patient
+        const todayTherapy = (tm.bp||0)+(tm.lp||0)+(tm.dp||0)
         return `
-        <div class="bg-white rounded-2xl shadow-sm border-2 ${borderColor} p-4">
+        <div class="bg-white rounded-2xl shadow-sm border-2 ${borderColor} p-4 relative">
+          <!-- 이슈 경고 배너 (이슈 있을 때만) -->
+          ${totalIssues > 0 ? `
+          <div class="flex items-center gap-2 mb-3 px-2 py-1.5 rounded-xl ${dangerIssues.length>0?'bg-red-50 border border-red-200':'bg-amber-50 border border-amber-200'}">
+            <span class="relative flex h-2 w-2">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full ${dangerIssues.length>0?'bg-red-400':'bg-amber-400'} opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2 ${dangerIssues.length>0?'bg-red-500':'bg-amber-500'}"></span>
+            </span>
+            <span class="text-xs font-semibold ${dangerIssues.length>0?'text-red-700':'text-amber-700'} flex-1">
+              ${dangerIssues.length>0?`🚨 위험 이슈 ${dangerIssues.length}건`:`⚠️ 주의 이슈 ${warnIssues.length}건`}
+            </span>
+            ${dangerIssues.length>0&&warnIssues.length>0?`<span class="text-xs text-amber-600">+경고 ${warnIssues.length}건</span>`:''}
+          </div>` : ''}
           <!-- 헤더 -->
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-2">
@@ -1874,79 +1897,126 @@ async function renderAdminDashboard() {
                 <div class="text-xs text-gray-400">${h.activeYear}년 ${h.activeMonth}월 운영 중</div>
               </div>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap justify-end">
               ${h.online ? `
               <span class="flex items-center gap-1 text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-200">
                 <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-                온라인 · ${h.online.last_page}
+                ${h.online.username || '온라인'}
               </span>` : `<span class="text-xs text-gray-300">오프라인</span>`}
               ${h.closingStatus==='requested'?`<span class="badge badge-yellow text-xs">마감요청</span>`:''}
             </div>
           </div>
-          <!-- 예산 진행 -->
-          <div class="grid grid-cols-3 gap-2 text-center mb-3">
-            <div class="p-2 bg-gray-50 rounded-lg">
-              <div class="text-xs text-gray-400">사용</div>
-              <div class="text-sm font-bold text-green-700">${fmtMan(h.totalUsed)}원</div>
+
+          <!-- ① 예산 진행률 -->
+          <div class="mb-3">
+            <div class="flex justify-between items-center mb-1">
+              <span class="text-xs text-gray-500 font-medium">월 예산 사용률</span>
+              <span class="text-xs font-bold ${over?'text-red-600':warn?'text-amber-600':'text-green-600'}">${pct.toFixed(1)}%</span>
             </div>
-            <div class="p-2 bg-gray-50 rounded-lg">
-              <div class="text-xs text-gray-400">목표</div>
-              <div class="text-sm font-semibold">${h.totalBudget>0?fmtMan(h.totalBudget)+'원':'-'}</div>
+            <div class="progress-bar mb-1.5">
+              <div class="progress-fill ${getProgressColor(pct)}" style="width:${Math.min(pct,100)}%"></div>
             </div>
-            <div class="p-2 ${over?'bg-red-50':'bg-green-50'} rounded-lg">
-              <div class="text-xs ${over?'text-red-400':'text-gray-400'}">잔여</div>
-              <div class="text-sm font-bold ${over?'text-red-600':'text-green-600'}">${fmtMan(h.remaining)}원</div>
+            <div class="grid grid-cols-3 gap-1.5 text-center">
+              <div class="p-1.5 bg-gray-50 rounded-lg">
+                <div class="text-xs text-gray-400">사용</div>
+                <div class="text-xs font-bold text-gray-700">${fmtMan(h.totalUsed)}원</div>
+              </div>
+              <div class="p-1.5 bg-gray-50 rounded-lg">
+                <div class="text-xs text-gray-400">목표</div>
+                <div class="text-xs font-semibold text-gray-600">${h.totalBudget>0?fmtMan(h.totalBudget)+'원':'-'}</div>
+              </div>
+              <div class="p-1.5 ${over?'bg-red-50':'bg-green-50'} rounded-lg">
+                <div class="text-xs ${over?'text-red-400':'text-gray-400'}">잔여</div>
+                <div class="text-xs font-bold ${over?'text-red-600':'text-green-600'}">${fmtMan(h.remaining)}원</div>
+              </div>
             </div>
           </div>
-          <div class="progress-bar mb-2">
-            <div class="progress-fill ${getProgressColor(pct)}" style="width:${Math.min(pct,100)}%"></div>
+
+          <!-- ② 식단가 3종 (핵심!) -->
+          <div class="mb-3 p-2.5 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-blue-700"><i class="fas fa-utensils mr-1"></i>식단가 현황</span>
+              ${h.targetMealPrice>0?`<span class="text-xs text-blue-500">목표 ${h.targetMealPrice.toLocaleString()}원</span>`:''}
+            </div>
+            <div class="grid grid-cols-3 gap-1.5 text-center">
+              <div class="p-1.5 bg-white rounded-lg border ${mpOver?'border-red-300':mpWarn?'border-amber-300':'border-blue-100'} relative">
+                ${mpOver?`<div class="absolute -top-1.5 left-1/2 -translate-x-1/2 text-xs">🚨</div>`:''}
+                <div class="text-xs text-blue-500 mt-1">전체</div>
+                <div class="text-xs font-bold ${mpColor}">${h.mealPriceTotal>0?h.mealPriceTotal.toLocaleString()+' 원':'-'}</div>
+                ${mpOver?`<div class="text-xs text-red-500">▲초과</div>`:mpWarn?`<div class="text-xs text-amber-500">▲주의</div>`:`<div class="text-xs text-gray-300">-</div>`}
+              </div>
+              <div class="p-1.5 bg-white rounded-lg border border-purple-100">
+                <div class="text-xs text-purple-500">직원제외</div>
+                <div class="text-xs font-bold text-purple-700">${h.mealPriceNoStaff>0?h.mealPriceNoStaff.toLocaleString()+' 원':'-'}</div>
+                <div class="text-xs text-gray-300">-</div>
+              </div>
+              <div class="p-1.5 bg-white rounded-lg border border-orange-100">
+                <div class="text-xs text-orange-500">소모품제외</div>
+                <div class="text-xs font-bold text-orange-700">${h.mealPriceNoSupply>0?h.mealPriceNoSupply.toLocaleString()+' 원':'-'}</div>
+                <div class="text-xs text-gray-300">-</div>
+              </div>
+            </div>
           </div>
-          <!-- 식단가 3종 -->
-          ${h.totalMeals > 0 ? `
-          <div class="grid grid-cols-3 gap-1 mb-2">
-            <div class="text-center p-1.5 bg-blue-50 rounded-lg">
-              <div class="text-xs text-blue-400">전체식단가</div>
-              <div class="text-xs font-bold ${mpColor}">${h.mealPriceTotal.toLocaleString()}원</div>
-              ${h.targetMealPrice>0?`<div class="text-xs text-gray-400">목표 ${h.targetMealPrice.toLocaleString()}원</div>`:''}
+
+          <!-- ③ 오늘 식수 현황 -->
+          <div class="mb-3 p-2.5 bg-gradient-to-r from-teal-50 to-cyan-50 rounded-xl border border-teal-100">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-teal-700"><i class="fas fa-people-group mr-1"></i>오늘 식수</span>
+              <span class="text-xs font-bold text-teal-800">${todayTotalMeals>0?`전체 ${fmt(todayTotalMeals)}식`:'입력 없음'}</span>
             </div>
-            <div class="text-center p-1.5 bg-purple-50 rounded-lg">
-              <div class="text-xs text-purple-400">직원식 제외</div>
-              <div class="text-xs font-bold text-purple-700">${h.mealPriceNoStaff.toLocaleString()}원</div>
+            <div class="grid grid-cols-4 gap-1 text-center">
+              <div class="p-1.5 bg-white rounded-lg border border-teal-100">
+                <div class="text-xs text-teal-600 font-medium">조식</div>
+                <div class="text-sm font-bold text-gray-700">${todayBreakfast}</div>
+                <div class="text-xs text-gray-400">식</div>
+              </div>
+              <div class="p-1.5 bg-white rounded-lg border border-teal-100">
+                <div class="text-xs text-teal-600 font-medium">중식</div>
+                <div class="text-sm font-bold text-gray-700">${todayLunch}</div>
+                <div class="text-xs text-gray-400">식</div>
+              </div>
+              <div class="p-1.5 bg-white rounded-lg border border-teal-100">
+                <div class="text-xs text-teal-600 font-medium">석식</div>
+                <div class="text-sm font-bold text-gray-700">${todayDinner}</div>
+                <div class="text-xs text-gray-400">식</div>
+              </div>
+              <div class="p-1.5 bg-white rounded-lg border border-indigo-100">
+                <div class="text-xs text-indigo-600 font-medium">치료식</div>
+                <div class="text-sm font-bold text-indigo-700">${todayTherapy}</div>
+                <div class="text-xs text-gray-400">명</div>
+              </div>
             </div>
-            <div class="text-center p-1.5 bg-orange-50 rounded-lg">
-              <div class="text-xs text-orange-400">소모품 제외</div>
-              <div class="text-xs font-bold text-orange-700">${h.mealPriceNoSupply.toLocaleString()}원</div>
-            </div>
-          </div>` : ''}
-          <!-- 오늘/주간 -->
+            <!-- 월간 누적 식수 -->
+            ${h.totalMeals > 0 ? `
+            <div class="mt-1.5 flex justify-between text-xs text-teal-600 bg-teal-50 rounded-lg px-2 py-1">
+              <span>월간 누적</span>
+              <span class="font-semibold">${fmt(h.totalMeals)}식 (환자 ${fmt(h.mealStats?.total_patient||0)} / 직원 ${fmt(h.mealStats?.total_staff||0)} / 비급여 ${fmt(h.mealStats?.total_noncovered||0)} / 보호자 ${fmt(h.mealStats?.total_guardian||0)})</span>
+            </div>` : ''}
+          </div>
+
+          <!-- ④ 발주 현황 & 잔반 -->
           <div class="flex gap-2 text-xs text-gray-500 mb-2">
-            <span>오늘: <strong class="text-gray-700">${fmtMan(h.todayUsed)}원</strong></span>
+            <span>오늘발주: <strong class="text-gray-700">${fmtMan(h.todayUsed)}원</strong></span>
             <span>·</span>
             <span>이번주: <strong class="text-gray-700">${fmtMan(h.weekUsed)}원</strong></span>
-            <span>·</span>
-            <span>식수: <strong class="text-gray-700">${fmt(h.totalMeals)}식</strong></span>
+            ${h.foodWaste.totalWaste > 0 ? `<span>·</span><span>잔반: <strong class="text-amber-600">${h.foodWaste.totalWaste.toFixed(1)}kg</strong></span>` : ''}
           </div>
-          <!-- 잔반 -->
-          ${h.foodWaste.totalWaste > 0 ? `
-          <div class="text-xs text-gray-500 mb-2">
-            잔반: <strong class="text-amber-600">${h.foodWaste.totalWaste.toFixed(1)}kg</strong>
-            ${h.foodWaste.totalCost>0?`(${fmtMan(h.foodWaste.totalCost)}원)`:''}
-          </div>` : ''}
-          <!-- 이슈 -->
+
+          <!-- ⑤ 이슈 목록 -->
           ${dangerIssues.length > 0 ? `
           <div class="space-y-1">
             ${dangerIssues.map(i=>`
-            <div class="flex items-center gap-1 text-xs bg-red-50 text-red-700 px-2 py-1 rounded-lg">
-              <i class="fas fa-exclamation-circle text-red-400"></i>${i.msg}
+            <div class="flex items-center gap-1 text-xs bg-red-50 text-red-700 px-2 py-1 rounded-lg border border-red-100">
+              <i class="fas fa-exclamation-circle text-red-400 flex-shrink-0"></i><span>${i.msg}</span>
             </div>`).join('')}
           </div>` : ''}
           ${warnIssues.length > 0 ? `
           <div class="space-y-1 mt-1">
             ${warnIssues.slice(0,2).map(i=>`
-            <div class="flex items-center gap-1 text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded-lg">
-              <i class="fas fa-exclamation-triangle text-amber-400"></i>${i.msg}
+            <div class="flex items-center gap-1 text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded-lg border border-amber-100">
+              <i class="fas fa-exclamation-triangle text-amber-400 flex-shrink-0"></i><span>${i.msg}</span>
             </div>`).join('')}
-            ${warnIssues.length>2?`<div class="text-xs text-gray-400 text-right">+${warnIssues.length-2}건 더</div>`:''}
+            ${warnIssues.length>2?`<div class="text-xs text-gray-400 text-right mt-1">+${warnIssues.length-2}건 더 있음</div>`:''}
           </div>` : ''}
         </div>`
       }).join('')}

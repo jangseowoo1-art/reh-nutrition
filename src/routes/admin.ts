@@ -298,6 +298,25 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
       `).bind(h.id, year, month).first<any>()
 
+      // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자)
+      const todayMeals = await c.env.DB.prepare(`
+        SELECT
+          COALESCE(SUM(breakfast_patient),0) as bp,
+          COALESCE(SUM(lunch_patient),0) as lp,
+          COALESCE(SUM(dinner_patient),0) as dp,
+          COALESCE(SUM(breakfast_staff),0) as bs,
+          COALESCE(SUM(lunch_staff),0) as ls,
+          COALESCE(SUM(dinner_staff),0) as ds,
+          COALESCE(SUM(breakfast_noncovered),0) as bn,
+          COALESCE(SUM(lunch_noncovered),0) as ln,
+          COALESCE(SUM(dinner_noncovered),0) as dn,
+          COALESCE(SUM(breakfast_guardian),0) as bg,
+          COALESCE(SUM(lunch_guardian),0) as lg,
+          COALESCE(SUM(dinner_guardian),0) as dg
+        FROM daily_meals
+        WHERE hospital_id=? AND meal_date=?
+      `).bind(h.id, today).first<any>()
+
       // 오늘/이번주 발주
       const todayUsed = await c.env.DB.prepare(
         `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date=?`
@@ -401,6 +420,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         vendors: vendors.results || [],
         dailyOrders: dailyOrders.results || [],
         foodWaste: { totalWaste: foodWaste?.total_waste||0, totalCost: foodWaste?.total_cost||0 },
+        todayMeals: todayMeals || { bp:0, lp:0, dp:0, bs:0, ls:0, ds:0, bn:0, ln:0, dn:0, bg:0, lg:0, dg:0 },
         issues,
         online: onlineMap[h.id] || null,
         closingStatus: h.closing_status || 'open',
