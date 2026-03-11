@@ -959,6 +959,10 @@ window.saveAllOrders = async () => {
   const inputs = document.querySelectorAll('.order-input')
   if (inputs.length === 0) { showToast('저장할 발주 데이터가 없습니다', 'warning'); return }
 
+  // 버튼 로딩 상태
+  const btn = document.querySelector('button[onclick="saveAllOrders()"]')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 저장 중...' }
+
   showAutoSaveIndicator('saving')
   const seen = new Set()
   const promises = []
@@ -983,13 +987,27 @@ window.saveAllOrders = async () => {
     }))
   })
 
-  if (promises.length === 0) { showToast('입력된 발주 데이터가 없습니다', 'warning'); showAutoSaveIndicator('saved'); return }
+  if (promises.length === 0) {
+    showToast('입력된 발주 데이터가 없습니다', 'warning')
+    showAutoSaveIndicator('saved')
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save mr-1"></i> 전체 저장' }
+    return
+  }
 
   const results = await Promise.all(promises)
   const ok = results.every(r => r?.success)
   showAutoSaveIndicator(ok ? 'saved' : 'error')
-  showToast(ok ? `${promises.length}건 발주 저장 완료!` : '일부 저장 실패', ok ? 'success' : 'error')
+  showToast(ok ? `✅ ${promises.length}건 발주 저장 완료!` : '❌ 일부 저장 실패', ok ? 'success' : 'error')
   updateBudgetProgressPanel()
+
+  // 버튼 복원
+  if (btn) {
+    btn.disabled = false
+    btn.innerHTML = ok
+      ? '<i class="fas fa-check mr-1"></i> 저장 완료'
+      : '<i class="fas fa-save mr-1"></i> 전체 저장'
+    if (ok) setTimeout(() => { btn.innerHTML = '<i class="fas fa-save mr-1"></i> 전체 저장' }, 2000)
+  }
 }
 
 window.showQuickMultiDay = () => {
@@ -1496,6 +1514,11 @@ async function saveMealBatch() {
   const rows = document.querySelectorAll('#mealTableBody tr[data-date]')
   let saved = 0
   const promises = []
+
+  // 버튼 로딩 상태
+  const btn = document.querySelector('button[onclick="saveMealBatch()"]')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 저장 중...' }
+
   rows.forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
@@ -1510,8 +1533,24 @@ async function saveMealBatch() {
       }))
     }
   })
-  await Promise.all(promises)
-  showToast(`${saved}일치 식수 저장 완료!`, 'success')
+
+  const results = await Promise.all(promises)
+  const ok = saved === 0 || results.every(r => r?.success)
+
+  if (saved === 0) {
+    showToast('저장할 식수 데이터가 없습니다', 'warning')
+  } else {
+    showToast(ok ? `✅ ${saved}일치 식수 저장 완료!` : '❌ 일부 저장 실패', ok ? 'success' : 'error')
+  }
+
+  // 버튼 복원
+  if (btn) {
+    btn.disabled = false
+    btn.innerHTML = ok && saved > 0
+      ? '<i class="fas fa-check mr-1"></i> 저장 완료'
+      : '<i class="fas fa-save"></i> 전체 저장'
+    if (ok && saved > 0) setTimeout(() => { btn.innerHTML = '<i class="fas fa-save"></i> 전체 저장' }, 2000)
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
