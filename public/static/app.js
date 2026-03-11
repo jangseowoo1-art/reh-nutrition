@@ -1432,95 +1432,6 @@ async function submitClosingRequest(year, month) {
     showToast('마감 요청 실패', 'error')
   }
 }
-            </label>
-            <input type="number" id="set-${f.key}" value="${f.val||''}" placeholder="${f.placeholder}" class="form-input" min="0">
-          </div>
-        `).join('')}
-        <button onclick="saveSettings()" class="btn btn-primary w-full mt-2">
-          <i class="fas fa-save"></i> 설정 저장
-        </button>
-      </div>
-    </div>
-
-    <!-- 업체 관리 -->
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-        <h2 class="font-bold text-gray-800"><i class="fas fa-store text-green-500 mr-2"></i>업체 관리</h2>
-        <button onclick="showAddVendorModal()" class="btn btn-success btn-sm">
-          <i class="fas fa-plus"></i> 업체 추가
-        </button>
-      </div>
-      <div class="divide-y divide-gray-50 max-h-96 overflow-y-auto">
-        ${(vendors||[]).map((v,idx) => `
-          <div class="px-5 py-3 flex items-center justify-between hover:bg-gray-50">
-            <div class="flex items-center gap-3 flex-1 min-w-0">
-              <span class="text-gray-400 text-xs w-5 text-center">${idx+1}</span>
-              <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
-              <div class="min-w-0">
-                <div class="font-medium text-sm truncate">${v.name}</div>
-                <div class="text-xs text-gray-400">${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)} · ${v.monthly_budget>0?'목표 '+fmtMan(v.monthly_budget)+'원':'목표 없음'}</div>
-              </div>
-            </div>
-            <div class="flex gap-1 flex-shrink-0 ml-2">
-              <button onclick="editVendor(${v.id},'${v.name.replace(/'/g,"\\'")}','${v.category}','${v.tax_type}',${v.monthly_budget})" 
-                class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
-              <button onclick="deleteVendor(${v.id})" 
-                class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-      ${vendors?.length===0?`<div class="p-8 text-center text-gray-400 text-sm">등록된 업체가 없습니다</div>`:''}
-    </div>
-  </div>
-
-  <!-- 업체 모달 -->
-  <div id="vendorModal" class="hidden modal-overlay">
-    <div class="modal-box max-w-md p-6">
-      <h3 class="font-bold text-lg mb-4" id="vendorModalTitle">업체 추가</h3>
-      <input type="hidden" id="vendorId">
-      <div class="space-y-3">
-        <div>
-          <label class="text-sm font-medium text-gray-600">업체명 *</label>
-          <input type="text" id="vendorName" class="form-input mt-1" placeholder="예: 삼성 웰스토리">
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-sm font-medium text-gray-600">카테고리</label>
-            <select id="vendorCategory" class="form-input mt-1">
-              <option value="major">대기업급식</option>
-              <option value="meat">육류</option>
-              <option value="seafood">해산물</option>
-              <option value="fruit">청과</option>
-              <option value="organic">유기농/한살림</option>
-              <option value="market">시장/유통</option>
-              <option value="delivery">인터넷배송</option>
-              <option value="card">법인카드</option>
-              <option value="event">이벤트</option>
-              <option value="general">기타</option>
-            </select>
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-600">세금 구분</label>
-            <select id="vendorTaxType" class="form-input mt-1">
-              <option value="mixed">과세+면세</option>
-              <option value="taxable">과세만</option>
-              <option value="exempt">면세만</option>
-            </select>
-          </div>
-        </div>
-        <div>
-          <label class="text-sm font-medium text-gray-600">월 목표금액 (원)</label>
-          <input type="number" id="vendorBudget" class="form-input mt-1" placeholder="0 (없으면 0)">
-        </div>
-      </div>
-      <div class="flex gap-2 mt-5">
-        <button onclick="saveVendor()" class="btn btn-primary flex-1">저장</button>
-        <button onclick="closeVendorModal()" class="btn btn-secondary flex-1">취소</button>
-      </div>
-    </div>
-  </div>`
-}
 
 async function saveSettings() {
   const get = id => parseInt(document.getElementById(id)?.value||0)||0
@@ -1542,7 +1453,12 @@ function showAddVendorModal() {
   document.getElementById('vendorModal').classList.remove('hidden')
 }
 
-function editVendor(id, name, category, taxType, budget) {
+function editVendor(id) {
+  const btn = document.querySelector(`[onclick="editVendor(${id})"]`)
+  const name = btn?.dataset.name || ''
+  const category = btn?.dataset.cat || 'general'
+  const taxType = btn?.dataset.tax || 'mixed'
+  const budget = parseInt(btn?.dataset.budget || 0)
   document.getElementById('vendorModalTitle').textContent = '업체 수정'
   document.getElementById('vendorId').value = id
   document.getElementById('vendorName').value = name
@@ -2347,7 +2263,8 @@ function renderAdminVendorRows(vendors) {
         </div>
         <div class="text-sm text-gray-600 font-medium">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'목표없음'}</div>
         <div class="flex gap-1">
-          <button onclick="editAdminVendor(${v.id},'${v.name.replace(/'/g,"\\'")}','${v.category}','${v.tax_type}',${v.monthly_budget})"
+          <button onclick="editAdminVendor(${v.id})"
+            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}"
             class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
           <button onclick="deleteAdminVendor(${v.id})"
             class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
@@ -2367,7 +2284,13 @@ function showAdminAddVendorModal() {
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
-function editAdminVendor(id, name, category, taxType, budget) {
+function editAdminVendor(id) {
+  // 클릭된 버튼의 data 속성에서 값 읽기
+  const btn = document.querySelector(`[onclick="editAdminVendor(${id})"]`)
+  const name = btn?.dataset.name || ''
+  const category = btn?.dataset.cat || 'general'
+  const taxType = btn?.dataset.tax || 'mixed'
+  const budget = parseInt(btn?.dataset.budget || 0)
   document.getElementById('adminVendorModalTitle').textContent = '업체 수정'
   document.getElementById('adminVendorId').value = id
   document.getElementById('adminVendorName').value = name
