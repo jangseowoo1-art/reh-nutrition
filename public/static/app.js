@@ -1979,18 +1979,20 @@ async function approveClosing(hospitalId, year, month) {
 }
 
 async function openHospitalDetail(hospitalId) {
-  const [hosp, budget, vendorList] = await Promise.all([
+  const [hosp, budget, vendorList, accounts] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+    api('GET', `/api/admin/hospitals/${hospitalId}/vendors`),
+    api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
   ])
   if (!hosp) return
 
   const s = budget?.settings || {}
   const vendors = vendorList || []
 
-  // 현재 관리 중인 hospitalId를 전역에 저장 (업체 추가/수정에 사용)
+  // 현재 관리 중인 hospitalId를 전역에 저장
   window._adminHospitalId = hospitalId
+  window._adminHospVendors = vendors  // 예산탭 갱신에 사용
 
   const modal = document.createElement('div')
   modal.className = 'modal-overlay'
@@ -2013,6 +2015,9 @@ async function openHospitalDetail(hospitalId) {
         </button>
         <button class="tab-btn" id="tab-vendors" onclick="switchHospTab('vendors')">
           <i class="fas fa-store mr-1"></i>업체관리
+        </button>
+        <button class="tab-btn" id="tab-accounts" onclick="switchHospTab('accounts')">
+          <i class="fas fa-user-circle mr-1"></i>계정관리
         </button>
       </div>
 
@@ -2146,30 +2151,9 @@ async function openHospitalDetail(hospitalId) {
         <!-- 업체별 목표금액 -->
         <div class="border-t border-gray-100 pt-4">
           <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-store text-green-600 mr-1"></i>업체별 월 목표금액</h3>
-          ${vendors.length === 0 ? `
-            <div class="text-center py-8 text-gray-400">
-              <i class="fas fa-store text-3xl mb-2 block text-gray-300"></i>
-              <p class="text-sm">등록된 업체가 없습니다</p>
-              <p class="text-xs mt-1">업체관리 탭에서 업체를 먼저 추가하세요</p>
-            </div>
-          ` : `
-            <div class="space-y-2">
-              ${vendors.map(v => `
-                <div class="flex items-center gap-3 py-2 border-b border-gray-50">
-                  <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
-                  <div class="flex-1 min-w-0">
-                    <span class="font-medium text-sm">${v.name}</span>
-                    <span class="text-xs text-gray-400 ml-2">${getCategoryLabel(v.category)}</span>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <input id="hvb-${v.id}" type="number" class="form-input w-40 text-right text-sm py-1.5"
-                      value="${v.monthly_budget||0}" placeholder="0">
-                    <span class="text-xs text-gray-400 whitespace-nowrap">원</span>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          `}
+          <div id="hospBudgetVendors">
+            ${renderBudgetVendorRows(vendors)}
+          </div>
         </div>
         <div class="mt-4 flex justify-end">
           <button onclick="saveHospitalBudget(${hospitalId})" class="btn btn-primary">
@@ -2188,6 +2172,23 @@ async function openHospitalDetail(hospitalId) {
         </div>
         <div id="adminVendorList">
           ${renderAdminVendorRows(vendors)}
+        </div>
+      </div>
+
+      <!-- 계정관리 탭 -->
+      <div id="hospTab-accounts" class="hidden">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-semibold text-gray-700"><i class="fas fa-user-circle text-green-600 mr-1"></i>병원 계정 목록</h3>
+          <button onclick="showAdminAddAccountModal()" class="btn btn-success btn-sm">
+            <i class="fas fa-plus mr-1"></i>계정 추가
+          </button>
+        </div>
+        <div id="adminAccountList">
+          ${renderAdminAccountRows(accounts || [])}
+        </div>
+        <div class="mt-4 p-3 bg-blue-50 rounded-xl text-xs text-blue-600">
+          <i class="fas fa-info-circle mr-1"></i>
+          병원 계정은 발주 입력, 식수 관리, 마감 요청 등에 사용됩니다. 관리자 계정은 이 화면에서 관리하지 않습니다.
         </div>
       </div>
 
@@ -2239,9 +2240,93 @@ async function openHospitalDetail(hospitalId) {
         <button onclick="document.getElementById('adminVendorModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>
       </div>
     </div>
+  </div>
+
+  <!-- 계정 추가/수정 모달 (관리자용) -->
+  <div id="adminAccountModal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[200]">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 mx-4">
+      <h3 class="font-bold text-lg mb-4" id="adminAccountModalTitle">계정 추가</h3>
+      <input type="hidden" id="adminAccountId">
+      <div class="space-y-3">
+        <div>
+          <label class="text-sm font-medium text-gray-600">아이디 *</label>
+          <input type="text" id="adminAccountUsername" class="form-input mt-1" placeholder="영문+숫자 조합 권장">
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-600" id="adminAccountPwLabel">비밀번호 *</label>
+          <input type="password" id="adminAccountPassword" class="form-input mt-1" placeholder="비밀번호 입력">
+          <p class="text-xs text-gray-400 mt-1" id="adminAccountPwHint"></p>
+        </div>
+      </div>
+      <div class="flex gap-2 mt-5">
+        <button onclick="saveAdminAccount()" class="btn btn-primary flex-1">저장</button>
+        <button onclick="document.getElementById('adminAccountModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>
+      </div>
+    </div>
   </div>`
 
   document.body.appendChild(modal)
+}
+
+// 예산설정 탭 업체별 목표금액 행 렌더
+function renderBudgetVendorRows(vendors) {
+  if (!vendors || vendors.length === 0) {
+    return `<div class="text-center py-8 text-gray-400">
+      <i class="fas fa-store text-3xl mb-2 block text-gray-300"></i>
+      <p class="text-sm">등록된 업체가 없습니다</p>
+      <p class="text-xs mt-1">업체관리 탭에서 업체를 먼저 추가하세요</p>
+    </div>`
+  }
+  return `<div class="space-y-2">
+    ${vendors.map(v => `
+      <div class="flex items-center gap-3 py-2 border-b border-gray-50">
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
+        <div class="flex-1 min-w-0">
+          <span class="font-medium text-sm">${v.name}</span>
+          <span class="text-xs text-gray-400 ml-2">${getCategoryLabel(v.category)}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="hvb-${v.id}" type="number" class="form-input w-40 text-right text-sm py-1.5"
+            value="${v.monthly_budget||0}" placeholder="0">
+          <span class="text-xs text-gray-400 whitespace-nowrap">원</span>
+        </div>
+      </div>
+    `).join('')}
+  </div>`
+}
+
+// 계정 목록 행 렌더
+function renderAdminAccountRows(accounts) {
+  if (!accounts || accounts.length === 0) {
+    return `<div class="text-center py-10 text-gray-400">
+      <i class="fas fa-user-circle text-4xl mb-3 block text-gray-300"></i>
+      <p class="text-sm">등록된 계정이 없습니다</p>
+      <p class="text-xs mt-1">계정 추가 버튼을 눌러 계정을 등록하세요</p>
+    </div>`
+  }
+  return `<div class="divide-y divide-gray-50">
+    ${accounts.map(a => `
+      <div class="flex items-center gap-3 py-3 hover:bg-gray-50 px-2 rounded-lg">
+        <div class="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-user text-green-600 text-sm"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium text-sm">${a.username}</div>
+          <div class="text-xs text-gray-400">생성일: ${a.created_at?.split('T')[0] || '-'}</div>
+        </div>
+        <div class="flex gap-1">
+          <button onclick="editAdminAccount(${a.id}, '${a.username}')"
+            class="btn btn-secondary btn-sm px-2" title="비밀번호 변경">
+            <i class="fas fa-key text-xs"></i>
+          </button>
+          <button onclick="deleteAdminAccount(${a.id}, '${a.username}')"
+            class="btn btn-danger btn-sm px-2" title="계정 삭제">
+            <i class="fas fa-trash text-xs"></i>
+          </button>
+        </div>
+      </div>
+    `).join('')}
+  </div>`
 }
 
 function renderAdminVendorRows(vendors) {
@@ -2317,9 +2402,11 @@ async function saveAdminVendor() {
   if (res?.success) {
     document.getElementById('adminVendorModal').classList.add('hidden')
     showToast(vid ? '업체가 수정되었습니다' : '업체가 추가되었습니다', 'success')
-    // 업체 목록 새로고침
+    // 업체 목록 + 예산탭 동시 갱신
     const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+    window._adminHospVendors = updated || []
     document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
+    document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [])
   } else {
     showToast('저장 실패', 'error')
   }
@@ -2331,8 +2418,75 @@ async function deleteAdminVendor(vid) {
   if (!confirm('업체를 삭제하시겠습니까?\n(해당 업체의 발주 데이터는 유지됩니다)')) return
   await api('DELETE', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`)
   showToast('업체가 삭제되었습니다', 'success')
+  // 업체 목록 + 예산탭 동시 갱신
   const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+  window._adminHospVendors = updated || []
   document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
+  document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [])
+}
+
+// ── 계정 관리 함수 ────────────────────────────────────────────
+function showAdminAddAccountModal() {
+  document.getElementById('adminAccountModalTitle').textContent = '계정 추가'
+  document.getElementById('adminAccountId').value = ''
+  document.getElementById('adminAccountUsername').value = ''
+  document.getElementById('adminAccountUsername').disabled = false
+  document.getElementById('adminAccountPassword').value = ''
+  document.getElementById('adminAccountPwLabel').textContent = '비밀번호 *'
+  document.getElementById('adminAccountPwHint').textContent = ''
+  document.getElementById('adminAccountModal').classList.remove('hidden')
+}
+
+function editAdminAccount(id, username) {
+  document.getElementById('adminAccountModalTitle').textContent = '비밀번호 변경'
+  document.getElementById('adminAccountId').value = id
+  document.getElementById('adminAccountUsername').value = username
+  document.getElementById('adminAccountUsername').disabled = true
+  document.getElementById('adminAccountPassword').value = ''
+  document.getElementById('adminAccountPwLabel').textContent = '새 비밀번호 *'
+  document.getElementById('adminAccountPwHint').textContent = '새 비밀번호를 입력하면 변경됩니다'
+  document.getElementById('adminAccountModal').classList.remove('hidden')
+}
+
+async function saveAdminAccount() {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) return
+  const aid = document.getElementById('adminAccountId').value
+  const username = document.getElementById('adminAccountUsername').value.trim()
+  const password = document.getElementById('adminAccountPassword').value
+
+  if (!username) { showToast('아이디를 입력하세요', 'error'); return }
+  if (!password) { showToast('비밀번호를 입력하세요', 'error'); return }
+  if (password.length < 4) { showToast('비밀번호는 4자 이상 입력하세요', 'error'); return }
+
+  const res = aid
+    ? await api('PUT', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`, { password })
+    : await api('POST', `/api/admin/hospitals/${hospitalId}/accounts`, { username, password })
+
+  if (res?.success) {
+    document.getElementById('adminAccountModal').classList.add('hidden')
+    showToast(aid ? '비밀번호가 변경되었습니다' : '계정이 생성되었습니다', 'success')
+    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
+    document.getElementById('adminAccountList').innerHTML = renderAdminAccountRows(updated || [])
+  } else if (res?.error) {
+    showToast(res.error, 'error')
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
+async function deleteAdminAccount(aid, username) {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) return
+  if (!confirm(`"${username}" 계정을 삭제하시겠습니까?`)) return
+  const res = await api('DELETE', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`)
+  if (res?.success) {
+    showToast('계정이 삭제되었습니다', 'success')
+    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
+    document.getElementById('adminAccountList').innerHTML = renderAdminAccountRows(updated || [])
+  } else {
+    showToast('삭제 실패', 'error')
+  }
 }
 
 function getDefaultWorkingDays(year, month) {
@@ -2340,7 +2494,7 @@ function getDefaultWorkingDays(year, month) {
 }
 
 function switchHospTab(tab) {
-  ['info','budget','vendors'].forEach(t => {
+  ['info','budget','vendors','accounts'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
   })

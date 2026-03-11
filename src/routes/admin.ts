@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { hashPassword } from '../utils/auth'
 
 const adminRouter = new Hono<{ Bindings: { DB: D1Database } }>()
 
@@ -340,6 +341,71 @@ adminRouter.get('/overview/:year/:month', async (c) => {
     })
   )
   return c.json({ hospitals: results, year, month })
+})
+
+// ── 병원 계정 목록 조회 ────────────────────────────────────────
+adminRouter.get('/hospitals/:id/accounts', async (c) => {
+  const id = c.req.param('id')
+  const accounts = await c.env.DB.prepare(`
+    SELECT id, username, role, created_at FROM users
+    WHERE hospital_id = ? ORDER BY id
+  `).bind(id).all<any>()
+  return c.json(accounts.results || [])
+})
+
+// ── 병원 계정 생성 ─────────────────────────────────────────────
+adminRouter.post('/hospitals/:id/accounts', async (c) => {
+  const hospitalId = c.req.param('id')
+  const { username, password } = await c.req.json()
+  if (!username?.trim() || !password?.trim())
+    return c.json({ error: '아이디와 비밀번호를 입력하세요' }, 400)
+
+  // 중복 아이디 체크
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM users WHERE username = ?`
+  ).bind(username.trim()).first<any>()
+  if (exists) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
+
+  const hash = await hashPassword(password)
+  await c.env.DB.prepare(`
+    INSERT INTO users (hospital_id, username, password_hash, role)
+    VALUES (?, ?, ?, 'hospital')
+  `).bind(hospitalId, username.trim(), hash).run()
+  return c.json({ success: true })
+})
+
+// ── 병원 계정 비밀번호 변경 ────────────────────────────────────
+adminRouter.put('/hospitals/:id/accounts/:uid', async (c) => {
+  const { id: hospitalId, uid } = c.req.param()
+  const { password, username } = await c.req.json()
+
+  if (username) {
+    // 중복 체크 (자기 자신 제외)
+    const exists = await c.env.DB.prepare(
+      `SELECT id FROM users WHERE username = ? AND id != ?`
+    ).bind(username.trim(), uid).first<any>()
+    if (exists) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
+    await c.env.DB.prepare(
+      `UPDATE users SET username = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(username.trim(), uid, hospitalId).run()
+  }
+
+  if (password?.trim()) {
+    const hash = await hashPassword(password)
+    await c.env.DB.prepare(
+      `UPDATE users SET password_hash = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(hash, uid, hospitalId).run()
+  }
+  return c.json({ success: true })
+})
+
+// ── 병원 계정 삭제 ─────────────────────────────────────────────
+adminRouter.delete('/hospitals/:id/accounts/:uid', async (c) => {
+  const { id: hospitalId, uid } = c.req.param()
+  await c.env.DB.prepare(
+    `DELETE FROM users WHERE id = ? AND hospital_id = ? AND role != 'admin'`
+  ).bind(uid, hospitalId).run()
+  return c.json({ success: true })
 })
 
 export default adminRouter
