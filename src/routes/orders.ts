@@ -146,14 +146,14 @@ orders.post('/save', async (c) => {
        note=?, is_multi_day=?, multi_day_start=?, multi_day_end=?,
        updated_at=CURRENT_TIMESTAMP WHERE id=?`
     ).bind(taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
-           note, isMultiDay?1:0, multiDayStart, multiDayEnd, existing.id).run()
+           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null, existing.id).run()
   } else {
     await c.env.DB.prepare(
       `INSERT INTO daily_orders
        (hospital_id,vendor_id,order_date,taxable_amount,exempt_amount,vat_amount,total_amount,note,is_multi_day,multi_day_start,multi_day_end)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(hospitalId, vendorId, orderDate, taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
-           note, isMultiDay?1:0, multiDayStart, multiDayEnd).run()
+           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null).run()
   }
 
   return c.json({ success: true, totalAmount })

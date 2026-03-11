@@ -158,11 +158,21 @@ function updateMonthDisplay() {
 }
 
 function navigateTo(page, forceReload = false) {
-  // 발주/식수 페이지: 같은 페이지 재진입 시 재렌더링 방지 (입력값 보존)
+  // 발주/식수 페이지: 이미 렌더된 경우 재렌더 방지 (입력값 보존)
+  // App._renderedPage[key] = {year, month} 로 렌더 완료 추적
+  if (!App._renderedPage) App._renderedPage = {}
   const noReloadPages = ['orders', 'meals']
-  if (!forceReload && noReloadPages.includes(page) && App.currentPage === page) {
-    return  // 이미 해당 페이지면 재렌더 스킵
+  const cacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
+  if (!forceReload && noReloadPages.includes(page) && App._renderedPage[cacheKey]) {
+    // 메뉴 활성화만 업데이트하고 재렌더 스킵
+    document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
+    const activeMenu = document.getElementById(`menu-${page}`)
+    if (activeMenu) activeMenu.classList.add('active')
+    App.currentPage = page
+    history.pushState(null, '', `/${page === 'dashboard' ? '' : page}`)
+    return
   }
+  // 렌더 완료 플래그 초기화 (다른 페이지 이동 시 해당 페이지 캐시 유지)
   App.currentPage = page
   document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
   const activeMenu = document.getElementById(`menu-${page}`)
@@ -202,7 +212,17 @@ function navigateTo(page, forceReload = false) {
     report: renderReport
   }
 
-  if (pages[page]) pages[page]()
+  if (pages[page]) {
+    const result = pages[page]()
+    // 렌더 완료 플래그 저장 (orders, meals만)
+    if (noReloadPages.includes(page)) {
+      if (result && typeof result.then === 'function') {
+        result.then(() => { App._renderedPage[cacheKey] = true })
+      } else {
+        App._renderedPage[cacheKey] = true
+      }
+    }
+  }
   else document.getElementById('pageContent').innerHTML = '<div class="text-center text-gray-400 py-20">준비 중입니다</div>'
   
   history.pushState(null, '', `/${page === 'dashboard' ? '' : page}`)
@@ -213,6 +233,8 @@ function changeMonth(delta) {
   if (App.currentMonth > 12) { App.currentMonth = 1; App.currentYear++ }
   if (App.currentMonth < 1) { App.currentMonth = 12; App.currentYear-- }
   updateMonthDisplay()
+  // 월 변경 시 캐시 초기화
+  App._renderedPage = {}
   navigateTo(App.currentPage)
 }
 
@@ -974,7 +996,14 @@ window.saveQuickMultiDay = async () => {
   }
 }
 
-window.refreshOrders = () => renderOrders()
+window.refreshOrders = () => {
+  // 강제 새로고침: 캐시 초기화 후 재렌더
+  if (App._renderedPage) {
+    const key = `orders-${App.currentYear}-${App.currentMonth}`
+    delete App._renderedPage[key]
+  }
+  renderOrders()
+}
 
 function getVendorCols(taxType) { return taxType === 'mixed' ? 3 : 1 }
 
@@ -1015,7 +1044,9 @@ function getVendorTotalCells(v, orderData) {
 
 function bindOrderInputEvents() {
   document.querySelectorAll('.order-input').forEach(input => {
-    input.addEventListener('change', async function() {
+    // 저장 핸들러 (change + blur 모두 처리, 중복 방지)
+    let _saveTimer = null
+    const saveHandler = async function() {
       const vendorId = this.dataset.vendor
       const date = this.dataset.date
       const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
@@ -1034,6 +1065,13 @@ function bindOrderInputEvents() {
       })
       showAutoSaveIndicator(res?.success ? 'saved' : 'error')
       updateBudgetProgressPanel()
+    }
+    // change: 값 확정 시 저장
+    input.addEventListener('change', saveHandler)
+    // blur: 포커스 이탈 시 저장 (다른 탭으로 이동 포함)
+    input.addEventListener('blur', function() {
+      if (_saveTimer) clearTimeout(_saveTimer)
+      _saveTimer = setTimeout(() => saveHandler.call(this), 100)
     })
     // 엔터키로 다음 셀 이동
     input.addEventListener('keydown', function(e) {
