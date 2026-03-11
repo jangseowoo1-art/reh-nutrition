@@ -5,7 +5,7 @@ const vendors = new Hono<{ Bindings: { DB: D1Database } }>()
 // 병원 업체 목록
 vendors.get('/', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const data = await c.env.DB.prepare(
     `SELECT * FROM vendors WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order`
   ).bind(hospitalId).all<any>()
@@ -15,7 +15,7 @@ vendors.get('/', async (c) => {
 // 업체 추가
 vendors.post('/', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
   
   await c.env.DB.prepare(

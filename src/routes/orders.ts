@@ -5,7 +5,7 @@ const orders = new Hono<{ Bindings: { DB: D1Database } }>()
 // 월별 발주 목록 조회
 orders.get('/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const { year, month } = c.req.param()
 
   const data = await c.env.DB.prepare(
@@ -24,7 +24,7 @@ orders.get('/:year/:month', async (c) => {
 // 특정 날짜의 발주 조회 (업체 목록 포함)
 orders.get('/date/:date', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const { date } = c.req.param()
 
   const data = await c.env.DB.prepare(
@@ -41,7 +41,7 @@ orders.get('/date/:date', async (c) => {
 // ── 데일리 예산 현황 요약 (일/주/월 실시간) ──────────────────
 orders.get('/budget-status/:year/:month/:date', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const { year, month, date } = c.req.param()
 
   // 월 설정
@@ -129,7 +129,7 @@ orders.get('/budget-status/:year/:month/:date', async (c) => {
 // 발주 저장/수정 (upsert)
 orders.post('/save', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const body = await c.req.json()
   const { vendorId, orderDate, taxableAmount, exemptAmount, vatAmount, note, isMultiDay, multiDayStart, multiDayEnd, multiDayCount } = body
 
@@ -162,7 +162,7 @@ orders.post('/save', async (c) => {
 // 발주 일괄 저장
 orders.post('/save-batch', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const { orderDate, orders: orderList, multiDayCount, multiDayNote } = await c.req.json()
 
   const stmts = orderList.map((order: any) => {

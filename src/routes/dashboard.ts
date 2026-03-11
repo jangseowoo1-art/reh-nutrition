@@ -5,7 +5,9 @@ const dashboard = new Hono<{ Bindings: { DB: D1Database } }>()
 // 월별 대시보드 요약
 dashboard.get('/summary/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.role === 'admin' ? c.req.query('hospitalId') : user.hospitalId
+  const rawId = user.role === 'admin' ? c.req.query('hospitalId') : user.hospitalId
+  const hospitalId = rawId ? Number(rawId) : null
+  if (!hospitalId) return c.json({ error: 'hospitalId required' }, 400)
   const { year, month } = c.req.param()
 
   // 월 설정 조회
@@ -140,14 +142,11 @@ dashboard.get('/annual/:year', async (c) => {
   const { year } = c.req.param()
   
   // admin은 hospitalId 쿼리 파라미터 필수, 없으면 첫 번째 병원 사용
-  let hospitalId: any = user.hospitalId
-  if (user.role === 'admin') {
-    hospitalId = c.req.query('hospitalId')
-    if (!hospitalId) {
-      // hospitalId 없으면 첫 번째 병원 ID 사용
-      const firstHospital = await c.env.DB.prepare(`SELECT id FROM hospitals ORDER BY id LIMIT 1`).first<any>()
-      hospitalId = firstHospital?.id
-    }
+  let hospitalId: any = user.role === 'admin' ? Number(c.req.query('hospitalId') || 0) : Number(user.hospitalId)
+  if (user.role === 'admin' && !hospitalId) {
+    // hospitalId 없으면 첫 번째 병원 ID 사용
+    const firstHospital = await c.env.DB.prepare(`SELECT id FROM hospitals ORDER BY id LIMIT 1`).first<any>()
+    hospitalId = firstHospital?.id
   }
   if (!hospitalId) return c.json({ monthly: [], mealMonthly: [], settings: [], vendorAnnual: [] })
 

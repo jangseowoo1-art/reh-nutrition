@@ -5,7 +5,7 @@ const meals = new Hono<{ Bindings: { DB: D1Database } }>()
 // 월별 식수 조회
 meals.get('/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const { year, month } = c.req.param()
 
   const data = await c.env.DB.prepare(
@@ -37,7 +37,7 @@ meals.get('/date/:date', async (c) => {
 // 식수 저장
 meals.post('/save', async (c) => {
   const user = c.get('user')
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   const body = await c.req.json()
   const { mealDate, ...mealData } = body
 

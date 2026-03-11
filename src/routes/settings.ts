@@ -7,7 +7,7 @@ settings.get('/:year/:month', async (c) => {
   const user = c.get('user')
   const { year, month } = c.req.param()
   // 관리자는 hospitalId 쿼리 파라미터 허용
-  const hospitalId = user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId
+  const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
   const data = await c.env.DB.prepare(
     `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
   ).bind(hospitalId, year, month).first<any>()
@@ -138,7 +138,7 @@ settings.post('/session/heartbeat', async (c) => {
 settings.get('/food-waste/:year/:month', async (c) => {
   const user = c.get('user')
   const { year, month } = c.req.param()
-  const hospitalId = user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId
+  const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
   const records = await c.env.DB.prepare(`
     SELECT * FROM food_waste_records WHERE hospital_id=? AND year=? AND month=?
     ORDER BY week
@@ -150,7 +150,7 @@ settings.get('/food-waste/:year/:month', async (c) => {
 settings.post('/food-waste', async (c) => {
   const user = c.get('user')
   const { year, month, week, waste_amount, waste_cost, memo } = await c.req.json()
-  const hospitalId = user.hospitalId
+  const hospitalId = Number(user.hospitalId)
   await c.env.DB.prepare(`
     INSERT INTO food_waste_records (hospital_id, year, month, week, waste_amount, waste_cost, memo, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
