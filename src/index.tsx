@@ -246,6 +246,11 @@ function getAppShell(): string {
       </div>
       <div class="flex items-center gap-3">
         <span id="headerMonth" class="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full"></span>
+        <button id="copyUrlBtn" onclick="copyServiceUrl()" title="서비스 URL 복사"
+          class="flex items-center gap-1.5 text-sm text-gray-500 bg-gray-100 hover:bg-green-100 hover:text-green-700 px-3 py-1 rounded-full transition-all duration-150 border border-transparent hover:border-green-300">
+          <i class="fas fa-link text-xs"></i>
+          <span id="copyUrlLabel">URL 복사</span>
+        </button>
       </div>
     </header>
 

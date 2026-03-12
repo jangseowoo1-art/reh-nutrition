@@ -769,6 +769,25 @@ async function renderOrders() {
   // 주간 예산 = 일일예산 × 5일(영업일)
   const weekBudget = dailyBudget * 5
 
+  // ── 이번 달 주차별 계산 (1주~5주) ──
+  const weeklyData = []
+  const seenWeeks = new Set()
+  for (let d = 1; d <= days; d++) {
+    const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    const dObj = new Date(ds)
+    const mon = new Date(dObj); mon.setDate(dObj.getDate() - (dObj.getDay()===0?6:dObj.getDay()-1))
+    const sun = new Date(mon); sun.setDate(mon.getDate()+6)
+    const wk = mon.toISOString().split('T')[0]
+    if (seenWeeks.has(wk)) continue
+    seenWeeks.add(wk)
+    const wkEnd = sun.toISOString().split('T')[0]
+    const wTotal = (orderData||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
+    const wPct = weekBudget>0?Math.round(wTotal/weekBudget*100):0
+    // 이번 주 여부
+    const isCurWeek = todayStr>=wk && todayStr<=wkEnd
+    weeklyData.push({ wk, wkEnd, wTotal, wPct, isCurWeek })
+  }
+
   const monthPct = totalBudget > 0 ? Math.round(monthTotal / totalBudget * 100) : 0
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
   const weekPct = weekBudget > 0 ? Math.round(weekTotal / weekBudget * 100) : 0
@@ -804,47 +823,80 @@ async function renderOrders() {
   </div>
 
   <!-- ── 예산 진행률 실시간 패널 ── -->
-  <div id="budgetProgressPanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-tachometer-alt text-green-600 mr-1"></i>예산 달성 현황 (실시간)</h3>
-      <span class="text-xs text-gray-400">${App.currentYear}년 ${App.currentMonth}월 | 월 총예산: <strong class="text-gray-700">${fmtWon(totalBudget)}</strong></span>
-    </div>
-    <div class="grid grid-cols-3 gap-4">
-      <div class="bg-gray-50 rounded-xl p-3">
-        <div class="flex justify-between items-center mb-1">
-          <span class="text-xs text-gray-500">일별 발주</span>
-          <span class="text-xs font-bold ${pctColor(todayPct)}" id="todayPct">${todayPct}%</span>
+  ${(() => {
+    // ── 카드 생성 헬퍼 ──
+    function miniCard(id, label, pct, amt, budget, barId, amtId, pctId, isCurrent=false, isToday=false) {
+      const isOver = pct>=100, isWarn = pct>=80&&!isOver
+      // 오늘 일별 카드는 파란 계열 강조
+      const borderColor = isOver?'#ef4444':isWarn?'#f59e0b':(isToday?'#2563eb':'#16a34a')
+      const borderW = (isCurrent||isToday) ? '3px' : '2px'
+      const bgColor = isOver?'#fff1f2':isWarn?'#fffbeb':(isToday?'#eff6ff':(isCurrent?'#f0fdf4':'#f8fafc'))
+      const pctColor = isOver?'#dc2626':isWarn?'#d97706':(isToday?'#1d4ed8':'#16a34a')
+      const pctSize = isToday ? (isOver||isWarn?'30px':'26px') : (isCurrent ? (isOver||isWarn?'26px':'20px') : (isOver||isWarn?'22px':'17px'))
+      const barFill = isOver?'#dc2626':isWarn?'#f59e0b':(isToday?'#3b82f6':'#16a34a')
+      const barBg = isOver?'#fee2e2':isWarn?'#fef3c7':(isToday?'#dbeafe':'#dcfce7')
+      const badge = isOver
+        ? `<span style="background:#dc2626;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">🚨초과</span>`
+        : isWarn
+        ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">⚠️주의</span>`
+        : ''
+      const shadow = (isCurrent||isToday) ? 'box-shadow:0 4px 14px rgba(0,0,0,0.13);' : ''
+      const curLabel = isCurrent && !isToday ? `<span style="font-size:8px;background:${isOver?'#dc2626':isWarn?'#f59e0b':'#16a34a'};color:white;padding:1px 5px;border-radius:8px;margin-left:4px;vertical-align:middle">이번주</span>` : ''
+      const todaySubLabel = isToday ? `<div style="font-size:9px;color:${isOver?'#dc2626':isWarn?'#d97706':'#3b82f6'};font-weight:700;margin-top:1px">일 발주 진행률</div>` : ''
+      const labelSize = isToday ? '13px' : (isCurrent?'12px':'11px')
+      return `<div id="${id}-card" style="border-radius:12px;padding:${(isCurrent||isToday)?'13px 14px':'10px 12px'};transition:all 0.3s;background:${bgColor};border:${borderW} solid ${borderColor};${shadow}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${isToday?'2px':'4px'}">
+          <div>
+            <span style="font-size:${labelSize};font-weight:700;color:#374151">${label}${curLabel}</span>
+            ${todaySubLabel}
+          </div>
+          ${badge}
         </div>
-        <div class="progress-bar h-2 mb-1"><div id="todayBar" class="progress-fill ${barColor(todayPct)}" style="width:${Math.min(todayPct,100)}%"></div></div>
-        <div class="flex justify-between text-xs text-gray-400">
-          <span id="todayAmt">${fmtWon(todayTotal)}</span>
-          <span>목표: ${fmtWon(dailyBudget)}</span>
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:6px">
+          <span id="${pctId}" style="font-size:${pctSize};font-weight:900;line-height:1;color:${pctColor}">${pct}%</span>
+          <div style="text-align:right">
+            <div style="font-size:9px;color:#9ca3af">발주액</div>
+            <div id="${amtId}" style="font-size:${(isCurrent||isToday)?'12px':'11px'};font-weight:700;color:#374151">${fmtWon(amt)}</div>
+          </div>
+        </div>
+        <div style="background:${barBg};border-radius:4px;height:${isToday?'8px':'6px'};overflow:hidden;margin-bottom:4px">
+          <div id="${barId}" style="height:100%;border-radius:4px;background:${barFill};width:${Math.min(pct,100)}%;transition:width 0.4s"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:${isToday?'10px':'9px'};color:${isToday?'#6b7280':'#9ca3af'};font-weight:${isToday?'600':'400'}">목표</span>
+          <span style="font-size:${(isCurrent||isToday)?'12px':'10px'};font-weight:800;color:${isToday?'#1e40af':'#1f2937'}">${fmtWon(budget)}</span>
+        </div>
+      </div>`
+    }
+
+    // 주차 카드들
+    const weekCards = weeklyData.map((w,i) => {
+      const lbl = `${i+1}주 (${w.wk.slice(5).replace('-','/')}~${w.wkEnd.slice(5).replace('-','/')})`
+      return miniCard(`week${i+1}`, lbl, w.wPct, w.wTotal, weekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false)
+    }).join('')
+
+    return `
+    <div id="budgetProgressPanel" style="background:white;border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e5e7eb;padding:16px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="font-weight:700;color:#374151;font-size:14px"><i class="fas fa-tachometer-alt" style="color:#16a34a;margin-right:4px"></i>예산 달성 현황 (실시간)</h3>
+        <span style="font-size:11px;color:#9ca3af">${App.currentYear}년 ${App.currentMonth}월 | 월 총예산 <strong style="color:#374151">${fmtWon(totalBudget)}</strong></span>
+      </div>
+
+      <!-- 일별 + 월별 카드 (2열) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        ${miniCard('today','📅 오늘 일별 발주',todayPct,todayTotal,dailyBudget,'todayBar','todayAmt','todayPct',false,true)}
+        ${miniCard('month','🗓️ 월별 발주',monthPct,monthTotal,totalBudget,'monthBar','monthAmt','monthPct',false,false)}
+      </div>
+
+      <!-- 주차별 카드 -->
+      <div style="border-top:1px solid #e5e7eb;padding-top:10px">
+        <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:8px">📆 주차별 발주 현황</div>
+        <div id="weeklyCardsGrid" style="display:grid;grid-template-columns:repeat(${weeklyData.length},1fr);gap:8px">
+          ${weekCards}
         </div>
       </div>
-      <div class="bg-gray-50 rounded-xl p-3">
-        <div class="flex justify-between items-center mb-1">
-          <span class="text-xs text-gray-500">주별 발주</span>
-          <span class="text-xs font-bold ${pctColor(weekPct)}" id="weekPct">${weekPct}%</span>
-        </div>
-        <div class="progress-bar h-2 mb-1"><div id="weekBar" class="progress-fill ${barColor(weekPct)}" style="width:${Math.min(weekPct,100)}%"></div></div>
-        <div class="flex justify-between text-xs text-gray-400">
-          <span id="weekAmt">${fmtWon(weekTotal)}</span>
-          <span>목표: ${fmtWon(weekBudget)}</span>
-        </div>
-      </div>
-      <div class="bg-gray-50 rounded-xl p-3">
-        <div class="flex justify-between items-center mb-1">
-          <span class="text-xs text-gray-500">월별 발주</span>
-          <span class="text-xs font-bold ${pctColor(monthPct)}" id="monthPct">${monthPct}%</span>
-        </div>
-        <div class="progress-bar h-2 mb-1"><div id="monthBar" class="progress-fill ${barColor(monthPct)}" style="width:${Math.min(monthPct,100)}%"></div></div>
-        <div class="flex justify-between text-xs text-gray-400">
-          <span id="monthAmt">${fmtWon(monthTotal)}</span>
-          <span>목표: ${fmtWon(totalBudget)}</span>
-        </div>
-      </div>
-    </div>
-  </div>
+    </div>`
+  })()}
 
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
@@ -891,54 +943,189 @@ async function renderOrders() {
       <table class="order-table w-full" id="ordersTable">
         <thead>
           <tr>
-            <th rowspan="2" class="sticky left-0 z-10 bg-gray-800" style="min-width:50px">일</th>
-            <th rowspan="2" style="min-width:28px">요일</th>
-            <th rowspan="2" style="min-width:50px;font-size:10px">발주<br>일수</th>
-            ${vendors.map(v => `
-              <th colspan="${getVendorCols(v.tax_type)}" style="min-width:${getVendorCols(v.tax_type)*90}px">
+            <th rowspan="2" class="sticky left-0 z-10 bg-gray-800" style="min-width:40px">일</th>
+            <th rowspan="2" style="min-width:24px">요일</th>
+            <th rowspan="2" style="min-width:44px;font-size:10px">발주<br>일수</th>
+            <th rowspan="2" style="min-width:110px;font-size:10px;background:#1e3a8a;color:white;padding:4px 5px;">
+              <div style="font-size:11px;font-weight:800;color:#93c5fd;letter-spacing:0.5px">📊 일발주 진행률</div>
+              <div style="font-size:10px;color:#bfdbfe;margin-top:2px;font-weight:600">일발주 / 일 목표</div>
+            </th>
+            ${vendors.map((v, vi) => {
+              const cols = getVendorCols(v.tax_type)
+              const borderLeft = vi > 0 ? 'border-left:3px solid #334155;' : ''
+              return `<th colspan="${cols + 1}" style="min-width:${cols*88+52}px;${borderLeft}">
                 <div style="font-size:11px">${v.name}</div>
                 <div style="font-size:9px;opacity:0.7">${getTaxTypeLabel(v.tax_type)}</div>
-              </th>
-            `).join('')}
-            <th rowspan="2" style="min-width:90px">일 합계</th>
+              </th>`
+            }).join('')}
+            <th rowspan="2" style="min-width:80px">일 합계</th>
           </tr>
           <tr>
-            ${vendors.map(v => getVendorSubHeaders(v.tax_type)).join('')}
+            ${vendors.map((v, vi) => {
+              const borderLeft = vi > 0 ? 'border-left:3px solid #334155;' : ''
+              return getVendorSubHeadersWithPct(v, borderLeft)
+            }).join('')}
           </tr>
         </thead>
         <tbody>
-          ${Array.from({ length: days }, (_, i) => {
-            const day = i + 1
-            const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
-            const weekend = isWeekend(App.currentYear, App.currentMonth, day)
-            const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-            const rowClass = dow === '일' ? 'holiday-row' : weekend ? 'weekend-row' : ''
-            let dayTotal = 0
-            ;(orderData||[]).filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
-            // 다일치 여부 확인
-            const dayOrders = (orderData||[]).filter(o=>o.order_date===dateStr)
-            const multiDayInfo = dayOrders.find(o=>o.is_multi_day)
-            const multiDayCount = multiDayInfo ? (() => {
-              const s = new Date(multiDayInfo.multi_day_start), e = new Date(multiDayInfo.multi_day_end)
-              return Math.round((e-s)/(1000*60*60*24))+1
-            })() : 1
-            return `<tr class="${rowClass}" data-date="${dateStr}">
-              <td class="date-col sticky left-0 z-10">${day}</td>
-              <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'}">${dow}</td>
-              <td class="text-center" style="font-size:10px">
-                <select class="multiday-select" data-date="${dateStr}" style="border:1px solid #e5e7eb;border-radius:4px;padding:1px 2px;font-size:10px;background:#f9fafb;cursor:pointer;" onchange="updateMultiDayNote(this)">
-                  ${[1,2,3,4,5,6,7].map(n => `<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}
-                </select>
-              </td>
-              ${vendors.map(v => getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr)).join('')}
-              <td class="total-col text-right pr-2 text-xs" id="dayTotal-${dateStr}">${dayTotal>0?fmt(dayTotal):''}</td>
-            </tr>`
-          }).join('')}
+          ${(() => {
+            // 다일치 커버 날짜 사전 계산
+            const coveredDates = {}
+            const multiDayMap = {}
+            ;(orderData||[]).forEach(o => {
+              if (o.is_multi_day && o.multi_day_start && o.multi_day_end) {
+                const s = new Date(o.multi_day_start), e = new Date(o.multi_day_end)
+                const cnt = Math.round((e-s)/(1000*60*60*24))+1
+                multiDayMap[o.multi_day_start] = Math.max(multiDayMap[o.multi_day_start]||0, cnt)
+                for (let d = new Date(s); d <= e; d.setDate(d.getDate()+1)) {
+                  const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+                  if (ds !== o.multi_day_start) coveredDates[ds] = o.multi_day_start
+                }
+              }
+            })
+            // 업체별 일일예산
+            const vendorDailyBudgets = {}
+            ;(vendors||[]).forEach(v => {
+              vendorDailyBudgets[v.id] = workingDays > 0 ? Math.round((v.monthly_budget||0)/workingDays) : 0
+            })
+            window._ordersCoveredDates = coveredDates
+            window._ordersMultiDayMap = multiDayMap
+            window._ordersVendors = vendors
+            window._ordersVendorDailyBudgets = vendorDailyBudgets
+
+            const rows = []
+            const renderedWeeks = new Set()
+            let weekNumber = 0  // 주차 번호 카운터
+
+            for (let i = 0; i < days; i++) {
+              const day = i + 1
+              const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
+              const weekend = isWeekend(App.currentYear, App.currentMonth, day)
+              const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+              const rowClass = dow === '일' ? 'holiday-row' : weekend ? 'weekend-row' : ''
+
+              // 이 날짜의 주 범위 (월~일)
+              const dateObj = new Date(dateStr)
+              const thisMon = new Date(dateObj)
+              thisMon.setDate(dateObj.getDate() - (dateObj.getDay()===0 ? 6 : dateObj.getDay()-1))
+              const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate()+6)
+              const weekKey = thisMon.toISOString().split('T')[0]
+              const weekEndKey = thisSun.toISOString().split('T')[0]
+
+              // 주간 요약행: 주차별 처음에만 삽입
+              if (!renderedWeeks.has(weekKey)) {
+                renderedWeeks.add(weekKey)
+                weekNumber++  // 주차 번호 증가
+                const wTotal = (orderData||[]).filter(o=>o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+                const wPct = weekBudget>0 ? Math.round(wTotal/weekBudget*100) : null
+                const wOver = wPct!==null&&wPct>=100; const wWarn = wPct!==null&&wPct>=80&&!wOver
+                // 이번 주 여부
+                const isCurrentWeek = todayStr>=weekKey && todayStr<=weekEndKey
+                // 상태별 테두리 색상: 정상 녹색/주의 노랑/초과 빨강 (현재 주는 더 굵게)
+                const wColor = wOver?'#dc2626':wWarn?'#d97706':'#166534'
+                const wBg = wOver?'#fee2e2':wWarn?'#fef3c7':(isCurrentWeek?'#e0f2fe':'#f0fdf4')
+                const wBorderColor = wOver?'#dc2626':wWarn?'#f59e0b':'#16a34a'
+                const wBorderW = isCurrentWeek ? '3px' : '2px'
+                const wBorderStyle = isCurrentWeek ? 'double' : 'solid'
+                const wLabel = `${weekKey.slice(5).replace('-','/')}~${weekEndKey.slice(5).replace('-','/')}`
+                const curWeekBadge = isCurrentWeek ? `<span style="background:${wOver?'#dc2626':wWarn?'#f59e0b':'#0284c7'};color:white;font-size:8px;font-weight:700;padding:1px 4px;border-radius:6px;margin-left:3px">이번주</span>` : ''
+                // 업체별 주간 셀
+                const vWeekCells = vendors.map((v, vi) => {
+                  const vWAmt = (orderData||[]).filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+                  const vWB = (vendorDailyBudgets[v.id]||0)*5
+                  const vWPct = vWB>0?Math.round(vWAmt/vWB*100):null
+                  const vWO = vWPct!==null&&vWPct>=100; const vWW = vWPct!==null&&vWPct>=80&&!vWO
+                  const vWC = vWO?'#dc2626':vWW?'#d97706':'#166534'
+                  const vWBg2 = vWO?'#fee2e2':vWW?'#fef3c7':(isCurrentWeek?'#e0f2fe':'#f0fdf4')
+                  const cols = getVendorCols(v.tax_type)
+                  const bl = vi > 0 ? `border-left:3px solid ${isCurrentWeek?'#7dd3fc':'#a7f3d0'};` : ''
+                  const empty = cols===3
+                    ? `<td style="${bl}background:${vWBg2};padding:2px"></td><td style="background:${vWBg2};padding:2px"></td>`
+                    : `<td style="${bl}background:${vWBg2};padding:2px"></td>`
+                  return `${empty}<td class="text-right pr-1 text-xs font-bold" style="background:${vWBg2};color:${vWC};">${vWAmt>0?fmtMan(vWAmt):'-'}</td><td id="vwpct-${v.id}-${weekKey}" class="text-center" style="font-size:10px;font-weight:700;color:${vWC};background:${vWBg2};padding:2px 3px;">${vWPct!==null?vWPct+'%'+(vWO?' 🚨':vWW?' ⚠️':''):'-'}</td>`
+                }).join('')
+                const rowBorderStyle = `border-top:${wBorderW} ${wBorderStyle} ${wBorderColor};border-bottom:${wBorderW} ${wBorderStyle} ${wBorderColor};${isCurrentWeek?`outline:2px solid ${wBorderColor};outline-offset:-1px;`:''}`
+                rows.push(`<tr class="week-summary-row${isCurrentWeek?' current-week-row':''}" data-week-key="${weekKey}" data-week-num="${weekNumber}" style="background:${wBg};${rowBorderStyle}">
+                  <td colspan="2" class="sticky left-0 text-center" style="font-size:9px;font-weight:700;color:${isCurrentWeek?'#0284c7':'#166534'};background:${wBg};padding:3px 2px;">📅 ${wLabel}</td>
+                  <td class="text-center" style="font-size:${isCurrentWeek?'11px':'9px'};font-weight:${isCurrentWeek?'800':'600'};color:${isCurrentWeek?'#0284c7':'#6b7280'};background:${wBg};">${weekNumber}주${curWeekBadge}</td>
+                  <td id="weekPctCell-${weekKey}" class="text-center" style="background:${wBg};padding:${isCurrentWeek?'5px 6px':'3px 4px'};">
+                    <div style="font-size:${isCurrentWeek?'15px':'12px'};font-weight:800;color:${wColor};line-height:1.2">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</div>
+                    <div style="font-size:9px;color:#6b7280;margin-top:1px"><span style="font-weight:600;color:#374151">${fmtMan(wTotal)}</span><span style="color:#9ca3af"> /주목표 ${fmtMan(weekBudget)}</span></div>
+                  </td>
+                  ${vWeekCells}
+                  <td class="text-right pr-2 font-bold text-xs" style="background:${wBg};color:${wColor};font-size:${isCurrentWeek?'12px':'10px'};">${wTotal>0?fmtMan(wTotal):'-'}</td>
+                </tr>`)
+              }
+
+              // 일반 날짜 행
+              const isCovered = !!coveredDates[dateStr]
+              const coveredBy = coveredDates[dateStr]
+              let dayTotal = 0
+              ;(orderData||[]).filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
+              const multiDayCount = multiDayMap[dateStr] || 1
+              const adjBudget = isCovered ? 0 : dailyBudget * multiDayCount
+              const dayPct = adjBudget>0 ? Math.round(dayTotal/adjBudget*100) : null
+              const dOver = dayPct!==null&&dayPct>=100; const dWarn = dayPct!==null&&dayPct>=80&&!dOver
+              const dColor = dOver?'#dc2626':dWarn?'#d97706':'#16a34a'
+              const dBg = dOver?'#fee2e2':dWarn?'#fef3c7':(dayPct!==null&&dayTotal>0?'#f0fdf4':'')
+
+              // 진행률 셀
+              let pctHtml = ''
+              if (isCovered) {
+                pctHtml = `<div style="color:#9ca3af;font-size:9px;text-align:center;line-height:1.4">🔗포함됨<br><span style="color:#93c5fd;font-size:8px">${coveredBy?.slice(5)}</span></div>`
+              } else if (dayPct!==null && dayTotal>0) {
+                const ml = multiDayCount>1?`<span style="color:#60a5fa;font-size:8px"> ${multiDayCount}일치</span>`:''
+                pctHtml = `<div style="color:${dColor};font-size:13px;font-weight:800;line-height:1.1">${dayPct}%${dOver?' 🚨':dWarn?' ⚠️':''}</div><div style="font-size:8px;line-height:1.3"><span style="color:#374151">${fmtMan(dayTotal)}</span><span style="color:#9ca3af"> /일 ${fmtMan(adjBudget)}</span>${ml}</div>`
+              } else {
+                const ml = multiDayCount>1?` ${multiDayCount}일치`:''
+                pctHtml = `<div style="color:#d1d5db;font-size:11px">-</div><div style="color:#93c5fd;font-size:8px">목표 ${fmtMan(adjBudget)}${ml}</div>`
+              }
+
+              // 업체별 셀 (일별% + 주별%)
+              const vendorCells = vendors.map((v, vi) => {
+                const vDB = vendorDailyBudgets[v.id]||0
+                const vWB = vDB*5
+                const vDayAmt = (orderData||[]).filter(o=>o.vendor_id===v.id&&o.order_date===dateStr).reduce((s,o)=>s+(o.total_amount||0),0)
+                const vWeekAmt = (orderData||[]).filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+                const vAdjDB = isCovered?0:vDB*multiDayCount
+                const vDPct = vAdjDB>0?Math.round(vDayAmt/vAdjDB*100):null
+                const vWPct = vWB>0?Math.round(vWeekAmt/vWB*100):null
+                const vDO = vDPct!==null&&vDPct>=100; const vDW = vDPct!==null&&vDPct>=80&&!vDO
+                const vWO = vWPct!==null&&vWPct>=100; const vWW = vWPct!==null&&vWPct>=80&&!vWO
+                const vDC = vDO?'#dc2626':vDW?'#d97706':'#16a34a'
+                const vWC = vWO?'#dc2626':vWW?'#d97706':'#6366f1'
+                const vBg = vDO?'#fee2e2':vDW?'#fef3c7':''
+                const inputCells = getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)
+                const dayTxt = vDPct!==null?`<div style="color:${vDC};font-size:10px;font-weight:700;line-height:1.2">${vDPct}%${vDO?' 🚨':vDW?' ⚠️':''}</div>`:`<div style="color:#d1d5db;font-size:9px">일 -</div>`
+                const weekTxt = vWPct!==null?`<div style="color:${vWC};font-size:9px;font-weight:600;line-height:1.2">${vWO?'🚨':vWW?'⚠️':''}주${vWPct}%</div>`:`<div style="color:#d1d5db;font-size:8px">주 -</div>`
+                return `${inputCells}<td id="vpct-${v.id}-${dateStr}" class="text-center vendor-pct-cell" data-vendor="${v.id}" data-date="${dateStr}" style="background:${vBg};min-width:50px;padding:2px 3px;">${dayTxt}${weekTxt}</td>`
+              }).join('')
+
+              rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
+                <td class="date-col sticky left-0 z-10">${day}</td>
+                <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'}">${dow}</td>
+                <td class="text-center" style="font-size:10px">
+                  <select class="multiday-select" data-date="${dateStr}"
+                    style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:4px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};"
+                    onchange="updateMultiDayNote(this)">
+                    ${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}
+                  </select>
+                  ${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px">${multiDayCount}일치</div>`:''}
+                </td>
+                <td id="dayPct-${dateStr}" class="text-center" style="font-size:10px;padding:3px 4px;background:${dBg};border-left:2px solid #bfdbfe;">${pctHtml}</td>
+                ${vendorCells}
+                <td class="total-col text-right pr-2 text-xs" id="dayTotal-${dateStr}" style="${dOver?'color:#dc2626;font-weight:700':dWarn?'color:#d97706;font-weight:600':''}">${dayTotal>0?fmt(dayTotal):''}</td>
+              </tr>`)
+            }
+            return rows.join('')
+          })()}
         </tbody>
         <tfoot>
           <tr class="bg-gray-100 font-bold text-xs">
-            <td colspan="3" class="text-center py-2 sticky left-0 bg-gray-100">합계</td>
-            ${vendors.map(v => getVendorTotalCells(v, orderData||[])).join('')}
+            <td colspan="2" class="text-center py-2 sticky left-0 bg-gray-100">합계</td>
+            <td class="bg-gray-100"></td>
+            <td class="text-center" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;background:#f0fdf4;">${monthPct}%<div style="font-size:9px;color:#6b7280;font-weight:400">${fmtMan(monthTotal)} / ${fmtMan(totalBudget)}</div></td>
+            ${vendors.map(v => getVendorTotalCellsWithPct(v, orderData||[])).join('')}
             <td class="text-right pr-2 text-green-700 font-bold">
               ${fmt((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}
             </td>
@@ -1000,8 +1187,15 @@ async function renderOrders() {
   </div>`
 
   // 전역에 예산 데이터 저장 (실시간 업데이트용)
-  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd }
+  const vendorDailyBudgets2 = {}
+  ;(vendors||[]).forEach(v => {
+    vendorDailyBudgets2[v.id] = workingDays>0 ? Math.round((v.monthly_budget||0)/workingDays) : 0
+  })
+  const weekStartStr = weekStart.toISOString().split('T')[0]
+  const weekEndStr = weekEnd.toISOString().split('T')[0]
+  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*5])), workingDays }
   window._ordersData = orderData || []
+  window._ordersVendors = vendors || []
   window._ordersMealStats = {
     totalMeals: (mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_noncovered||0)+(mealStats.total_guardian||0),
     totalStaff: mealStats.total_staff||0,
@@ -1086,14 +1280,71 @@ window.selectQDDays = (n) => {
 
 window.syncQDButtons = (v) => window.selectQDDays(parseInt(v))
 
-window.updateMultiDayNote = (sel) => {
-  // 발주일수 변경 시 해당 행의 다일치 정보 업데이트 (시각적 표시만)
+window.updateMultiDayNote = async (sel) => {
   const days = parseInt(sel.value)
   const dateStr = sel.dataset.date
   const row = document.querySelector(`tr[data-date="${dateStr}"]`)
-  if (row) {
-    row.style.background = days > 1 ? 'rgba(22,163,74,0.05)' : ''
+  if (!row) return
+
+  // 1) data-multidays 즉시 반영
+  row.dataset.multidays = days
+  row.style.background = days > 1 ? 'rgba(22,163,74,0.05)' : ''
+
+  // 2) 드롭다운 색상 업데이트
+  sel.style.border = `1px solid ${days > 1 ? '#16a34a' : '#e5e7eb'}`
+  sel.style.background = days > 1 ? '#f0fdf4' : '#f9fafb'
+  sel.style.color = days > 1 ? '#166534' : '#374151'
+  sel.style.fontWeight = days > 1 ? '700' : '400'
+
+  // 3) 다일치 라벨 추가/제거
+  let labelEl = sel.nextElementSibling
+  if (days > 1) {
+    if (!labelEl || !labelEl.classList.contains('multiday-label')) {
+      labelEl = document.createElement('div')
+      labelEl.className = 'multiday-label'
+      labelEl.style.cssText = 'font-size:8px;color:#16a34a;font-weight:600;margin-top:1px'
+      sel.parentNode.insertBefore(labelEl, sel.nextSibling)
+    }
+    labelEl.textContent = `${days}일치`
+  } else {
+    if (labelEl && labelEl.classList.contains('multiday-label')) labelEl.remove()
   }
+
+  // 4) 종료일 계산
+  const endDate = new Date(dateStr)
+  endDate.setDate(endDate.getDate() + days - 1)
+  const endStr = `${endDate.getFullYear()}-${String(endDate.getMonth()+1).padStart(2,'0')}-${String(endDate.getDate()).padStart(2,'0')}`
+
+  if (days > 1) {
+    sel.title = `${dateStr} ~ ${endStr} (${days}일치)`
+    if (window._ordersMultiDayMap) window._ordersMultiDayMap[dateStr] = days
+  } else {
+    sel.title = ''
+    if (window._ordersMultiDayMap) delete window._ordersMultiDayMap[dateStr]
+  }
+
+  // 5) 진행률 셀 즉시 재계산
+  updateDayTotal(dateStr)
+
+  // 6) 입력값 있는 업체만 DB 저장
+  const vendors = window._ordersVendors || []
+  for (const v of vendors) {
+    const taxableEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${dateStr}"]`)
+    const exemptEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${dateStr}"]`)
+    const taxable = parseInt(taxableEl?.value || 0) || 0
+    const exempt = parseInt(exemptEl?.value || 0) || 0
+    if (taxable === 0 && exempt === 0) continue
+    const vat = Math.round(taxable * 0.1)
+    await api('POST', '/api/orders/save', {
+      vendorId: v.id, orderDate: dateStr,
+      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat,
+      isMultiDay: days > 1 ? 1 : 0,
+      multiDayStart: days > 1 ? dateStr : null,
+      multiDayEnd: days > 1 ? endStr : null,
+      note: days > 1 ? `${days}일치 발주` : null
+    })
+  }
+  showAutoSaveIndicator('saved')
 }
 
 window.saveQuickMultiDay = async () => {
@@ -1142,20 +1393,21 @@ function getVendorSubHeaders(taxType) {
   return `<th style="min-width:80px;font-size:10px">면세</th>`
 }
 
-function getVendorInputCells(v, order, dateStr) {
+function getVendorInputCells(v, order, dateStr, addBorder = false) {
   const taxable = order.taxable_amount || 0
   const exempt = order.exempt_amount || 0
   const total = order.total_amount || 0
   const multiDay = order.is_multi_day ? `title="${order.multi_day_start}~${order.multi_day_end} 다일치"` : ''
+  const borderStyle = addBorder ? 'border-left:3px solid #cbd5e1;' : ''
   if (v.tax_type === 'mixed') {
-    return `<td><input type="number" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${taxable||''}" placeholder="0" min="0"></td>
+    return `<td style="${borderStyle}"><input type="number" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${taxable||''}" placeholder="0" min="0"></td>
             <td><input type="number" class="order-input" data-vendor="${v.id}" data-type="exempt" data-date="${dateStr}" value="${exempt||''}" placeholder="0" min="0"></td>
             <td class="total-col text-right pr-2 text-xs ${order.is_multi_day?'multi-day-cell':''}" id="vt-${v.id}-${dateStr}" ${multiDay}>${total>0?fmt(total):''}</td>`
   }
   if (v.tax_type === 'taxable') {
-    return `<td><input type="number" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${taxable||''}" placeholder="0" min="0"></td>`
+    return `<td style="${borderStyle}"><input type="number" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${taxable||''}" placeholder="0" min="0"></td>`
   }
-  return `<td><input type="number" class="order-input" data-vendor="${v.id}" data-type="exempt" data-date="${dateStr}" value="${exempt||''}" placeholder="0" min="0"></td>`
+  return `<td style="${borderStyle}"><input type="number" class="order-input" data-vendor="${v.id}" data-type="exempt" data-date="${dateStr}" value="${exempt||''}" placeholder="0" min="0"></td>`
 }
 
 function getVendorTotalCells(v, orderData) {
@@ -1169,6 +1421,39 @@ function getVendorTotalCells(v, orderData) {
             <td class="text-right pr-2 text-blue-700 font-bold text-xs total-col">${total>0?fmt(total):''}</td>`
   }
   return `<td class="text-right pr-2 text-blue-700 font-bold text-xs total-col">${total>0?fmt(total):''}</td>`
+}
+
+// 업체 서브헤더 (% 컬럼 포함)
+function getVendorSubHeadersWithPct(v, borderLeft = '') {
+  const firstBorder = borderLeft ? `style="${borderLeft}min-width:80px;font-size:10px"` : `style="min-width:80px;font-size:10px"`
+  const pctTh = `<th style="min-width:56px;font-size:9px;background:#1e3a8a;color:#93c5fd;padding:3px 2px;line-height:1.3"><div style="font-size:8px;color:#bfdbfe;font-weight:700">주 발주</div><div style="font-size:9px;font-weight:800;color:#60a5fa">진행률%</div></th>`
+  if (v.tax_type === 'mixed') {
+    return `<th ${firstBorder}>과세</th><th style="min-width:80px;font-size:10px">면세</th><th style="min-width:80px;font-size:10px;background:#1a2f4a">소계</th>${pctTh}`
+  }
+  if (v.tax_type === 'taxable') {
+    return `<th ${firstBorder}>과세</th>${pctTh}`
+  }
+  return `<th ${firstBorder}>면세</th>${pctTh}`
+}
+
+// 업체 합계 셀 (% 컬럼 포함)
+function getVendorTotalCellsWithPct(v, orderData) {
+  const filtered = orderData.filter(o => o.vendor_id === v.id)
+  const totalTaxable = filtered.reduce((s, o) => s + (o.taxable_amount||0), 0)
+  const totalExempt = filtered.reduce((s, o) => s + (o.exempt_amount||0), 0)
+  const total = filtered.reduce((s, o) => s + (o.total_amount||0), 0)
+  const monthPct = v.monthly_budget > 0 ? Math.round(total / v.monthly_budget * 100) : null
+  const mOver = monthPct !== null && monthPct >= 100
+  const mWarn = monthPct !== null && monthPct >= 80 && !mOver
+  const mColor = mOver ? '#dc2626' : mWarn ? '#d97706' : '#166534'
+  const mBg = mOver ? '#fee2e2' : mWarn ? '#fef3c7' : '#f0fdf4'
+  const pctCell = `<td class="text-center" style="font-size:10px;font-weight:700;color:${mColor};background:${mBg};">${monthPct !== null ? monthPct + '%' + (mOver ? ' 🚨' : mWarn ? ' ⚠️' : '') : '-'}</td>`
+  if (v.tax_type === 'mixed') {
+    return `<td class="text-right pr-1 text-xs">${totalTaxable>0?fmt(totalTaxable):''}</td>
+            <td class="text-right pr-1 text-xs">${totalExempt>0?fmt(totalExempt):''}</td>
+            <td class="text-right pr-2 text-blue-700 font-bold text-xs total-col">${total>0?fmt(total):''}</td>${pctCell}`
+  }
+  return `<td class="text-right pr-2 text-blue-700 font-bold text-xs total-col">${total>0?fmt(total):''}</td>${pctCell}`
 }
 
 function bindOrderInputEvents() {
@@ -1270,28 +1555,83 @@ function updateBudgetProgressPanel() {
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
   const weekPct = weekBudget > 0 ? Math.round(weekTotal / weekBudget * 100) : 0
 
-  function pctColor(p) { return p >= 100 ? 'text-red-600' : p >= 80 ? 'text-yellow-600' : 'text-green-700' }
-  function barColor(p) { return p >= 100 ? '#ef4444' : p >= 80 ? '#f59e0b' : '#16a34a' }
-
-  const updateEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val }
-  const updateBar = (id, pct, color) => {
-    const el = document.getElementById(id)
-    if (el) { el.style.width = `${Math.min(pct,100)}%`; el.style.background = color }
+  // 범용 카드 업데이트 헬퍼
+  function updateBudgetCard(cardId, pctId, amtId, barId, pct, amt, isCurrent=false, isToday=false) {
+    const card = document.getElementById(cardId)
+    if (!card) return
+    const isOver = pct>=100, isWarn = pct>=80&&!isOver
+    const borderColor = isOver?'#ef4444':isWarn?'#f59e0b':(isToday?'#2563eb':'#16a34a')
+    const borderW = (isCurrent||isToday)?'3px':'2px'
+    card.style.background = isOver?'#fff1f2':isWarn?'#fffbeb':(isToday?'#eff6ff':(isCurrent?'#f0fdf4':'#f8fafc'))
+    card.style.border = `${borderW} solid ${borderColor}`
+    card.style.boxShadow = (isCurrent||isToday)?'0 4px 14px rgba(0,0,0,0.13)':''
+    const pctEl = document.getElementById(pctId)
+    if (pctEl) {
+      pctEl.textContent = `${pct}%`
+      pctEl.style.color = isOver?'#dc2626':isWarn?'#d97706':(isToday?'#1d4ed8':'#16a34a')
+      pctEl.style.fontSize = isToday?(isOver||isWarn?'30px':'26px'):(isCurrent?(isOver||isWarn?'26px':'20px'):(isOver||isWarn?'22px':'17px'))
+    }
+    const amtEl = document.getElementById(amtId)
+    if (amtEl) amtEl.textContent = fmtWon(amt)
+    const barEl = document.getElementById(barId)
+    if (barEl) {
+      barEl.style.width = `${Math.min(pct,100)}%`
+      barEl.style.background = isOver?'#dc2626':isWarn?'#f59e0b':(isToday?'#3b82f6':'#16a34a')
+      if (barEl.parentElement) barEl.parentElement.style.background = isOver?'#fee2e2':isWarn?'#fef3c7':(isToday?'#dbeafe':'#dcfce7')
+    }
+    // 뱃지 업데이트 (첫번째 div의 마지막 요소)
+    const badgeEl = card.querySelector('[style*="border-radius:10px"]')
+    const badge = isOver
+      ? `<span style="background:#dc2626;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">🚨초과</span>`
+      : isWarn
+      ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">⚠️주의</span>`
+      : ''
+    if (badgeEl) { badgeEl.outerHTML = badge || '' }
+    else if (badge) {
+      const firstDiv = card.querySelector('div')
+      if (firstDiv) firstDiv.insertAdjacentHTML('beforeend', badge)
+    }
   }
-  const updateClass = (id, cls) => {
-    const el = document.getElementById(id)
-    if (el) { el.className = `text-xs font-bold ${cls}` }
-  }
 
-  updateEl('todayPct', `${todayPct}%`); updateEl('todayAmt', fmtWon(todayTotal))
-  updateEl('weekPct', `${weekPct}%`); updateEl('weekAmt', fmtWon(weekTotal))
-  updateEl('monthPct', `${monthPct}%`); updateEl('monthAmt', fmtWon(monthTotal))
-  updateBar('todayBar', todayPct, barColor(todayPct))
-  updateBar('weekBar', weekPct, barColor(weekPct))
-  updateBar('monthBar', monthPct, barColor(monthPct))
-  updateClass('todayPct', pctColor(todayPct))
-  updateClass('weekPct', pctColor(weekPct))
-  updateClass('monthPct', pctColor(monthPct))
+  updateBudgetCard('today-card','todayPct','todayAmt','todayBar', todayPct, todayTotal, false, true)
+  updateBudgetCard('month-card','monthPct','monthAmt','monthBar', monthPct, monthTotal, false, false)
+
+  // 주차별 카드 업데이트
+  const wBudget = budget.weekBudget
+  const allInputNodes = document.querySelectorAll('.order-input')
+  // 주차별 발주 합계 재계산
+  const weeklyTotals = {}
+  const procWk = {}
+  allInputNodes.forEach(inp => {
+    const date = inp.dataset.date
+    const vendor = inp.dataset.vendor
+    const wKey = `${date}-${vendor}`
+    if (procWk[wKey]) return
+    procWk[wKey] = true
+    const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
+    const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
+    const t2 = parseInt(tx?.value||0)||0
+    const e2 = parseInt(ex?.value||0)||0
+    const tot2 = t2+Math.round(t2*0.1)+e2
+    if (tot2 === 0) return
+    // 이 날짜가 몇 번째 주인지
+    const row = document.querySelector(`tr[data-date="${date}"]`)
+    const wkStart = row?.dataset.weekStart || ''
+    if (!wkStart) return
+    if (!weeklyTotals[wkStart]) weeklyTotals[wkStart] = 0
+    weeklyTotals[wkStart] += tot2
+  })
+  // 주차 카드별 업데이트
+  let wIdx = 1
+  document.querySelectorAll('[id^="week"][id$="-card"]').forEach(el => {
+    const num = el.id.replace('-card','').replace('week','')
+    if (isNaN(num)) return
+    const wkPct = wBudget>0 ? Math.round((weeklyTotals[Object.keys(weeklyTotals)[num-1]]||0)/wBudget*100) : 0
+    const wkAmt = weeklyTotals[Object.keys(weeklyTotals)[num-1]] || 0
+    // 이번주 여부는 todayStr이 해당 주 범위에 있는지
+    const isCW = el.innerHTML.includes('이번주')
+    updateBudgetCard(`week${num}-card`,`weekPct${num}`,`weekAmt${num}`,`weekBar${num}`, wkPct, wkAmt, isCW)
+  })
 
   // 월 합계 표시 업데이트
   const mTotalEl = document.getElementById('monthTotalDisplay')
@@ -1354,6 +1694,8 @@ function updateBudgetProgressPanel() {
 function updateDayTotal(date) {
   let total = 0
   const processedVendors = new Set()
+  const vendorTotals = {}
+
   document.querySelectorAll(`.order-input[data-date="${date}"]`).forEach(inp => {
     const vendorId = inp.dataset.vendor
     if (processedVendors.has(vendorId)) return
@@ -1362,10 +1704,105 @@ function updateDayTotal(date) {
     const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
     const t = parseInt(taxableEl?.value||0)||0
     const e = parseInt(exemptEl?.value||0)||0
-    total += t + Math.round(t*0.1) + e
+    const vTotal = t + Math.round(t*0.1) + e
+    total += vTotal
+    vendorTotals[vendorId] = vTotal
   })
-  const el = document.getElementById(`dayTotal-${date}`)
-  if (el) el.textContent = total > 0 ? fmt(total) : ''
+
+  // 일 합계 셀 업데이트
+  const dayTotalEl = document.getElementById(`dayTotal-${date}`)
+  if (dayTotalEl) dayTotalEl.textContent = total > 0 ? fmt(total) : ''
+
+  // ── 진행률(dayPct) 셀 실시간 갱신 ──
+  const budget = window._ordersBudget
+  if (budget) {
+    const row = document.querySelector(`tr[data-date="${date}"]`)
+    const multidays = row ? parseInt(row.dataset.multidays || '1') : 1
+    const isCovered = row ? row.dataset.covered === '1' : false
+    const adjBudget = isCovered ? 0 : budget.dailyBudget * multidays
+    const dayPct = adjBudget > 0 ? Math.round(total / adjBudget * 100) : null
+    const dOver = dayPct !== null && dayPct >= 100
+    const dWarn = dayPct !== null && dayPct >= 80 && !dOver
+    const dColor = dOver ? '#dc2626' : dWarn ? '#d97706' : '#16a34a'
+    const dBg = dOver ? '#fee2e2' : dWarn ? '#fef3c7' : (dayPct !== null && total > 0 ? '#f0fdf4' : '')
+
+    let pctHtml = ''
+    if (isCovered) {
+      pctHtml = `<div style="color:#9ca3af;font-size:9px;text-align:center;line-height:1.4">🔗포함됨</div>`
+    } else if (dayPct !== null && total > 0) {
+      const ml = multidays > 1 ? `<span style="color:#60a5fa;font-size:8px"> ${multidays}일치</span>` : ''
+      pctHtml = `<div style="color:${dColor};font-size:13px;font-weight:800;line-height:1.1">${dayPct}%${dOver ? ' 🚨' : dWarn ? ' ⚠️' : ''}</div><div style="font-size:8px;line-height:1.3"><span style="color:#374151">${fmtMan(total)}</span><span style="color:#9ca3af"> /일 ${fmtMan(adjBudget)}</span>${ml}</div>`
+    } else {
+      const ml = multidays > 1 ? ` ${multidays}일치` : ''
+      pctHtml = `<div style="color:#d1d5db;font-size:11px">-</div><div style="color:#93c5fd;font-size:8px">목표 ${fmtMan(adjBudget)}${ml}</div>`
+    }
+
+    const pctCell = document.getElementById(`dayPct-${date}`)
+    if (pctCell) {
+      pctCell.innerHTML = pctHtml
+      pctCell.style.background = dBg
+    }
+
+    // 일 합계 셀 색상 업데이트
+    if (dayTotalEl) {
+      dayTotalEl.style.color = dOver ? '#dc2626' : dWarn ? '#d97706' : ''
+      dayTotalEl.style.fontWeight = (dOver || dWarn) ? '700' : ''
+    }
+
+    // ── 업체별 % 셀(vpct) 실시간 갱신 ──
+    const vendorBudgets = window._ordersVendorDailyBudgets || {}
+    const vendors = window._ordersVendors || []
+    // 현재 날짜 주간 범위
+    const dateObj = new Date(date)
+    const thisMon = new Date(dateObj)
+    thisMon.setDate(dateObj.getDate() - (dateObj.getDay() === 0 ? 6 : dateObj.getDay() - 1))
+    const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate() + 6)
+    const weekKey = thisMon.toISOString().split('T')[0]
+    const weekEndKey = thisSun.toISOString().split('T')[0]
+
+    vendors.forEach(v => {
+      const vDB = vendorBudgets[v.id] || 0
+      const vWB = vDB * 5
+      const vDayAmt = vendorTotals[v.id] || 0
+
+      // 주간 합계: DOM에서 읽기
+      let vWeekAmt = 0
+      const seenDates = new Set()
+      document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`).forEach(inp => {
+        const d = inp.dataset.date
+        if (seenDates.has(d)) return
+        seenDates.add(d)
+        if (d < weekKey || d > weekEndKey) return
+        const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
+        const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
+        const t2 = parseInt(tx?.value || 0) || 0
+        const e2 = parseInt(ex?.value || 0) || 0
+        vWeekAmt += t2 + Math.round(t2 * 0.1) + e2
+      })
+
+      const vAdjDB = isCovered ? 0 : vDB * multidays
+      const vDPct = vAdjDB > 0 ? Math.round(vDayAmt / vAdjDB * 100) : null
+      const vWPct = vWB > 0 ? Math.round(vWeekAmt / vWB * 100) : null
+      const vDO = vDPct !== null && vDPct >= 100; const vDW = vDPct !== null && vDPct >= 80 && !vDO
+      const vWO = vWPct !== null && vWPct >= 100; const vWW = vWPct !== null && vWPct >= 80 && !vWO
+      const vDC = vDO ? '#dc2626' : vDW ? '#d97706' : '#16a34a'
+      const vWC = vWO ? '#dc2626' : vWW ? '#d97706' : '#6366f1'
+      const vBg = vDO ? '#fee2e2' : vDW ? '#fef3c7' : ''
+
+      const dayTxt = vDPct !== null
+        ? `<div style="color:${vDC};font-size:10px;font-weight:700;line-height:1.2">${vDPct}%${vDO ? ' 🚨' : vDW ? ' ⚠️' : ''}</div>`
+        : `<div style="color:#d1d5db;font-size:9px">일 -</div>`
+      const weekTxt = vWPct !== null
+        ? `<div style="color:${vWC};font-size:9px;font-weight:600;line-height:1.2">${vWO ? '🚨' : vWW ? '⚠️' : ''}주${vWPct}%</div>`
+        : `<div style="color:#d1d5db;font-size:8px">주 -</div>`
+
+      const vpctCell = document.getElementById(`vpct-${v.id}-${date}`)
+      if (vpctCell) {
+        vpctCell.innerHTML = dayTxt + weekTxt
+        vpctCell.style.background = vBg
+      }
+    })
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1420,28 +1857,29 @@ async function renderMeals() {
       </button>
     </div>
     <div class="overflow-x-auto">
-      <table class="meal-table w-full" style="font-size:12px">
+      <table class="meal-table w-full" style="font-size:12px;border-collapse:collapse">
         <thead>
           <tr>
-            <th rowspan="2" style="min-width:32px">일</th>
-            <th rowspan="2" style="min-width:24px">요</th>
-            <th colspan="5" class="border-l-2 border-blue-700">조식</th>
-            <th colspan="5" class="border-l-2 border-green-700">중식</th>
-            <th colspan="5" class="border-l-2 border-purple-700">석식</th>
-            <th colspan="5" class="border-l-2 border-gray-600" style="background:#0f2942">합계</th>
+            <th rowspan="2" style="min-width:32px;border:2px solid #1e5c3a">일</th>
+            <th rowspan="2" style="min-width:24px;border:2px solid #1e5c3a">요</th>
+            <th colspan="5" style="border:2px solid #1d4ed8;border-bottom:1px solid #3b82f6;background:#1e40af">조식</th>
+            <th colspan="5" style="border:2px solid #166534;border-bottom:1px solid #22c55e;background:#14532d">중식</th>
+            <th colspan="5" style="border:2px solid #6b21a8;border-bottom:1px solid #a855f7;background:#581c87">석식</th>
+            <th colspan="5" style="border:2px solid #374151;border-bottom:1px solid #6b7280;background:#0f2942">합계</th>
           </tr>
           <tr>
-            ${['bf','l','d','t'].map((prefix, mi) => {
-              const colors = ['border-blue-700','border-green-700','border-purple-700','border-gray-600']
-              const bg = mi===3 ? 'background:#0f2942' : ''
-              return `
-                <th class="border-l-2 ${colors[mi]}" style="${bg}">환자</th>
-                <th style="${bg}">직원</th>
-                <th style="${bg}">비급</th>
-                <th style="${bg}">보호</th>
-                <th style="${bg};background:${mi===3?'#0f2942':'#1e3a6e'};color:#93c5fd">합</th>
-              `
-            }).join('')}
+            ${[
+              {prefix:'bf', border:'#3b82f6', bg:''},
+              {prefix:'l',  border:'#22c55e', bg:''},
+              {prefix:'d',  border:'#a855f7', bg:''},
+              {prefix:'t',  border:'#6b7280', bg:'background:#0f2942'}
+            ].map(({prefix, border, bg}, mi) => `
+              <th style="border-left:3px solid ${border};border-top:1px solid ${border};border-bottom:1px solid ${border};border-right:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">환자</th>
+              <th style="border:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">직원</th>
+              <th style="border:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">비급</th>
+              <th style="border:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">보호</th>
+              <th style="border:1px solid rgba(255,255,255,0.15);border-right:3px solid ${border};padding:4px 3px;background:${mi===3?'#0f2942':'#1e3a6e'};color:#93c5fd">합</th>
+            `).join('')}
           </tr>
         </thead>
         <tbody id="mealTableBody">
@@ -1456,19 +1894,28 @@ async function renderMeals() {
             const lp=m.lunch_patient||0, ls=m.lunch_staff||0, ln=m.lunch_noncovered||0, lg=m.lunch_guardian||0
             const dp=m.dinner_patient||0, ds=m.dinner_staff||0, dn=m.dinner_noncovered||0, dg=m.dinner_guardian||0
             return `<tr class="${rowClass}" data-date="${dateStr}">
-              <td class="font-semibold text-center">${day}</td>
-              <td class="text-center ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}">${dow}</td>
-              ${makeMealInput('bf_p',dateStr,bp)} ${makeMealInput('bf_s',dateStr,bs)} ${makeMealInput('bf_n',dateStr,bn)} ${makeMealInput('bf_g',dateStr,bg2)}
-              <td class="font-semibold text-center bg-blue-50 text-blue-800" id="bf-sum-${dateStr}">${bp+bs+bn+bg2||''}</td>
-              ${makeMealInput('l_p',dateStr,lp)} ${makeMealInput('l_s',dateStr,ls)} ${makeMealInput('l_n',dateStr,ln)} ${makeMealInput('l_g',dateStr,lg)}
-              <td class="font-semibold text-center bg-green-50 text-green-800" id="l-sum-${dateStr}">${lp+ls+ln+lg||''}</td>
-              ${makeMealInput('d_p',dateStr,dp)} ${makeMealInput('d_s',dateStr,ds)} ${makeMealInput('d_n',dateStr,dn)} ${makeMealInput('d_g',dateStr,dg)}
-              <td class="font-semibold text-center bg-purple-50 text-purple-800" id="d-sum-${dateStr}">${dp+ds+dn+dg||''}</td>
-              <td class="text-center bg-gray-50" id="t-p-${dateStr}">${bp+lp+dp||''}</td>
-              <td class="text-center bg-gray-50" id="t-s-${dateStr}">${bs+ls+ds||''}</td>
-              <td class="text-center bg-gray-50" id="t-n-${dateStr}">${bn+ln+dn||''}</td>
-              <td class="text-center bg-gray-50" id="t-g-${dateStr}">${bg2+lg+dg||''}</td>
-              <td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}">${(bp+bs+bn+bg2)+(lp+ls+ln+lg)+(dp+ds+dn+dg)||''}</td>
+              <td class="font-semibold text-center" style="border:1px solid #d1d5db">${day}</td>
+              <td class="text-center ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="border:1px solid #d1d5db">${dow}</td>
+              <td style="border-left:3px solid #3b82f6;border-top:1px solid #dbeafe;border-bottom:1px solid #dbeafe;border-right:1px solid #dbeafe">${makeMealInput('bf_p',dateStr,bp)}</td>
+              <td style="border:1px solid #dbeafe">${makeMealInput('bf_s',dateStr,bs)}</td>
+              <td style="border:1px solid #dbeafe">${makeMealInput('bf_n',dateStr,bn)}</td>
+              <td style="border-right:3px solid #3b82f6;border-top:1px solid #dbeafe;border-bottom:1px solid #dbeafe;border-left:1px solid #dbeafe">${makeMealInput('bf_g',dateStr,bg2)}</td>
+              <td class="font-semibold text-center bg-blue-50 text-blue-800" id="bf-sum-${dateStr}" style="border-left:1px solid #bfdbfe;border-right:3px solid #3b82f6">${bp+bs+bn+bg2||''}</td>
+              <td style="border-left:3px solid #22c55e;border-top:1px solid #dcfce7;border-bottom:1px solid #dcfce7;border-right:1px solid #dcfce7">${makeMealInput('l_p',dateStr,lp)}</td>
+              <td style="border:1px solid #dcfce7">${makeMealInput('l_s',dateStr,ls)}</td>
+              <td style="border:1px solid #dcfce7">${makeMealInput('l_n',dateStr,ln)}</td>
+              <td style="border-right:3px solid #22c55e;border-top:1px solid #dcfce7;border-bottom:1px solid #dcfce7;border-left:1px solid #dcfce7">${makeMealInput('l_g',dateStr,lg)}</td>
+              <td class="font-semibold text-center bg-green-50 text-green-800" id="l-sum-${dateStr}" style="border-left:1px solid #bbf7d0;border-right:3px solid #22c55e">${lp+ls+ln+lg||''}</td>
+              <td style="border-left:3px solid #a855f7;border-top:1px solid #f3e8ff;border-bottom:1px solid #f3e8ff;border-right:1px solid #f3e8ff">${makeMealInput('d_p',dateStr,dp)}</td>
+              <td style="border:1px solid #f3e8ff">${makeMealInput('d_s',dateStr,ds)}</td>
+              <td style="border:1px solid #f3e8ff">${makeMealInput('d_n',dateStr,dn)}</td>
+              <td style="border-right:3px solid #a855f7;border-top:1px solid #f3e8ff;border-bottom:1px solid #f3e8ff;border-left:1px solid #f3e8ff">${makeMealInput('d_g',dateStr,dg)}</td>
+              <td class="font-semibold text-center bg-purple-50 text-purple-800" id="d-sum-${dateStr}" style="border-left:1px solid #e9d5ff;border-right:3px solid #a855f7">${dp+ds+dn+dg||''}</td>
+              <td class="text-center bg-gray-50" id="t-p-${dateStr}" style="border-left:3px solid #6b7280;border:1px solid #e5e7eb">${bp+lp+dp||''}</td>
+              <td class="text-center bg-gray-50" id="t-s-${dateStr}" style="border:1px solid #e5e7eb">${bs+ls+ds||''}</td>
+              <td class="text-center bg-gray-50" id="t-n-${dateStr}" style="border:1px solid #e5e7eb">${bn+ln+dn||''}</td>
+              <td class="text-center bg-gray-50" id="t-g-${dateStr}" style="border:1px solid #e5e7eb">${bg2+lg+dg||''}</td>
+              <td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd">${(bp+bs+bn+bg2)+(lp+ls+ln+lg)+(dp+ds+dn+dg)||''}</td>
             </tr>`
           }).join('')}
         </tbody>
@@ -1504,8 +1951,8 @@ async function renderMeals() {
   bindMealInputEvents()
 }
 
-function makeMealInput(key, date, val) {
-  return `<td><input type="number" class="meal-input" data-key="${key}" data-date="${date}" value="${val||''}" placeholder="" min="0"></td>`
+function makeMealInput(key, date, val, extraStyle = '') {
+  return `<input type="number" class="meal-input" data-key="${key}" data-date="${date}" value="${val||''}" placeholder="" min="0">`
 }
 
 function bindMealInputEvents() {
@@ -2890,19 +3337,21 @@ async function renderSchedule() {
     </div>
 
     <div class="overflow-x-auto">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
         <thead>
-          <tr style="background:#166534;color:white">
-            <th style="padding:8px 12px;text-align:left;min-width:80px;position:sticky;left:0;background:#166534;z-index:10">이름/직책</th>
+          <tr style="background:#166534;color:white;border-bottom:3px solid #14532d">
+            <th style="padding:8px 12px;text-align:left;min-width:90px;position:sticky;left:0;background:#166534;z-index:10;border-right:3px solid #14532d;border-bottom:3px solid #14532d">이름/직책</th>
             ${Array.from({length:days},(_,i)=>{
               const day=i+1, dow=getDayOfWeek(App.currentYear,App.currentMonth,day)
               const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
-              return `<th style="padding:6px 4px;text-align:center;min-width:34px;font-weight:${isWknd?'bold':'normal'};color:${dow==='토'?'#93c5fd':dow==='일'?'#fca5a5':'white'}">
-                <div>${day}</div><div style="font-size:9px">${dow}</div>
+              const isSun=dow==='일', isSat=dow==='토'
+              const borderCol = isSun ? '#fca5a5' : isSat ? '#93c5fd' : 'rgba(255,255,255,0.2)'
+              return `<th style="padding:6px 2px;text-align:center;min-width:34px;font-weight:${isWknd?'bold':'normal'};color:${isSun?'#fca5a5':isSat?'#93c5fd':'white'};border-left:1px solid ${borderCol};border-bottom:3px solid #14532d;${isWknd?'background:#1a4731;':''}">
+                <div style="font-size:12px">${day}</div><div style="font-size:9px;opacity:0.85">${dow}</div>
               </th>`
             }).join('')}
-            <th style="padding:8px 6px;min-width:50px">근무</th>
-            <th style="padding:8px 6px;min-width:40px">연차</th>
+            <th style="padding:8px 6px;min-width:50px;border-left:3px solid #14532d;border-bottom:3px solid #14532d;background:#0f3d25">근무</th>
+            <th style="padding:8px 6px;min-width:40px;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25">연차</th>
           </tr>
         </thead>
         <tbody>
@@ -2911,7 +3360,7 @@ async function renderSchedule() {
               <i class="fas fa-users text-4xl mb-3 block"></i>
               등록된 직원이 없습니다. 직원을 추가해주세요.
             </td></tr>
-          ` : employees.map(emp => {
+          ` : employees.map((emp, empIdx) => {
             const empSchedule = schedMap[emp.id] || {}
             let workDays = 0, annualDays = 0, restDays = 0
             for (let d=1; d<=days; d++) {
@@ -2921,9 +3370,10 @@ async function renderSchedule() {
               if (shift === '연') annualDays++
               if (shift === '휴') restDays++
             }
-            return `<tr style="border-bottom:1px solid #f1f5f9" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-              <td style="padding:6px 12px;position:sticky;left:0;background:white;z-index:5">
-                <div class="font-semibold text-gray-800">${emp.name}</div>
+            const rowBg = empIdx % 2 === 0 ? 'white' : '#fafafa'
+            return `<tr style="border-bottom:1px solid #e2e8f0" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='${rowBg}'">
+              <td style="padding:6px 12px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:90px">
+                <div style="font-weight:600;color:#1f2937;font-size:12px">${emp.name}</div>
                 <div style="font-size:10px;color:#94a3b8">${emp.position}</div>
               </td>
               ${Array.from({length:days},(_,i)=>{
@@ -2931,16 +3381,19 @@ async function renderSchedule() {
                 const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
                 const shift=empSchedule[dateStr]||''
                 const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
-                const cellBg=isWknd?'background:#fffbeb;':'background:white;'
+                const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
+                const isSun2=dow2==='일'
+                const cellBg=isSun2?'background:#fff1f2;':isWknd?'background:#fffbeb;':`background:${rowBg};`
+                const borderLeft = `border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
                 const colorClass=SHIFT_COLORS[shift]||''
-                return `<td style="padding:4px;text-align:center;${cellBg}cursor:pointer" 
+                return `<td style="padding:3px 2px;text-align:center;${cellBg}${borderLeft}cursor:pointer;border-bottom:1px solid #e5e7eb" 
                   onclick="cycleShift(${emp.id},'${dateStr}',this)"
                   data-shift="${shift}" data-employee="${emp.id}" data-date="${dateStr}">
                   <span class="inline-flex items-center justify-center w-7 h-7 rounded text-xs font-bold ${colorClass||'bg-gray-50 text-gray-300'}">${shift||'·'}</span>
                 </td>`
               }).join('')}
-              <td style="padding:6px;text-align:center;background:#f0fdf4" class="font-semibold text-green-700">${workDays}</td>
-              <td style="padding:6px;text-align:center;background:#fef9c3" class="font-semibold text-yellow-700">${annualDays}</td>
+              <td style="padding:6px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;font-weight:700;color:#166534;font-size:13px">${workDays}</td>
+              <td style="padding:6px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;font-weight:700;color:#92400e;font-size:13px">${annualDays}</td>
             </tr>`
           }).join('')}
         </tbody>

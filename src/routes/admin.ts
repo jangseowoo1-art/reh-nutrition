@@ -272,9 +272,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 
   const results = await Promise.all(
     (hospitals.results || []).map(async (h: any) => {
+      // ★ 핵심: 각 병원의 실제 활성 연/월을 우선 사용 (영양사가 입력한 데이터와 일치)
+      const hYear  = String(h.current_year  || year)
+      const hMonth = String(h.current_month || month)
+
       const settings = await c.env.DB.prepare(
         `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
-      ).bind(h.id, year, month).first<any>()
+      ).bind(h.id, hYear, hMonth).first<any>()
 
       // 업체별 사용액 (이슈 분석용)
       const vendors = await c.env.DB.prepare(`
@@ -285,7 +289,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           AND strftime('%Y',d.order_date)=? AND strftime('%m',d.order_date)=printf('%02d',?)
         WHERE v.hospital_id=? AND v.is_active=1
         GROUP BY v.id
-      `).bind(year, month, h.id).all<any>()
+      `).bind(hYear, hMonth, h.id).all<any>()
 
       // 식수 통계
       const mealStats = await c.env.DB.prepare(`
@@ -296,7 +300,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
         FROM daily_meals
         WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
-      `).bind(h.id, year, month).first<any>()
+      `).bind(h.id, hYear, hMonth).first<any>()
 
       // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자)
       const todayMeals = await c.env.DB.prepare(`
@@ -331,13 +335,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         FROM daily_orders
         WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)
         GROUP BY order_date ORDER BY order_date
-      `).bind(h.id, year, month).all<any>()
+      `).bind(h.id, hYear, hMonth).all<any>()
 
       // 잔반 기록
       const foodWaste = await c.env.DB.prepare(`
         SELECT SUM(waste_amount) as total_waste, SUM(waste_cost) as total_cost
         FROM food_waste_records WHERE hospital_id=? AND year=? AND month=?
-      `).bind(h.id, year, month).first<any>()
+      `).bind(h.id, hYear, hMonth).first<any>()
 
       const totalBudget = settings?.total_budget || 0
       const workingDays = settings?.working_days || 30
@@ -364,9 +368,9 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 
       const targetMealPrice = h.target_meal_price || settings?.meal_price || 0
 
-      // 전월 식단가 계산
-      const prevMonthNum = parseInt(month) === 1 ? 12 : parseInt(month) - 1
-      const prevYearStr  = parseInt(month) === 1 ? String(parseInt(year) - 1) : year
+      // 전월 식단가 계산 (병원 활성 월 기준)
+      const prevMonthNum = parseInt(hMonth) === 1 ? 12 : parseInt(hMonth) - 1
+      const prevYearStr  = parseInt(hMonth) === 1 ? String(parseInt(hYear) - 1) : hYear
       const prevMealStats = await c.env.DB.prepare(`
         SELECT COALESCE(SUM(breakfast_patient+lunch_patient+dinner_patient),0) as total_patient,
                COALESCE(SUM(breakfast_staff+lunch_staff+dinner_staff),0) as total_staff,
@@ -457,8 +461,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         issues,
         online: onlineMap[h.id] || null,
         closingStatus: h.closing_status || 'open',
-        activeYear: h.current_year || parseInt(year),
-        activeMonth: h.current_month || parseInt(month),
+        activeYear: parseInt(hYear),
+        activeMonth: parseInt(hMonth),
         prevMonth: {
           month: prevMonthNum, year: parseInt(prevYearStr),
           mealPriceTotal: prevMealPriceTotal,
@@ -563,14 +567,18 @@ adminRouter.get('/overview/:year/:month', async (c) => {
 
   const results = await Promise.all(
     (hospitals.results || []).map(async (h: any) => {
+      // ★ 각 병원의 실제 활성 연/월 기준으로 조회
+      const hYear  = String(h.current_year  || year)
+      const hMonth = String(h.current_month || month)
+
       const settings = await c.env.DB.prepare(
         `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
-      ).bind(h.id, year, month).first<any>()
+      ).bind(h.id, hYear, hMonth).first<any>()
 
       const totalUsed = await c.env.DB.prepare(`
         SELECT COALESCE(SUM(total_amount),0) as total FROM daily_orders
         WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)
-      `).bind(h.id, year, month).first<any>()
+      `).bind(h.id, hYear, hMonth).first<any>()
 
       const today = new Date().toISOString().split('T')[0]
       const todayUsed = await c.env.DB.prepare(`
@@ -581,7 +589,7 @@ adminRouter.get('/overview/:year/:month', async (c) => {
       const closingReq = await c.env.DB.prepare(`
         SELECT status, requested_at FROM monthly_closings
         WHERE hospital_id=? AND year=? AND month=?
-      `).bind(h.id, year, month).first<any>()
+      `).bind(h.id, hYear, hMonth).first<any>()
 
       const totalBudget = settings?.total_budget || 0
       const used = totalUsed?.total || 0
@@ -594,8 +602,8 @@ adminRouter.get('/overview/:year/:month', async (c) => {
         mealPrice: settings?.meal_price || 0,
         todayUsed: todayUsed?.today_total || 0,
         closingStatus: closingReq?.status || 'open',
-        activeYear: h.current_year || parseInt(year),
-        activeMonth: h.current_month || parseInt(month)
+        activeYear: parseInt(hYear),
+        activeMonth: parseInt(hMonth)
       }
     })
   )
