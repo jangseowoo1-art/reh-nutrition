@@ -191,13 +191,40 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   header { display: none !important; }
   main { overflow: visible !important; margin-left: 0 !important; }
   #pageContent { overflow: visible !important; padding: 0 !important; }
-  .report-slide { page-break-after: always; border-radius: 0 !important; box-shadow: none !important; margin-bottom: 0 !important; }
+  .report-slide {
+    page-break-after: always;
+    page-break-inside: avoid;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    margin-bottom: 0 !important;
+    padding: 16px !important;
+  }
   .report-slide:last-child { page-break-after: auto; }
   body { background: white !important; }
-  canvas { max-width: 100% !important; }
+  /* 그래프(캔버스) 인쇄/PDF 최적화 */
+  canvas {
+    max-width: 100% !important;
+    height: auto !important;
+    display: block !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* 차트 컨테이너가 잘리지 않도록 */
+  .chart-container, [id^="rpt-"] {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
   table { width: 100% !important; font-size: 11px !important; }
   th, td { padding: 4px 6px !important; }
   .progress-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .progress-fill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .bg-gradient-to-br { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* 배경색/그라디언트 인쇄 허용 */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  /* 보고서 컨트롤 영역 숨김 */
+  .report-controls { display: none !important; }
 }

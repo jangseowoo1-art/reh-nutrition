@@ -176,12 +176,88 @@ adminRouter.post('/closing-approve/:hospitalId', async (c) => {
   // hospital_info 다음 달로 전환
   const nextYear = month == 12 ? year + 1 : year
   const nextMonth = month == 12 ? 1 : parseInt(month) + 1
+
   await c.env.DB.prepare(`
     UPDATE hospital_info SET
       current_year=?, current_month=?, closing_status='open',
       closing_requested_at=NULL, updated_at=CURRENT_TIMESTAMP
     WHERE hospital_id=?
   `).bind(nextYear, nextMonth, hospitalId).run()
+
+  // ── 예산 이월 (자동) ──────────────────────────────
+  try {
+    // 현재 달 예산 설정 가져오기
+    const currentBudget = await c.env.DB.prepare(`
+      SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?
+    `).bind(hospitalId, year, month).first<any>()
+
+    if (currentBudget) {
+      // 다음 달 영업일 계산 (대략 계산: 해당 월 평일 수)
+      const daysInNextMonth = new Date(nextYear, nextMonth, 0).getDate()
+      let workingDays = 0
+      for (let d = 1; d <= daysInNextMonth; d++) {
+        const dow = new Date(nextYear, nextMonth - 1, d).getDay()
+        if (dow !== 0 && dow !== 6) workingDays++
+      }
+
+      // 다음 달 설정 존재 여부 확인
+      const existing = await c.env.DB.prepare(`
+        SELECT id FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?
+      `).bind(hospitalId, nextYear, nextMonth).first<any>()
+
+      if (existing) {
+        // 기존 설정 업데이트 (영업일만 갱신, 나머지는 유지)
+        await c.env.DB.prepare(`
+          UPDATE monthly_settings SET working_days=?, updated_at=CURRENT_TIMESTAMP
+          WHERE hospital_id=? AND year=? AND month=?
+        `).bind(workingDays, hospitalId, nextYear, nextMonth).run()
+      } else {
+        // 이월 생성
+        await c.env.DB.prepare(`
+          INSERT INTO monthly_settings (
+            hospital_id, year, month, total_budget, event_budget,
+            supply_budget, card_budget, meal_price, food_waste_budget, working_days
+          ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          hospitalId, nextYear, nextMonth,
+          currentBudget.total_budget || 0,
+          currentBudget.event_budget || 0,
+          currentBudget.supply_budget || 0,
+          currentBudget.card_budget || 0,
+          currentBudget.meal_price || 0,
+          currentBudget.food_waste_budget || 0,
+          workingDays
+        ).run()
+      }
+    }
+  } catch (e: any) {
+    console.error('budget carryover error:', e?.message)
+  }
+
+  // ── 업체 이월 (자동) ──────────────────────────────
+  try {
+    const vendors = await c.env.DB.prepare(`
+      SELECT v.*, vm.monthly_budget
+      FROM vendors v
+      LEFT JOIN vendor_monthly_budgets vm ON vm.vendor_id=v.id AND vm.year=? AND vm.month=?
+      WHERE v.hospital_id=?
+    `).bind(year, month, hospitalId).all<any>()
+
+    for (const v of (vendors.results || [])) {
+      if (!v.monthly_budget) continue
+      const existingVb = await c.env.DB.prepare(`
+        SELECT id FROM vendor_monthly_budgets WHERE vendor_id=? AND year=? AND month=?
+      `).bind(v.id, nextYear, nextMonth).first<any>()
+      if (!existingVb) {
+        await c.env.DB.prepare(`
+          INSERT INTO vendor_monthly_budgets (vendor_id, hospital_id, year, month, monthly_budget)
+          VALUES (?,?,?,?,?)
+        `).bind(v.id, hospitalId, nextYear, nextMonth, v.monthly_budget).run()
+      }
+    }
+  } catch (e: any) {
+    console.error('vendor carryover error:', e?.message)
+  }
 
   // 승인 알림 생성
   const hospital = await c.env.DB.prepare(`SELECT name FROM hospitals WHERE id=?`)
@@ -614,8 +690,11 @@ adminRouter.get('/overview/:year/:month', async (c) => {
 adminRouter.get('/hospitals/:id/accounts', async (c) => {
   const id = c.req.param('id')
   const accounts = await c.env.DB.prepare(`
-    SELECT id, username, role, created_at FROM users
-    WHERE hospital_id = ? ORDER BY id
+    SELECT u.id, u.username, u.role, u.nutritionist_name, u.created_at,
+           hs.last_active_at as last_active, hs.last_page as current_page
+    FROM users u
+    LEFT JOIN hospital_sessions hs ON hs.username = u.username AND hs.hospital_id = u.hospital_id
+    WHERE u.hospital_id = ? ORDER BY u.id
   `).bind(id).all<any>()
   return c.json(accounts.results || [])
 })
@@ -623,7 +702,7 @@ adminRouter.get('/hospitals/:id/accounts', async (c) => {
 // ── 병원 계정 생성 ─────────────────────────────────────────────
 adminRouter.post('/hospitals/:id/accounts', async (c) => {
   const hospitalId = c.req.param('id')
-  const { username, password } = await c.req.json()
+  const { username, password, nutritionistName } = await c.req.json()
   if (!username?.trim() || !password?.trim())
     return c.json({ error: '아이디와 비밀번호를 입력하세요' }, 400)
 
@@ -635,10 +714,10 @@ adminRouter.post('/hospitals/:id/accounts', async (c) => {
 
   const hash = await hashPassword(password)
   await c.env.DB.prepare(`
-    INSERT INTO users (hospital_id, username, password_hash, role)
-    VALUES (?, ?, ?, 'hospital')
-  `).bind(hospitalId, username.trim(), hash).run()
-  return c.json({ success: true })
+    INSERT INTO users (hospital_id, username, password_hash, role, nutritionist_name)
+    VALUES (?, ?, ?, 'hospital', ?)
+  `).bind(hospitalId, username.trim(), hash, nutritionistName?.trim()||'').run()
+  return c.json({ success: true, username: username.trim(), password, nutritionistName: nutritionistName?.trim()||'' })
 })
 
 // ── 병원 계정 비밀번호 변경 ────────────────────────────────────
@@ -673,6 +752,202 @@ adminRouter.delete('/hospitals/:id/accounts/:uid', async (c) => {
     `DELETE FROM users WHERE id = ? AND hospital_id = ? AND role != 'admin'`
   ).bind(uid, hospitalId).run()
   return c.json({ success: true })
+})
+
+// ── 병원 계정 생성 (영양사 이름 포함) ──────────────────────────
+adminRouter.post('/hospitals/:id/accounts/v2', async (c) => {
+  const hospitalId = c.req.param('id')
+  const { username, password, nutritionistName } = await c.req.json()
+  if (!username?.trim() || !password?.trim())
+    return c.json({ error: '아이디와 비밀번호를 입력하세요' }, 400)
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM users WHERE username = ?`
+  ).bind(username.trim()).first<any>()
+  if (exists) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
+  const hash = await hashPassword(password)
+  await c.env.DB.prepare(`
+    INSERT INTO users (hospital_id, username, password_hash, role, nutritionist_name)
+    VALUES (?, ?, ?, 'hospital', ?)
+  `).bind(hospitalId, username.trim(), hash, nutritionistName?.trim()||'').run()
+  return c.json({ success: true, username: username.trim(), password, nutritionistName: nutritionistName?.trim()||'' })
+})
+
+// ── 계정 목록 조회 (영양사 이름 포함) ─────────────────────────
+adminRouter.get('/hospitals/:id/accounts/v2', async (c) => {
+  const id = c.req.param('id')
+  const accounts = await c.env.DB.prepare(`
+    SELECT id, username, role, nutritionist_name, created_at FROM users
+    WHERE hospital_id = ? ORDER BY id
+  `).bind(id).all<any>()
+  return c.json(accounts.results || [])
+})
+
+// ── 데일리 이슈 목록 조회 (3일 이내) ──────────────────────────
+adminRouter.get('/daily-issues', async (c) => {
+  // 3일 이상 지난 이슈 자동 삭제 (등록일 포함 3일째 자정 기준)
+  await c.env.DB.prepare(`
+    DELETE FROM daily_issues
+    WHERE issue_date < date('now', '-2 days')
+  `).run()
+
+  const issues = await c.env.DB.prepare(`
+    SELECT di.*, h.name as hospital_name
+    FROM daily_issues di
+    JOIN hospitals h ON di.hospital_id = h.id
+    ORDER BY di.issue_date DESC, di.id DESC
+  `).all<any>()
+  return c.json(issues.results || [])
+})
+
+// ── 데일리 이슈 수동 저장 ─────────────────────────────────────
+adminRouter.post('/daily-issues', async (c) => {
+  const { hospital_id, issue_type, issue_level, message, extra_data } = await c.req.json()
+  const today = new Date().toISOString().split('T')[0]
+  await c.env.DB.prepare(`
+    INSERT INTO daily_issues (hospital_id, issue_date, issue_type, issue_level, message, extra_data)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(hospital_id, today, issue_type||'manual', issue_level||'warning', message, extra_data||null).run()
+  return c.json({ success: true })
+})
+
+// ── 이슈 자동 저장 (대시보드 로드 시 현재 이슈를 DB에 기록) ───
+adminRouter.post('/daily-issues/auto-save/:year/:month', async (c) => {
+  const { year, month } = c.req.param()
+  const { hospitalId, issues } = await c.req.json()
+  const today = new Date().toISOString().split('T')[0]
+  // 오늘 해당 병원 이슈 초기화 후 재삽입
+  await c.env.DB.prepare(`
+    DELETE FROM daily_issues WHERE hospital_id=? AND issue_date=?
+  `).bind(hospitalId, today).run()
+  for (const issue of (issues || [])) {
+    await c.env.DB.prepare(`
+      INSERT INTO daily_issues (hospital_id, issue_date, issue_type, issue_level, message)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(hospitalId, today, issue.type, issue.level, issue.msg).run()
+  }
+  return c.json({ success: true })
+})
+
+// ── 마감 승인 요청 목록 (사이드바 배지용) ─────────────────────
+adminRouter.get('/close-requests/pending', async (c) => {
+  const requests = await c.env.DB.prepare(`
+    SELECT cr.*, h.name as hospital_name
+    FROM close_month_requests cr
+    JOIN hospitals h ON cr.hospital_id = h.id
+    WHERE cr.status = 'pending'
+    ORDER BY cr.requested_at DESC
+  `).all<any>()
+  // monthly_closings 기반 요청도 포함
+  const legacyReqs = await c.env.DB.prepare(`
+    SELECT mc.*, h.name as hospital_name
+    FROM monthly_closings mc
+    JOIN hospitals h ON mc.hospital_id = h.id
+    WHERE mc.status = 'requested'
+    ORDER BY mc.requested_at DESC
+  `).all<any>()
+  const allReqs = [...(requests.results||[]), ...(legacyReqs.results||[])]
+  return c.json({ requests: allReqs, count: allReqs.length })
+})
+
+// ── 업체별 월별 사용금액 (비교분석용) ─────────────────────────
+adminRouter.get('/vendor-monthly/:hospitalId/:year', async (c) => {
+  const { hospitalId, year } = c.req.param()
+  const data = await c.env.DB.prepare(`
+    SELECT
+      v.id, v.name, v.category,
+      strftime('%m', d.order_date) as month,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM vendors v
+    LEFT JOIN daily_orders d ON v.id = d.vendor_id
+      AND strftime('%Y', d.order_date) = ?
+    WHERE v.hospital_id = ? AND v.is_active = 1
+    GROUP BY v.id, strftime('%m', d.order_date)
+    ORDER BY v.sort_order, v.id, month
+  `).bind(year, hospitalId).all<any>()
+  return c.json(data.results || [])
+})
+
+// ── 연간 분석 데이터 (월별 총발주) ───────────────────────────
+adminRouter.get('/annual/:hospitalId/:year', async (c) => {
+  const { hospitalId, year } = c.req.param()
+  const monthly = await c.env.DB.prepare(`
+    SELECT
+      strftime('%m', order_date) as month,
+      COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ? AND strftime('%Y', order_date) = ?
+    GROUP BY strftime('%m', order_date)
+    ORDER BY month
+  `).bind(hospitalId, year).all<any>()
+
+  const budgets = await c.env.DB.prepare(`
+    SELECT month, total_budget FROM monthly_settings
+    WHERE hospital_id = ? AND year = ?
+    ORDER BY month
+  `).bind(hospitalId, year).all<any>()
+
+  return c.json({
+    monthly: monthly.results || [],
+    budgets: budgets.results || []
+  })
+})
+
+// ── 예산 이월 (마감 승인 후 다음 달로 복사) ───────────────────
+adminRouter.post('/budget-carryover/:hospitalId', async (c) => {
+  const hospitalId = c.req.param('hospitalId')
+  const { fromYear, fromMonth, toYear, toMonth } = await c.req.json()
+
+  // 이전 달 설정 조회
+  const prevSettings = await c.env.DB.prepare(`
+    SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?
+  `).bind(hospitalId, fromYear, fromMonth).first<any>()
+
+  if (!prevSettings) return c.json({ error: '이전 달 설정 없음' }, 404)
+
+  // 영업일수는 다음 달 자동 계산
+  const daysInNextMonth = new Date(toYear, toMonth, 0).getDate()
+  let workingDays = 0
+  for (let d = 1; d <= daysInNextMonth; d++) {
+    const dow = new Date(toYear, toMonth-1, d).getDay()
+    if (dow !== 0 && dow !== 6) workingDays++
+  }
+
+  // 다음 달 설정 존재 여부 확인
+  const exists = await c.env.DB.prepare(`
+    SELECT id FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?
+  `).bind(hospitalId, toYear, toMonth).first<any>()
+
+  if (!exists) {
+    // 없으면 이월 데이터로 새로 생성
+    await c.env.DB.prepare(`
+      INSERT INTO monthly_settings (
+        hospital_id, year, month, total_budget, event_budget, meal_price,
+        food_waste_budget, working_days, supply_budget, card_budget,
+        created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+    `).bind(
+      hospitalId, toYear, toMonth,
+      prevSettings.total_budget||0, prevSettings.event_budget||0,
+      prevSettings.meal_price||0, prevSettings.food_waste_budget||0,
+      workingDays,
+      prevSettings.supply_budget||0, prevSettings.card_budget||0
+    ).run()
+  }
+
+  return c.json({ success: true, workingDays, message: `${toYear}년 ${toMonth}월로 예산 이월 완료` })
+})
+
+// ── 업체 이월 (마감 승인 후 다음 달 업체 유지) ─────────────────
+adminRouter.post('/vendor-carryover/:hospitalId', async (c) => {
+  const hospitalId = c.req.param('hospitalId')
+  // 업체는 hospital_id 기반으로 이미 공유되므로 특별한 처리 불필요
+  // 단지 현재 활성 업체를 확인해서 반환
+  const vendors = await c.env.DB.prepare(`
+    SELECT id, name, category, tax_type, monthly_budget, sort_order
+    FROM vendors WHERE hospital_id=? AND is_active=1
+    ORDER BY sort_order, id
+  `).bind(hospitalId).all<any>()
+  return c.json({ success: true, vendors: vendors.results || [] })
 })
 
 export default adminRouter

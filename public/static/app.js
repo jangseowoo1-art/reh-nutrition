@@ -83,6 +83,44 @@ async function sendHeartbeat() {
   } catch(e) {}
 }
 
+// ── 스마트 폴링 (관리자 대시보드 실시간 갱신) ─────────────────
+let _smartPollTimer = null
+let _lastInputTime = 0
+let _isPolling = false
+
+function startSmartPolling(refreshFn, baseInterval = 10000) {
+  stopSmartPolling()
+  // 입력 감지: 포커스 중인 셀은 갱신 제외
+  const onInput = () => { _lastInputTime = Date.now() }
+  document.addEventListener('input', onInput)
+  document.addEventListener('change', onInput)
+
+  _smartPollTimer = setInterval(async () => {
+    if (_isPolling) return
+    // 입력 중(2초 이내)이면 건너뜀
+    if (Date.now() - _lastInputTime < 2000) return
+    // 포커스된 입력 요소 있으면 건너뜀
+    const focused = document.activeElement
+    if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' || focused.tagName === 'SELECT')) return
+    _isPolling = true
+    try { await refreshFn() } catch(e) {}
+    _isPolling = false
+  }, baseInterval)
+
+  return () => {
+    document.removeEventListener('input', onInput)
+    document.removeEventListener('change', onInput)
+  }
+}
+
+function stopSmartPolling() {
+  if (_smartPollTimer) {
+    clearInterval(_smartPollTimer)
+    _smartPollTimer = null
+  }
+  _isPolling = false
+}
+
 function initSidebar() {
   document.getElementById('hospitalNameDisplay').textContent = App.hospitalName || '병원'
   document.getElementById('usernameDisplay').textContent = App.username
@@ -97,26 +135,44 @@ function initSidebar() {
 async function loadNotificationBadge() {
   const data = await api('GET', '/api/admin/notifications')
   if (!data) return
-  const cnt = data.unreadCount || 0
-  // 병원 관리 메뉴에 배지 추가/업데이트
+  const notifCnt = data.unreadCount || 0
+
+  // 마감 승인 요청 건수도 별도로 가져오기
+  let closeReqCnt = 0
+  try {
+    const cr = await api('GET', '/api/admin/close-requests/pending')
+    closeReqCnt = cr?.count || 0
+  } catch(e) {}
+
+  // 알림 배지 (기존 알림)
   const menuEl = document.getElementById('menu-hospital-manage')
   if (menuEl) {
     const existing = menuEl.querySelector('.notif-badge')
-    if (cnt > 0) {
+    // 알림 + 마감요청 합산
+    const totalCnt = notifCnt + closeReqCnt
+    if (totalCnt > 0) {
       if (existing) {
-        existing.textContent = cnt > 9 ? '9+' : cnt
+        existing.textContent = totalCnt > 9 ? '9+' : totalCnt
       } else {
         const badge = document.createElement('span')
         badge.className = 'notif-badge ml-auto bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold'
-        badge.textContent = cnt > 9 ? '9+' : cnt
+        badge.textContent = totalCnt > 9 ? '9+' : totalCnt
         menuEl.appendChild(badge)
       }
     } else {
-      // 읽지 않은 알림이 없으면 배지 제거
       if (existing) existing.remove()
     }
   }
-  App.unreadNotifCount = cnt
+
+  // 마감 승인 요청 배지 (별도 표시)
+  const closeReqEl = document.getElementById('close-req-badge')
+  if (closeReqEl) {
+    closeReqEl.textContent = closeReqCnt > 0 ? closeReqCnt : ''
+    closeReqEl.style.display = closeReqCnt > 0 ? '' : 'none'
+  }
+
+  App.unreadNotifCount = notifCnt
+  App.closeReqCount = closeReqCnt
 }
 
 function getHospitalMenus() {
@@ -142,10 +198,15 @@ function getAdminMenus() {
 
 function renderMenuItem(item) {
   const sectionHtml = item.section ? `<div class="menu-section-title">${item.section}</div>` : ''
+  // 병원 관리 메뉴에는 마감승인 배지 슬롯 포함
+  const badgeHtml = item.id === 'hospital-manage'
+    ? `<span id="close-req-badge" class="ml-auto bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold" style="display:none"></span>`
+    : ''
   return `${sectionHtml}
   <div class="menu-item" id="menu-${item.id}" onclick="navigateTo('${item.id}')">
     <div class="icon"><i class="fas ${item.icon} text-xs"></i></div>
     <span>${item.label}</span>
+    ${badgeHtml}
   </div>`
 }
 
@@ -224,6 +285,8 @@ function navigateTo(page, forceReload = false) {
     App.charts = {}
   }
   if (page !== 'settings') stopClosingPoll()
+  // 관리자 페이지 이탈 시 스마트 폴링 중단
+  if (page !== 'admin') stopSmartPolling()
 
   const pages = {
     dashboard: renderDashboard, orders: renderOrders, meals: renderMeals,
@@ -2358,39 +2421,115 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
         <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-trash text-amber-500 mr-1"></i>잔반 발생량 vs 비용 추이</h3>
         <canvas id="chart-wasteMonthly" height="220"></canvas>
       </div>
+      <!-- 업체별 월별 사용금액 비교 차트 (신규) -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 col-span-1 lg:col-span-2">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-store text-indigo-500 mr-1"></i>업체별 월별 사용금액 비교</h3>
+          <span class="text-xs text-gray-400">상위 8개 업체 · 꺾은선 그래프</span>
+        </div>
+        <canvas id="chart-vendorMonthly" height="120"></canvas>
+        <!-- 업체별 월별 사용금액 데이터 테이블 -->
+        <div class="mt-4 overflow-x-auto" id="vendorMonthlyTableWrap">
+          <table class="w-full text-xs border-collapse">
+            <thead>
+              <tr class="bg-indigo-700 text-white">
+                <th class="text-left pl-3 py-1.5 sticky left-0 bg-indigo-700 min-w-[100px]">업체명</th>
+                ${months.map(m=>`<th class="text-right pr-2 py-1.5 whitespace-nowrap">${m}</th>`).join('')}
+                <th class="text-right pr-2 py-1.5 bg-indigo-800 whitespace-nowrap">연간합계</th>
+                <th class="text-right pr-2 py-1.5 bg-indigo-800 whitespace-nowrap">최고월</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${vendors.map((v,vi) => {
+                const maxVal = Math.max(...v.monthly)
+                const maxIdx = v.monthly.indexOf(maxVal)
+                return `<tr class="${vi%2===0?'bg-white':'bg-indigo-50'} hover:bg-indigo-100">
+                  <td class="pl-3 py-1.5 font-medium sticky left-0 ${vi%2===0?'bg-white':'bg-indigo-50'}">${v.name}</td>
+                  ${v.monthly.map((val,mi)=>`<td class="text-right pr-2 py-1.5 ${mi===maxIdx&&val>0?'font-bold text-indigo-700 bg-indigo-100':''}">${val>0?fmtMan(val)+'만':''}</td>`).join('')}
+                  <td class="text-right pr-2 py-1.5 font-bold text-indigo-700 bg-indigo-50">${fmtMan(v.total)}만</td>
+                  <td class="text-right pr-2 py-1.5 text-indigo-600">${maxVal>0?months[maxIdx]:'—'}</td>
+                </tr>`
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr class="bg-indigo-100 font-bold">
+                <td class="pl-3 py-1.5 sticky left-0 bg-indigo-100 text-indigo-800">월별 합계</td>
+                ${usedByMonth.map(v=>`<td class="text-right pr-2 py-1.5 text-indigo-700">${v>0?fmtMan(v)+'만':''}</td>`).join('')}
+                <td class="text-right pr-2 py-1.5 text-indigo-800">${fmtMan(totalUsed)}만</td>
+                <td class="text-right pr-2 py-1.5 text-gray-400">—</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
     </div>
   </div>`
 
   // ── 공통 차트 색상
   const COLORS = ['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6','#a855f7']
 
-  // ── ① 예산 vs 사용금액
+  // 꼭짓점 금액 레이블 플러그인
+  const pointLabelPlugin = {
+    id: 'pointLabels',
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart
+      chart.data.datasets.forEach((ds, di) => {
+        if (ds.type === 'line' || chart.config.type === 'line') {
+          const meta = chart.getDatasetMeta(di)
+          if (meta.hidden) return
+          meta.data.forEach((pt, i) => {
+            const val = ds.data[i]
+            if (!val || val === 0) return
+            ctx.save()
+            ctx.font = 'bold 9px sans-serif'
+            ctx.fillStyle = ds.borderColor || '#374151'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'bottom'
+            const label = val >= 1e6 ? `${(val/1e6).toFixed(1)}백만` : val >= 1e4 ? `${(val/1e4).toFixed(0)}만` : val.toLocaleString()
+            ctx.fillText(label, pt.x, pt.y - 5)
+            ctx.restore()
+          })
+        }
+      })
+    }
+  }
+
+  // ── ① 예산 vs 사용금액 (꼭짓점 금액 추가)
   new Chart(document.getElementById('chart-budget'), {
     type:'bar', data:{
       labels:months,
       datasets:[
         { label:'사용금액', data:usedByMonth, backgroundColor:'rgba(22,163,74,0.7)', borderRadius:5 },
-        { label:'목표예산', data:budgetByMonth, type:'line', borderColor:'#ef4444', borderDash:[5,5], borderWidth:2, pointRadius:3, fill:false }
+        { label:'목표예산', data:budgetByMonth, type:'line', borderColor:'#ef4444', borderDash:[5,5], borderWidth:2, pointRadius:4, pointBackgroundColor:'#ef4444', fill:false }
       ]
     },
-    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
-      scales:{ y:{ ticks:{ callback:v=>`${(v/1e7).toFixed(0)}천만` } } } }
+    options:{
+      responsive:true,
+      plugins:{
+        legend:{ labels:{boxWidth:12,font:{size:10}} },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtMan(ctx.raw)}원` } }
+      },
+      scales:{ y:{ ticks:{ callback:v=>`${(v/1e7).toFixed(0)}천만` } } }
+    },
+    plugins: [pointLabelPlugin]
   })
 
-  // ── ② 식단가 3종 + 전년 비교
+  // ── ② 식단가 3종 + 전년 비교 (꼭짓점 금액 표시)
   new Chart(document.getElementById('chart-mealPrice'), {
     type:'line', data:{
       labels:months,
       datasets:[
-        { label:'전체식단가(당해)', data:mpTotalByMonth, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', borderWidth:2, pointRadius:3, fill:true, tension:0.3 },
+        { label:'전체식단가(당해)', data:mpTotalByMonth, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', borderWidth:2, pointRadius:4, fill:true, tension:0.3 },
         { label:'직원제외(당해)',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:2, pointRadius:3, fill:false, tension:0.3 },
         { label:'소모품제외(당해)', data:mpNoSupplyByMonth, borderColor:'#f59e0b', borderWidth:2, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3] },
         { label:`전체식단가(${parseInt(App.currentYear)-1}년)`, data:prevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[6,3] },
-        { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
+        { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:3, pointBackgroundColor:'#ef4444', fill:false, borderDash:[8,4] }
       ]
     },
-    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
-      scales:{ y:{ ticks:{ callback:v=>`${(v/1000).toFixed(1)}천원` } } } }
+    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} },
+      tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw.toLocaleString()}원/식` } } },
+      scales:{ y:{ ticks:{ callback:v=>`${(v/1000).toFixed(1)}천원` } } } },
+    plugins: [pointLabelPlugin]
   })
 
   // ── ③ 식수 구성 (스택 바)
@@ -2506,8 +2645,41 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       scales:{
         y:{ ticks:{callback:v=>`${v}kg`}, position:'left' },
         y1:{ ticks:{callback:v=>`${(v/1e4).toFixed(0)}만`}, position:'right', grid:{drawOnChartArea:false} }
-      } }
+      } },
+    plugins: [pointLabelPlugin]
   })
+
+  // ── 업체별 월별 사용금액 비교 (신규)
+  const vendorMonthlyEl = document.getElementById('chart-vendorMonthly')
+  if (vendorMonthlyEl && vendors.length > 0) {
+    const topVs = vendors.slice(0, 8)
+    new Chart(vendorMonthlyEl, {
+      type: 'line',
+      data: {
+        labels: months,
+        datasets: topVs.map((v, i) => ({
+          label: v.name,
+          data: v.monthly,
+          borderColor: COLORS[i % COLORS.length],
+          backgroundColor: COLORS[i % COLORS.length] + '20',
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: COLORS[i % COLORS.length],
+          pointBorderColor: '#fff', pointBorderWidth: 1.5,
+          fill: false, tension: 0.3
+        }))
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtMan(ctx.raw)}원` } }
+        },
+        scales: { y: { ticks: { callback: v => `${(v/1e6).toFixed(1)}백만` } } }
+      },
+      plugins: [pointLabelPlugin]
+    })
+  }
 
   // 초기 탭
   if (activeTab === 'monthly') switchAnaTab('monthly')
@@ -3140,16 +3312,16 @@ async function renderAdminDashboard() {
     <!-- 병원별 비교 차트 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
       <h3 class="font-bold text-gray-700 mb-1"><i class="fas fa-chart-bar text-green-600 mr-2"></i>${App.currentYear}년 ${App.currentMonth}월 병원별 예산 대비 사용현황</h3>
-      <p class="text-xs text-gray-400 mb-4">막대: 실제 사용 / 배경: 목표예산</p>
+      <p class="text-xs text-gray-400 mb-4">막대: 실제 사용금액 · 빨간선: 목표예산 · 막대 상단 금액 표시</p>
       <canvas id="adminCompareChart" height="80"></canvas>
     </div>
-    <!-- 식단가 비교 차트 -->
+    <!-- 식단가 비교 차트 (꺾은선) -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
-      <h3 class="font-bold text-gray-700 mb-1"><i class="fas fa-utensils text-purple-500 mr-2"></i>병원별 식단가 비교</h3>
-      <p class="text-xs text-gray-400 mb-4">전체 식단가 / 직원식 제외 / 소모품 제외</p>
+      <h3 class="font-bold text-gray-700 mb-1"><i class="fas fa-utensils text-purple-500 mr-2"></i>병원별 식단가 비교 (꺾은선)</h3>
+      <p class="text-xs text-gray-400 mb-4">전체 식단가 / 직원식 제외 / 소모품 제외 · 꼭짓점 금액 표시</p>
       <canvas id="adminMealPriceChart" height="80"></canvas>
     </div>
-    <!-- 요약 테이블 -->
+    <!-- 요약 테이블 (개선) -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 overflow-x-auto">
       <h3 class="font-bold text-gray-700 mb-3"><i class="fas fa-table text-gray-500 mr-2"></i>병원별 전체 현황 요약</h3>
       <table class="data-table w-full text-sm">
@@ -3157,14 +3329,14 @@ async function renderAdminDashboard() {
           <tr>
             <th class="text-left pl-3">병원</th>
             <th class="text-center">상태</th>
-            <th class="text-center">일발주/목표</th>
-            <th class="text-center">주발주/목표</th>
-            <th class="text-center">월사용/목표</th>
-            <th class="text-center">전체식단가</th>
+            <th class="text-center">일 발주<br><span class="font-normal text-xs opacity-60">목표 대비%</span></th>
+            <th class="text-center">주 발주<br><span class="font-normal text-xs opacity-60">목표 대비%</span></th>
+            <th class="text-center">월 사용 / 목표<br><span class="font-normal text-xs opacity-60">달성률</span></th>
+            <th class="text-center">전체식단가<br><span class="font-normal text-xs opacity-60">목표 대비</span></th>
             <th class="text-center">직원제외</th>
             <th class="text-center">소모품제외</th>
             <th class="text-center">잔반</th>
-            <th class="text-center">진행률</th>
+            <th class="text-center">월 달성률</th>
           </tr>
         </thead>
         <tbody>
@@ -3172,21 +3344,51 @@ async function renderAdminDashboard() {
             const pct = parseFloat(h.progress)
             const mp = h.mealPriceTotal
             const mpOver = h.targetMealPrice > 0 && mp > h.targetMealPrice
+            const mpWarn = !mpOver && h.targetMealPrice > 0 && mp > h.targetMealPrice * 0.95
             const todayPct = h.dailyBudget > 0 ? Math.round(h.todayUsed/h.dailyBudget*100) : 0
             const weekPct = h.weekBudget > 0 ? Math.round(h.weekUsed/h.weekBudget*100) : 0
+            const todayColor = todayPct>=100?'text-red-600 font-bold':todayPct>=90?'text-amber-500 font-semibold':'text-green-600'
+            const weekColor = weekPct>=100?'text-red-600 font-bold':weekPct>=90?'text-amber-500 font-semibold':'text-green-600'
+            const monthColor = pct>=100?'text-red-600 font-bold':pct>=90?'text-amber-500 font-semibold':'text-green-600'
+            const mpColor = mpOver?'text-red-600 font-bold':mpWarn?'text-amber-600':'text-blue-600'
             return `
-            <tr class="${pct>=100&&h.totalBudget>0?'bg-red-50':''}">
+            <tr class="${pct>=100&&h.totalBudget>0?'bg-red-50':pct>=90&&h.totalBudget>0?'bg-amber-50':'hover:bg-gray-50'}">
               <td class="font-semibold pl-3 py-2">${h.hospital.name}</td>
-              <td class="text-center py-2">${h.online?`<span class="inline-flex items-center gap-1 text-xs text-green-600"><span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>온라인</span>`:'<span class="text-xs text-gray-300">오프라인</span>'}</td>
-              <td class="text-center text-xs py-2">${fmtMan(h.todayUsed)}원<br><span class="${todayPct>=100?'text-red-500 font-bold':'text-gray-400'}">${todayPct}%</span></td>
-              <td class="text-center text-xs py-2">${fmtMan(h.weekUsed)}원<br><span class="${weekPct>=100?'text-red-500 font-bold':'text-gray-400'}">${weekPct}%</span></td>
-              <td class="text-center text-xs py-2">${fmtMan(h.totalUsed)} / ${h.totalBudget>0?fmtMan(h.totalBudget):'-'}원</td>
-              <td class="text-center text-xs py-2 ${mpOver?'text-red-600 font-bold':''}">${mp>0?mp.toLocaleString()+'원':'-'}${mpOver?'<br><span class="text-red-400 text-xs">▲초과</span>':''}</td>
+              <td class="text-center py-2">
+                ${h.online?`<span class="inline-flex items-center gap-1 text-xs text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full border border-green-200"><span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>${h.online.username||'온라인'}</span>`
+                :'<span class="text-xs text-gray-300">오프라인</span>'}
+              </td>
+              <td class="text-center text-xs py-2">
+                <div class="font-semibold">${fmtMan(h.todayUsed)}원</div>
+                <div class="${todayColor}">${todayPct}%</div>
+                ${h.dailyBudget>0?`<div class="text-gray-400 text-xs">목표 ${fmtMan(h.dailyBudget)}원</div>`:''}
+                <div class="mt-0.5 h-1 bg-gray-100 rounded-full w-16 mx-auto overflow-hidden"><div class="h-full rounded-full ${todayPct>=100?'bg-red-400':todayPct>=90?'bg-amber-400':'bg-green-400'}" style="width:${Math.min(todayPct,100)}%"></div></div>
+              </td>
+              <td class="text-center text-xs py-2">
+                <div class="font-semibold">${fmtMan(h.weekUsed)}원</div>
+                <div class="${weekColor}">${weekPct}%</div>
+                ${h.weekBudget>0?`<div class="text-gray-400 text-xs">목표 ${fmtMan(h.weekBudget)}원</div>`:''}
+                <div class="mt-0.5 h-1 bg-gray-100 rounded-full w-16 mx-auto overflow-hidden"><div class="h-full rounded-full ${weekPct>=100?'bg-red-400':weekPct>=90?'bg-amber-400':'bg-green-400'}" style="width:${Math.min(weekPct,100)}%"></div></div>
+              </td>
+              <td class="text-center text-xs py-2">
+                <div class="font-semibold">${fmtMan(h.totalUsed)}원</div>
+                <div class="${monthColor}">${pct.toFixed(1)}%</div>
+                ${h.totalBudget>0?`<div class="text-gray-400 text-xs">목표 ${fmtMan(h.totalBudget)}원</div>`:''}
+                <div class="mt-0.5 h-1 bg-gray-100 rounded-full w-16 mx-auto overflow-hidden"><div class="h-full rounded-full ${pct>=100?'bg-red-400':pct>=90?'bg-amber-400':'bg-green-400'}" style="width:${Math.min(pct,100)}%"></div></div>
+              </td>
+              <td class="text-center text-xs py-2">
+                <div class="${mpColor}">${mp>0?mp.toLocaleString()+'원':'-'}</div>
+                ${h.targetMealPrice>0?`<div class="text-gray-400">목표 ${h.targetMealPrice.toLocaleString()}원</div>`:''}
+                ${mpOver?`<div class="text-red-500 font-bold">▲초과</div>`:mpWarn?`<div class="text-amber-500">▲주의</div>`:''}
+              </td>
               <td class="text-center text-xs py-2 text-purple-600">${h.mealPriceNoStaff>0?h.mealPriceNoStaff.toLocaleString()+'원':'-'}</td>
               <td class="text-center text-xs py-2 text-orange-600">${h.mealPriceNoSupply>0?h.mealPriceNoSupply.toLocaleString()+'원':'-'}</td>
-              <td class="text-center text-xs py-2">${h.foodWaste.totalWaste>0?h.foodWaste.totalWaste.toFixed(1)+'kg':'-'}</td>
+              <td class="text-center text-xs py-2">${h.foodWaste.totalWaste>0?`<span class="text-amber-600 font-medium">${h.foodWaste.totalWaste.toFixed(1)}kg</span>`:'-'}</td>
               <td class="text-center py-2">
-                <span class="font-bold ${pct>=100?'text-red-600':pct>=90?'text-amber-500':'text-green-700'}">${pct.toFixed(1)}%</span>
+                <div class="inline-flex flex-col items-center">
+                  <span class="text-sm font-bold ${pct>=100?'text-red-600':pct>=90?'text-amber-500':'text-green-700'}">${pct.toFixed(1)}%</span>
+                  <div class="w-16 h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden"><div class="h-full rounded-full ${pct>=100?'bg-red-400':pct>=90?'bg-amber-400':'bg-green-500'}" style="width:${Math.min(pct,100)}%"></div></div>
+                </div>
               </td>
             </tr>`
           }).join('')}
@@ -3219,7 +3421,7 @@ window.switchAdminTab = (tab) => {
 }
 
 function renderAdminCompareChart(hospitals) {
-  // 예산 비교 차트
+  // ── 발주 비교 차트 (목표선 + 꼭짓점 금액 레이블)
   const ctx = document.getElementById('adminCompareChart')
   if (ctx) {
     if (App.charts.adminCompare) { App.charts.adminCompare.destroy(); App.charts.adminCompare = null }
@@ -3228,29 +3430,70 @@ function renderAdminCompareChart(hospitals) {
     const budget = hospitals.map(h => h.totalBudget)
     const colors = hospitals.map(h => {
       const pct = h.totalBudget > 0 ? h.totalUsed/h.totalBudget*100 : 0
-      return pct >= 100 ? 'rgba(239,68,68,0.75)' : pct >= 90 ? 'rgba(245,158,11,0.75)' : 'rgba(34,197,94,0.75)'
+      return pct >= 100 ? 'rgba(239,68,68,0.8)' : pct >= 90 ? 'rgba(245,158,11,0.8)' : 'rgba(34,197,94,0.8)'
     })
     App.charts.adminCompare = new Chart(ctx, {
       type: 'bar',
       data: {
         labels,
         datasets: [
-          { label: '사용금액', data: used, backgroundColor: colors, borderRadius: 4 },
-          { label: '목표예산', data: budget, backgroundColor: 'rgba(156,163,175,0.25)', borderRadius: 4, borderColor: 'rgba(156,163,175,0.5)', borderWidth: 1 }
+          {
+            label: '사용금액', data: used, backgroundColor: colors, borderRadius: 6,
+            borderColor: colors.map(c=>c.replace('0.8','1')), borderWidth: 1
+          },
+          {
+            type: 'line', label: '목표예산', data: budget,
+            borderColor: '#ef4444', borderDash: [6,3], borderWidth: 2.5,
+            pointRadius: 6, pointBackgroundColor: '#ef4444', pointBorderColor: '#fff', pointBorderWidth: 2,
+            fill: false, tension: 0
+          }
         ]
       },
       options: {
         responsive: true,
         plugins: {
-          legend: { position: 'top' },
-          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmt(ctx.raw)}원` } }
+          legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: ctx => `${ctx.dataset.label}: ${fmt(ctx.raw)}원`,
+              afterLabel: ctx => {
+                if (ctx.datasetIndex === 0 && budget[ctx.dataIndex] > 0) {
+                  const pct = Math.round(used[ctx.dataIndex]/budget[ctx.dataIndex]*100)
+                  return `달성률: ${pct}%`
+                }
+                return ''
+              }
+            }
+          },
+          datalabels: false
         },
-        scales: { y: { ticks: { callback: v => fmtMan(v)+'원' } } }
-      }
+        scales: {
+          y: { ticks: { callback: v => fmtMan(v)+'원' }, beginAtZero: true }
+        }
+      },
+      plugins: [{
+        id: 'usedLabels',
+        afterDatasetsDraw(chart) {
+          const { ctx: c, data } = chart
+          data.datasets[0].data.forEach((val, i) => {
+            if (!val) return
+            const meta = chart.getDatasetMeta(0)
+            const bar = meta.data[i]
+            if (!bar) return
+            c.save()
+            c.font = 'bold 10px sans-serif'
+            c.fillStyle = '#1f2937'
+            c.textAlign = 'center'
+            c.textBaseline = 'bottom'
+            c.fillText(fmtMan(val)+'원', bar.x, bar.y - 2)
+            c.restore()
+          })
+        }
+      }]
     })
   }
 
-  // 식단가 비교 차트
+  // ── 식단가 비교 차트 (꺾은선으로 변경 + 꼭짓점 금액 표시)
   const ctx2 = document.getElementById('adminMealPriceChart')
   if (ctx2) {
     if (App.charts.adminMealPrice) { App.charts.adminMealPrice.destroy(); App.charts.adminMealPrice = null }
@@ -3260,24 +3503,62 @@ function renderAdminCompareChart(hospitals) {
     const mp3 = hospitals.map(h => h.mealPriceNoSupply)
     const targets = hospitals.map(h => h.targetMealPrice)
     App.charts.adminMealPrice = new Chart(ctx2, {
-      type: 'bar',
+      type: 'line',
       data: {
         labels,
         datasets: [
-          { label: '전체 식단가', data: mp1, backgroundColor: 'rgba(59,130,246,0.7)', borderRadius: 4 },
-          { label: '직원식 제외', data: mp2, backgroundColor: 'rgba(139,92,246,0.7)', borderRadius: 4 },
-          { label: '소모품 제외', data: mp3, backgroundColor: 'rgba(249,115,22,0.7)', borderRadius: 4 },
-          { type: 'line', label: '목표 식단가', data: targets, borderColor: '#ef4444', borderDash: [5,5], borderWidth: 2, pointRadius: 4, pointBackgroundColor: '#ef4444', fill: false }
+          {
+            label: '전체 식단가', data: mp1, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.08)',
+            borderWidth: 2.5, pointRadius: 6, pointBackgroundColor: '#2563eb',
+            pointBorderColor: '#fff', pointBorderWidth: 2, fill: true, tension: 0.3
+          },
+          {
+            label: '직원식 제외', data: mp2, borderColor: '#9333ea', backgroundColor: 'rgba(147,51,234,0.06)',
+            borderWidth: 2, pointRadius: 5, pointBackgroundColor: '#9333ea',
+            pointBorderColor: '#fff', pointBorderWidth: 2, fill: false, tension: 0.3
+          },
+          {
+            label: '소모품 제외', data: mp3, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.06)',
+            borderWidth: 2, pointRadius: 5, pointBackgroundColor: '#f59e0b',
+            pointBorderColor: '#fff', pointBorderWidth: 2, fill: false, tension: 0.3, borderDash: [4,2]
+          },
+          {
+            label: '목표 식단가', data: targets,
+            borderColor: '#ef4444', borderDash: [8,4], borderWidth: 2,
+            pointRadius: 5, pointBackgroundColor: '#ef4444', pointBorderColor: '#fff', pointBorderWidth: 2,
+            fill: false, tension: 0
+          }
         ]
       },
       options: {
         responsive: true,
         plugins: {
-          legend: { position: 'top' },
+          legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmt(ctx.raw)}원/식` } }
         },
         scales: { y: { ticks: { callback: v => `${fmt(v)}원` } } }
-      }
+      },
+      plugins: [{
+        id: 'mpLabels',
+        afterDatasetsDraw(chart) {
+          const { ctx: c } = chart
+          chart.data.datasets.forEach((ds, di) => {
+            if (di > 1) return // 전체/직원제외만 레이블
+            const meta = chart.getDatasetMeta(di)
+            meta.data.forEach((pt, i) => {
+              const val = ds.data[i]
+              if (!val) return
+              c.save()
+              c.font = 'bold 9px sans-serif'
+              c.fillStyle = ds.borderColor
+              c.textAlign = 'center'
+              c.textBaseline = 'bottom'
+              c.fillText(val.toLocaleString()+'원', pt.x, pt.y - 6)
+              c.restore()
+            })
+          })
+        }
+      }]
     })
   }
 }
@@ -3627,9 +3908,16 @@ async function openHospitalDetail(hospitalId) {
                 .map(([v,l]) => `<option value="${v}" ${hosp.hospital_type===v?'selected':''}>${l}</option>`).join('')}
             </select>
           </div>
+          <!-- 주소 (카카오 주소검색) -->
           <div class="col-span-2">
             <label class="block text-xs font-semibold text-gray-500 mb-1">주소</label>
-            <input id="hi-address" class="form-input" value="${hosp.address||''}">
+            <div class="flex gap-2">
+              <input id="hi-address" class="form-input flex-1" value="${hosp.address||''}" placeholder="카카오 주소검색 또는 직접 입력" readonly>
+              <button type="button" onclick="openKakaoAddressSearch()" class="btn btn-secondary btn-sm whitespace-nowrap">
+                <i class="fas fa-search-location mr-1"></i>주소검색
+              </button>
+            </div>
+            <input id="hi-address-detail" class="form-input mt-1" value="${hosp.address_detail||''}" placeholder="상세주소 입력">
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">허가 병상수</label>
@@ -3643,18 +3931,33 @@ async function openHospitalDetail(hospitalId) {
             <label class="block text-xs font-semibold text-gray-500 mb-1">급식 대상 직원수</label>
             <input id="hi-staff" type="number" class="form-input" value="${hosp.staff_count||0}">
           </div>
+          <!-- 주종목 드롭다운 (복수 선택 가능) -->
           <div class="col-span-2">
-            <label class="block text-xs font-semibold text-gray-500 mb-1">주 종목 <span class="text-gray-400 font-normal">(암, 교통사고, 척추, 관절 등 직접 입력)</span></label>
-            <input id="hi-specialty" class="form-input" placeholder="예: 암, 교통사고, 척추 재활" value="${hosp.main_specialty||''}">
+            <label class="block text-xs font-semibold text-gray-500 mb-1">주 종목</label>
+            <div class="flex flex-wrap gap-2 mb-2" id="specialty-chips">
+              ${(hosp.main_specialty||'').split(',').filter(Boolean).map(s=>`
+                <span class="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs">
+                  ${s.trim()}<button type="button" onclick="removeSpecialtyChip(this)" class="ml-1 text-blue-400 hover:text-red-500">×</button>
+                </span>`).join('')}
+            </div>
+            <div class="flex gap-2">
+              <select id="hi-specialty-select" class="form-input flex-1" onchange="addSpecialtyChip(this)">
+                <option value="">-- 종목 선택 --</option>
+                ${['암','교통사고','척추재활','관절','요양','정신','소아','산부인과','심장','신장','노인요양','호흡기','소화기','뇌졸중','기타'].map(v=>`<option value="${v}">${v}</option>`).join('')}
+              </select>
+              <input id="hi-specialty-custom" class="form-input" placeholder="직접입력 후 Enter" style="max-width:160px"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();addSpecialtyCustom()}">
+            </div>
+            <input type="hidden" id="hi-specialty" value="${hosp.main_specialty||''}">
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">급식 운영방식</label>
-            <select id="hi-optype" class="form-input">
+            <select id="hi-optype" class="form-input" onchange="toggleConsignField(this.value)">
               <option value="direct" ${hosp.operation_type==='direct'?'selected':''}>직영</option>
               <option value="consignment" ${hosp.operation_type==='consignment'?'selected':''}>위탁</option>
             </select>
           </div>
-          <div>
+          <div id="hi-consign-wrap" style="${hosp.operation_type==='consignment'?'':'display:none'}">
             <label class="block text-xs font-semibold text-gray-500 mb-1">위탁업체명</label>
             <input id="hi-consign" class="form-input" value="${hosp.consignment_company||''}">
           </div>
@@ -3684,6 +3987,15 @@ async function openHospitalDetail(hospitalId) {
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">연간 총 급식예산 (원)</label>
             <input id="hi-annual" type="number" class="form-input" value="${hosp.annual_budget||0}">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-gray-500 mb-1">월평균 예산 (원) <span class="text-gray-400 font-normal">자동계산 또는 직접입력</span></label>
+            <div class="flex gap-2">
+              <input id="hi-monthly-avg" type="number" class="form-input flex-1" value="${hosp.monthly_avg_budget||Math.round((hosp.annual_budget||0)/12)||0}">
+              <button type="button" onclick="document.getElementById('hi-monthly-avg').value=Math.round((parseInt(document.getElementById('hi-annual').value)||0)/12)" class="btn btn-secondary btn-sm whitespace-nowrap">
+                <i class="fas fa-sync mr-1"></i>자동
+              </button>
+            </div>
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">영양사 이름</label>
@@ -3846,13 +4158,32 @@ async function openHospitalDetail(hospitalId) {
         </div>
         <div>
           <label class="text-sm font-medium text-gray-600" id="adminAccountPwLabel">비밀번호 *</label>
-          <input type="password" id="adminAccountPassword" class="form-input mt-1" placeholder="비밀번호 입력">
+          <div class="relative mt-1">
+            <input type="text" id="adminAccountPassword" class="form-input pr-10" placeholder="비밀번호 입력">
+            <button type="button" onclick="togglePwVisibility()" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs">
+              <i class="fas fa-eye" id="pwEyeIcon"></i>
+            </button>
+          </div>
           <p class="text-xs text-gray-400 mt-1" id="adminAccountPwHint"></p>
         </div>
+        <div>
+          <label class="text-sm font-medium text-gray-600">영양사 이름</label>
+          <input type="text" id="adminAccountNutrName" class="form-input mt-1" placeholder="영양사 이름 (선택)">
+        </div>
       </div>
-      <div class="flex gap-2 mt-5">
+      <!-- 생성 완료 후 표시 영역 -->
+      <div id="accountCreatedResult" class="hidden mt-3 p-3 bg-green-50 border border-green-200 rounded-xl text-sm">
+        <div class="font-bold text-green-700 mb-1.5"><i class="fas fa-check-circle mr-1"></i>계정 생성 완료</div>
+        <div class="space-y-1 text-xs">
+          <div class="flex justify-between"><span class="text-gray-500">아이디</span><span class="font-mono font-bold" id="createdUsername"></span></div>
+          <div class="flex justify-between"><span class="text-gray-500">비밀번호</span><span class="font-mono font-bold text-red-600" id="createdPassword"></span></div>
+          <div class="flex justify-between" id="createdNutrRow"><span class="text-gray-500">영양사</span><span class="font-semibold" id="createdNutrName"></span></div>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">* 이 화면을 닫으면 비밀번호를 다시 확인할 수 없습니다</p>
+      </div>
+      <div class="flex gap-2 mt-5" id="accountModalBtns">
         <button onclick="saveAdminAccount()" class="btn btn-primary flex-1">저장</button>
-        <button onclick="document.getElementById('adminAccountModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>
+        <button onclick="document.getElementById('adminAccountModal').classList.add('hidden'); document.getElementById('accountCreatedResult').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>
       </div>
     </div>
   </div>`
@@ -3897,13 +4228,29 @@ function renderAdminAccountRows(accounts) {
     </div>`
   }
   return `<div class="divide-y divide-gray-50">
-    ${accounts.map(a => `
+    ${accounts.map(a => {
+      // 실시간 접속 상태: last_active가 3분 이내면 온라인
+      const lastActive = a.last_active ? new Date(a.last_active) : null
+      const isOnline = lastActive && (Date.now() - lastActive.getTime()) < 3 * 60 * 1000
+      const lastPage = a.current_page || ''
+      const lastActiveStr = lastActive ? lastActive.toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit'}) : '-'
+      return `
       <div class="flex items-center gap-3 py-3 hover:bg-gray-50 px-2 rounded-lg">
-        <div class="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-          <i class="fas fa-user text-green-600 text-sm"></i>
+        <div class="w-9 h-9 rounded-full ${isOnline ? 'bg-green-100' : 'bg-gray-100'} flex items-center justify-center flex-shrink-0 relative">
+          <i class="fas fa-user ${isOnline ? 'text-green-600' : 'text-gray-400'} text-sm"></i>
+          <!-- 온라인 인디케이터 -->
+          <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${isOnline ? 'bg-green-500' : 'bg-gray-300'}"></span>
         </div>
         <div class="flex-1 min-w-0">
-          <div class="font-medium text-sm">${a.username}</div>
+          <div class="flex items-center gap-2">
+            <span class="font-medium text-sm">${a.username}</span>
+            ${isOnline
+              ? `<span class="text-xs font-semibold text-green-600 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-full">● 접속중</span>`
+              : `<span class="text-xs text-gray-400">마지막 ${lastActiveStr}</span>`
+            }
+          </div>
+          ${a.nutritionist_name ? `<div class="text-xs text-blue-600 font-medium"><i class="fas fa-user-nurse mr-1"></i>${a.nutritionist_name}</div>` : ''}
+          ${isOnline && lastPage ? `<div class="text-xs text-green-500"><i class="fas fa-eye mr-1"></i>${lastPage}</div>` : ''}
           <div class="text-xs text-gray-400">생성일: ${a.created_at?.split('T')[0] || '-'}</div>
         </div>
         <div class="flex gap-1">
@@ -3916,8 +4263,8 @@ function renderAdminAccountRows(accounts) {
             <i class="fas fa-trash text-xs"></i>
           </button>
         </div>
-      </div>
-    `).join('')}
+      </div>`
+    }).join('')}
   </div>`
 }
 
@@ -4018,14 +4365,35 @@ async function deleteAdminVendor(vid) {
 }
 
 // ── 계정 관리 함수 ────────────────────────────────────────────
+function togglePwVisibility() {
+  const el = document.getElementById('adminAccountPassword')
+  const icon = document.getElementById('pwEyeIcon')
+  if (!el) return
+  if (el.type === 'text') {
+    el.type = 'password'
+    icon.className = 'fas fa-eye'
+  } else {
+    el.type = 'text'
+    icon.className = 'fas fa-eye-slash'
+  }
+}
+
 function showAdminAddAccountModal() {
   document.getElementById('adminAccountModalTitle').textContent = '계정 추가'
   document.getElementById('adminAccountId').value = ''
   document.getElementById('adminAccountUsername').value = ''
   document.getElementById('adminAccountUsername').disabled = false
   document.getElementById('adminAccountPassword').value = ''
+  document.getElementById('adminAccountPassword').type = 'text'
+  document.getElementById('pwEyeIcon').className = 'fas fa-eye-slash'
   document.getElementById('adminAccountPwLabel').textContent = '비밀번호 *'
   document.getElementById('adminAccountPwHint').textContent = ''
+  document.getElementById('adminAccountNutrName').value = ''
+  document.getElementById('adminAccountNutrName').disabled = false
+  document.getElementById('accountCreatedResult').classList.add('hidden')
+  document.getElementById('accountModalBtns').innerHTML = `
+    <button onclick="saveAdminAccount()" class="btn btn-primary flex-1">저장</button>
+    <button onclick="document.getElementById('adminAccountModal').classList.add('hidden'); document.getElementById('accountCreatedResult').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>`
   document.getElementById('adminAccountModal').classList.remove('hidden')
 }
 
@@ -4035,8 +4403,16 @@ function editAdminAccount(id, username) {
   document.getElementById('adminAccountUsername').value = username
   document.getElementById('adminAccountUsername').disabled = true
   document.getElementById('adminAccountPassword').value = ''
+  document.getElementById('adminAccountPassword').type = 'password'
+  document.getElementById('pwEyeIcon').className = 'fas fa-eye'
   document.getElementById('adminAccountPwLabel').textContent = '새 비밀번호 *'
   document.getElementById('adminAccountPwHint').textContent = '새 비밀번호를 입력하면 변경됩니다'
+  document.getElementById('adminAccountNutrName').value = ''
+  document.getElementById('adminAccountNutrName').disabled = true
+  document.getElementById('accountCreatedResult').classList.add('hidden')
+  document.getElementById('accountModalBtns').innerHTML = `
+    <button onclick="saveAdminAccount()" class="btn btn-primary flex-1">변경</button>
+    <button onclick="document.getElementById('adminAccountModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>`
   document.getElementById('adminAccountModal').classList.remove('hidden')
 }
 
@@ -4046,14 +4422,15 @@ async function saveAdminAccount() {
   const aid = document.getElementById('adminAccountId').value
   const username = document.getElementById('adminAccountUsername').value.trim()
   const password = document.getElementById('adminAccountPassword').value
+  const nutritionistName = document.getElementById('adminAccountNutrName')?.value?.trim() || ''
 
   if (!username) { showToast('아이디를 입력하세요', 'error'); return }
   if (!password) { showToast('비밀번호를 입력하세요', 'error'); return }
   if (password.length < 4) { showToast('비밀번호는 4자 이상 입력하세요', 'error'); return }
 
   const res = aid
-    ? await api('PUT', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`, { password })
-    : await api('POST', `/api/admin/hospitals/${hospitalId}/accounts`, { username, password })
+    ? await api('PUT', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`, { password, nutritionistName })
+    : await api('POST', `/api/admin/hospitals/${hospitalId}/accounts`, { username, password, nutritionistName })
 
   if (res?.success) {
     document.getElementById('adminAccountModal').classList.add('hidden')
@@ -4093,21 +4470,34 @@ function switchHospTab(tab) {
 }
 
 async function saveHospitalInfo(hospitalId) {
+  // 주종목 히든 필드 값 동기화
+  const chips = document.querySelectorAll('#specialty-chips span')
+  if (chips.length > 0) {
+    const specialties = Array.from(chips).map(c => c.textContent.replace('×','').trim()).filter(Boolean)
+    const hiddenEl = document.getElementById('hi-specialty')
+    if (hiddenEl) hiddenEl.value = specialties.join(',')
+  }
+  // 상세주소 합치기
+  const addrMain = document.getElementById('hi-address')?.value || ''
+  const addrDetail = document.getElementById('hi-address-detail')?.value || ''
+  const fullAddress = addrDetail ? `${addrMain} ${addrDetail}`.trim() : addrMain
+
   const body = {
     name: document.getElementById('hi-name').value,
-    address: document.getElementById('hi-address').value,
+    address: fullAddress,
     hospital_type: document.getElementById('hi-type').value,
     licensed_beds: parseInt(document.getElementById('hi-beds').value)||0,
     avg_inpatients: parseInt(document.getElementById('hi-inpatients').value)||0,
     staff_count: parseInt(document.getElementById('hi-staff').value)||0,
     main_specialty: document.getElementById('hi-specialty').value,
     operation_type: document.getElementById('hi-optype').value,
-    consignment_company: document.getElementById('hi-consign').value,
+    consignment_company: document.getElementById('hi-consign')?.value || '',
     meals_per_day: parseInt(document.getElementById('hi-meals').value)||3,
     current_meal_price: parseInt(document.getElementById('hi-curprice').value)||0,
     target_meal_price: parseInt(document.getElementById('hi-tgtprice').value)||0,
     supply_method: document.getElementById('hi-supply').value,
     annual_budget: parseInt(document.getElementById('hi-annual').value)||0,
+    monthly_avg_budget: parseInt(document.getElementById('hi-monthly-avg')?.value)||0,
     dietitian_name: document.getElementById('hi-dietname').value,
     dietitian_phone: document.getElementById('hi-dietphone').value,
     admin_memo: document.getElementById('hi-memo').value
@@ -4115,6 +4505,72 @@ async function saveHospitalInfo(hospitalId) {
   const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/info`, body)
   if (res?.success) showToast('기본정보가 저장되었습니다', 'success')
   else showToast('저장 실패', 'error')
+}
+
+// 카카오 주소검색
+window.openKakaoAddressSearch = function() {
+  // 다음(카카오) 주소검색 API 동적 로드
+  if (window.daum && window.daum.Postcode) {
+    _execDaumPost()
+  } else {
+    const s = document.createElement('script')
+    s.src = '//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js'
+    s.onload = _execDaumPost
+    document.head.appendChild(s)
+  }
+}
+function _execDaumPost() {
+  if (!window.daum || !window.daum.Postcode) {
+    showToast('카카오 주소검색 로드 실패. 직접 입력해주세요.', 'warning'); return
+  }
+  new window.daum.Postcode({
+    oncomplete: function(data) {
+      const addr = data.roadAddress || data.jibunAddress
+      const el = document.getElementById('hi-address')
+      if (el) { el.value = addr; el.readOnly = false }
+    }
+  }).open()
+}
+
+// 주종목 칩 추가/제거
+window.addSpecialtyChip = function(select) {
+  const val = select.value.trim()
+  if (!val) return
+  _addChip(val)
+  select.value = ''
+}
+window.addSpecialtyCustom = function() {
+  const el = document.getElementById('hi-specialty-custom')
+  const val = el.value.trim()
+  if (!val) return
+  _addChip(val)
+  el.value = ''
+}
+function _addChip(val) {
+  const container = document.getElementById('specialty-chips')
+  if (!container) return
+  // 중복 방지
+  const existing = Array.from(container.querySelectorAll('span')).map(s => s.textContent.replace('×','').trim())
+  if (existing.includes(val)) return
+  const span = document.createElement('span')
+  span.className = 'inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs'
+  span.innerHTML = `${val}<button type="button" onclick="removeSpecialtyChip(this)" class="ml-1 text-blue-400 hover:text-red-500">×</button>`
+  container.appendChild(span)
+  _syncSpecialtyHidden()
+}
+window.removeSpecialtyChip = function(btn) {
+  btn.parentElement.remove()
+  _syncSpecialtyHidden()
+}
+function _syncSpecialtyHidden() {
+  const chips = document.querySelectorAll('#specialty-chips span')
+  const specialties = Array.from(chips).map(c => c.textContent.replace('×','').trim()).filter(Boolean)
+  const el = document.getElementById('hi-specialty')
+  if (el) el.value = specialties.join(',')
+}
+window.toggleConsignField = function(val) {
+  const wrap = document.getElementById('hi-consign-wrap')
+  if (wrap) wrap.style.display = val === 'consignment' ? '' : 'none'
 }
 
 async function saveHospitalBudget(hospitalId) {
@@ -4667,6 +5123,46 @@ async function renderReport(selectedHospitalId = null) {
   })
 }
 
+// 캔버스를 고화질 PNG DataURL로 변환 (devicePixelRatio 반영)
+function canvasToHiResPng(canvas) {
+  if (!canvas) return null
+  try {
+    // offscreen canvas로 2배 해상도 복사
+    const scale = 2
+    const off = document.createElement('canvas')
+    off.width = canvas.width * scale
+    off.height = canvas.height * scale
+    const ctx2 = off.getContext('2d')
+    ctx2.scale(scale, scale)
+    ctx2.drawImage(canvas, 0, 0)
+    return off.toDataURL('image/png', 1.0)
+  } catch(e) {
+    return canvas.toDataURL('image/png', 1.0)
+  }
+}
+
+// PPT 슬라이드에 그래프 + 내용 요약 칸 추가 헬퍼
+function addChartSlideWithSummary(pptx, title, titleColor, canvasData, summaryLabel) {
+  const slide = pptx.addSlide()
+  // 상단 헤더 배경
+  slide.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:0.7, fill:{ color: titleColor || '166534' } })
+  slide.addText(title, { x:0.4, y:0.1, w:12.2, h:0.5, fontSize:20, bold:true, color:'FFFFFF' })
+  // 그래프 이미지 (고화질)
+  if (canvasData) {
+    slide.addImage({ data: canvasData, x:0.4, y:0.85, w:12.2, h:4.0 })
+  } else {
+    slide.addShape(pptx.ShapeType.rect, { x:0.4, y:0.85, w:12.2, h:4.0, fill:{ color:'F3F4F6' }, line:{ color:'D1D5DB', width:1 } })
+    slide.addText('차트 데이터 없음', { x:0.4, y:2.5, w:12.2, h:0.5, fontSize:14, color:'9CA3AF', align:'center' })
+  }
+  // 내용 요약 칸
+  const summaryY = 5.0
+  slide.addShape(pptx.ShapeType.rect, { x:0.4, y:summaryY, w:12.2, h:1.8, fill:{ color:'F9FAFB' }, line:{ color:'D1D5DB', width:1 } })
+  slide.addText(summaryLabel || '내용 요약', { x:0.5, y:summaryY+0.05, w:3, h:0.3, fontSize:10, bold:true, color:'374151' })
+  slide.addText('', { x:0.5, y:summaryY+0.35, w:12.0, h:1.35, fontSize:11, color:'6B7280',
+    placeholder: true, isTextBox: true })
+  return slide
+}
+
 async function exportReportPPT(hospitalName, year, month) {
   showToast('PPT 생성 중... 잠시 기다려주세요', 'warning')
   // pptxgenjs CDN 동적 로드
@@ -4681,70 +5177,56 @@ async function exportReportPPT(hospitalName, year, month) {
   const pptx = new window.PptxGenJS()
   pptx.layout = 'LAYOUT_WIDE'
 
+  // 고화질 캔버스 데이터 미리 추출
+  const chartIds = ['rpt-vendorChart','rpt-dailyChart','rpt-mealMonthChart','rpt-mealPriceChart','rpt-annualMpChart','rpt-annualMealChart','rpt-annualVendorPie','rpt-annualBudgetPct','rpt-annualWaste']
+  const chartData = {}
+  chartIds.forEach(id => {
+    const el = document.getElementById(id)
+    chartData[id] = el ? canvasToHiResPng(el) : null
+  })
+
   // 슬라이드 1: 표지
   const s1 = pptx.addSlide()
   s1.background = { color: '166534' }
+  s1.addShape(pptx.ShapeType.rect, { x:2, y:1.2, w:9, h:5, fill:{ color:'14532D', transparency:60 }, line:{ color:'FFFFFF', width:1 } })
   s1.addText(`${hospitalName}`, { x:1, y:1.5, w:11, h:1, fontSize:36, bold:true, color:'FFFFFF', align:'center' })
   s1.addText('급식 운영 월간 보고서', { x:1, y:2.7, w:11, h:0.7, fontSize:22, color:'CCFFCC', align:'center' })
   s1.addText(`${year}년 ${month}월`, { x:1, y:3.6, w:11, h:0.8, fontSize:28, bold:true, color:'FFFFFF', align:'center' })
   s1.addText(`작성일: ${new Date().toLocaleDateString('ko-KR')}`, { x:1, y:5.2, w:11, h:0.4, fontSize:13, color:'AAFFAA', align:'center' })
 
-  // 슬라이드 2: 예산 요약
-  const s2 = pptx.addSlide()
-  s2.addText('월 예산 요약', { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'166534' })
-  const canvas1 = document.getElementById('rpt-vendorChart')
-  if (canvas1) {
-    s2.addImage({ data: canvas1.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
-  }
+  // 슬라이드 2: 예산 요약 + 내용 요약칸
+  addChartSlideWithSummary(pptx, `${year}년 ${month}월 예산 요약 — 업체별 발주금액`, '166534', chartData['rpt-vendorChart'], '📊 예산 요약')
 
-  // 슬라이드 3: 일별 매입금액
-  const s3 = pptx.addSlide()
-  s3.addText('일별 매입금액', { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'166534' })
-  const canvas2 = document.getElementById('rpt-dailyChart')
-  if (canvas2) {
-    s3.addImage({ data: canvas2.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
-  }
+  // 슬라이드 3: 일별 매입금액 + 내용 요약칸
+  addChartSlideWithSummary(pptx, `${year}년 ${month}월 일별 매입금액`, '166534', chartData['rpt-dailyChart'], '📅 일별 매입 요약')
 
-  // 슬라이드 4: 식수 현황
-  const s4 = pptx.addSlide()
-  s4.addText('식수 현황 월별 추이', { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'166534' })
-  const canvas3 = document.getElementById('rpt-mealMonthChart')
-  if (canvas3) {
-    s4.addImage({ data: canvas3.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
-  }
+  // 슬라이드 4: 식수 현황 + 내용 요약칸
+  addChartSlideWithSummary(pptx, `${year}년 ${month}월 식수 현황 월별 추이`, '0F766E', chartData['rpt-mealMonthChart'], '🍽️ 식수 현황 요약')
 
-  // 슬라이드 5: 식단가 분석
-  const s5 = pptx.addSlide()
-  s5.addText('식단가 월별 비교', { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'166534' })
-  const canvas4 = document.getElementById('rpt-mealPriceChart')
-  if (canvas4) {
-    s5.addImage({ data: canvas4.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
-  }
+  // 슬라이드 5: 식단가 분석 + 내용 요약칸
+  addChartSlideWithSummary(pptx, `${year}년 ${month}월 식단가 월별 비교`, '1D4ED8', chartData['rpt-mealPriceChart'], '💰 식단가 분석 요약')
 
-  // 슬라이드 6: 연간 식단가 3종 추이
-  const s6 = pptx.addSlide()
-  s6.addText(`${year}년 연간 식단가 3종 추이`, { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'1d4ed8' })
-  const canvas5 = document.getElementById('rpt-annualMpChart')
-  if (canvas5) {
-    s6.addImage({ data: canvas5.toDataURL('image/png'), x:0.5, y:1.0, w:12, h:4.5 })
-  }
+  // 슬라이드 6: 연간 식단가 3종 추이 + 내용 요약칸
+  addChartSlideWithSummary(pptx, `${year}년 연간 식단가 3종 추이`, '1D4ED8', chartData['rpt-annualMpChart'], '📈 연간 식단가 추이 요약')
 
-  // 슬라이드 7: 연간 식수 구성 (좌) + 업체별 파이 (우)
+  // 슬라이드 7: 연간 식수 구성 + 업체별 파이 (나란히) + 내용 요약칸
   const s7 = pptx.addSlide()
-  s7.addText(`${year}년 연간 식수 구성 & 업체별 발주 비중`, { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'0f766e' })
-  const canvas6 = document.getElementById('rpt-annualMealChart')
-  const canvas7 = document.getElementById('rpt-annualVendorPie')
-  if (canvas6) s7.addImage({ data: canvas6.toDataURL('image/png'), x:0.5, y:1.0, w:6, h:4.5 })
-  if (canvas7) s7.addImage({ data: canvas7.toDataURL('image/png'), x:7, y:1.0, w:5.5, h:4.5 })
+  s7.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:0.7, fill:{ color:'0F766E' } })
+  s7.addText(`${year}년 연간 식수 구성 & 업체별 발주 비중`, { x:0.4, y:0.1, w:12.2, h:0.5, fontSize:20, bold:true, color:'FFFFFF' })
+  if (chartData['rpt-annualMealChart']) s7.addImage({ data: chartData['rpt-annualMealChart'], x:0.4, y:0.85, w:6.0, h:4.0 })
+  if (chartData['rpt-annualVendorPie']) s7.addImage({ data: chartData['rpt-annualVendorPie'], x:6.6, y:0.85, w:6.0, h:4.0 })
+  s7.addShape(pptx.ShapeType.rect, { x:0.4, y:5.0, w:12.2, h:1.8, fill:{ color:'F9FAFB' }, line:{ color:'D1D5DB', width:1 } })
+  s7.addText('🥘 식수구성 & 업체 비중 요약', { x:0.5, y:5.05, w:6, h:0.3, fontSize:10, bold:true, color:'374151' })
 
-  // 슬라이드 8: 예산 달성률 (좌) + 잔반 추이 (우)
+  // 슬라이드 8: 예산 달성률 + 잔반 추이 (나란히) + 내용 요약칸
   const s8 = pptx.addSlide()
-  s8.addText(`${year}년 예산 달성률 & 잔반 추이`, { x:0.5, y:0.3, w:12, h:0.6, fontSize:24, bold:true, color:'15803d' })
-  const canvas8 = document.getElementById('rpt-annualBudgetPct')
-  const canvas9 = document.getElementById('rpt-annualWaste')
-  if (canvas8) s8.addImage({ data: canvas8.toDataURL('image/png'), x:0.5, y:1.0, w:6, h:4.5 })
-  if (canvas9) s8.addImage({ data: canvas9.toDataURL('image/png'), x:7, y:1.0, w:5.5, h:4.5 })
+  s8.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:0.7, fill:{ color:'15803D' } })
+  s8.addText(`${year}년 예산 달성률 & 잔반 추이`, { x:0.4, y:0.1, w:12.2, h:0.5, fontSize:20, bold:true, color:'FFFFFF' })
+  if (chartData['rpt-annualBudgetPct']) s8.addImage({ data: chartData['rpt-annualBudgetPct'], x:0.4, y:0.85, w:6.0, h:4.0 })
+  if (chartData['rpt-annualWaste']) s8.addImage({ data: chartData['rpt-annualWaste'], x:6.6, y:0.85, w:6.0, h:4.0 })
+  s8.addShape(pptx.ShapeType.rect, { x:0.4, y:5.0, w:12.2, h:1.8, fill:{ color:'F9FAFB' }, line:{ color:'D1D5DB', width:1 } })
+  s8.addText('📉 예산달성률 & 잔반 요약', { x:0.5, y:5.05, w:6, h:0.3, fontSize:10, bold:true, color:'374151' })
 
   pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
-  showToast('PPT 다운로드 완료!', 'success')
+  showToast('PPT 다운로드 완료! (고화질)', 'success')
 }
