@@ -3760,12 +3760,14 @@ async function renderHospitalManage() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [hospitals, closingReqs] = await Promise.all([
+  const [hospitals, closingReqs, recentApproved] = await Promise.all([
     api('GET', '/api/admin/hospitals'),
-    api('GET', '/api/admin/closing-requests')
+    api('GET', '/api/admin/closing-requests'),
+    api('GET', '/api/admin/closing-requests/recent-approved').catch(() => [])
   ])
 
   const pendingClosings = closingReqs || []
+  const approvedClosings = recentApproved || []
 
   // 병원 관리 페이지 진입 시 항상 알림 읽음 처리 (배지 초기화)
   await api('POST', '/api/admin/notifications/read-all')
@@ -3794,6 +3796,31 @@ async function renderHospitalManage() {
         </div>
       `).join('')}
     </div>
+  </div>` : ''}
+
+  <!-- 최근 승인된 마감 (롤백 가능) -->
+  ${approvedClosings.length > 0 ? `
+  <div class="mb-5 bg-blue-50 border border-blue-200 rounded-xl p-4">
+    <div class="flex items-center gap-2 mb-3">
+      <i class="fas fa-history text-blue-500"></i>
+      <span class="font-bold text-blue-800">최근 마감 승인 이력 (실수 시 되돌리기 가능)</span>
+    </div>
+    <div class="space-y-2">
+      ${approvedClosings.map(r => `
+        <div class="flex items-center justify-between bg-white rounded-lg p-3 border border-blue-100">
+          <div>
+            <span class="font-semibold text-gray-800">${r.hospital_name}</span>
+            <span class="text-sm text-gray-500 ml-2">${r.year}년 ${r.month}월 → ${r.month==12?r.year+1+'년 1':r.year+'년 '+(parseInt(r.month)+1)}월로 전환됨</span>
+            <span class="text-xs text-gray-400 ml-2">승인: ${r.approved_at?.split('T')[0]}</span>
+          </div>
+          <button onclick="rollbackClosing(${r.hospital_id},${r.year},${r.month},'${r.hospital_name}')"
+            class="btn btn-sm bg-red-50 text-red-600 border border-red-200 hover:bg-red-100">
+            <i class="fas fa-undo mr-1"></i>되돌리기
+          </button>
+        </div>
+      `).join('')}
+    </div>
+    <p class="text-xs text-blue-500 mt-2"><i class="fas fa-info-circle mr-1"></i>되돌리기를 하면 해당 월의 마감 요청 상태로 복원됩니다. 영양사 페이지도 해당 월로 돌아갑니다.</p>
   </div>` : ''}
 
   <!-- 병원 목록 -->
@@ -3848,6 +3875,17 @@ async function approveClosing(hospitalId, year, month) {
   if (res?.success) {
     showToast(`마감 승인 완료! ${res.nextYear}년 ${res.nextMonth}월로 전환되었습니다`, 'success')
     renderHospitalManage()
+  }
+}
+
+async function rollbackClosing(hospitalId, year, month, hospitalName) {
+  if (!confirm(`⚠️ [${hospitalName}] ${year}년 ${month}월로 되돌리시겠습니까?\n\n영양사 페이지가 ${month}월 상태로 복원됩니다.\n실수로 승인한 경우에만 사용하세요.`)) return
+  const res = await api('POST', `/api/admin/closing-rollback/${hospitalId}`, { year, month })
+  if (res?.success) {
+    showToast(res.message || `${year}년 ${month}월로 되돌렸습니다`, 'success')
+    renderHospitalManage()
+  } else {
+    showToast('되돌리기 실패', 'error')
   }
 }
 

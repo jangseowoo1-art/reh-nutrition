@@ -151,17 +151,6 @@ adminRouter.post('/hospitals/:id/budget/:year/:month', async (c) => {
 })
 
 // ── 월 마감 요청 목록 (알림) ──────────────────────────────────
-adminRouter.get('/closing-requests', async (c) => {
-  const requests = await c.env.DB.prepare(`
-    SELECT mc.*, h.name as hospital_name
-    FROM monthly_closings mc
-    JOIN hospitals h ON mc.hospital_id = h.id
-    WHERE mc.status = 'requested'
-    ORDER BY mc.requested_at DESC
-  `).all<any>()
-  return c.json(requests.results)
-})
-
 // ── 월 마감 승인 ──────────────────────────────────────────────
 adminRouter.post('/closing-approve/:hospitalId', async (c) => {
   const hospitalId = c.req.param('hospitalId')
@@ -270,7 +259,33 @@ adminRouter.post('/closing-approve/:hospitalId', async (c) => {
   return c.json({ success: true, nextYear, nextMonth })
 })
 
-// ── 알림 목록 ─────────────────────────────────────────────────
+// ── 마감 승인 롤백 (테스트/실수 취소용) ──────────────────────────
+adminRouter.post('/closing-rollback/:hospitalId', async (c) => {
+  const hospitalId = c.req.param('hospitalId')
+  const { year, month } = await c.req.json()
+
+  // monthly_closings 상태를 다시 'requested' 또는 삭제
+  await c.env.DB.prepare(`
+    UPDATE monthly_closings SET status='requested', approved_at=NULL
+    WHERE hospital_id=? AND year=? AND month=?
+  `).bind(hospitalId, year, month).run()
+
+  // hospital_info를 다시 해당 월로 되돌리기
+  await c.env.DB.prepare(`
+    UPDATE hospital_info SET
+      current_year=?, current_month=?, closing_status='requested',
+      closing_requested_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE hospital_id=?
+  `).bind(year, month, hospitalId).run()
+
+  const hospital = await c.env.DB.prepare(`SELECT name FROM hospitals WHERE id=?`)
+    .bind(hospitalId).first<any>()
+
+  return c.json({ 
+    success: true, 
+    message: `${hospital?.name} ${year}년 ${month}월 마감 승인이 취소되었습니다. 다시 ${month}월로 되돌아갔습니다.` 
+  })
+})
 adminRouter.get('/notifications', async (c) => {
   const notifs = await c.env.DB.prepare(`
     SELECT n.*, h.name as hospital_name
@@ -847,6 +862,32 @@ adminRouter.get('/close-requests/pending', async (c) => {
   `).all<any>()
   const allReqs = [...(requests.results||[]), ...(legacyReqs.results||[])]
   return c.json({ requests: allReqs, count: allReqs.length })
+})
+
+// ── 마감 요청 전체 목록 (병원 관리 페이지용) ─────────────────
+adminRouter.get('/closing-requests', async (c) => {
+  const reqs = await c.env.DB.prepare(`
+    SELECT mc.*, h.name as hospital_name
+    FROM monthly_closings mc
+    JOIN hospitals h ON mc.hospital_id = h.id
+    WHERE mc.status = 'requested'
+    ORDER BY mc.requested_at DESC
+  `).all<any>()
+  return c.json(reqs.results || [])
+})
+
+// ── 최근 승인된 마감 이력 (롤백용, 7일 이내) ─────────────────
+adminRouter.get('/closing-requests/recent-approved', async (c) => {
+  const reqs = await c.env.DB.prepare(`
+    SELECT mc.hospital_id, mc.year, mc.month, mc.approved_at, h.name as hospital_name
+    FROM monthly_closings mc
+    JOIN hospitals h ON mc.hospital_id = h.id
+    WHERE mc.status = 'approved'
+      AND mc.approved_at >= datetime('now', '-7 days')
+    ORDER BY mc.approved_at DESC
+    LIMIT 10
+  `).all<any>()
+  return c.json(reqs.results || [])
 })
 
 // ── 업체별 월별 사용금액 (비교분석용) ─────────────────────────
