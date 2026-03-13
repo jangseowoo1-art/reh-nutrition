@@ -1048,4 +1048,193 @@ adminRouter.post('/vendor-carryover/:hospitalId', async (c) => {
   return c.json({ success: true, vendors: vendors.results || [] })
 })
 
+// ══════════════════════════════════════════════════════════════
+// 병원별 환자군 카테고리 (주종목) CRUD
+// ══════════════════════════════════════════════════════════════
+
+// 카테고리 목록 조회
+adminRouter.get('/hospitals/:id/patient-categories', async (c) => {
+  const id = c.req.param('id')
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(id).all<any>()
+  return c.json(cats.results || [])
+})
+
+// 카테고리 일괄 저장 (추가/수정/삭제 통합)
+adminRouter.put('/hospitals/:id/patient-categories', async (c) => {
+  const id = c.req.param('id')
+  const { categories } = await c.req.json() as { categories: any[] }
+
+  if (!categories || !Array.isArray(categories)) {
+    return c.json({ error: 'categories 배열 필요' }, 400)
+  }
+
+  // 기존 전체 비활성화
+  await c.env.DB.prepare(`
+    UPDATE hospital_patient_categories SET is_active = 0 WHERE hospital_id = ?
+  `).bind(id).run()
+
+  // 새로 upsert
+  for (let i = 0; i < categories.length; i++) {
+    const cat = categories[i]
+    await c.env.DB.prepare(`
+      INSERT INTO hospital_patient_categories
+        (hospital_id, category_key, category_name, order_code, sort_order, is_active)
+      VALUES (?,?,?,?,?,1)
+      ON CONFLICT(hospital_id, category_key) DO UPDATE SET
+        category_name = excluded.category_name,
+        order_code = excluded.order_code,
+        sort_order = excluded.sort_order,
+        is_active = 1
+    `).bind(id, cat.category_key, cat.category_name, cat.order_code || '', i).run()
+  }
+
+  const updated = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(id).all<any>()
+  return c.json({ success: true, categories: updated.results || [] })
+})
+
+// 카테고리별 월간 목표 설정 조회
+adminRouter.get('/hospitals/:id/category-settings/:year/:month', async (c) => {
+  const { id, year, month } = c.req.param()
+  const settings = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name, hpc.order_code
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+    ORDER BY hpc.sort_order
+  `).bind(id, year, month).all<any>()
+  return c.json(settings.results || [])
+})
+
+// 카테고리별 월간 목표 설정 저장
+adminRouter.post('/hospitals/:id/category-settings/:year/:month', async (c) => {
+  const { id, year, month } = c.req.param()
+  const { settings } = await c.req.json() as { settings: any[] }
+
+  if (!settings || !Array.isArray(settings)) {
+    return c.json({ error: 'settings 배열 필요' }, 400)
+  }
+
+  for (const s of settings) {
+    await c.env.DB.prepare(`
+      INSERT INTO category_order_settings
+        (hospital_id, patient_category_id, year, month, monthly_budget, target_meal_price, working_days, updated_at)
+      VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(hospital_id, patient_category_id, year, month) DO UPDATE SET
+        monthly_budget = excluded.monthly_budget,
+        target_meal_price = excluded.target_meal_price,
+        working_days = excluded.working_days,
+        updated_at = CURRENT_TIMESTAMP
+    `).bind(id, s.patient_category_id, year, month, s.monthly_budget || 0, s.target_meal_price || 0, s.working_days || 0).run()
+  }
+
+  return c.json({ success: true })
+})
+
+// 카테고리별 발주 현황 조회 (일별/월별)
+adminRouter.get('/hospitals/:id/category-orders/:year/:month', async (c) => {
+  const { id, year, month } = c.req.param()
+  const mm = String(month).padStart(2, '0')
+
+  // 카테고리 목록
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(id).all<any>()
+
+  // 카테고리별 월 발주 합계
+  const monthly = await c.env.DB.prepare(`
+    SELECT
+      d.patient_category_id,
+      COALESCE(SUM(d.taxable_amount), 0) as taxable,
+      COALESCE(SUM(d.exempt_amount), 0) as exempt,
+      COALESCE(SUM(d.vat_amount), 0) as vat,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM daily_orders d
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+      AND strftime('%m', d.order_date) = ?
+    GROUP BY d.patient_category_id
+  `).bind(id, String(year), mm).all<any>()
+
+  // 카테고리별 일별 발주
+  const daily = await c.env.DB.prepare(`
+    SELECT
+      d.order_date,
+      d.patient_category_id,
+      COALESCE(SUM(d.taxable_amount), 0) as taxable,
+      COALESCE(SUM(d.exempt_amount), 0) as exempt,
+      COALESCE(SUM(d.vat_amount), 0) as vat,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM daily_orders d
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+      AND strftime('%m', d.order_date) = ?
+    GROUP BY d.order_date, d.patient_category_id
+    ORDER BY d.order_date
+  `).bind(id, String(year), mm).all<any>()
+
+  // 목표 설정
+  const catSettings = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+  `).bind(id, year, month).all<any>()
+
+  return c.json({
+    categories: cats.results || [],
+    monthlyByCategory: monthly.results || [],
+    dailyByCategory: daily.results || [],
+    categorySettings: catSettings.results || []
+  })
+})
+
+// ── 카테고리별 연간 발주 집계 (분석용) ────────────────────────
+adminRouter.get('/hospitals/:id/category-annual/:year', async (c) => {
+  const { id, year } = c.req.param()
+
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(id).all<any>()
+
+  const annual = await c.env.DB.prepare(`
+    SELECT
+      d.patient_category_id,
+      strftime('%m', d.order_date) as month,
+      COALESCE(SUM(d.taxable_amount), 0) as taxable,
+      COALESCE(SUM(d.exempt_amount), 0) as exempt,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM daily_orders d
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+    GROUP BY d.patient_category_id, strftime('%m', d.order_date)
+    ORDER BY d.patient_category_id, month
+  `).bind(id, year).all<any>()
+
+  const annualSettings = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ?
+    ORDER BY hpc.sort_order, cos.month
+  `).bind(id, year).all<any>()
+
+  return c.json({
+    categories: cats.results || [],
+    annualByCategory: annual.results || [],
+    annualSettings: annualSettings.results || []
+  })
+})
+
 export default adminRouter

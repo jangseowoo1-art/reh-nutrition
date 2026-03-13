@@ -197,4 +197,126 @@ orders.delete('/:id', async (c) => {
   return c.json({ success: true })
 })
 
+// ── 환자군 카테고리 목록 조회 (영양사용) ────────────────────
+orders.get('/patient-categories', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  if (!hospitalId) return c.json([])
+
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(hospitalId).all<any>()
+  return c.json(cats.results || [])
+})
+
+// ── 카테고리별 월간 발주 현황 (영양사용) ────────────────────
+orders.get('/category-monthly/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  if (!hospitalId) return c.json({ categories: [], monthly: [], settings: [] })
+
+  const { year, month } = c.req.param()
+  const mm = month.padStart(2, '0')
+
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(hospitalId).all<any>()
+
+  const monthly = await c.env.DB.prepare(`
+    SELECT
+      patient_category_id,
+      COALESCE(SUM(taxable_amount), 0) as taxable,
+      COALESCE(SUM(exempt_amount), 0) as exempt,
+      COALESCE(SUM(vat_amount), 0) as vat,
+      COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND strftime('%Y', order_date) = ?
+      AND strftime('%m', order_date) = ?
+    GROUP BY patient_category_id
+  `).bind(hospitalId, year, mm).all<any>()
+
+  const catSettings = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+  `).bind(hospitalId, year, month).all<any>()
+
+  return c.json({
+    categories: cats.results || [],
+    monthly: monthly.results || [],
+    settings: catSettings.results || []
+  })
+})
+
+// ── 카테고리별 일별 발주 조회 ────────────────────────────────
+orders.get('/category-daily/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  if (!hospitalId) return c.json([])
+
+  const { year, month } = c.req.param()
+  const mm = month.padStart(2, '0')
+
+  const data = await c.env.DB.prepare(`
+    SELECT
+      order_date,
+      patient_category_id,
+      COALESCE(SUM(taxable_amount), 0) as taxable,
+      COALESCE(SUM(exempt_amount), 0) as exempt,
+      COALESCE(SUM(vat_amount), 0) as vat,
+      COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND strftime('%Y', order_date) = ?
+      AND strftime('%m', order_date) = ?
+    GROUP BY order_date, patient_category_id
+    ORDER BY order_date, patient_category_id
+  `).bind(hospitalId, year, mm).all<any>()
+
+  return c.json(data.results || [])
+})
+
+// ── 카테고리별 발주 저장 ─────────────────────────────────────
+orders.post('/save-category', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const body = await c.req.json()
+  const { vendorId, orderDate, patientCategoryId, taxableAmount, exemptAmount, vatAmount, note } = body
+
+  const totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount || 0)
+
+  // vendor + date + category 조합으로 upsert
+  const existing = await c.env.DB.prepare(`
+    SELECT id FROM daily_orders
+    WHERE hospital_id=? AND vendor_id=? AND order_date=?
+      AND (patient_category_id = ? OR (patient_category_id IS NULL AND ? IS NULL))
+  `).bind(hospitalId, vendorId, orderDate, patientCategoryId || null, patientCategoryId || null).first<any>()
+
+  if (existing) {
+    await c.env.DB.prepare(`
+      UPDATE daily_orders SET
+        taxable_amount=?, exempt_amount=?, vat_amount=?, total_amount=?,
+        patient_category_id=?, note=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).bind(taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
+            patientCategoryId||null, note||null, existing.id).run()
+  } else {
+    await c.env.DB.prepare(`
+      INSERT INTO daily_orders
+        (hospital_id, vendor_id, order_date, patient_category_id,
+         taxable_amount, exempt_amount, vat_amount, total_amount, note)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).bind(hospitalId, vendorId, orderDate, patientCategoryId||null,
+            taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount, note||null).run()
+  }
+
+  return c.json({ success: true, totalAmount })
+})
+
 export default orders

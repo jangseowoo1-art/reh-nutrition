@@ -462,6 +462,23 @@ function getTaxTypeLabel(t) {
   return { mixed:'과세+면세', taxable:'과세', exempt:'면세' }[t] || t
 }
 
+// 환자군 카테고리 색상 (hex)
+function getCategoryColorHex(key) {
+  const colors = {
+    general: '#6b7280', cancer: '#dc2626', rehab: '#2563eb',
+    nursing: '#16a34a', traffic: '#d97706', mental: '#7c3aed',
+    pediatric: '#db2777', spine: '#0891b2', joint: '#059669',
+    cardiac: '#e11d48', dialysis: '#0284c7', stroke: '#9333ea',
+    elderly: '#65a30d', maternity: '#ec4899', other: '#6b7280'
+  }
+  return colors[key] || '#6b7280'
+}
+
+// 카테고리 설정 안내
+function openCategorySetupGuide() {
+  showToast('관리자 → 병원관리 → 환자군 탭에서 카테고리를 설정하세요', 'info')
+}
+
 function showToast(msg, type = 'success') {
   const t = document.createElement('div')
   t.className = `toast toast-${type}`
@@ -480,8 +497,21 @@ async function renderDashboard() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const data = await api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`)
+  const [data, catData] = await Promise.all([
+    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
+  ])
   if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+
+  const patientCats = catData?.categories || []
+  const catMonthly = catData?.monthly || []
+  const catSettings = catData?.settings || []
+
+  // 카테고리별 데이터 맵
+  const catMonthlyMap = {}
+  catMonthly.forEach(m => { catMonthlyMap[m.patient_category_id] = m })
+  const catSettingsMap = {}
+  catSettings.forEach(s => { catSettingsMap[s.patient_category_id] = s })
 
   const s = data.summary
   const vendors = data.vendors || []
@@ -692,6 +722,52 @@ async function renderDashboard() {
   </div>
 
   <!-- 식수 현황 + 업체 카테고리 -->
+  ${patientCats.length > 0 ? `
+  <!-- 환자군별 발주 현황 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-bold text-gray-800"><i class="fas fa-layer-group text-purple-600 mr-2"></i>환자군별 발주 현황</h2>
+      <span class="text-xs text-gray-400">${App.currentYear}년 ${App.currentMonth}월</span>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+      ${patientCats.map(cat => {
+        const monthly = catMonthlyMap[cat.id] || {}
+        const settings = catSettingsMap[cat.id] || {}
+        const used = monthly.total || 0
+        const budget = settings.monthly_budget || 0
+        const taxable = monthly.taxable || 0
+        const exempt = monthly.exempt || 0
+        const pct = budget > 0 ? Math.round(used / budget * 100) : null
+        const over = pct !== null && pct >= 100
+        const warn = pct !== null && pct >= 80 && !over
+        const catColor = getCategoryColorHex(cat.category_key)
+        const borderColor = over ? '#ef4444' : warn ? '#f59e0b' : catColor
+        return `<div style="border:2px solid ${borderColor}20;border-radius:12px;padding:12px;background:${catColor}08;position:relative;overflow:hidden">
+          <div style="position:absolute;top:0;right:0;width:40px;height:40px;border-radius:0 0 0 40px;background:${catColor}15"></div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <div style="width:24px;height:24px;border-radius:6px;background:${catColor};display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700">${cat.category_name.charAt(0)}</div>
+            <span style="font-weight:700;color:#374151;font-size:13px">${cat.category_name}</span>
+            ${cat.order_code ? `<span style="font-size:10px;color:#9ca3af">(${cat.order_code})</span>` : ''}
+          </div>
+          <div style="font-size:20px;font-weight:900;color:${over?'#dc2626':catColor};line-height:1;margin-bottom:4px">${fmtMan(used)}</div>
+          ${budget > 0 ? `
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:6px">목표: ${fmtMan(budget)}</div>
+          <div style="background:${catColor}20;border-radius:4px;height:5px;overflow:hidden;margin-bottom:4px">
+            <div style="height:5px;width:${Math.min(pct||0,100)}%;background:${over?'#ef4444':warn?'#f59e0b':catColor};border-radius:4px;transition:width 0.3s"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;font-weight:700;color:${over?'#dc2626':warn?'#d97706':catColor}">${pct}%</span>
+            <span style="font-size:10px;color:#9ca3af">${over?'<span style="color:#dc2626">초과</span>':fmtMan(budget-used)+' 남음'}</span>
+          </div>` : `<div style="font-size:10px;color:#9ca3af">목표미설정</div>`}
+          ${(taxable > 0 || exempt > 0) ? `
+          <div style="margin-top:6px;padding-top:6px;border-top:1px solid ${catColor}20;display:flex;gap:8px;font-size:10px;color:#6b7280">
+            <span>과: ${fmtMan(taxable)}</span>
+            <span>면: ${fmtMan(exempt)}</span>
+          </div>` : ''}
+        </div>`
+      }).join('')}
+    </div>
+  </div>` : ''}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
       <div class="flex items-center justify-between mb-4">
@@ -864,20 +940,20 @@ async function renderDashboard() {
   }
 
   // 파이 차트
-  const catData = {}
+  const vendorCatData = {}
   vendors.forEach(v => {
     if (v.total_used > 0) {
       const cat = getCategoryLabel(v.category)
-      catData[cat] = (catData[cat] || 0) + v.total_used
+      vendorCatData[cat] = (vendorCatData[cat] || 0) + v.total_used
     }
   })
   const ctx2 = document.getElementById('vendorPieChart')
-  if (ctx2 && Object.keys(catData).length > 0) {
+  if (ctx2 && Object.keys(vendorCatData).length > 0) {
     App.charts.pie = new Chart(ctx2, {
       type: 'doughnut',
       data: {
-        labels: Object.keys(catData),
-        datasets: [{ data: Object.values(catData), backgroundColor: ['#16a34a','#15803d','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899'] }]
+        labels: Object.keys(vendorCatData),
+        datasets: [{ data: Object.values(vendorCatData), backgroundColor: ['#16a34a','#15803d','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899'] }]
       },
       options: {
         responsive: true,
@@ -897,14 +973,20 @@ async function renderOrders() {
   const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [vendors, orderData, settingsData, dashData] = await Promise.all([
+  const [vendors, orderData, settingsData, dashData, patientCats, catOrderData] = await Promise.all([
     api('GET', '/api/vendors'),
     api('GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/settings/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
+    api('GET', '/api/orders/patient-categories'),
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
   ])
 
   if (!vendors) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+
+  // 환자군 카테고리 전역 저장
+  window._patientCats = patientCats || []
+  window._catOrderSettings = (catOrderData?.settings) || []
 
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   const orderMap = {}
@@ -1084,6 +1166,10 @@ async function renderOrders() {
         <button onclick="saveAllOrders()" class="btn btn-success btn-sm">
           <i class="fas fa-save"></i> <span class="hidden sm:inline">전체 </span>저장
         </button>
+        ${window._patientCats && window._patientCats.length > 0 ? '' : `
+        <button onclick="openCategorySetupGuide()" class="btn btn-sm" style="background:#f3e8ff;color:#7c3aed;border:1px solid #d8b4fe">
+          <i class="fas fa-layer-group"></i> <span class="hidden sm:inline">칸 생성</span>
+        </button>`}
         <button onclick="showQuickMultiDay()" class="btn btn-primary btn-sm">
           <i class="fas fa-calendar-plus"></i> <span class="hidden sm:inline">다수일 </span>발주
         </button>
@@ -1136,12 +1222,23 @@ async function renderOrders() {
                 <div style="font-size:9px;opacity:0.7">${getTaxTypeLabel(v.tax_type)}</div>
               </th>`
             }).join('')}
+            ${(patientCats||[]).length > 0 ? `
+            <th colspan="${(patientCats||[]).length}" style="border-left:3px solid #7c3aed;background:#4c1d95;font-size:11px">
+              환자군별 발주
+            </th>` : ''}
             <th rowspan="2" style="width:85px">일합계</th>
           </tr>
           <tr>
             ${vendors.map((v, vi) => {
               const borderLeft = vi > 0 ? 'border-left:3px solid #334155;' : ''
               return getVendorSubHeadersWithPct(v, borderLeft)
+            }).join('')}
+            ${(patientCats||[]).map((cat, ci) => {
+              const borderLeft = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
+              const catColor = getCategoryColorHex(cat.category_key)
+              return `<th style="width:80px;${borderLeft}background:${catColor}20;color:${catColor};font-size:10px">
+                ${cat.category_name}
+              </th>`
             }).join('')}
           </tr>
         </thead>
@@ -1170,6 +1267,20 @@ async function renderOrders() {
             window._ordersMultiDayMap = multiDayMap
             window._ordersVendors = vendors
             window._ordersVendorDailyBudgets = vendorDailyBudgets
+
+            // 카테고리별 일별 발주 맵 생성
+            // catDailyMap[date][categoryId] = { taxable, exempt, vat, total }
+            const catDailyMap = {}
+            ;(catOrderData?.dailyByCategory || []).forEach(r => {
+              if (!catDailyMap[r.order_date]) catDailyMap[r.order_date] = {}
+              catDailyMap[r.order_date][r.patient_category_id] = r
+            })
+            window._catDailyMap = catDailyMap
+
+            // 카테고리별 목표 설정 맵
+            const catSettingsMap = {}
+            ;(catOrderData?.settings || []).forEach(s => { catSettingsMap[s.patient_category_id] = s })
+            window._catSettingsMap = catSettingsMap
 
             const rows = []
             const renderedWeeks = new Set()
@@ -1262,6 +1373,27 @@ async function renderOrders() {
                 return getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)
               }).join('')
 
+              // 카테고리별 셀 생성
+              const catCells = (patientCats||[]).map((cat, ci) => {
+                const catData = catDailyMap[dateStr]?.[cat.id] || {}
+                const catTotal = catData.total || 0
+                const catTaxable = catData.taxable || 0
+                const catExempt = catData.exempt || 0
+                const catBorder = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
+                const catColor = getCategoryColorHex(cat.category_key)
+                const catSettings = catSettingsMap[cat.id] || {}
+                const catDailyBudget = catSettings.working_days > 0 ? Math.round((catSettings.monthly_budget||0)/catSettings.working_days) : 0
+                const catPct = catDailyBudget > 0 ? Math.round(catTotal/catDailyBudget*100) : null
+                const catOver = catPct !== null && catPct >= 100
+                return `<td style="${catBorder}padding:2px 2px;min-width:80px;text-align:center">
+                  <input type="text" inputmode="numeric" pattern="[0-9,]*"
+                    class="cat-order-input" style="width:72px;font-size:11px;text-align:right;padding:2px 4px;border:1px solid ${catColor}40;border-radius:3px;background:${catTotal>0?catColor+'10':'#fff'}"
+                    data-category="${cat.id}" data-date="${dateStr}"
+                    value="${catTotal > 0 ? fmt(catTotal) : ''}" placeholder="0">
+                  ${catPct !== null && catTotal > 0 ? `<div style="font-size:8px;color:${catOver?'#dc2626':catColor};font-weight:600">${catPct}%</div>` : ''}
+                </td>`
+              }).join('')
+
               rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
                 <td class="date-col sticky left-0 z-10" style="width:30px">${day}</td>
                 <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};width:24px">${dow}</td>
@@ -1274,6 +1406,7 @@ async function renderOrders() {
                   ${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px;white-space:nowrap">${multiDayCount}일치</div>`:''}
                 </td>
                 ${vendorCells}
+                ${catCells}
                 <td class="total-col text-center text-xs" id="dayTotal-${dateStr}" style="${dOver?'color:#dc2626;font-weight:700;background:#fee2e2':dWarn?'color:#d97706;font-weight:600;background:#fef3c7':''}">${dayTotal>0?fmt(dayTotal):''}</td>
               </tr>`)
             }
@@ -1285,6 +1418,20 @@ async function renderOrders() {
             <td colspan="2" class="text-center py-1.5 sticky left-0 bg-gray-100">합계</td>
             <td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>
             ${vendors.map(v => getVendorTotalCellsWithPct(v, orderData||[])).join('')}
+            ${(patientCats||[]).map((cat, ci) => {
+              const catMonthly = (catOrderData?.monthly||[]).find(m => m.patient_category_id === cat.id) || {}
+              const catTotal = catMonthly.total || 0
+              const catSettings = catSettingsMap?.[cat.id] || {}
+              const catBudget = catSettings.monthly_budget || 0
+              const catPct = catBudget > 0 ? Math.round(catTotal/catBudget*100) : null
+              const catOver = catPct !== null && catPct >= 100
+              const catColor = getCategoryColorHex(cat.category_key)
+              const borderLeft = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
+              return `<td style="${borderLeft}text-align:center;background:${catColor}10;padding:4px 2px">
+                <div style="font-size:11px;font-weight:700;color:${catOver?'#dc2626':catColor}">${catTotal>0?fmtMan(catTotal):'-'}</div>
+                ${catPct!==null ? `<div style="font-size:9px;color:${catOver?'#dc2626':'#6b7280'}">${catPct}%</div>` : ''}
+              </td>`
+            }).join('')}
             <td class="text-center text-green-700 font-bold" id="vfoot-month-total" style="font-size:11px">
               ${fmt((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}
             </td>
@@ -1736,6 +1883,58 @@ function bindOrderInputEvents() {
       }
     })
   })
+
+  // 환자군 카테고리 입력 이벤트
+  document.querySelectorAll('.cat-order-input').forEach(input => {
+    let _catSaveTimer = null
+    input.addEventListener('focus', function() {
+      const raw = parseOrderVal(this.value)
+      this.value = raw > 0 ? String(raw) : ''
+      this.select()
+    })
+    input.addEventListener('input', function() {
+      this.value = this.value.replace(/[^0-9]/g, '')
+    })
+    input.addEventListener('blur', function() {
+      const val = parseOrderVal(this.value)
+      if (val > 0) this.value = val.toLocaleString()
+      else this.value = ''
+      if (_catSaveTimer) clearTimeout(_catSaveTimer)
+      _catSaveTimer = setTimeout(async () => {
+        await saveCatOrderInput(this)
+      }, 200)
+    })
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const inputs = [...document.querySelectorAll('.cat-order-input')]
+        const idx = inputs.indexOf(this)
+        if (idx < inputs.length-1) { e.preventDefault(); inputs[idx+1].focus() }
+      }
+    })
+  })
+}
+
+// 카테고리별 발주 저장
+async function saveCatOrderInput(input) {
+  const categoryId = input.dataset.category
+  const date = input.dataset.date
+  const total = parseOrderVal(input.value)
+
+  if (!categoryId || !date) return
+
+  // 카테고리 발주는 과세/면세 비율을 총액에서 계산 (기본: 전체 과세)
+  // 실제로는 총액만 저장하고 과세/면세 분리 없이 저장 (vendor_id = null)
+  showAutoSaveIndicator('saving')
+  const res = await api('POST', '/api/orders/save-category', {
+    vendorId: null,
+    orderDate: date,
+    patientCategoryId: parseInt(categoryId),
+    taxableAmount: total,
+    exemptAmount: 0,
+    vatAmount: Math.round(total * 0.1)
+  })
+  showAutoSaveIndicator(res?.success ? 'saved' : 'error')
+  updateCatMonthTotal(categoryId)
 }
 
 // 자동저장 인디케이터
@@ -1761,6 +1960,16 @@ function showAutoSaveIndicator(state) {
     el.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i>저장 실패'
     _autoSaveTimer = setTimeout(() => { el.style.opacity = '0' }, 3000)
   }
+}
+
+// 카테고리 월 합계 업데이트
+function updateCatMonthTotal(categoryId) {
+  let monthTotal = 0
+  document.querySelectorAll(`.cat-order-input[data-category="${categoryId}"]`).forEach(inp => {
+    monthTotal += parseOrderVal(inp.value)
+  })
+  // tfoot 카테고리 셀 업데이트 - 간단한 버전으로 구현
+  // (tfoot은 렌더링 시 catSettingsMap 사용하므로 실시간 업데이트는 refreshOrders 호출로 처리)
 }
 
 function updateBudgetProgressPanel() {
@@ -2579,11 +2788,46 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     ? `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}?hospitalId=${selectedHospitalId}`
     : `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`
 
-  const [data, summaryData] = await Promise.all([
+  // 카테고리 연간 데이터
+  const catAnnualUrl = App.role === 'admin' && selectedHospitalId
+    ? `/api/admin/hospitals/${selectedHospitalId}/category-annual/${App.currentYear}`
+    : null
+  const catCategoryUrl = App.role === 'admin' && selectedHospitalId
+    ? `/api/admin/hospitals/${selectedHospitalId}/patient-categories`
+    : '/api/orders/patient-categories'
+
+  const [data, summaryData, catAnnualData, catListData] = await Promise.all([
     api('GET', annualUrl),
-    api('GET', summaryUrl)
+    api('GET', summaryUrl),
+    catAnnualUrl ? api('GET', catAnnualUrl) : Promise.resolve(null),
+    api('GET', catCategoryUrl)
   ])
   if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+
+  // 환자군 카테고리 연간 데이터 처리
+  const patientCatsForAnalysis = catAnnualData?.categories || catListData || []
+  const catAnnualByCategory = catAnnualData?.annualByCategory || []
+  const catAnnualSettingsData = catAnnualData?.annualSettings || []
+
+  // 카테고리별 월별 데이터 맵
+  const catMonthlyData = {}  // catMonthlyData[catId][monthIdx] = { taxable, exempt, total }
+  patientCatsForAnalysis.forEach(cat => {
+    catMonthlyData[cat.id] = Array(12).fill(null).map(() => ({ taxable:0, exempt:0, total:0 }))
+  })
+  catAnnualByCategory.forEach(r => {
+    const catId = r.patient_category_id
+    const mIdx = parseInt(r.month) - 1
+    if (catMonthlyData[catId] && mIdx >= 0 && mIdx < 12) {
+      catMonthlyData[catId][mIdx] = { taxable: r.taxable||0, exempt: r.exempt||0, total: r.total||0 }
+    }
+  })
+
+  // 카테고리별 목표 설정 맵
+  const catAnnualSettingsMap = {}  // [catId][month] = settings
+  catAnnualSettingsData.forEach(s => {
+    if (!catAnnualSettingsMap[s.patient_category_id]) catAnnualSettingsMap[s.patient_category_id] = {}
+    catAnnualSettingsMap[s.patient_category_id][s.month] = s
+  })
 
   const months = Array.from({length:12}, (_,i) => `${i+1}월`)
   // 연간 배열 구성
@@ -2832,6 +3076,84 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       </div>
     </div>
   </div>
+
+  <!-- 환자군별 연간 분석 (카테고리가 있을 때만 표시) -->
+  ${patientCatsForAnalysis.length > 0 ? `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mt-4">
+    <h3 class="font-bold text-gray-700 text-sm mb-4"><i class="fas fa-layer-group text-purple-500 mr-1"></i>환자군별 월별 발주 현황</h3>
+
+    <!-- 환자군별 월별 발주 금액 차트 -->
+    <div class="mb-6">
+      <h4 class="font-semibold text-gray-600 text-sm mb-3">환자군별 월별 발주 금액 추이</h4>
+      <div style="position:relative;height:280px">
+        <canvas id="chart-catMonthly"></canvas>
+      </div>
+    </div>
+
+    <!-- 환자군별 월별 예산 달성률 -->
+    <div class="mb-6">
+      <h4 class="font-semibold text-gray-600 text-sm mb-3">환자군별 월별 예산 달성률</h4>
+      <div style="position:relative;height:200px">
+        <canvas id="chart-catBudgetPct"></canvas>
+      </div>
+    </div>
+
+    <!-- 환자군별 월별 발주 상세 표 -->
+    <div>
+      <h4 class="font-semibold text-gray-600 text-sm mb-3">환자군별 월별 발주 상세</h4>
+      <div class="overflow-x-auto">
+        <table style="width:100%;border-collapse:collapse;min-width:700px">
+          <thead>
+            <tr style="background:#f3e8ff">
+              <th style="padding:8px 10px;text-align:left;font-size:12px;color:#6b21a8;border-bottom:2px solid #d8b4fe;min-width:100px">환자군</th>
+              ${months.map(m => `<th style="padding:8px 6px;text-align:right;font-size:11px;color:#6b21a8;border-bottom:2px solid #d8b4fe;width:65px">${m}</th>`).join('')}
+              <th style="padding:8px 8px;text-align:right;font-size:12px;color:#6b21a8;border-bottom:2px solid #d8b4fe;background:#e9d5ff;min-width:80px">연합계</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${patientCatsForAnalysis.map(cat => {
+              const catColor = getCategoryColorHex(cat.category_key)
+              const monthVals = catMonthlyData[cat.id] || Array(12).fill({total:0})
+              const annualTotal = monthVals.reduce((s, m) => s + (m?.total||0), 0)
+              return `<tr style="border-bottom:1px solid #f3f4f6">
+                <td style="padding:7px 10px">
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <div style="width:10px;height:10px;border-radius:2px;background:${catColor};flex-shrink:0"></div>
+                    <span style="font-size:12px;font-weight:600;color:#374151">${cat.category_name}</span>
+                    ${cat.order_code ? `<span style="font-size:10px;color:#9ca3af">(${cat.order_code})</span>` : ''}
+                  </div>
+                </td>
+                ${monthVals.map((mv, mi) => {
+                  const v = mv?.total || 0
+                  const s = catAnnualSettingsMap[cat.id]?.[mi+1]
+                  const budget = s?.monthly_budget || 0
+                  const pct = budget > 0 ? Math.round(v/budget*100) : null
+                  const over = pct !== null && pct >= 100
+                  return `<td style="padding:7px 6px;text-align:right;font-size:11px;color:${v>0?(over?'#dc2626':catColor):'#d1d5db'};font-weight:${v>0?'600':'400'}">
+                    ${v > 0 ? fmtMan(v)+'만' : '-'}
+                    ${pct !== null && v > 0 ? `<div style="font-size:9px;color:${over?'#dc2626':'#9ca3af'}">${pct}%</div>` : ''}
+                  </td>`
+                }).join('')}
+                <td style="padding:7px 8px;text-align:right;font-size:12px;font-weight:700;color:${catColor};background:${catColor}10;border-left:2px solid ${catColor}40">${annualTotal>0?fmtMan(annualTotal)+'만':'-'}</td>
+              </tr>`
+            }).join('')}
+          </tbody>
+          <tfoot>
+            <tr style="background:#f3e8ff;font-weight:700">
+              <td style="padding:8px 10px;font-size:12px;color:#6b21a8">합계</td>
+              ${months.map((m, mi) => {
+                const total = patientCatsForAnalysis.reduce((s, cat) => s + (catMonthlyData[cat.id]?.[mi]?.total||0), 0)
+                return `<td style="padding:8px 6px;text-align:right;font-size:11px;color:${total>0?'#6b21a8':'#d1d5db'}">${total>0?fmtMan(total)+'만':'-'}</td>`
+              }).join('')}
+              <td style="padding:8px 8px;text-align:right;font-size:12px;color:#6b21a8;background:#e9d5ff">
+                ${fmtMan(patientCatsForAnalysis.reduce((s, cat) => s + (catMonthlyData[cat.id]||[]).reduce((ss, m) => ss+(m?.total||0), 0), 0))}만
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </div>` : ''}
 
   <!-- ════ 월간 분석 탭 ════ -->
   <div id="anaContent-monthly" class="hidden">
@@ -3387,6 +3709,85 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
         scales: { y: { ticks: { callback: v => `${(v/1e6).toFixed(1)}백만` } } }
       },
       plugins: [pointLabelPlugin]
+    })
+  }
+
+  // ── 환자군별 월별 발주 금액 차트
+  const catMonthlyEl = document.getElementById('chart-catMonthly')
+  if (catMonthlyEl && patientCatsForAnalysis.length > 0) {
+    const catColors = patientCatsForAnalysis.map(cat => getCategoryColorHex(cat.category_key))
+    new Chart(catMonthlyEl, {
+      type: 'bar',
+      data: {
+        labels: months,
+        datasets: patientCatsForAnalysis.map((cat, i) => ({
+          label: cat.category_name,
+          data: (catMonthlyData[cat.id] || Array(12).fill({total:0})).map(m => m?.total || 0),
+          backgroundColor: catColors[i] + 'cc',
+          borderColor: catColors[i],
+          borderWidth: 1,
+          borderRadius: 3
+        }))
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtMan(ctx.raw)}원` } }
+        },
+        scales: {
+          x: { stacked: false },
+          y: { ticks: { callback: v => v > 0 ? `${Math.round(v/1e4)}만` : '0' } }
+        }
+      }
+    })
+  }
+
+  // ── 환자군별 월별 예산 달성률 차트
+  const catBudgetPctEl = document.getElementById('chart-catBudgetPct')
+  if (catBudgetPctEl && patientCatsForAnalysis.length > 0) {
+    // 달성률 계산
+    const pctDatasets = patientCatsForAnalysis.map(cat => {
+      const catColor = getCategoryColorHex(cat.category_key)
+      const pctData = months.map((_, mi) => {
+        const used = catMonthlyData[cat.id]?.[mi]?.total || 0
+        const budget = catAnnualSettingsMap[cat.id]?.[mi+1]?.monthly_budget || 0
+        return budget > 0 ? Math.round(used / budget * 100) : null
+      })
+      return {
+        label: cat.category_name,
+        data: pctData,
+        borderColor: catColor,
+        backgroundColor: catColor + '20',
+        borderWidth: 2,
+        pointRadius: 4,
+        pointBackgroundColor: catColor,
+        pointBorderColor: '#fff', pointBorderWidth: 1.5,
+        fill: false, tension: 0.3,
+        spanGaps: false
+      }
+    })
+
+    new Chart(catBudgetPctEl, {
+      type: 'line',
+      data: { labels: months, datasets: pctDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: ctx => ctx.raw !== null ? `${ctx.dataset.label}: ${ctx.raw}%` : '목표 미설정' } },
+          annotation: {
+            annotations: {
+              line100: { type: 'line', yMin: 100, yMax: 100, borderColor: '#ef4444', borderWidth: 1, borderDash: [4,4], label: { content: '100%', enabled: true, position: 'end', font: { size: 9 } } }
+            }
+          }
+        },
+        scales: {
+          y: { ticks: { callback: v => `${v}%` }, suggestedMax: 120 }
+        }
+      }
     })
   }
 
@@ -4675,6 +5076,9 @@ async function openHospitalDetail(hospitalId) {
         <button class="tab-btn flex-shrink-0" id="tab-accounts" onclick="switchHospTab('accounts')">
           <i class="fas fa-user-circle mr-1"></i>계정관리
         </button>
+        <button class="tab-btn flex-shrink-0" id="tab-categories" onclick="switchHospTab('categories')">
+          <i class="fas fa-layer-group mr-1"></i>환자군
+        </button>
       </div>
 
       <!-- 기본정보 탭 -->
@@ -4869,6 +5273,73 @@ async function openHospitalDetail(hospitalId) {
         <div class="mt-4 p-3 bg-blue-50 rounded-xl text-xs text-blue-600">
           <i class="fas fa-info-circle mr-1"></i>
           병원 계정은 발주 입력, 식수 관리, 마감 요청 등에 사용됩니다. 관리자 계정은 이 화면에서 관리하지 않습니다.
+        </div>
+      </div>
+
+      <!-- 환자군 카테고리 탭 -->
+      <div id="hospTab-categories" class="hidden">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-semibold text-gray-700"><i class="fas fa-layer-group text-purple-600 mr-1"></i>환자군 카테고리 설정</h3>
+          <button onclick="addPatientCategoryRow()" class="btn btn-success btn-sm">
+            <i class="fas fa-plus mr-1"></i>카테고리 추가
+          </button>
+        </div>
+        <div class="mb-3 p-3 bg-purple-50 rounded-xl text-xs text-purple-700">
+          <i class="fas fa-info-circle mr-1"></i>
+          설정한 카테고리는 <strong>발주 입력 화면</strong>에 열(column)로 자동 생성됩니다.<br>
+          예: 항암, 재활, 교통사고 등 병원 특성에 맞게 설정하세요.<br>
+          각 카테고리별 <strong>과세/면세 금액이 합산</strong>되어 일별·주별·월별 목표와 비교됩니다.
+        </div>
+
+        <!-- 사전정의 카테고리 빠른선택 -->
+        <div class="mb-4">
+          <div class="text-xs font-semibold text-gray-500 mb-2">빠른 선택 (클릭하면 추가)</div>
+          <div class="flex flex-wrap gap-1.5">
+            ${[
+              {key:'general',name:'일반'},
+              {key:'cancer',name:'항암'},
+              {key:'rehab',name:'재활'},
+              {key:'nursing',name:'요양'},
+              {key:'traffic',name:'교통사고'},
+              {key:'mental',name:'정신'},
+              {key:'pediatric',name:'소아'},
+              {key:'spine',name:'척추'},
+              {key:'joint',name:'관절'},
+              {key:'cardiac',name:'심장'},
+              {key:'dialysis',name:'투석'},
+              {key:'stroke',name:'뇌졸중'},
+              {key:'elderly',name:'노인전문'},
+              {key:'maternity',name:'산부인과'},
+              {key:'other',name:'기타'}
+            ].map(c => `<button type="button" onclick="quickAddCategory('${c.key}','${c.name}')"
+              class="px-2 py-1 bg-white border border-purple-200 text-purple-700 text-xs rounded-full hover:bg-purple-100 transition">${c.name}</button>`).join('')}
+          </div>
+        </div>
+
+        <!-- 카테고리 목록 -->
+        <div id="patientCategoryList" class="space-y-2">
+          <!-- 동적으로 렌더링됨 -->
+          <div class="text-xs text-gray-400 text-center py-4">로딩 중...</div>
+        </div>
+
+        <!-- 월별 목표 설정 -->
+        <div class="mt-5 border-t border-gray-100 pt-4">
+          <h4 class="font-semibold text-gray-700 text-sm mb-3">
+            <i class="fas fa-target text-green-600 mr-1"></i>
+            ${App.currentYear}년 ${App.currentMonth}월 카테고리별 목표 설정
+          </h4>
+          <div id="categoryBudgetList" class="space-y-2">
+            <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex gap-2 justify-end">
+          <button onclick="savePatientCategories(${hospitalId})" class="btn btn-primary">
+            <i class="fas fa-save mr-1"></i>카테고리 저장
+          </button>
+          <button onclick="saveCategoryBudgets(${hospitalId})" class="btn btn-success">
+            <i class="fas fa-won-sign mr-1"></i>목표금액 저장
+          </button>
         </div>
       </div>
 
@@ -5370,10 +5841,14 @@ function getDefaultWorkingDays(year, month) {
 }
 
 function switchHospTab(tab) {
-  ['info','budget','vendors','accounts'].forEach(t => {
+  ['info','budget','vendors','accounts','categories'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
   })
+  // 환자군 탭으로 전환 시 데이터 로드
+  if (tab === 'categories' && window._adminHospitalId) {
+    loadPatientCategories(window._adminHospitalId)
+  }
 }
 
 // 전체 탭 한 번에 저장
@@ -5495,6 +5970,232 @@ function _syncSpecialtyHidden() {
 window.toggleConsignField = function(val) {
   const wrap = document.getElementById('hi-consign-wrap')
   if (wrap) wrap.style.display = val === 'consignment' ? '' : 'none'
+}
+
+// ══════════════════════════════════════════════════════════════
+//  환자군 카테고리 관리 함수들
+// ══════════════════════════════════════════════════════════════
+
+// 전역 카테고리 상태
+window._patientCategories = []
+
+async function loadPatientCategories(hospitalId) {
+  const [cats, catSettings] = await Promise.all([
+    api('GET', `/api/admin/hospitals/${hospitalId}/patient-categories`),
+    api('GET', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`)
+  ])
+  window._patientCategories = cats || []
+  renderPatientCategoryList(window._patientCategories)
+  renderCategoryBudgetList(window._patientCategories, catSettings || [])
+}
+
+function renderPatientCategoryList(cats) {
+  const el = document.getElementById('patientCategoryList')
+  if (!el) return
+
+  if (!cats || cats.length === 0) {
+    el.innerHTML = `<div class="text-xs text-gray-400 text-center py-4">
+      등록된 카테고리가 없습니다. 위에서 빠른 선택하거나 직접 추가하세요.
+    </div>`
+    return
+  }
+
+  el.innerHTML = cats.map((cat, i) => `
+    <div class="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl" id="catRow-${cat.id || 'new'+i}">
+      <div class="w-6 h-6 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+           style="background:${getCategoryColor(cat.category_key)}">
+        ${cat.category_name.charAt(0)}
+      </div>
+      <input type="text" value="${cat.category_name}" placeholder="카테고리명"
+        class="form-input flex-1 text-sm py-1" style="min-width:80px"
+        data-cat-id="${cat.id || ''}" data-field="name">
+      <input type="text" value="${cat.order_code || ''}" placeholder="발주코드(선택)"
+        class="form-input text-sm py-1" style="width:100px"
+        data-cat-id="${cat.id || ''}" data-field="code">
+      <select data-cat-id="${cat.id || ''}" data-field="key" class="form-input text-sm py-1" style="width:110px">
+        ${[
+          {k:'general',n:'일반'},{k:'cancer',n:'항암'},{k:'rehab',n:'재활'},
+          {k:'nursing',n:'요양'},{k:'traffic',n:'교통사고'},{k:'mental',n:'정신'},
+          {k:'pediatric',n:'소아'},{k:'spine',n:'척추'},{k:'joint',n:'관절'},
+          {k:'cardiac',n:'심장'},{k:'dialysis',n:'투석'},{k:'stroke',n:'뇌졸중'},
+          {k:'elderly',n:'노인전문'},{k:'maternity',n:'산부인과'},{k:'other',n:'기타'}
+        ].map(opt => `<option value="${opt.k}" ${cat.category_key===opt.k?'selected':''}>${opt.n}</option>`).join('')}
+      </select>
+      <button onclick="removePatientCategoryRow(this)" class="text-red-400 hover:text-red-600 text-sm px-1.5 py-1 rounded hover:bg-red-50 flex-shrink-0">
+        <i class="fas fa-trash-alt"></i>
+      </button>
+    </div>
+  `).join('')
+}
+
+function renderCategoryBudgetList(cats, settings) {
+  const el = document.getElementById('categoryBudgetList')
+  if (!el) return
+
+  if (!cats || cats.length === 0) {
+    el.innerHTML = `<div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>`
+    return
+  }
+
+  const settingsMap = {}
+  ;(settings || []).forEach(s => { settingsMap[s.patient_category_id] = s })
+
+  el.innerHTML = cats.map(cat => {
+    const s = settingsMap[cat.id] || {}
+    return `
+    <div class="p-3 bg-white border border-gray-200 rounded-xl">
+      <div class="flex items-center gap-2 mb-2">
+        <div class="w-5 h-5 rounded flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+             style="background:${getCategoryColor(cat.category_key)}">
+          ${cat.category_name.charAt(0)}
+        </div>
+        <span class="font-semibold text-gray-700 text-sm">${cat.category_name}</span>
+        ${cat.order_code ? `<span class="text-xs text-gray-400">(${cat.order_code})</span>` : ''}
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">월 목표금액 (원)</label>
+          <input type="number" id="catBudget-${cat.id}" value="${s.monthly_budget||0}"
+            class="form-input text-sm py-1" placeholder="0">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">목표 식단가 (원/식)</label>
+          <input type="number" id="catMealPrice-${cat.id}" value="${s.target_meal_price||0}"
+            class="form-input text-sm py-1" placeholder="0">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">영업일수 (일)</label>
+          <input type="number" id="catWorkDays-${cat.id}" value="${s.working_days||0}"
+            class="form-input text-sm py-1" placeholder="0">
+        </div>
+      </div>
+    </div>`
+  }).join('')
+}
+
+function addPatientCategoryRow() {
+  const list = document.getElementById('patientCategoryList')
+  if (!list) return
+
+  // 빈 메시지 제거
+  const empty = list.querySelector('.text-gray-400')
+  if (empty) empty.remove()
+
+  const idx = Date.now()
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2 p-2.5 bg-white border border-purple-200 rounded-xl'
+  row.id = `catRow-new${idx}`
+  row.innerHTML = `
+    <div class="w-6 h-6 rounded-lg bg-purple-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">+</div>
+    <input type="text" placeholder="카테고리명 *" class="form-input flex-1 text-sm py-1" style="min-width:80px" data-cat-id="" data-field="name">
+    <input type="text" placeholder="발주코드(선택)" class="form-input text-sm py-1" style="width:100px" data-cat-id="" data-field="code">
+    <select data-cat-id="" data-field="key" class="form-input text-sm py-1" style="width:110px">
+      ${[
+        {k:'general',n:'일반'},{k:'cancer',n:'항암'},{k:'rehab',n:'재활'},
+        {k:'nursing',n:'요양'},{k:'traffic',n:'교통사고'},{k:'mental',n:'정신'},
+        {k:'pediatric',n:'소아'},{k:'spine',n:'척추'},{k:'joint',n:'관절'},
+        {k:'cardiac',n:'심장'},{k:'dialysis',n:'투석'},{k:'stroke',n:'뇌졸중'},
+        {k:'elderly',n:'노인전문'},{k:'maternity',n:'산부인과'},{k:'other',n:'기타'}
+      ].map(opt => `<option value="${opt.k}">${opt.n}</option>`).join('')}
+    </select>
+    <button onclick="removePatientCategoryRow(this)" class="text-red-400 hover:text-red-600 text-sm px-1.5 py-1 rounded hover:bg-red-50 flex-shrink-0">
+      <i class="fas fa-trash-alt"></i>
+    </button>
+  `
+  list.appendChild(row)
+}
+
+function quickAddCategory(key, name) {
+  // 이미 있는지 확인
+  const existingInputs = document.querySelectorAll('[data-field="name"]')
+  for (const inp of existingInputs) {
+    if (inp.value.trim() === name) {
+      showToast(`'${name}'이(가) 이미 추가되어 있습니다`, 'warning')
+      return
+    }
+  }
+  const list = document.getElementById('patientCategoryList')
+  if (!list) return
+
+  const empty = list.querySelector('.text-gray-400')
+  if (empty) empty.remove()
+
+  const idx = Date.now()
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2 p-2.5 bg-white border border-purple-200 rounded-xl'
+  row.id = `catRow-new${idx}`
+  row.innerHTML = `
+    <div class="w-6 h-6 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+         style="background:${getCategoryColor(key)}">${name.charAt(0)}</div>
+    <input type="text" value="${name}" placeholder="카테고리명 *" class="form-input flex-1 text-sm py-1" style="min-width:80px" data-cat-id="" data-field="name">
+    <input type="text" placeholder="발주코드(선택)" class="form-input text-sm py-1" style="width:100px" data-cat-id="" data-field="code">
+    <select data-cat-id="" data-field="key" class="form-input text-sm py-1" style="width:110px">
+      ${[
+        {k:'general',n:'일반'},{k:'cancer',n:'항암'},{k:'rehab',n:'재활'},
+        {k:'nursing',n:'요양'},{k:'traffic',n:'교통사고'},{k:'mental',n:'정신'},
+        {k:'pediatric',n:'소아'},{k:'spine',n:'척추'},{k:'joint',n:'관절'},
+        {k:'cardiac',n:'심장'},{k:'dialysis',n:'투석'},{k:'stroke',n:'뇌졸중'},
+        {k:'elderly',n:'노인전문'},{k:'maternity',n:'산부인과'},{k:'other',n:'기타'}
+      ].map(opt => `<option value="${opt.k}" ${opt.k===key?'selected':''}>${opt.n}</option>`).join('')}
+    </select>
+    <button onclick="removePatientCategoryRow(this)" class="text-red-400 hover:text-red-600 text-sm px-1.5 py-1 rounded hover:bg-red-50 flex-shrink-0">
+      <i class="fas fa-trash-alt"></i>
+    </button>
+  `
+  list.appendChild(row)
+  showToast(`'${name}' 카테고리 추가됨 (저장 버튼 클릭 필요)`, 'success')
+}
+
+function removePatientCategoryRow(btn) {
+  btn.closest('[id^="catRow-"]')?.remove()
+}
+
+async function savePatientCategories(hospitalId) {
+  const rows = document.querySelectorAll('#patientCategoryList [id^="catRow-"]')
+  const categories = []
+  for (const row of rows) {
+    const name = row.querySelector('[data-field="name"]')?.value?.trim()
+    const code = row.querySelector('[data-field="code"]')?.value?.trim() || ''
+    const key = row.querySelector('[data-field="key"]')?.value || 'other'
+    if (!name) continue
+    categories.push({ category_key: key, category_name: name, order_code: code })
+  }
+
+  if (categories.length === 0) {
+    showToast('최소 1개 이상의 카테고리를 입력하세요', 'warning')
+    return
+  }
+
+  const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/patient-categories`, { categories })
+  if (res?.success) {
+    window._patientCategories = res.categories || []
+    showToast(`${categories.length}개 카테고리 저장 완료`, 'success')
+    renderPatientCategoryList(window._patientCategories)
+    // 저장 후 목표설정 탭 갱신
+    const settingsData = await api('GET', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`)
+    renderCategoryBudgetList(window._patientCategories, settingsData || [])
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
+async function saveCategoryBudgets(hospitalId) {
+  const cats = window._patientCategories || []
+  if (cats.length === 0) {
+    showToast('카테고리를 먼저 저장하세요', 'warning')
+    return
+  }
+
+  const settings = cats.map(cat => ({
+    patient_category_id: cat.id,
+    monthly_budget: parseInt(document.getElementById(`catBudget-${cat.id}`)?.value || 0) || 0,
+    target_meal_price: parseInt(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0) || 0,
+    working_days: parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0
+  }))
+
+  const res = await api('POST', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`, { settings })
+  if (res?.success) showToast('카테고리별 목표 저장 완료', 'success')
+  else showToast('저장 실패', 'error')
 }
 
 async function saveHospitalBudget(hospitalId) {
