@@ -56,7 +56,37 @@ dashboard.get('/summary/:year/:month', async (c) => {
        AND strftime('%m', meal_date) = printf('%02d', ?)`
   ).bind(hospitalId, year, month).first<any>()
 
-  // 오늘 발주액
+  // 커스텀 식수 필드 목록 + 월별 custom_data 합계 계산
+  const customFieldsList = await c.env.DB.prepare(
+    `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+  ).bind(hospitalId).all<any>()
+
+  const mealCustomData = await c.env.DB.prepare(
+    `SELECT custom_data FROM daily_meals
+     WHERE hospital_id = ?
+       AND strftime('%Y', meal_date) = ?
+       AND strftime('%m', meal_date) = printf('%02d', ?)
+       AND custom_data IS NOT NULL AND custom_data != '{}'`
+  ).bind(hospitalId, year, month).all<any>()
+
+  // 커스텀 필드별 월 합계 계산
+  const customFieldTotals: Record<string, number> = {}
+  ;(customFieldsList.results || []).forEach((f: any) => { customFieldTotals[f.field_key] = 0 })
+  ;(mealCustomData.results || []).forEach((row: any) => {
+    try {
+      const cd = JSON.parse(row.custom_data || '{}')
+      ;(customFieldsList.results || []).forEach((f: any) => {
+        const fv = cd[f.field_key] || {}
+        customFieldTotals[f.field_key] = (customFieldTotals[f.field_key] || 0) + (fv.bf || 0) + (fv.l || 0) + (fv.d || 0)
+      })
+    } catch(e) {}
+  })
+  // ea 단위 필드는 식수 합산에서 제외 (unit_type='ea')
+  const mealCustomTotal = (customFieldsList.results || [])
+    .filter((f: any) => f.unit_type !== 'ea')
+    .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
+
+
   const today = new Date().toISOString().split('T')[0]
   const todayOrders = await c.env.DB.prepare(
     `SELECT COALESCE(SUM(total_amount), 0) as today_total
@@ -95,10 +125,10 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 식단가 3종 계산
   const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-  // 화면 표시용 전체 식수 (비급여 포함)
-  const totalMeals = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_noncovered||0) + (ms.total_guardian||0)
-  // 식단가 계산용 식수: 비급여(noncovered) 제외, 환자+직원+보호자
-  const totalMealsForPrice = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0)
+  // 화면 표시용 전체 식수: 비급여 제외 (환자+직원+보호자) + ea 아닌 커스텀 필드 포함
+  const totalMeals = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
+  // 식단가 계산용 식수: 비급여 제외, 환자+직원+보호자+커스텀(ea 제외)
+  const totalMealsForPrice = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
   // 소모품/카드 제외 금액
   const supplyCardUsed = (vendors.results || [])
     .filter((v: any) => v.category === 'supply' || v.category === 'card')
@@ -106,14 +136,14 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
   // ② 직원식 제외 식단가:
-  //    분자: 총금액 - 직원식 비용 (직원식 비용 = 총금액 × 직원식수/전체식수)
+  //    의의: 직원식에 든 예산이 자동 수식에 포함되므로,
+  //    분모만 직원식수를 제외 → 화자 1인당 실질 식리 확인 가능
+  //    분자: 월 총 발주금액 그대로
   //    분모: 환자 + 보호자 (직원식수 제외)
-  //    예: 총금액 2,088,000 / 직원50명 / 전체160명 → 직원비용=652,500 → 직원제외금액=1,435,500 ÷ 110 = 13,050원/식
+  //    예: 아미나 20,880,000원 ÷ 110명 = 189,818원/식 (전체 130,500원보다 높음)
   const mealsNoStaff = (ms.total_patient||0) + (ms.total_guardian||0)  // 환자 + 보호자
-  const staffCost = totalMealsForPrice > 0
-    ? Math.round(totalUsed * (ms.total_staff||0) / totalMealsForPrice) : 0
   const mealPriceNoStaff = mealsNoStaff > 0
-    ? Math.round((totalUsed - staffCost) / mealsNoStaff) : 0
+    ? Math.round(totalUsed / mealsNoStaff) : 0
   // ③ 소모품/카드 제외 식단가: (총금액 - 소모품/카드) ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceNoSupply = totalMealsForPrice > 0
     ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
@@ -147,19 +177,18 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 전월 식단가 계산 (현재 월과 동일 로직)
   const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-  const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_noncovered||0)+(pms.total_guardian||0)
-  // 전월 식단가 계산용 식수: 비급여 제외
+  // 전월 총식수: 비급여 제외
+  const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
+  // 전월 식단가 계산용 식수: 비급여 제외 (동일)
   const prevMealsForPrice = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
   const prevTotalUsed = prevOrders?.total_used || 0
   const prevSupplyUsed = prevSupply?.supply_used || 0
   // ① 전월 전체 식단가
   const prevMealPriceTotal = prevMealsForPrice > 0 ? Math.round(prevTotalUsed / prevMealsForPrice) : 0
-  // ② 전월 직원식 제외: (총금액 - 직원비용) ÷ (환자+보호자)
+  // ② 전월 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
   const prevMealsNoStaff = (pms.total_patient||0) + (pms.total_guardian||0)
-  const prevStaffCost = prevMealsForPrice > 0
-    ? Math.round(prevTotalUsed * (pms.total_staff||0) / prevMealsForPrice) : 0
   const prevMealPriceNoStaff = prevMealsNoStaff > 0
-    ? Math.round((prevTotalUsed - prevStaffCost) / prevMealsNoStaff) : 0
+    ? Math.round(prevTotalUsed / prevMealsNoStaff) : 0
   // ③ 전월 소모품 제외 (비급여 제외 분모)
   const prevMealPriceNoSupply = prevMealsForPrice > 0
     ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0
@@ -169,6 +198,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
     vendors: vendors.results,
     dailyOrders: dailyOrders.results,
     mealStats,
+    mealCustomFields: customFieldsList.results || [],
+    mealCustomTotals: customFieldTotals,
     overBudgetVendors,
     mealPriceTotal,
     mealPriceNoStaff,

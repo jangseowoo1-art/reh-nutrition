@@ -487,7 +487,13 @@ async function renderDashboard() {
   const vendors = data.vendors || []
   const ms = data.mealStats || {}
   const pm = data.prevMonth || {}  // 전월 데이터
-  const totalMeals = (ms.total_patient||0)+(ms.total_staff||0)+(ms.total_noncovered||0)+(ms.total_guardian||0)
+  const mealCustomFields = data.mealCustomFields || []
+  const mealCustomTotals = data.mealCustomTotals || {}
+  // ea 단위 커스텀 필드는 총식수에서 제외
+  const customMealTotal = mealCustomFields
+    .filter(f => (f.unit_type||'meal') !== 'ea')
+    .reduce((s, f) => s + (Number(mealCustomTotals[f.field_key]) || 0), 0)
+  const totalMeals = (ms.total_patient||0)+(ms.total_staff||0)+(ms.total_guardian||0) + customMealTotal
   const mealPrice = totalMeals > 0 && s.totalUsed > 0 ? Math.round(s.totalUsed / totalMeals) : (data.settings?.meal_price || 0)
   // 식단가 3종 (API에서 제공)
   const mealPriceTotal = data.mealPriceTotal || mealPrice
@@ -609,13 +615,20 @@ async function renderDashboard() {
         </button>
       </div>
       <div class="overflow-x-auto">
-        <table class="data-table">
+        <table class="data-table" style="table-layout:fixed;width:100%">
+          <colgroup>
+            <col style="width:auto;min-width:120px">
+            <col style="width:110px">
+            <col style="width:110px">
+            <col style="min-width:160px;max-width:220px">
+            <col style="width:100px">
+          </colgroup>
           <thead>
             <tr>
               <th>업체명</th>
               <th class="text-right">사용금액</th>
               <th class="text-right">목표금액</th>
-              <th style="width:160px">진행률</th>
+              <th>진행률</th>
               <th class="text-right">잔여</th>
             </tr>
           </thead>
@@ -690,15 +703,16 @@ async function renderDashboard() {
           { label: '환자식', value: ms.total_patient, color: 'bg-blue-100 text-blue-700', icon: 'fa-bed' },
           { label: '직원식', value: ms.total_staff, color: 'bg-green-100 text-green-700', icon: 'fa-user' },
           { label: '비급여', value: ms.total_noncovered, color: 'bg-purple-100 text-purple-700', icon: 'fa-receipt' },
-          { label: '보호자', value: ms.total_guardian, color: 'bg-orange-100 text-orange-700', icon: 'fa-users' }
+          { label: '보호자', value: ms.total_guardian, color: 'bg-orange-100 text-orange-700', icon: 'fa-users' },
+          ...mealCustomFields.map(f => ({ label: f.field_name, value: mealCustomTotals[f.field_key]||0, color: f.unit_type==='ea'?'bg-orange-100 text-orange-700':'bg-indigo-100 text-indigo-700', icon: 'fa-utensils', unit: f.unit_type||'meal' }))
         ].map(item => `
           <div class="flex items-center gap-3 p-3 rounded-xl ${item.color.split(' ')[0]}">
             <div class="w-9 h-9 rounded-lg flex items-center justify-center ${item.color}">
               <i class="fas ${item.icon} text-xs"></i>
             </div>
             <div>
-              <div class="text-xs font-medium opacity-75">${item.label}</div>
-              <div class="font-bold text-lg">${fmt(item.value)}<span class="text-xs font-normal opacity-60 ml-1">식</span></div>
+              <div class="text-xs font-medium opacity-75">${item.label}${item.unit==='ea'?'<span class='text-orange-500 ml-1' style='font-size:9px'>(ea)</span>':''}</div>
+              <div class="font-bold text-lg">${fmt(item.value)}<span class="text-xs font-normal opacity-60 ml-1">${item.unit==='ea'?'개':'식'}</span></div>
             </div>
           </div>
         `).join('')}
@@ -962,7 +976,7 @@ async function renderOrders() {
   <div id="mealPricePanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
     <div class="flex items-center justify-between mb-3">
       <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-utensils text-blue-500 mr-1"></i>실시간 식단가</h3>
-      <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt((mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_noncovered||0)+(mealStats.total_guardian||0))}</strong>식</span>
+      <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt((mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_guardian||0))}</strong>식</span>
     </div>
     <div class="grid grid-cols-3 gap-3">
       <div id="mpCard-total" class="rounded-xl p-3 ${targetMealPrice > 0 && dashData?.mealPriceTotal > targetMealPrice ? 'bg-red-50 border-2 border-red-300' : 'bg-blue-50'}">
@@ -1110,18 +1124,19 @@ async function renderOrders() {
       <table class="order-table w-full" id="ordersTable">
         <thead style="position:sticky;top:0;z-index:20">
           <tr>
-            <th rowspan="2" class="sticky left-0 z-30 bg-gray-800" style="min-width:28px;width:28px">일</th>
-            <th rowspan="2" class="sticky z-30 bg-gray-800" style="min-width:22px;width:22px;left:28px">요</th>
-            <th rowspan="2" class="sticky z-30 bg-gray-800" style="min-width:38px;width:38px;font-size:9px;left:50px">발주<br>일수</th>
+            <th rowspan="2" class="sticky left-0 z-30 bg-gray-800" style="width:30px">일</th>
+            <th rowspan="2" class="sticky z-30 bg-gray-800" style="width:24px;left:30px">요</th>
+            <th rowspan="2" class="sticky z-30 bg-gray-800" style="width:52px;font-size:9px;left:54px">발주<br>일수</th>
             ${vendors.map((v, vi) => {
               const cols = getVendorCols(v.tax_type)
               const borderLeft = vi > 0 ? 'border-left:3px solid #334155;' : ''
-              return `<th colspan="${cols}" style="min-width:${cols*68}px;${borderLeft}">
+              const colW = v.tax_type === 'mixed' ? 82 : 84
+              return `<th colspan="${cols}" style="width:${cols*colW}px;${borderLeft}">
                 <div style="font-size:11px">${v.name}</div>
                 <div style="font-size:9px;opacity:0.7">${getTaxTypeLabel(v.tax_type)}</div>
               </th>`
             }).join('')}
-            <th rowspan="2" style="min-width:62px">일합계</th>
+            <th rowspan="2" style="width:85px">일합계</th>
           </tr>
           <tr>
             ${vendors.map((v, vi) => {
@@ -1216,7 +1231,7 @@ async function renderOrders() {
                 const wPctBar = wPct!==null ? `<div style="height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin-top:3px"><div style="height:4px;width:${Math.min(wPct,100)}%;background:${wColor};border-radius:2px"></div></div>` : ''
                 const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver?'#dc2626':wWarn?'#d97706':'#166534')
                 rows.push(`<tr class="week-summary-row${isCurrentWeek?' current-week-row':''}" data-week-key="${weekKey}" data-week-num="${weekNumber}" style="background:${wBg};${rowBorderStyle}">
-                  <td colspan="3" class="sticky left-0" id="weekPctCell-${weekKey}" style="background:${wBg};padding:3px 5px;min-width:88px;border-right:3px solid ${wBorderColor};">
+                  <td colspan="3" class="sticky left-0" id="weekPctCell-${weekKey}" style="background:${wBg};padding:3px 5px;min-width:106px;border-right:3px solid ${wBorderColor};">
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
                       <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumber}주${isCurrentWeek?'(현재)':''}</div>
                       <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
@@ -1248,11 +1263,11 @@ async function renderOrders() {
               }).join('')
 
               rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
-                <td class="date-col sticky left-0 z-10" style="min-width:28px;width:28px">${day}</td>
-                <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};min-width:22px;width:22px">${dow}</td>
-                <td class="text-center" style="font-size:10px;min-width:38px;width:38px">
+                <td class="date-col sticky left-0 z-10" style="width:30px">${day}</td>
+                <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};width:24px">${dow}</td>
+                <td class="text-center" style="font-size:10px;width:52px">
                   <select class="multiday-select" data-date="${dateStr}"
-                    style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 1px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:36px"
+                    style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:48px"
                     onchange="updateMultiDayNote(this)">
                     ${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}
                   </select>
@@ -1337,11 +1352,13 @@ async function renderOrders() {
   window._ordersData = orderData || []
   window._ordersVendors = vendors || []
   window._ordersMealStats = {
-    totalMeals: (mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_noncovered||0)+(mealStats.total_guardian||0),
+    totalMeals: (mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_guardian||0),
     totalPatient: mealStats.total_patient||0,
     totalStaff: mealStats.total_staff||0,
     totalNoncovered: mealStats.total_noncovered||0,
     totalGuardian: mealStats.total_guardian||0,
+    mealCustomFields: dashData?.mealCustomFields || [],
+    mealCustomTotals: dashData?.mealCustomTotals || {},
     targetMealPrice,
     vendors: vendors || []
   }
@@ -1361,43 +1378,44 @@ function setupOrdersScrollSync() {
     const existingMirror = document.getElementById('orders-hscroll-mirror')
     if (existingMirror) existingMirror.remove()
 
-    // 미러 스크롤 컨테이너 생성 (하단 고정 가로스크롤)
-    const mirror = document.createElement('div')
-    mirror.id = 'orders-hscroll-mirror'
-    // 내부 너비 맞춤 div
-    const inner = document.createElement('div')
-    inner.style.cssText = `height:1px;`
-    // 테이블 너비에 맞춤
-    const setMirrorWidth = () => {
-      inner.style.width = table.scrollWidth + 'px'
-    }
-    setMirrorWidth()
-    mirror.appendChild(inner)
+    // 모바일 여부 확인
+    const isMobile = window.innerWidth <= 768
 
-    // orders-panel에 sticky bottom으로 삽입
-    panel.appendChild(mirror)
-
-    // 스크롤 동기화 (mirror ↔ panel)
-    let syncingMirror = false, syncingPanel = false
-    mirror.addEventListener('scroll', () => {
-      if (syncingMirror) return
-      syncingPanel = true
-      panel.scrollLeft = mirror.scrollLeft
-      setTimeout(() => syncingPanel = false, 20)
-    })
-    panel.addEventListener('scroll', () => {
-      if (syncingPanel) return
-      syncingMirror = true
-      mirror.scrollLeft = panel.scrollLeft
-      setTimeout(() => syncingMirror = false, 20)
+    // 미러 스크롤 컨테이너 생성 (하단 고정 가로스크롤) - 데스크탑만
+    if (!isMobile) {
+      const mirror = document.createElement('div')
+      mirror.id = 'orders-hscroll-mirror'
+      const inner = document.createElement('div')
+      inner.style.cssText = `height:1px;`
+      const setMirrorWidth = () => {
+        inner.style.width = table.scrollWidth + 'px'
+      }
       setMirrorWidth()
-    })
+      mirror.appendChild(inner)
+      panel.appendChild(mirror)
 
-    // ResizeObserver로 테이블 크기 변경 감지
-    if (window.ResizeObserver) {
-      const ro = new ResizeObserver(setMirrorWidth)
-      ro.observe(table)
+      let syncingMirror = false, syncingPanel = false
+      mirror.addEventListener('scroll', () => {
+        if (syncingMirror) return
+        syncingPanel = true
+        panel.scrollLeft = mirror.scrollLeft
+        setTimeout(() => syncingPanel = false, 20)
+      })
+      panel.addEventListener('scroll', () => {
+        if (syncingPanel) return
+        syncingMirror = true
+        mirror.scrollLeft = panel.scrollLeft
+        setTimeout(() => syncingMirror = false, 20)
+        setMirrorWidth()
+      })
+
+      if (window.ResizeObserver) {
+        const ro = new ResizeObserver(setMirrorWidth)
+        ro.observe(table)
+      }
     }
+    // 모바일: orders-panel 자체의 overflow-x:auto 터치 스크롤 사용
+    // (별도 미러 없이 패널 직접 스크롤)
   })
 }
 
@@ -1599,7 +1617,7 @@ function getVendorInputCells(v, order, dateStr, addBorder = false) {
   if (v.tax_type === 'mixed') {
     return `<td style="${borderStyle}padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${fmtV(taxable)}" placeholder="0"></td>
             <td style="padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="exempt" data-date="${dateStr}" value="${fmtV(exempt)}" placeholder="0"></td>
-            <td class="total-col text-right text-xs ${order.is_multi_day?'multi-day-cell':''}" id="vt-${v.id}-${dateStr}" ${multiDay} style="padding:2px 4px;min-width:62px">${total>0?fmt(total):''}</td>`
+            <td class="total-col text-right text-xs ${order.is_multi_day?'multi-day-cell':''}" id="vt-${v.id}-${dateStr}" ${multiDay} style="padding:2px 4px;width:82px">${total>0?fmt(total):''}</td>`
   }
   if (v.tax_type === 'taxable') {
     return `<td style="${borderStyle}padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${fmtV(taxable)}" placeholder="0"></td>`
@@ -1622,9 +1640,10 @@ function getVendorTotalCells(v, orderData) {
 
 // 업체 서브헤더 (주 진행률 열 없음)
 function getVendorSubHeadersWithPct(v, borderLeft = '') {
-  const firstBorder = borderLeft ? `style="${borderLeft}min-width:62px;width:62px;font-size:10px"` : `style="min-width:62px;width:62px;font-size:10px"`
+  const colW = v.tax_type === 'mixed' ? 82 : 84
+  const firstBorder = borderLeft ? `style="${borderLeft}width:${colW}px;font-size:10px"` : `style="width:${colW}px;font-size:10px"`
   if (v.tax_type === 'mixed') {
-    return `<th ${firstBorder}>과세</th><th style="min-width:62px;width:62px;font-size:10px">면세</th><th style="min-width:62px;width:62px;font-size:10px;background:#1a2f4a">소계</th>`
+    return `<th ${firstBorder}>과세</th><th style="width:${colW}px;font-size:10px">면세</th><th style="width:${colW}px;font-size:10px;background:#1a2f4a">소계</th>`
   }
   if (v.tax_type === 'taxable') {
     return `<th ${firstBorder}>과세</th>`
@@ -1930,18 +1949,19 @@ function updateBudgetProgressPanel() {
         return s + vTotal
       }, 0)
 
-    // 식단가 계산용 식수: 비급여 제외 (환자+직원+보호자)
-    const totalMeals = ms.totalMeals || 0  // 전체 식수 (비급여 포함) - 표시용
-    const totalMealsForPrice = (ms.totalPatient||0) + (ms.totalStaff||0) + (ms.totalGuardian||0)
+    // 식단가 계산용 식수: 비급여 제외, ea 단위 커스텀 필드 제외
+    const customFields4price = (ms.mealCustomFields || []).filter(f => (f.unit_type||'meal') !== 'ea')
+    const customMealSum = customFields4price.reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
+    const totalMeals = (ms.totalMeals || 0) + customMealSum  // 전체 식수 (비급여 제외 + 커스텀 ea제외) - 표시용
+    const totalMealsForPrice = (ms.totalPatient||0) + (ms.totalStaff||0) + (ms.totalGuardian||0) + customMealSum
     // ② 직원식 제외 분모: 환자 + 보호자
     const mealsNoStaff = (ms.totalPatient||0) + (ms.totalGuardian||0)
 
     // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
     const mp1 = totalMealsForPrice > 0 ? Math.round(monthTotal / totalMealsForPrice) : 0
-    // ② 직원식 제외: (총금액 - 직원비용) ÷ (환자+보호자)
-    //    직원비용 = 총금액 × (직원식수 / 전체식수)
-    const staffCostRt = totalMealsForPrice > 0 ? Math.round(monthTotal * (ms.totalStaff||0) / totalMealsForPrice) : 0
-    const mp2 = mealsNoStaff > 0 ? Math.round((monthTotal - staffCostRt) / mealsNoStaff) : 0
+    // ② 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
+    //    예: 20,880,000 ÷ 110명 = 189,818원/식 (전체 130,500원보다 높음)
+    const mp2 = mealsNoStaff > 0 ? Math.round(monthTotal / mealsNoStaff) : 0
     // ③ 소모품/카드 제외: (총금액 - 소모품) ÷ (환자+직원+보호자) — 비급여 제외
     const mp3 = totalMealsForPrice > 0 ? Math.round((monthTotal - supplyTotal) / totalMealsForPrice) : 0
     const tgt = ms.targetMealPrice
@@ -2036,151 +2056,275 @@ function updateDayTotal(date) {
 // ══════════════════════════════════════════════════════════════
 //  식수 입력 페이지
 // ══════════════════════════════════════════════════════════════
+// 전역: 현재 커스텀 필드 목록
+window._mealCustomFields = []
+
 async function renderMeals() {
   const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const mealData = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
-  if (!mealData) return
+  // API 응답: { meals: [...], customFields: [...] }
+  const resp = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
+  if (!resp) return
 
+  // 구버전(배열) 호환
+  const mealData = Array.isArray(resp) ? resp : (resp.meals || [])
+  window._mealCustomFields = Array.isArray(resp) ? [] : (resp.customFields || [])
+
+  renderMealsContent(content, mealData, window._mealCustomFields)
+}
+
+function renderMealsContent(content, mealData, customFields) {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   const mealMap = {}
-  mealData.forEach(m => { mealMap[m.meal_date] = m })
+  mealData.forEach(m => {
+    mealMap[m.meal_date] = m
+    // custom_data JSON 파싱
+    try { m._custom = JSON.parse(m.custom_data || '{}') } catch(e) { m._custom = {} }
+  })
 
-  // 월 합계 계산
-  let monthTotal = { p:0, s:0, n:0, g:0 }
+  // 월 합계 계산 (기본)
+  let monthTotal = { p:0, s:0, n:0, g:0, custom:{} }
+  customFields.forEach(f => { monthTotal.custom[f.field_key] = 0 })
   mealData.forEach(m => {
     monthTotal.p += (m.breakfast_patient||0)+(m.lunch_patient||0)+(m.dinner_patient||0)
     monthTotal.s += (m.breakfast_staff||0)+(m.lunch_staff||0)+(m.dinner_staff||0)
     monthTotal.n += (m.breakfast_noncovered||0)+(m.lunch_noncovered||0)+(m.dinner_noncovered||0)
     monthTotal.g += (m.breakfast_guardian||0)+(m.lunch_guardian||0)+(m.dinner_guardian||0)
+    customFields.forEach(f => {
+      const cd = m._custom?.[f.field_key] || {}
+      monthTotal.custom[f.field_key] = (monthTotal.custom[f.field_key]||0) + (cd.bf||0) + (cd.l||0) + (cd.d||0)
+    })
   })
 
+  // 기본 + 커스텀 합계 (커스텀 중 ea 단위는 grandTotal에서 제외)
+  const customTotal = Object.values(monthTotal.custom).reduce((s, v) => s + v, 0)
+  const customTotalForMeals = customFields
+    .filter(f => f.unit_type !== 'ea')
+    .reduce((s, f) => s + (monthTotal.custom[f.field_key] || 0), 0)
+  // 총 식수: 비급여 제외, ea 커스텀 필드 제외
+  const grandTotal = monthTotal.p + monthTotal.s + monthTotal.g + customTotalForMeals
+
+  // 헤더 서브컬럼 생성: 환자/직원/비급/보호 + 커스텀필드들 + 합
+  const baseLabels = ['환자','직원','비급','보호']
+  const customLabels = customFields.map(f => f.field_name)
+  const allLabels = [...baseLabels, ...customLabels]
+  const colCount = allLabels.length + 1  // +1 = 소계
+
   content.innerHTML = `
-  <!-- 월 합계 요약 -->
-  <div class="grid grid-cols-3 lg:grid-cols-5 gap-2 mb-4">
-    ${[
-      { label: '환자식', val: monthTotal.p, color: 'blue', id: 'mealSummary-p' },
-      { label: '직원식', val: monthTotal.s, color: 'green', id: 'mealSummary-s' },
-      { label: '비급여', val: monthTotal.n, color: 'purple', id: 'mealSummary-n' },
-      { label: '보호자', val: monthTotal.g, color: 'orange', id: 'mealSummary-g' },
-      { label: '전체', val: monthTotal.p+monthTotal.s+monthTotal.n+monthTotal.g, color: 'gray', id: 'mealSummary-total', bold: true }
-    ].map(item => `
-      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-2 text-center">
-        <div class="text-xs text-gray-500 font-medium mb-0.5">${item.label}</div>
-        <div class="text-base font-bold text-${item.color}-600" id="${item.id}">${fmt(item.val)}</div>
-        <div class="text-xs text-gray-400">식</div>
-      </div>
-    `).join('')}
+  <!-- 월 합계 요약 카드 -->
+  <div class="flex flex-wrap gap-2 mb-4" id="mealSummaryCards">
+    ${buildMealSummaryCards(monthTotal, customFields, grandTotal)}
   </div>
 
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
       <div>
         <h2 class="font-bold text-gray-800 text-sm md:text-base">${App.currentYear}년 ${App.currentMonth}월 식수 현황</h2>
-        <p class="text-xs text-gray-400 mt-0.5 hidden md:block">조식/중식/석식 × 환자·직원·비급여·보호자</p>
+        <p class="text-xs text-gray-400 mt-0.5 hidden md:block">조식/중식/석식 × 식수 카테고리</p>
       </div>
-      <button onclick="saveMealBatch()" class="btn btn-success btn-sm">
-        <i class="fas fa-save"></i> 저장
-      </button>
+      <div class="flex items-center gap-2 flex-wrap">
+        <button onclick="openCustomFieldModal()" class="btn btn-sm" style="background:#6366f1;color:white;border:none;padding:6px 12px;border-radius:8px;font-size:12px;cursor:pointer">
+          <i class="fas fa-plus-circle mr-1"></i>칸 생성
+        </button>
+        <button onclick="saveMealBatch()" class="btn btn-success btn-sm">
+          <i class="fas fa-save"></i> 저장
+        </button>
+      </div>
     </div>
     <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
-      <!-- 모바일 스크롤 안내 -->
-      <div class="scroll-hint">
-        <i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 식수 입력
-      </div>
-      <table class="meal-table w-full" style="font-size:12px;border-collapse:collapse">
+      <div class="scroll-hint"><i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 식수 입력</div>
+      <table class="meal-table w-full" id="mealMainTable" style="font-size:12px;border-collapse:collapse">
         <thead>
           <tr>
-            <th rowspan="2" style="min-width:32px;border:2px solid #1e5c3a">일</th>
-            <th rowspan="2" style="min-width:24px;border:2px solid #1e5c3a">요</th>
-            <th colspan="5" style="border:2px solid #1d4ed8;border-bottom:1px solid #3b82f6;background:#1e40af">조식</th>
-            <th colspan="5" style="border:2px solid #166534;border-bottom:1px solid #22c55e;background:#14532d">중식</th>
-            <th colspan="5" style="border:2px solid #6b21a8;border-bottom:1px solid #a855f7;background:#581c87">석식</th>
-            <th colspan="5" style="border:2px solid #374151;border-bottom:1px solid #6b7280;background:#0f2942">합계</th>
+            <th rowspan="2" style="min-width:28px;border:2px solid #1e5c3a">일</th>
+            <th rowspan="2" style="min-width:22px;border:2px solid #1e5c3a">요</th>
+            <th colspan="${colCount}" style="border:2px solid #1d4ed8;border-bottom:1px solid #3b82f6;background:#1e40af">조식</th>
+            <th colspan="${colCount}" style="border:2px solid #166534;border-bottom:1px solid #22c55e;background:#14532d">중식</th>
+            <th colspan="${colCount}" style="border:2px solid #6b21a8;border-bottom:1px solid #a855f7;background:#581c87">석식</th>
+            <th colspan="${allLabels.length + 1}" style="border:2px solid #374151;border-bottom:1px solid #6b7280;background:#0f2942">합계</th>
           </tr>
           <tr>
-            ${[
-              {prefix:'bf', border:'#3b82f6', bg:''},
-              {prefix:'l',  border:'#22c55e', bg:''},
-              {prefix:'d',  border:'#a855f7', bg:''},
-              {prefix:'t',  border:'#6b7280', bg:'background:#0f2942'}
-            ].map(({prefix, border, bg}, mi) => `
-              <th style="border-left:3px solid ${border};border-top:1px solid ${border};border-bottom:1px solid ${border};border-right:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">환자</th>
-              <th style="border:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">직원</th>
-              <th style="border:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">비급</th>
-              <th style="border:1px solid rgba(255,255,255,0.15);padding:4px 3px;${bg}">보호</th>
-              <th style="border:1px solid rgba(255,255,255,0.15);border-right:3px solid ${border};padding:4px 3px;background:${mi===3?'#0f2942':'#1e3a6e'};color:#93c5fd">합</th>
-            `).join('')}
+            ${['bf','l','d','t'].map((prefix, mi) => {
+              const borderColors = ['#3b82f6','#22c55e','#a855f7','#6b7280']
+              const border = borderColors[mi]
+              const isTot = mi===3
+              return allLabels.map((label, li) => {
+                const isFirst = li===0
+                const isLast = li===allLabels.length-1
+                const isCustom = li >= 4
+                const bg = isTot ? 'background:#0f2942;' : isCustom ? 'background:#1a2f4a;' : ''
+                const bl = isFirst ? `border-left:3px solid ${border};` : 'border-left:1px solid rgba(255,255,255,0.15);'
+                const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.15)` : ''
+                return `<th style="${bl}border-top:1px solid ${border};border-bottom:1px solid ${border}${br};padding:3px 2px;${bg}font-size:10px">${label}</th>`
+              }).join('') + `<th style="border:1px solid rgba(255,255,255,0.15);border-right:3px solid ${border};padding:3px 2px;background:${isTot?'#0f2942':'#1e3a6e'};color:#93c5fd;font-size:10px">합</th>`
+            }).join('')}
           </tr>
         </thead>
         <tbody id="mealTableBody">
-          ${Array.from({ length: days }, (_, i) => {
-            const day = i + 1
-            const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
-            const weekend = isWeekend(App.currentYear, App.currentMonth, day)
-            const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-            const m = mealMap[dateStr] || {}
-            const rowClass = dow==='일'?'holiday-row':weekend?'weekend-row':''
-            const bp=m.breakfast_patient||0, bs=m.breakfast_staff||0, bn=m.breakfast_noncovered||0, bg2=m.breakfast_guardian||0
-            const lp=m.lunch_patient||0, ls=m.lunch_staff||0, ln=m.lunch_noncovered||0, lg=m.lunch_guardian||0
-            const dp=m.dinner_patient||0, ds=m.dinner_staff||0, dn=m.dinner_noncovered||0, dg=m.dinner_guardian||0
-            return `<tr class="${rowClass}" data-date="${dateStr}">
-              <td class="font-semibold text-center" style="border:1px solid #d1d5db">${day}</td>
-              <td class="text-center ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="border:1px solid #d1d5db">${dow}</td>
-              <td style="border-left:3px solid #3b82f6;border-top:1px solid #dbeafe;border-bottom:1px solid #dbeafe;border-right:1px solid #dbeafe">${makeMealInput('bf_p',dateStr,bp)}</td>
-              <td style="border:1px solid #dbeafe">${makeMealInput('bf_s',dateStr,bs)}</td>
-              <td style="border:1px solid #dbeafe">${makeMealInput('bf_n',dateStr,bn)}</td>
-              <td style="border-right:3px solid #3b82f6;border-top:1px solid #dbeafe;border-bottom:1px solid #dbeafe;border-left:1px solid #dbeafe">${makeMealInput('bf_g',dateStr,bg2)}</td>
-              <td class="font-semibold text-center bg-blue-50 text-blue-800" id="bf-sum-${dateStr}" style="border-left:1px solid #bfdbfe;border-right:3px solid #3b82f6">${bp+bs+bn+bg2||''}</td>
-              <td style="border-left:3px solid #22c55e;border-top:1px solid #dcfce7;border-bottom:1px solid #dcfce7;border-right:1px solid #dcfce7">${makeMealInput('l_p',dateStr,lp)}</td>
-              <td style="border:1px solid #dcfce7">${makeMealInput('l_s',dateStr,ls)}</td>
-              <td style="border:1px solid #dcfce7">${makeMealInput('l_n',dateStr,ln)}</td>
-              <td style="border-right:3px solid #22c55e;border-top:1px solid #dcfce7;border-bottom:1px solid #dcfce7;border-left:1px solid #dcfce7">${makeMealInput('l_g',dateStr,lg)}</td>
-              <td class="font-semibold text-center bg-green-50 text-green-800" id="l-sum-${dateStr}" style="border-left:1px solid #bbf7d0;border-right:3px solid #22c55e">${lp+ls+ln+lg||''}</td>
-              <td style="border-left:3px solid #a855f7;border-top:1px solid #f3e8ff;border-bottom:1px solid #f3e8ff;border-right:1px solid #f3e8ff">${makeMealInput('d_p',dateStr,dp)}</td>
-              <td style="border:1px solid #f3e8ff">${makeMealInput('d_s',dateStr,ds)}</td>
-              <td style="border:1px solid #f3e8ff">${makeMealInput('d_n',dateStr,dn)}</td>
-              <td style="border-right:3px solid #a855f7;border-top:1px solid #f3e8ff;border-bottom:1px solid #f3e8ff;border-left:1px solid #f3e8ff">${makeMealInput('d_g',dateStr,dg)}</td>
-              <td class="font-semibold text-center bg-purple-50 text-purple-800" id="d-sum-${dateStr}" style="border-left:1px solid #e9d5ff;border-right:3px solid #a855f7">${dp+ds+dn+dg||''}</td>
-              <td class="text-center bg-gray-50" id="t-p-${dateStr}" style="border-left:3px solid #6b7280;border:1px solid #e5e7eb">${bp+lp+dp||''}</td>
-              <td class="text-center bg-gray-50" id="t-s-${dateStr}" style="border:1px solid #e5e7eb">${bs+ls+ds||''}</td>
-              <td class="text-center bg-gray-50" id="t-n-${dateStr}" style="border:1px solid #e5e7eb">${bn+ln+dn||''}</td>
-              <td class="text-center bg-gray-50" id="t-g-${dateStr}" style="border:1px solid #e5e7eb">${bg2+lg+dg||''}</td>
-              <td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd">${(bp+bs+bn+bg2)+(lp+ls+ln+lg)+(dp+ds+dn+dg)||''}</td>
-            </tr>`
-          }).join('')}
+          ${Array.from({ length: days }, (_, i) => buildMealRow(i+1, mealMap, customFields, colCount)).join('')}
         </tbody>
         <tfoot>
-          <tr class="bg-gray-100 font-bold" style="font-size:11px">
-            <td colspan="2" class="text-center py-2">월 합계</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_patient||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_staff||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_noncovered||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_guardian||0),0))}</td>
-            <td class="text-center bg-blue-100 font-bold">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_patient||0)+(m.breakfast_staff||0)+(m.breakfast_noncovered||0)+(m.breakfast_guardian||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_patient||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_staff||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_noncovered||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_guardian||0),0))}</td>
-            <td class="text-center bg-green-100 font-bold">${fmt(mealData.reduce((s,m)=>s+(m.lunch_patient||0)+(m.lunch_staff||0)+(m.lunch_noncovered||0)+(m.lunch_guardian||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_patient||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_staff||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_noncovered||0),0))}</td>
-            <td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_guardian||0),0))}</td>
-            <td class="text-center bg-purple-100 font-bold">${fmt(mealData.reduce((s,m)=>s+(m.dinner_patient||0)+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0))}</td>
-            <td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.p)}</td>
-            <td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.s)}</td>
-            <td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.n)}</td>
-            <td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.g)}</td>
-            <td class="text-center bg-blue-200 font-bold text-blue-900">${fmt(monthTotal.p+monthTotal.s+monthTotal.n+monthTotal.g)}</td>
-          </tr>
+          ${buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCount)}
         </tfoot>
       </table>
+    </div>
+  </div>
+
+  <!-- 커스텀 칸 생성 모달 -->
+  <div id="customFieldModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm mx-4">
+      <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-plus-circle text-indigo-500 mr-2"></i>커스텀 식수 칸 관리</h3>
+      <div id="customFieldList" class="mb-4 space-y-2"></div>
+      <div class="flex gap-2">
+        <input type="text" id="newCustomFieldName" placeholder="새 칸 이름 (예: 간병인)" class="form-input flex-1 text-sm" maxlength="10">
+        <select id="newCustomFieldUnit" class="form-input text-sm" style="width:90px;flex-shrink:0">
+          <option value="meal">식 (식수포함)</option>
+          <option value="ea">ea/개 (미포함)</option>
+        </select>
+        <button onclick="addCustomField()" class="btn btn-success btn-sm px-4">추가</button>
+      </div>
+      <div class="text-xs text-gray-400 mt-1">· <b>식</b>: 총식수/식단가 포함 &nbsp;·&nbsp; <b>ea/개</b>: 개수 집계, 식수 미포함 (예: 공기밥)</div>
+      <div class="mt-4 text-right">
+        <button onclick="closeCustomFieldModal()" class="btn btn-sm bg-gray-100 text-gray-600 px-4">닫기</button>
+      </div>
     </div>
   </div>`
 
   bindMealInputEvents()
+}
+
+function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
+  const baseCards = [
+    { label:'환자식', val:monthTotal.p, color:'blue', id:'mealSummary-p' },
+    { label:'직원식', val:monthTotal.s, color:'green', id:'mealSummary-s' },
+    { label:'비급여', val:monthTotal.n, color:'purple', id:'mealSummary-n' },
+    { label:'보호자', val:monthTotal.g, color:'orange', id:'mealSummary-g' },
+  ]
+  const customCards = customFields.map(f => ({
+    label: f.field_name, val: monthTotal.custom[f.field_key]||0, color:'indigo', id:`mealSummary-${f.field_key}`, unit: f.unit_type||'meal'
+  }))
+  const totalCard = { label:'총식수', val:grandTotal, color:'gray', id:'mealSummary-total', bold:true, unit:'meal' }
+  return [...baseCards, ...customCards, totalCard].map(item => {
+    const unitStr = item.unit === 'ea' ? '개' : '식'
+    return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-2 text-center" style="min-width:72px">
+      <div class="text-xs text-gray-500 font-medium mb-0.5">${item.label}${item.unit==='ea'?'<span class='text-xs text-orange-500 ml-0.5'>(ea)</span>':''}</div>
+      <div class="text-base font-bold text-${item.color}-600" id="${item.id}">${fmt(item.val)}</div>
+      <div class="text-xs text-gray-400">${unitStr}</div>
+    </div>`
+  }).join('')
+}
+
+function buildMealRow(day, mealMap, customFields, colCount) {
+  const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
+  const weekend = isWeekend(App.currentYear, App.currentMonth, day)
+  const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+  const m = mealMap[dateStr] || {}
+  const cd = m._custom || {}
+  const rowClass = dow==='일'?'holiday-row':weekend?'weekend-row':''
+
+  const bp=m.breakfast_patient||0, bs=m.breakfast_staff||0, bn=m.breakfast_noncovered||0, bg2=m.breakfast_guardian||0
+  const lp=m.lunch_patient||0, ls=m.lunch_staff||0, ln=m.lunch_noncovered||0, lg=m.lunch_guardian||0
+  const dp=m.dinner_patient||0, ds=m.dinner_staff||0, dn=m.dinner_noncovered||0, dg=m.dinner_guardian||0
+
+  // 커스텀 값
+  const cVals = customFields.map(f => ({
+    key: f.field_key,
+    bf: cd[f.field_key]?.bf || 0,
+    l:  cd[f.field_key]?.l  || 0,
+    d:  cd[f.field_key]?.d  || 0,
+  }))
+
+  const bfSum = bp+bs+bn+bg2 + cVals.reduce((s,c)=>s+c.bf,0)
+  const lSum  = lp+ls+ln+lg  + cVals.reduce((s,c)=>s+c.l,0)
+  const dSum  = dp+ds+dn+dg  + cVals.reduce((s,c)=>s+c.d,0)
+  const tpSum = bp+lp+dp, tsSum=bs+ls+ds, tnSum=bn+ln+dn, tgSum=bg2+lg+dg
+  // 총 식수(t-total): 비급여 제외, ea 단위 커스텀 필드 제외
+  const cValsForMeals = cVals.filter((_,i) => (customFields[i]?.unit_type||'meal') !== 'ea')
+  const tGrand = tpSum + tsSum + tgSum + cValsForMeals.reduce((s,c)=>s+c.bf+c.l+c.d,0)
+
+  const mealSections = [
+    { prefix:'bf', border:'#3b82f6', bg:'#dbeafe', base:[{k:'bf_p',v:bp},{k:'bf_s',v:bs},{k:'bf_n',v:bn},{k:'bf_g',v:bg2}], cPrefix:'bf', sum:bfSum, sumId:`bf-sum-${dateStr}`, sumBg:'bg-blue-50 text-blue-800' },
+    { prefix:'l',  border:'#22c55e', bg:'#dcfce7', base:[{k:'l_p',v:lp},{k:'l_s',v:ls},{k:'l_n',v:ln},{k:'l_g',v:lg}],   cPrefix:'l',  sum:lSum,  sumId:`l-sum-${dateStr}`,  sumBg:'bg-green-50 text-green-800' },
+    { prefix:'d',  border:'#a855f7', bg:'#f3e8ff', base:[{k:'d_p',v:dp},{k:'d_s',v:ds},{k:'d_n',v:dn},{k:'d_g',v:dg}],   cPrefix:'d',  sum:dSum,  sumId:`d-sum-${dateStr}`,  sumBg:'bg-purple-50 text-purple-800' },
+  ]
+
+  let cells = ''
+  mealSections.forEach(sec => {
+    sec.base.forEach((b, bi) => {
+      const bl = bi===0 ? `border-left:3px solid ${sec.border};` : ''
+      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg}">${makeMealInput(b.k, dateStr, b.v)}</td>`
+    })
+    // 커스텀 칸들
+    cVals.forEach(cv => {
+      cells += `<td style="border:1px solid ${sec.bg};background:#fafafa">${makeMealInput(`${sec.cPrefix}_c_${cv.key}`, dateStr, cv[sec.cPrefix === 'bf' ? 'bf' : sec.cPrefix === 'l' ? 'l' : 'd'])}</td>`
+    })
+    cells += `<td class="font-semibold text-center ${sec.sumBg}" id="${sec.sumId}" style="border-left:1px solid ${sec.bg};border-right:3px solid ${sec.border}">${sec.sum||''}</td>`
+  })
+
+  // 합계 열
+  cells += `<td class="text-center bg-gray-50" id="t-p-${dateStr}" style="border-left:3px solid #6b7280;border:1px solid #e5e7eb">${tpSum||''}</td>`
+  cells += `<td class="text-center bg-gray-50" id="t-s-${dateStr}" style="border:1px solid #e5e7eb">${tsSum||''}</td>`
+  cells += `<td class="text-center bg-gray-50" id="t-n-${dateStr}" style="border:1px solid #e5e7eb">${tnSum||''}</td>`
+  cells += `<td class="text-center bg-gray-50" id="t-g-${dateStr}" style="border:1px solid #e5e7eb">${tgSum||''}</td>`
+  cVals.forEach(cv => {
+    cells += `<td class="text-center bg-indigo-50" id="t-${cv.key}-${dateStr}" style="border:1px solid #e0e7ff">${(cv.bf+cv.l+cv.d)||''}</td>`
+  })
+  cells += `<td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd">${tGrand||''}</td>`
+
+  return `<tr class="${rowClass}" data-date="${dateStr}">
+    <td class="font-semibold text-center" style="border:1px solid #d1d5db">${day}</td>
+    <td class="text-center ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="border:1px solid #d1d5db">${dow}</td>
+    ${cells}
+  </tr>`
+}
+
+function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCount) {
+  // 커스텀 필드 조식/중식/석식 월합계
+  const cBf={}, cL={}, cD={}
+  customFields.forEach(f => { cBf[f.field_key]=0; cL[f.field_key]=0; cD[f.field_key]=0 })
+  mealData.forEach(m => {
+    const cd = m._custom || {}
+    customFields.forEach(f => {
+      cBf[f.field_key] += cd[f.field_key]?.bf||0
+      cL[f.field_key]  += cd[f.field_key]?.l||0
+      cD[f.field_key]  += cd[f.field_key]?.d||0
+    })
+  })
+  const bfTotal = mealData.reduce((s,m)=>s+(m.breakfast_patient||0)+(m.breakfast_staff||0)+(m.breakfast_noncovered||0)+(m.breakfast_guardian||0),0) + customFields.reduce((s,f)=>s+cBf[f.field_key],0)
+  const lTotal  = mealData.reduce((s,m)=>s+(m.lunch_patient||0)+(m.lunch_staff||0)+(m.lunch_noncovered||0)+(m.lunch_guardian||0),0) + customFields.reduce((s,f)=>s+cL[f.field_key],0)
+  const dTotal  = mealData.reduce((s,m)=>s+(m.dinner_patient||0)+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0) + customFields.reduce((s,f)=>s+cD[f.field_key],0)
+
+  let cells = `<td colspan="2" class="text-center py-2">월 합계</td>`
+  // 조식
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_patient||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_staff||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_noncovered||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_guardian||0),0))}</td>`
+  customFields.forEach(f => { cells += `<td class="text-center">${fmt(cBf[f.field_key])}</td>` })
+  cells += `<td class="text-center bg-blue-100 font-bold">${fmt(bfTotal)}</td>`
+  // 중식
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_patient||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_staff||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_noncovered||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_guardian||0),0))}</td>`
+  customFields.forEach(f => { cells += `<td class="text-center">${fmt(cL[f.field_key])}</td>` })
+  cells += `<td class="text-center bg-green-100 font-bold">${fmt(lTotal)}</td>`
+  // 석식
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_patient||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_staff||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_noncovered||0),0))}</td>`
+  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_guardian||0),0))}</td>`
+  customFields.forEach(f => { cells += `<td class="text-center">${fmt(cD[f.field_key])}</td>` })
+  cells += `<td class="text-center bg-purple-100 font-bold">${fmt(dTotal)}</td>`
+  // 합계열
+  cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.p)}</td>`
+  cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.s)}</td>`
+  cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.n)}</td>`
+  cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.g)}</td>`
+  customFields.forEach(f => { cells += `<td class="text-center bg-indigo-100 font-bold">${fmt(monthTotal.custom[f.field_key]||0)}</td>` })
+  cells += `<td class="text-center bg-blue-200 font-bold text-blue-900">${fmt(grandTotal)}</td>`
+  return `<tr class="bg-gray-100 font-bold" style="font-size:11px">${cells}</tr>`
 }
 
 function makeMealInput(key, date, val, extraStyle = '') {
@@ -2192,13 +2336,7 @@ function bindMealInputEvents() {
     input.addEventListener('input', function() { updateMealRowTotals(this.dataset.date) })
     input.addEventListener('change', async function() {
       const date = this.dataset.date
-      const get = (k) => getMealVal(k, date)
-      await api('POST', '/api/meals/save', {
-        mealDate: date,
-        breakfastPatient: get('bf_p'), breakfastStaff: get('bf_s'), breakfastNoncovered: get('bf_n'), breakfastGuardian: get('bf_g'),
-        lunchPatient: get('l_p'), lunchStaff: get('l_s'), lunchNoncovered: get('l_n'), lunchGuardian: get('l_g'),
-        dinnerPatient: get('d_p'), dinnerStaff: get('d_s'), dinnerNoncovered: get('d_n'), dinnerGuardian: get('d_g')
-      })
+      await saveMealRow(date)
       sendActivityLog('식수 입력')
     })
     input.addEventListener('keydown', function(e) {
@@ -2215,22 +2353,70 @@ function getMealVal(key, date) {
   return parseInt(document.querySelector(`input.meal-input[data-key="${key}"][data-date="${date}"]`)?.value||0)||0
 }
 
+function buildCustomData(date) {
+  const customData = {}
+  window._mealCustomFields.forEach(f => {
+    customData[f.field_key] = {
+      bf: getMealVal(`bf_c_${f.field_key}`, date),
+      l:  getMealVal(`l_c_${f.field_key}`, date),
+      d:  getMealVal(`d_c_${f.field_key}`, date),
+    }
+  })
+  return customData
+}
+
+async function saveMealRow(date) {
+  const g = (k) => getMealVal(k, date)
+  await api('POST', '/api/meals/save', {
+    mealDate: date,
+    breakfastPatient: g('bf_p'), breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
+    lunchPatient: g('l_p'), lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
+    dinnerPatient: g('d_p'), dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
+    customData: buildCustomData(date)
+  })
+}
+
 function updateMealRowTotals(date) {
   const g = (k) => getMealVal(k, date)
+  const cf = window._mealCustomFields || []
+
   const bp=g('bf_p'),bs=g('bf_s'),bn=g('bf_n'),bg2=g('bf_g')
   const lp=g('l_p'),ls=g('l_s'),ln=g('l_n'),lg=g('l_g')
   const dp=g('d_p'),ds=g('d_s'),dn=g('d_n'),dg=g('d_g')
+
+  // 커스텀 합계
+  let bfC=0, lC=0, dC=0
+  const customTotals = {}
+  cf.forEach(f => {
+    const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
+    bfC+=bfv; lC+=lv; dC+=dv
+    customTotals[f.field_key] = bfv+lv+dv
+  })
+
+  const bfSum=(bp+bs+bn+bg2)+bfC, lSum=(lp+ls+ln+lg)+lC, dSum=(dp+ds+dn+dg)+dC
+  // 총 식수: 비급여 제외, ea 단위 커스텀 필드 제외
+  const customForMeals = cf.filter(f => (f.unit_type||'meal') !== 'ea')
+  const tGrand = (bp+lp+dp)+(bs+ls+ds)+(bg2+lg+dg) + customForMeals.reduce((s,f)=>s+(customTotals[f.field_key]||0),0)
+
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v||'' }
-  set(`bf-sum-${date}`,bp+bs+bn+bg2); set(`l-sum-${date}`,lp+ls+ln+lg); set(`d-sum-${date}`,dp+ds+dn+dg)
-  set(`t-p-${date}`,bp+lp+dp); set(`t-s-${date}`,bs+ls+ds); set(`t-n-${date}`,bn+ln+dn); set(`t-g-${date}`,bg2+lg+dg)
-  set(`t-total-${date}`,(bp+bs+bn+bg2)+(lp+ls+ln+lg)+(dp+ds+dn+dg))
-  // 상단 요약 카드 실시간 업데이트
+  set(`bf-sum-${date}`, bfSum)
+  set(`l-sum-${date}`, lSum)
+  set(`d-sum-${date}`, dSum)
+  set(`t-p-${date}`, bp+lp+dp)
+  set(`t-s-${date}`, bs+ls+ds)
+  set(`t-n-${date}`, bn+ln+dn)
+  set(`t-g-${date}`, bg2+lg+dg)
+  cf.forEach(f => { set(`t-${f.field_key}-${date}`, customTotals[f.field_key]) })
+  set(`t-total-${date}`, tGrand)
   updateMealSummaryCards()
 }
 
 function updateMealSummaryCards() {
-  // 전체 테이블에서 각 카테고리 합산
   let tp=0, ts=0, tn=0, tg=0
+  const cf = window._mealCustomFields || []
+  const customSums = {}
+  cf.forEach(f => { customSums[f.field_key] = 0 })
+
   document.querySelectorAll('#mealTableBody tr[data-date]').forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
@@ -2238,14 +2424,23 @@ function updateMealSummaryCards() {
     ts += g('bf_s')+g('l_s')+g('d_s')
     tn += g('bf_n')+g('l_n')+g('d_n')
     tg += g('bf_g')+g('l_g')+g('d_g')
+    cf.forEach(f => {
+      customSums[f.field_key] += g(`bf_c_${f.field_key}`)+g(`l_c_${f.field_key}`)+g(`d_c_${f.field_key}`)
+    })
   })
-  // 상단 카드 ID로 업데이트
+  // 총 식수: 비급여(tn) 제외, ea 단위 커스텀 필드 제외
+  const customTotalForMeals = cf
+    .filter(f => (f.unit_type||'meal') !== 'ea')
+    .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
+  const grand = tp+ts+tg+customTotalForMeals
+
   const setCard = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=fmt(v) }
   setCard('mealSummary-p', tp)
   setCard('mealSummary-s', ts)
   setCard('mealSummary-n', tn)
   setCard('mealSummary-g', tg)
-  setCard('mealSummary-total', tp+ts+tn+tg)
+  cf.forEach(f => { setCard(`mealSummary-${f.field_key}`, customSums[f.field_key]) })
+  setCard('mealSummary-total', grand)
 }
 
 async function saveMealBatch() {
@@ -2253,41 +2448,113 @@ async function saveMealBatch() {
   let saved = 0
   const promises = []
 
-  // 버튼 로딩 상태
   const btn = document.querySelector('button[onclick="saveMealBatch()"]')
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 저장 중...' }
 
   rows.forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
-    const total = ['bf_p','bf_s','bf_n','bf_g','l_p','l_s','l_n','l_g','d_p','d_s','d_n','d_g'].reduce((s,k)=>s+g(k),0)
-    if (total > 0) {
+    const baseTotal = ['bf_p','bf_s','bf_n','bf_g','l_p','l_s','l_n','l_g','d_p','d_s','d_n','d_g'].reduce((s,k)=>s+g(k),0)
+    const cf = window._mealCustomFields || []
+    const customSum = cf.reduce((s,f)=>s+g(`bf_c_${f.field_key}`)+g(`l_c_${f.field_key}`)+g(`d_c_${f.field_key}`),0)
+    if (baseTotal + customSum > 0) {
       saved++
       promises.push(api('POST', '/api/meals/save', {
         mealDate: date,
         breakfastPatient: g('bf_p'), breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
         lunchPatient: g('l_p'), lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
-        dinnerPatient: g('d_p'), dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g')
+        dinnerPatient: g('d_p'), dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
+        customData: buildCustomData(date)
       }))
     }
   })
 
   const results = await Promise.all(promises)
   const ok = saved === 0 || results.every(r => r?.success)
-
   if (saved === 0) {
     showToast('저장할 식수 데이터가 없습니다', 'warning')
   } else {
     showToast(ok ? `✅ ${saved}일치 식수 저장 완료!` : '❌ 일부 저장 실패', ok ? 'success' : 'error')
   }
-
-  // 버튼 복원
   if (btn) {
     btn.disabled = false
-    btn.innerHTML = ok && saved > 0
-      ? '<i class="fas fa-check mr-1"></i> 저장 완료'
-      : '<i class="fas fa-save"></i> 전체 저장'
-    if (ok && saved > 0) setTimeout(() => { btn.innerHTML = '<i class="fas fa-save"></i> 전체 저장' }, 2000)
+    btn.innerHTML = ok && saved > 0 ? '<i class="fas fa-check mr-1"></i> 저장 완료' : '<i class="fas fa-save"></i> 저장'
+    if (ok && saved > 0) setTimeout(() => { btn.innerHTML = '<i class="fas fa-save"></i> 저장' }, 2000)
+  }
+}
+
+// ── 커스텀 필드 모달 ──────────────────────────────────────────
+function openCustomFieldModal() {
+  renderCustomFieldList()
+  document.getElementById('customFieldModal')?.classList.remove('hidden')
+}
+
+function closeCustomFieldModal() {
+  document.getElementById('customFieldModal')?.classList.add('hidden')
+}
+
+function renderCustomFieldList() {
+  const cf = window._mealCustomFields || []
+  const listEl = document.getElementById('customFieldList')
+  if (!listEl) return
+  if (cf.length === 0) {
+    listEl.innerHTML = `<p class="text-xs text-gray-400 text-center py-2">아직 커스텀 칸이 없습니다.</p>`
+    return
+  }
+  listEl.innerHTML = cf.map(f => {
+    const unitLabel = f.unit_type === 'ea' ? '<span class="text-xs bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded ml-1">ea/개</span>' : '<span class="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded ml-1">식</span>'
+    return `
+    <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+      <span class="text-sm font-medium text-gray-700"><i class="fas fa-grip-vertical text-gray-300 mr-2"></i>${f.field_name}${unitLabel}</span>
+      <button onclick="deleteCustomField(${f.id})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-trash"></i> 삭제</button>
+    </div>
+  `}).join('')
+}
+
+async function addCustomField() {
+  const input = document.getElementById('newCustomFieldName')
+  const unitSel = document.getElementById('newCustomFieldUnit')
+  const name = input?.value?.trim()
+  const unitType = unitSel?.value || 'meal'
+  if (!name) { showToast('칸 이름을 입력하세요', 'warning'); return }
+  const result = await api('POST', '/api/meals/custom-fields', { fieldName: name, unitType })
+  if (result?.id) {
+    window._mealCustomFields.push(result)
+    if (input) input.value = ''
+    renderCustomFieldList()
+    showToast(`"${name}" 칸이 추가되었습니다`, 'success')
+    // 테이블 새로고침
+    const mealData = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
+    if (mealData) {
+      const meals = Array.isArray(mealData) ? mealData : (mealData.meals || [])
+      meals.forEach(m => { try { m._custom = JSON.parse(m.custom_data||'{}') } catch(e){ m._custom={} } })
+      const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
+      renderMealsContent(content, meals, window._mealCustomFields)
+      openCustomFieldModal()
+    }
+  } else {
+    showToast(result?.error || '추가 실패', 'error')
+  }
+}
+
+async function deleteCustomField(id) {
+  if (!confirm('이 칸을 삭제하시겠습니까? 저장된 데이터는 유지됩니다.')) return
+  const result = await api('DELETE', `/api/meals/custom-fields/${id}`)
+  if (result?.success) {
+    window._mealCustomFields = window._mealCustomFields.filter(f => f.id !== id)
+    renderCustomFieldList()
+    showToast('삭제 완료', 'success')
+    // 테이블 새로고침
+    const mealData = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
+    if (mealData) {
+      const meals = Array.isArray(mealData) ? mealData : (mealData.meals || [])
+      meals.forEach(m => { try { m._custom = JSON.parse(m.custom_data||'{}') } catch(e){ m._custom={} } })
+      const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
+      renderMealsContent(content, meals, window._mealCustomFields)
+      openCustomFieldModal()
+    }
+  } else {
+    showToast('삭제 실패', 'error')
   }
 }
 
@@ -2371,10 +2638,9 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     if (tmForPrice > 0 && used > 0) {
       // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) 비급여제외
       mpTotalByMonth[i]    = Math.round(used / tmForPrice)
-      // ② 직원식 제외: (총금액 - 직원비용) ÷ (환자+보호자)
-      //    직원비용 = 총금액 × (직원식수 / 전체식수)
-      const staffCostM = tmForPrice > 0 ? Math.round(used * staffM / tmForPrice) : 0
-      mpNoStaffByMonth[i]  = mealsNoStaffM > 0 ? Math.round((used - staffCostM) / mealsNoStaffM) : 0
+      // ② 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
+      //    직원식 예산이 포함된 총금액을 환자 식수로 나누면 환자 1인당 실질 식비가 나옴
+      mpNoStaffByMonth[i]  = mealsNoStaffM > 0 ? Math.round(used / mealsNoStaffM) : 0
       // ③ 소모품 제외: (총금액-소모품) ÷ (환자+직원+보호자) 비급여제외
       mpNoSupplyByMonth[i] = Math.round((used - supCost) / tmForPrice)
     }
@@ -2529,8 +2795,8 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
               ${months.map((m,i)=>{
                 const isQEnd = (i+1)%3===0
                 const isLast = i===months.length-1
-                const borderR = isQEnd&&!isLast ? 'border-right:3px solid #9ca3af;' : ''
-                const bgColor = isQEnd&&!isLast ? 'background:#374151;' : ''
+                const borderR = isQEnd&&!isLast ? 'border-right:3px solid #6b7280;' : 'border-right:1px solid #4b5563;'
+                const bgColor = isQEnd&&!isLast ? 'background:#374151;' : 'background:#1f2937;'
                 return `<th class="text-right" style="padding:7px 6px;color:white;${borderR}${bgColor}">${m}</th>`
               }).join('')}
               <th class="text-right" style="padding:7px 8px;color:#86efac;font-weight:800;background:#166534;border-left:3px solid #4ade80">연간합계</th>
@@ -2544,7 +2810,8 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
                 const isQEnd = (i+1)%3===0
                 const isLast = i===v.monthly.length-1
                 const borderR = isQEnd&&!isLast ? 'border-right:3px solid #9ca3af;' : 'border-right:1px solid #e5e7eb;'
-                return `<td class="text-right" style="padding:6px 6px;${borderR}${val>0?'color:#1e293b':'color:#d1d5db'}">${val>0?fmtMan(val)+'만':'-'}</td>`
+                const valColor = val>0 ? 'color:#1e293b;font-weight:600;' : 'color:#9ca3af;'
+                return `<td class="text-right" style="padding:6px 6px;${borderR}${valColor}">${val>0?fmtMan(val)+'만':'-'}</td>`
               }).join('')}
               <td class="text-right font-bold" style="padding:6px 8px;color:#166534;border-left:3px solid #86efac;background:${ri%2===0?'#f0fdf4':'#ecfdf5'}">${v.total>0?fmtMan(v.total)+'만':'-'}</td>
             </tr>`).join('')}
@@ -3609,9 +3876,15 @@ async function renderAdminDashboard() {
             </div>
             <!-- 월간 누적 식수 -->
             ${h.totalMeals > 0 ? `
-            <div class="mt-1.5 flex justify-between text-xs text-teal-600 bg-teal-50 rounded-lg px-2 py-1">
-              <span>월간 누적</span>
-              <span class="font-semibold">${fmt(h.totalMeals)}식 (환자 ${fmt(h.mealStats?.total_patient||0)} / 직원 ${fmt(h.mealStats?.total_staff||0)} / 비급여 ${fmt(h.mealStats?.total_noncovered||0)} / 보호자 ${fmt(h.mealStats?.total_guardian||0)})</span>
+            <div class="mt-1.5 flex flex-col text-xs text-teal-600 bg-teal-50 rounded-lg px-2 py-1 gap-0.5">
+              <div class="flex justify-between">
+                <span>월간 누적</span>
+                <span class="font-semibold">${fmt(h.totalMeals)}식</span>
+              </div>
+              <div class="text-gray-400" style="font-size:10px">
+                환자 ${fmt(h.mealStats?.total_patient||0)} / 직원 ${fmt(h.mealStats?.total_staff||0)} / 비급여 ${fmt(h.mealStats?.total_noncovered||0)} / 보호자 ${fmt(h.mealStats?.total_guardian||0)}
+                ${(h.mealCustomFields||[]).map(f=>`/ ${f.field_name} ${fmt((h.mealCustomTotals||{})[f.field_key]||0)}`).join('')}
+              </div>
             </div>` : ''}
           </div>
 

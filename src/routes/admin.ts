@@ -394,6 +394,30 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
       `).bind(h.id, hYear, hMonth).first<any>()
 
+      // 커스텀 식수 필드 목록 및 월별 합계
+      const customFieldsList = await c.env.DB.prepare(
+        `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+      ).bind(h.id).all<any>()
+      const mealCustomDataRows = await c.env.DB.prepare(
+        `SELECT custom_data FROM daily_meals
+         WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
+           AND custom_data IS NOT NULL AND custom_data != '{}'`
+      ).bind(h.id, hYear, hMonth).all<any>()
+      const customFieldTotals: Record<string, number> = {}
+      ;(customFieldsList.results || []).forEach((f: any) => { customFieldTotals[f.field_key] = 0 })
+      ;(mealCustomDataRows.results || []).forEach((row: any) => {
+        try {
+          const cd = JSON.parse(row.custom_data || '{}')
+          ;(customFieldsList.results || []).forEach((f: any) => {
+            const fv = cd[f.field_key] || {}
+            customFieldTotals[f.field_key] = (customFieldTotals[f.field_key] || 0) + (fv.bf||0) + (fv.l||0) + (fv.d||0)
+          })
+        } catch(e) {}
+      })
+      const customMealTotal = (customFieldsList.results || [])
+        .filter((f: any) => f.unit_type !== 'ea')
+        .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
+
       // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자)
       const todayMeals = await c.env.DB.prepare(`
         SELECT
@@ -443,9 +467,10 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const totalUsed = (vendors.results || []).reduce((s: number, v: any) => s + v.used, 0)
       const progress = totalBudget > 0 ? ((totalUsed / totalBudget) * 100) : 0
 
-      // 식단가 계산 (3종)
+      // 식단가 계산 (3종) - 커스텀 식수 포함
       const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-      const totalMeals = ms.total_patient + ms.total_staff + ms.total_noncovered + ms.total_guardian
+      // 총식수: 비급여 제외 (환자+직원+보호자) + 커스텀
+      const totalMeals = ms.total_patient + ms.total_staff + ms.total_guardian + customMealTotal
       // supply/card 카테고리 제외 금액
       const supplyCardUsed = (vendors.results || [])
         .filter((v: any) => v.category === 'supply' || v.category === 'card')
@@ -481,7 +506,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           AND (v.category='supply' OR v.category='card')
       `).bind(h.id, prevYearStr, prevMonthNum).first<any>()
       const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-      const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_noncovered||0)+(pms.total_guardian||0)
+      // 전월 총식수: 비급여 제외
+      const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
       const prevTotalUsed  = prevOrders?.total_used || 0
       const prevSupplyUsed = prevSupply?.supply_used || 0
       const prevStaffRatio = prevTotalMeals > 0 ? (pms.total_staff||0) / prevTotalMeals : 0
@@ -542,6 +568,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         targetMealPrice,
         totalMeals,
         mealStats: ms,
+        mealCustomFields: customFieldsList.results || [],
+        mealCustomTotals: customFieldTotals,
         todayUsed: todayUsed?.t || 0,
         weekUsed: weekUsed?.t || 0,
         dailyBudget,

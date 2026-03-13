@@ -144,7 +144,7 @@
    발주 입력 테이블
 ══════════════════════════════════════════ */
 /* ── 발주 테이블 ─────────────────────────── */
-.order-table { font-size: 12px; border-collapse: collapse; table-layout: auto; }
+.order-table { font-size: 12px; border-collapse: collapse; table-layout: fixed; width: auto; }
 .order-table th { background: #166534; color: white; padding: 5px 3px; font-size: 10px; text-align: center; border: 1px solid #1e7a3e; position: sticky; top: 0; z-index: 10; white-space: nowrap; }
 .order-table td { padding: 2px 2px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; }
 .order-table .date-col { background: #f8fafc; font-weight: 700; font-size: 12px; text-align: center; color: #374151; min-width: 28px; width: 28px; }
@@ -152,13 +152,13 @@
 .order-table .holiday-row td.date-col { background: #fee2e2; color: #991b1b; }
 /* 입력칸: 가운데 정렬, 너비 축소 */
 .order-table input[type="text"].order-input,
-.order-table input[type="number"] { width: 62px; text-align: right; padding: 3px 5px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; background: #f9fafb; -moz-appearance: textfield; appearance: textfield; display: block; margin: 0 auto; }
+.order-table input[type="number"] { width: 78px; text-align: right; padding: 3px 5px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; background: #f9fafb; -moz-appearance: textfield; appearance: textfield; display: block; margin: 0 auto; box-sizing: border-box; }
 /* 스피너 제거 */
 .order-table input[type="number"]::-webkit-outer-spin-button,
 .order-table input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .order-table input[type="text"].order-input:focus,
 .order-table input[type="number"]:focus { border-color: #16a34a; outline: none; box-shadow: 0 0 0 2px rgba(22,163,74,0.15); background: #fff; }
-.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; text-align: center; font-size: 11px; min-width: 58px; }
+.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; text-align: center; font-size: 11px; min-width: 82px; }
 .order-table td[id^="dayTarget-"] { background: #eff6ff; border-left: 2px solid #bfdbfe; text-align: center; white-space: nowrap; }
 .order-table .weekend-row td[id^="dayTarget-"] { background: #fefce8; }
 .order-table .holiday-row td[id^="dayTarget-"] { background: #fff1f2; }
@@ -243,16 +243,17 @@
 ::-webkit-scrollbar-thumb:hover { background: #34d399; }
 /* 발주입력 가로 스크롤바 (orders-panel 기반) */
 .orders-scroll-wrap { position: relative; }
-/* orders-panel 스크롤바 */
-#orders-panel::-webkit-scrollbar { width: 8px; height: 14px; }
+/* orders-panel: 세로는 부모가 처리, 가로 스크롤만 허용 */
+#orders-panel { overflow-x: auto !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
+#orders-panel::-webkit-scrollbar { width: 8px; height: 8px; }
 #orders-panel::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
-#orders-panel::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 3px solid #dcfce7; }
+#orders-panel::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 2px solid #dcfce7; }
 #orders-panel::-webkit-scrollbar-thumb:hover { background: #166534; }
-/* 하단 고정 가로 스크롤 미러 */
-#orders-hscroll-mirror { position: sticky; bottom: 0; overflow-x: auto; overflow-y: hidden; height: 18px; background: #dcfce7; border-top: 2px solid #16a34a; border-radius: 0 0 8px 8px; z-index: 50; }
-#orders-hscroll-mirror::-webkit-scrollbar { height: 14px; }
+/* 하단 고정 가로 스크롤 미러 — 모바일에서는 숨김 (직접 터치 스크롤 사용) */
+#orders-hscroll-mirror { position: sticky; bottom: 0; overflow-x: auto; overflow-y: hidden; height: 16px; background: #dcfce7; border-top: 2px solid #16a34a; border-radius: 0 0 8px 8px; z-index: 50; }
+#orders-hscroll-mirror::-webkit-scrollbar { height: 12px; }
 #orders-hscroll-mirror::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
-#orders-hscroll-mirror::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 3px solid #dcfce7; }
+#orders-hscroll-mirror::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 2px solid #dcfce7; }
 #orders-hscroll-mirror::-webkit-scrollbar-thumb:hover { background: #166534; }
 /* 발주 테이블 sticky 헤더 */
 .order-table thead th { position: sticky; top: 0; z-index: 20; }
@@ -303,7 +304,11 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   main { padding-bottom: 60px; }
 
   /* 컨텐츠 패딩 축소 */
-  #pageContent, #orders-panel, #meals-panel { padding: 10px 8px !important; }
+  #pageContent, #meals-panel { padding: 10px 8px !important; }
+  /* orders-panel: 모바일에서 가로 스크롤 전용, 패딩 최소화 */
+  #orders-panel { padding: 6px 0 !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+  /* 발주 패널 내부 컨테이너 패딩 */
+  #orders-panel > div:first-child { padding: 0 8px; }
 
   /* 헤더 */
   header { padding: 8px 10px !important; border-bottom-width: 1px !important; }
