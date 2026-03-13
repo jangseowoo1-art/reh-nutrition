@@ -213,7 +213,7 @@ function getAppShell(): string {
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css?v=20250313">
 </head>
 <body class="bg-gray-50">
 
@@ -316,7 +316,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20250313"></script>
 </body>
 </html>`
 }

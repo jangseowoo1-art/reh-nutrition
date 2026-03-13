@@ -319,4 +319,48 @@ orders.post('/save-category', async (c) => {
   return c.json({ success: true, totalAmount })
 })
 
+// ── 카테고리별 연간 발주 현황 (영양사용) ────────────────────
+orders.get('/category-annual/:year', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  if (!hospitalId) return c.json({ categories: [], annualByCategory: [], annualSettings: [] })
+
+  const { year } = c.req.param()
+
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(hospitalId).all<any>()
+
+  const annual = await c.env.DB.prepare(`
+    SELECT
+      d.patient_category_id,
+      strftime('%m', d.order_date) as month,
+      COALESCE(SUM(d.taxable_amount), 0) as taxable,
+      COALESCE(SUM(d.exempt_amount), 0) as exempt,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM daily_orders d
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+      AND d.patient_category_id IS NOT NULL
+    GROUP BY d.patient_category_id, strftime('%m', d.order_date)
+    ORDER BY d.patient_category_id, month
+  `).bind(hospitalId, year).all<any>()
+
+  const annualSettings = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ?
+    ORDER BY hpc.sort_order, cos.month
+  `).bind(hospitalId, year).all<any>()
+
+  return c.json({
+    categories: cats.results || [],
+    annualByCategory: annual.results || [],
+    annualSettings: annualSettings.results || []
+  })
+})
+
 export default orders

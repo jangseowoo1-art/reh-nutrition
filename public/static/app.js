@@ -2791,21 +2791,20 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   // 카테고리 연간 데이터
   const catAnnualUrl = App.role === 'admin' && selectedHospitalId
     ? `/api/admin/hospitals/${selectedHospitalId}/category-annual/${App.currentYear}`
-    : null
+    : `/api/orders/category-annual/${App.currentYear}`
   const catCategoryUrl = App.role === 'admin' && selectedHospitalId
     ? `/api/admin/hospitals/${selectedHospitalId}/patient-categories`
     : '/api/orders/patient-categories'
 
-  const [data, summaryData, catAnnualData, catListData] = await Promise.all([
+  const [data, summaryData, catAnnualData] = await Promise.all([
     api('GET', annualUrl),
     api('GET', summaryUrl),
-    catAnnualUrl ? api('GET', catAnnualUrl) : Promise.resolve(null),
-    api('GET', catCategoryUrl)
+    api('GET', catAnnualUrl)
   ])
   if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
 
   // 환자군 카테고리 연간 데이터 처리
-  const patientCatsForAnalysis = catAnnualData?.categories || catListData || []
+  const patientCatsForAnalysis = catAnnualData?.categories || []
   const catAnnualByCategory = catAnnualData?.annualByCategory || []
   const catAnnualSettingsData = catAnnualData?.annualSettings || []
 
@@ -3079,79 +3078,103 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
 
   <!-- 환자군별 연간 분석 (카테고리가 있을 때만 표시) -->
   ${patientCatsForAnalysis.length > 0 ? `
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mt-4">
-    <h3 class="font-bold text-gray-700 text-sm mb-4"><i class="fas fa-layer-group text-purple-500 mr-1"></i>환자군별 월별 발주 현황</h3>
+  <!-- 환자군별 연간 요약 카드 -->
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4 mb-4">
+    ${patientCatsForAnalysis.slice(0, 4).map(cat => {
+      const catColor = getCategoryColorHex(cat.category_key)
+      const monthVals = catMonthlyData[cat.id] || Array(12).fill({total:0})
+      const annualTotal = monthVals.reduce((s, m) => s + (m?.total||0), 0)
+      const annualBudget = Object.values(catAnnualSettingsMap[cat.id] || {}).reduce((s, s2) => s + (s2.monthly_budget||0), 0)
+      const pct = annualBudget > 0 ? (annualTotal / annualBudget * 100).toFixed(1) : null
+      return `<div class="stat-card" style="border-left:4px solid ${catColor}">
+        <div class="text-xs text-gray-500">${cat.category_name}</div>
+        <div class="text-lg font-bold" style="color:${catColor}">${annualTotal>0?fmtMan(annualTotal)+'원':'집계없음'}</div>
+        <div class="text-xs text-gray-400">${annualBudget>0?'목표 '+fmtMan(annualBudget)+'원'+(pct?(' · '+pct+'%'):''):'목표 미설정'}</div>
+      </div>`
+    }).join('')}
+  </div>
 
-    <!-- 환자군별 월별 발주 금액 차트 -->
-    <div class="mb-6">
-      <h4 class="font-semibold text-gray-600 text-sm mb-3">환자군별 월별 발주 금액 추이</h4>
-      <div style="position:relative;height:280px">
-        <canvas id="chart-catMonthly"></canvas>
-      </div>
+  <!-- 환자군별 차트 그리드 -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+    <!-- 환자군별 월별 발주금액 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+      <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-layer-group text-purple-500 mr-1"></i>환자군별 월별 발주금액</h3>
+      <canvas id="chart-catMonthly" height="180"></canvas>
     </div>
-
-    <!-- 환자군별 월별 예산 달성률 -->
-    <div class="mb-6">
-      <h4 class="font-semibold text-gray-600 text-sm mb-3">환자군별 월별 예산 달성률</h4>
-      <div style="position:relative;height:200px">
-        <canvas id="chart-catBudgetPct"></canvas>
-      </div>
+    <!-- 환자군별 예산 달성률 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+      <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-percent text-indigo-500 mr-1"></i>환자군별 예산 달성률 (%)</h3>
+      <canvas id="chart-catBudgetPct" height="180"></canvas>
     </div>
+  </div>
 
-    <!-- 환자군별 월별 발주 상세 표 -->
-    <div>
-      <h4 class="font-semibold text-gray-600 text-sm mb-3">환자군별 월별 발주 상세</h4>
-      <div class="overflow-x-auto">
-        <table style="width:100%;border-collapse:collapse;min-width:700px">
-          <thead>
-            <tr style="background:#f3e8ff">
-              <th style="padding:8px 10px;text-align:left;font-size:12px;color:#6b21a8;border-bottom:2px solid #d8b4fe;min-width:100px">환자군</th>
-              ${months.map(m => `<th style="padding:8px 6px;text-align:right;font-size:11px;color:#6b21a8;border-bottom:2px solid #d8b4fe;width:65px">${m}</th>`).join('')}
-              <th style="padding:8px 8px;text-align:right;font-size:12px;color:#6b21a8;border-bottom:2px solid #d8b4fe;background:#e9d5ff;min-width:80px">연합계</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${patientCatsForAnalysis.map(cat => {
-              const catColor = getCategoryColorHex(cat.category_key)
-              const monthVals = catMonthlyData[cat.id] || Array(12).fill({total:0})
-              const annualTotal = monthVals.reduce((s, m) => s + (m?.total||0), 0)
-              return `<tr style="border-bottom:1px solid #f3f4f6">
-                <td style="padding:7px 10px">
-                  <div style="display:flex;align-items:center;gap:6px">
-                    <div style="width:10px;height:10px;border-radius:2px;background:${catColor};flex-shrink:0"></div>
-                    <span style="font-size:12px;font-weight:600;color:#374151">${cat.category_name}</span>
-                    ${cat.order_code ? `<span style="font-size:10px;color:#9ca3af">(${cat.order_code})</span>` : ''}
-                  </div>
-                </td>
-                ${monthVals.map((mv, mi) => {
-                  const v = mv?.total || 0
-                  const s = catAnnualSettingsMap[cat.id]?.[mi+1]
-                  const budget = s?.monthly_budget || 0
-                  const pct = budget > 0 ? Math.round(v/budget*100) : null
-                  const over = pct !== null && pct >= 100
-                  return `<td style="padding:7px 6px;text-align:right;font-size:11px;color:${v>0?(over?'#dc2626':catColor):'#d1d5db'};font-weight:${v>0?'600':'400'}">
-                    ${v > 0 ? fmtMan(v)+'만' : '-'}
-                    ${pct !== null && v > 0 ? `<div style="font-size:9px;color:${over?'#dc2626':'#9ca3af'}">${pct}%</div>` : ''}
-                  </td>`
-                }).join('')}
-                <td style="padding:7px 8px;text-align:right;font-size:12px;font-weight:700;color:${catColor};background:${catColor}10;border-left:2px solid ${catColor}40">${annualTotal>0?fmtMan(annualTotal)+'만':'-'}</td>
-              </tr>`
+  <!-- 환자군별 발주 상세 테이블 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
+    <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-table text-purple-500 mr-1"></i>환자군별 월별 발주 상세</h3>
+    <div class="overflow-x-auto" style="min-width:100%">
+      <table class="data-table text-xs" style="width:100%;min-width:${130 + months.length*68 + 88}px;table-layout:fixed;border-collapse:separate;border-spacing:0;border:2px solid #d8b4fe;border-radius:8px;overflow:hidden">
+        <colgroup>
+          <col style="width:130px;min-width:130px">
+          ${months.map(() => `<col style="width:68px;min-width:60px">`).join('')}
+          <col style="width:88px;min-width:78px">
+        </colgroup>
+        <thead>
+          <tr style="background:#6b21a8">
+            <th class="text-left pl-3 sticky left-0 z-20" style="min-width:130px;background:#6b21a8;color:white;padding:7px 6px;border-right:3px solid #a855f7">환자군</th>
+            ${months.map((m,i) => {
+              const isQEnd = (i+1)%3===0
+              const isLast = i===months.length-1
+              const borderR = isQEnd&&!isLast ? 'border-right:3px solid #a855f7;' : 'border-right:1px solid #9333ea;'
+              const bgColor = isQEnd&&!isLast ? 'background:#7e22ce;' : 'background:#6b21a8;'
+              return `<th class="text-right" style="padding:7px 6px;color:white;${borderR}${bgColor}">${m}</th>`
             }).join('')}
-          </tbody>
-          <tfoot>
-            <tr style="background:#f3e8ff;font-weight:700">
-              <td style="padding:8px 10px;font-size:12px;color:#6b21a8">합계</td>
-              ${months.map((m, mi) => {
-                const total = patientCatsForAnalysis.reduce((s, cat) => s + (catMonthlyData[cat.id]?.[mi]?.total||0), 0)
-                return `<td style="padding:8px 6px;text-align:right;font-size:11px;color:${total>0?'#6b21a8':'#d1d5db'}">${total>0?fmtMan(total)+'만':'-'}</td>`
-              }).join('')}
-              <td style="padding:8px 8px;text-align:right;font-size:12px;color:#6b21a8;background:#e9d5ff">
-                ${fmtMan(patientCatsForAnalysis.reduce((s, cat) => s + (catMonthlyData[cat.id]||[]).reduce((ss, m) => ss+(m?.total||0), 0), 0))}만
+            <th class="text-right" style="padding:7px 8px;color:#e9d5ff;font-weight:800;background:#4a1272;border-left:3px solid #a855f7">연간합계</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${patientCatsForAnalysis.map((cat, ri) => {
+            const catColor = getCategoryColorHex(cat.category_key)
+            const monthVals = catMonthlyData[cat.id] || Array(12).fill({total:0})
+            const annualTotal = monthVals.reduce((s, m) => s + (m?.total||0), 0)
+            return `<tr style="${ri%2===0?'background:#faf5ff':'background:white'}">
+              <td class="pl-3 font-semibold sticky left-0 z-10" style="min-width:130px;background:${ri%2===0?'#f5f0ff':'#ffffff'};border-right:3px solid #d8b4fe;padding:6px 6px">
+                <div style="display:flex;align-items:center;gap:5px">
+                  <div style="width:8px;height:8px;border-radius:2px;background:${catColor};flex-shrink:0"></div>
+                  <span style="color:#4c1d95;font-size:11px">${cat.category_name}</span>
+                </div>
               </td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
+              ${monthVals.map((mv, i) => {
+                const v = mv?.total || 0
+                const s = catAnnualSettingsMap[cat.id]?.[i+1]
+                const budget = s?.monthly_budget || 0
+                const pct = budget > 0 ? Math.round(v/budget*100) : null
+                const over = pct !== null && pct >= 100
+                const isQEnd = (i+1)%3===0
+                const isLast = i===monthVals.length-1
+                const borderR = isQEnd&&!isLast ? 'border-right:3px solid #d8b4fe;' : 'border-right:1px solid #ede9fe;'
+                return `<td class="text-right" style="padding:6px 6px;${borderR}${v>0?(over?'color:#dc2626;':'color:#4c1d95;'):'color:#d1d5db;'}font-weight:${v>0?'600':'400'}">
+                  ${v > 0 ? fmtMan(v)+'만' : '-'}
+                  ${pct !== null && v > 0 ? `<div style="font-size:9px;color:${over?'#dc2626':'#9ca3af'}">${pct}%</div>` : ''}
+                </td>`
+              }).join('')}
+              <td class="text-right font-bold" style="padding:6px 8px;border-left:3px solid ${catColor}80;background:${catColor}15;color:${catColor}">${annualTotal>0?fmtMan(annualTotal)+'만':'-'}</td>
+            </tr>`
+          }).join('')}
+        </tbody>
+        <tfoot>
+          <tr style="background:#f3e8ff;border-top:2px solid #a855f7">
+            <td class="pl-3 font-bold sticky left-0 z-10" style="background:#ede9fe;border-right:3px solid #a855f7;padding:7px 6px;color:#6b21a8">합 계</td>
+            ${months.map((m, mi) => {
+              const total = patientCatsForAnalysis.reduce((s, cat) => s + (catMonthlyData[cat.id]?.[mi]?.total||0), 0)
+              const isQEnd = (mi+1)%3===0
+              const isLast = mi===months.length-1
+              const borderR = isQEnd&&!isLast ? 'border-right:3px solid #a855f7;' : 'border-right:1px solid #ddd6fe;'
+              return `<td class="text-right font-bold" style="padding:7px 6px;${borderR}color:${total>0?'#6b21a8':'#d1d5db'}">${total>0?fmtMan(total)+'만':'-'}</td>`
+            }).join('')}
+            <td class="text-right font-bold" style="padding:7px 8px;color:#6b21a8;border-left:3px solid #a855f7;background:#ddd6fe">${fmtMan(patientCatsForAnalysis.reduce((s, cat) => s + (catMonthlyData[cat.id]||[]).reduce((ss, m) => ss+(m?.total||0), 0), 0))}만</td>
+          </tr>
+        </tfoot>
+      </table>
     </div>
   </div>` : ''}
 
@@ -3716,6 +3739,29 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   const catMonthlyEl = document.getElementById('chart-catMonthly')
   if (catMonthlyEl && patientCatsForAnalysis.length > 0) {
     const catColors = patientCatsForAnalysis.map(cat => getCategoryColorHex(cat.category_key))
+    // 꼭짓점 레이블 플러그인 (기존 pointLabelPlugin과 동일 형식)
+    const catPointLabelPlugin = {
+      id: 'catPointLabel',
+      afterDatasetsDraw(chart) {
+        const ctx = chart.ctx
+        chart.data.datasets.forEach((dataset, di) => {
+          const meta = chart.getDatasetMeta(di)
+          if (meta.type !== 'bar') return
+          meta.data.forEach((bar, i) => {
+            const val = dataset.data[i]
+            if (!val || val <= 0) return
+            const { x, y } = bar.getCenterPoint ? bar.getCenterPoint() : { x: bar.x, y: bar.y }
+            ctx.save()
+            ctx.font = 'bold 9px sans-serif'
+            ctx.fillStyle = dataset.borderColor || '#374151'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'bottom'
+            ctx.fillText(`${Math.round(val/1e4)}만`, x, y - 4)
+            ctx.restore()
+          })
+        })
+      }
+    }
     new Chart(catMonthlyEl, {
       type: 'bar',
       data: {
@@ -3725,13 +3771,12 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
           data: (catMonthlyData[cat.id] || Array(12).fill({total:0})).map(m => m?.total || 0),
           backgroundColor: catColors[i] + 'cc',
           borderColor: catColors[i],
-          borderWidth: 1,
-          borderRadius: 3
+          borderWidth: 1.5,
+          borderRadius: 4
         }))
       },
       options: {
         responsive: true,
-        maintainAspectRatio: false,
         plugins: {
           legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtMan(ctx.raw)}원` } }
@@ -3740,11 +3785,12 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
           x: { stacked: false },
           y: { ticks: { callback: v => v > 0 ? `${Math.round(v/1e4)}만` : '0' } }
         }
-      }
+      },
+      plugins: [catPointLabelPlugin]
     })
   }
 
-  // ── 환자군별 월별 예산 달성률 차트
+  // ── 환자군별 월별 예산 달성률 차트 (기존 chart-budgetPct와 동일 형식)
   const catBudgetPctEl = document.getElementById('chart-catBudgetPct')
   if (catBudgetPctEl && patientCatsForAnalysis.length > 0) {
     // 달성률 계산
@@ -3753,7 +3799,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       const pctData = months.map((_, mi) => {
         const used = catMonthlyData[cat.id]?.[mi]?.total || 0
         const budget = catAnnualSettingsMap[cat.id]?.[mi+1]?.monthly_budget || 0
-        return budget > 0 ? Math.round(used / budget * 100) : null
+        return budget > 0 ? parseFloat((used / budget * 100).toFixed(1)) : null
       })
       return {
         label: cat.category_name,
@@ -3768,26 +3814,58 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
         spanGaps: false
       }
     })
+    // 100% 기준선 데이터셋 추가 (기존 chart-budgetPct와 동일)
+    pctDatasets.push({
+      label: '100% 기준',
+      data: Array(12).fill(100),
+      type: 'line',
+      borderColor: '#ef4444',
+      borderDash: [5, 5],
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false
+    })
+
+    // 달성률 꼭짓점 레이블 플러그인 (기존 pctBarLabelPlugin과 동일 형식)
+    const catPctPointPlugin = {
+      id: 'catPctPointLabel',
+      afterDatasetsDraw(chart) {
+        if (!chart.options._showCatPct) return
+        const ctx = chart.ctx
+        chart.data.datasets.forEach((dataset, di) => {
+          if (dataset.type === 'line' && dataset.label === '100% 기준') return
+          const meta = chart.getDatasetMeta(di)
+          meta.data.forEach((point, i) => {
+            const val = dataset.data[i]
+            if (val === null || val === undefined) return
+            const { x, y } = point
+            ctx.save()
+            ctx.font = 'bold 9px sans-serif'
+            ctx.fillStyle = val >= 100 ? '#ef4444' : val >= 90 ? '#d97706' : '#16a34a'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'bottom'
+            ctx.fillText(`${val}%`, x, y - 5)
+            ctx.restore()
+          })
+        })
+      }
+    }
 
     new Chart(catBudgetPctEl, {
       type: 'line',
       data: { labels: months, datasets: pctDatasets },
       options: {
         responsive: true,
-        maintainAspectRatio: false,
+        _showCatPct: true,
         plugins: {
-          legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
-          tooltip: { callbacks: { label: ctx => ctx.raw !== null ? `${ctx.dataset.label}: ${ctx.raw}%` : '목표 미설정' } },
-          annotation: {
-            annotations: {
-              line100: { type: 'line', yMin: 100, yMax: 100, borderColor: '#ef4444', borderWidth: 1, borderDash: [4,4], label: { content: '100%', enabled: true, position: 'end', font: { size: 9 } } }
-            }
-          }
+          legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 }, filter: item => item.text !== '100% 기준' } },
+          tooltip: { callbacks: { label: ctx => ctx.raw !== null ? `${ctx.dataset.label}: ${ctx.raw}%` : '목표 미설정' } }
         },
         scales: {
-          y: { ticks: { callback: v => `${v}%` }, suggestedMax: 120 }
+          y: { ticks: { callback: v => `${v}%` }, suggestedMax: 130 }
         }
-      }
+      },
+      plugins: [catPctPointPlugin]
     })
   }
 
