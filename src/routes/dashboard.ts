@@ -95,19 +95,27 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 식단가 3종 계산
   const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
+  // 화면 표시용 전체 식수 (비급여 포함)
   const totalMeals = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_noncovered||0) + (ms.total_guardian||0)
+  // 식단가 계산용 식수: 비급여(noncovered) 제외, 환자+직원+보호자
+  const totalMealsForPrice = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0)
   // 소모품/카드 제외 금액
   const supplyCardUsed = (vendors.results || [])
     .filter((v: any) => v.category === 'supply' || v.category === 'card')
     .reduce((s: number, v: any) => s + v.total_used, 0)
-  // 직원식 비율로 추정
-  const staffRatio = totalMeals > 0 ? (ms.total_staff||0) / totalMeals : 0
+  // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
+  const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
+  // ② 직원식 제외 식단가:
+  //    분모: 환자식 수만 (직원+보호자 제외)
+  //    분자: 총금액 - 직원식 추정비용 (직원비율로 추정)
+  const staffRatio = totalMealsForPrice > 0 ? (ms.total_staff||0) / totalMealsForPrice : 0
   const staffEstimatedCost = Math.round(totalUsed * staffRatio)
-  const mealPriceTotal = totalMeals > 0 ? Math.round(totalUsed / totalMeals) : 0
-  const mealPriceNoStaff = (totalMeals - (ms.total_staff||0)) > 0
-    ? Math.round((totalUsed - staffEstimatedCost) / (totalMeals - (ms.total_staff||0))) : 0
-  const mealPriceNoSupply = totalMeals > 0
-    ? Math.round((totalUsed - supplyCardUsed) / totalMeals) : 0
+  const mealsPatientOnly = (ms.total_patient||0)  // 환자식 수만 분모로
+  const mealPriceNoStaff = mealsPatientOnly > 0
+    ? Math.round((totalUsed - staffEstimatedCost) / mealsPatientOnly) : 0
+  // ③ 소모품/카드 제외 식단가: (총금액 - 소모품/카드) ÷ (환자+직원+보호자) — 비급여 제외
+  const mealPriceNoSupply = totalMealsForPrice > 0
+    ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
 
   // 전월 식단가 비교용 데이터
   const prevMonth = parseInt(month) === 1 ? 12 : parseInt(month) - 1
@@ -136,18 +144,24 @@ dashboard.get('/summary/:year/:month', async (c) => {
     `SELECT total_budget, meal_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
   ).bind(hospitalId, prevYear2, prevMonth).first<any>()
 
-  // 전월 식단가 계산
+  // 전월 식단가 계산 (현재 월과 동일 로직)
   const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
   const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_noncovered||0)+(pms.total_guardian||0)
+  // 전월 식단가 계산용 식수: 비급여 제외
+  const prevMealsForPrice = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
   const prevTotalUsed = prevOrders?.total_used || 0
   const prevSupplyUsed = prevSupply?.supply_used || 0
-  const prevStaffRatio = prevTotalMeals > 0 ? (pms.total_staff||0) / prevTotalMeals : 0
+  // ① 전월 전체 식단가
+  const prevMealPriceTotal = prevMealsForPrice > 0 ? Math.round(prevTotalUsed / prevMealsForPrice) : 0
+  // ② 전월 직원식 제외 (환자식만 분모)
+  const prevStaffRatio = prevMealsForPrice > 0 ? (pms.total_staff||0) / prevMealsForPrice : 0
   const prevStaffCost = Math.round(prevTotalUsed * prevStaffRatio)
-  const prevMealPriceTotal = prevTotalMeals > 0 ? Math.round(prevTotalUsed / prevTotalMeals) : 0
-  const prevMealPriceNoStaff = (prevTotalMeals - (pms.total_staff||0)) > 0
-    ? Math.round((prevTotalUsed - prevStaffCost) / (prevTotalMeals - (pms.total_staff||0))) : 0
-  const prevMealPriceNoSupply = prevTotalMeals > 0
-    ? Math.round((prevTotalUsed - prevSupplyUsed) / prevTotalMeals) : 0
+  const prevPatientOnly = (pms.total_patient||0)
+  const prevMealPriceNoStaff = prevPatientOnly > 0
+    ? Math.round((prevTotalUsed - prevStaffCost) / prevPatientOnly) : 0
+  // ③ 전월 소모품 제외 (비급여 제외 분모)
+  const prevMealPriceNoSupply = prevMealsForPrice > 0
+    ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0
 
   return c.json({
     settings,

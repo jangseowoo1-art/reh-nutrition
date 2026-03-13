@@ -312,7 +312,7 @@ adminRouter.post('/notifications/read-all', async (c) => {
 adminRouter.get('/online-hospitals', async (c) => {
   try {
     const sessions = await c.env.DB.prepare(`
-      SELECT hs.hospital_id, hs.username, hs.last_page, hs.last_active_at,
+      SELECT hs.hospital_id, hs.username, hs.last_page, hs.last_action, hs.last_active_at,
              h.name as hospital_name
       FROM hospital_sessions hs
       JOIN hospitals h ON hs.hospital_id = h.id
@@ -349,12 +349,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
     ORDER BY h.id
   `).all<any>()
 
-  // 온라인 세션 (5분 기준)
+  // 온라인 세션 (5분 기준) - 액션 정보 포함
   const onlineSessions = await c.env.DB.prepare(`
-    SELECT hospital_id, username, last_page, last_active_at
+    SELECT hospital_id, username, last_page, last_active_at, last_action
     FROM hospital_sessions
     WHERE last_active_at >= datetime('now', '-5 minutes')
     GROUP BY hospital_id
+    HAVING MAX(last_active_at)
   `).all<any>()
   const onlineMap: Record<number, any> = {}
   for (const s of (onlineSessions.results || [])) {
@@ -619,6 +620,19 @@ adminRouter.delete('/hospitals/:id/vendors/:vid', async (c) => {
   return c.json({ success: true })
 })
 
+// ── 업체 순서 일괄 변경 ───────────────────────────────────────
+adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
+  const hospitalId = c.req.param('id')
+  const { order } = await c.req.json() // order: [{id, sort_order}]
+  if (!Array.isArray(order)) return c.json({ error: 'invalid' }, 400)
+  const stmts = order.map((item: any) =>
+    c.env.DB.prepare(`UPDATE vendors SET sort_order=? WHERE id=? AND hospital_id=?`)
+      .bind(item.sort_order, item.id, hospitalId)
+  )
+  await c.env.DB.batch(stmts)
+  return c.json({ success: true })
+})
+
 // ── 공휴일 목록 ───────────────────────────────────────────────
 adminRouter.get('/holidays/:year', async (c) => {
   const year = c.req.param('year')
@@ -706,9 +720,16 @@ adminRouter.get('/hospitals/:id/accounts', async (c) => {
   const id = c.req.param('id')
   const accounts = await c.env.DB.prepare(`
     SELECT u.id, u.username, u.role, u.nutritionist_name, u.created_at,
-           hs.last_active_at as last_active, hs.last_page as current_page
+           u.password_plain,
+           hs.last_active_at as last_active, hs.last_page as current_page,
+           hs.last_action
     FROM users u
-    LEFT JOIN hospital_sessions hs ON hs.username = u.username AND hs.hospital_id = u.hospital_id
+    LEFT JOIN (
+      SELECT hospital_id, username, last_active_at, last_page, last_action
+      FROM hospital_sessions
+      WHERE last_active_at >= datetime('now', '-5 minutes')
+      ORDER BY last_active_at DESC
+    ) hs ON hs.username = u.username AND hs.hospital_id = u.hospital_id
     WHERE u.hospital_id = ? ORDER BY u.id
   `).bind(id).all<any>()
   return c.json(accounts.results || [])
@@ -729,16 +750,16 @@ adminRouter.post('/hospitals/:id/accounts', async (c) => {
 
   const hash = await hashPassword(password)
   await c.env.DB.prepare(`
-    INSERT INTO users (hospital_id, username, password_hash, role, nutritionist_name)
-    VALUES (?, ?, ?, 'hospital', ?)
-  `).bind(hospitalId, username.trim(), hash, nutritionistName?.trim()||'').run()
+    INSERT INTO users (hospital_id, username, password_hash, password_plain, role, nutritionist_name)
+    VALUES (?, ?, ?, ?, 'hospital', ?)
+  `).bind(hospitalId, username.trim(), hash, password, nutritionistName?.trim()||'').run()
   return c.json({ success: true, username: username.trim(), password, nutritionistName: nutritionistName?.trim()||'' })
 })
 
-// ── 병원 계정 비밀번호 변경 ────────────────────────────────────
+// ── 병원 계정 비밀번호/영양사이름 변경 ────────────────────────
 adminRouter.put('/hospitals/:id/accounts/:uid', async (c) => {
   const { id: hospitalId, uid } = c.req.param()
-  const { password, username } = await c.req.json()
+  const { password, username, nutritionistName } = await c.req.json()
 
   if (username) {
     // 중복 체크 (자기 자신 제외)
@@ -754,9 +775,17 @@ adminRouter.put('/hospitals/:id/accounts/:uid', async (c) => {
   if (password?.trim()) {
     const hash = await hashPassword(password)
     await c.env.DB.prepare(
-      `UPDATE users SET password_hash = ? WHERE id = ? AND hospital_id = ?`
-    ).bind(hash, uid, hospitalId).run()
+      `UPDATE users SET password_hash = ?, password_plain = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(hash, password, uid, hospitalId).run()
   }
+
+  // 영양사 이름 변경 (값이 있을 때만)
+  if (nutritionistName !== undefined && nutritionistName !== null) {
+    await c.env.DB.prepare(
+      `UPDATE users SET nutritionist_name = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(nutritionistName, uid, hospitalId).run()
+  }
+
   return c.json({ success: true })
 })
 
@@ -781,9 +810,9 @@ adminRouter.post('/hospitals/:id/accounts/v2', async (c) => {
   if (exists) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
   const hash = await hashPassword(password)
   await c.env.DB.prepare(`
-    INSERT INTO users (hospital_id, username, password_hash, role, nutritionist_name)
-    VALUES (?, ?, ?, 'hospital', ?)
-  `).bind(hospitalId, username.trim(), hash, nutritionistName?.trim()||'').run()
+    INSERT INTO users (hospital_id, username, password_hash, password_plain, role, nutritionist_name)
+    VALUES (?, ?, ?, ?, 'hospital', ?)
+  `).bind(hospitalId, username.trim(), hash, password, nutritionistName?.trim()||'').run()
   return c.json({ success: true, username: username.trim(), password, nutritionistName: nutritionistName?.trim()||'' })
 })
 
@@ -791,7 +820,7 @@ adminRouter.post('/hospitals/:id/accounts/v2', async (c) => {
 adminRouter.get('/hospitals/:id/accounts/v2', async (c) => {
   const id = c.req.param('id')
   const accounts = await c.env.DB.prepare(`
-    SELECT id, username, role, nutritionist_name, created_at FROM users
+    SELECT id, username, role, nutritionist_name, created_at, password_plain FROM users
     WHERE hospital_id = ? ORDER BY id
   `).bind(id).all<any>()
   return c.json(accounts.results || [])

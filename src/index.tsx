@@ -65,6 +65,8 @@ app.get('/analysis', (c) => c.html(getAppShell()))
 app.get('/settings', (c) => c.html(getAppShell()))
 app.get('/admin', (c) => c.html(getAppShell()))
 app.get('/report', (c) => c.html(getAppShell()))
+app.get('/hospital-manage', (c) => c.html(getAppShell()))
+app.get('/holiday-manage', (c) => c.html(getAppShell()))
 
 export default app
 
@@ -117,6 +119,13 @@ function getLoginPage(): string {
           autocomplete="current-password">
       </div>
     </div>
+    <div class="flex items-center justify-between">
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input id="rememberMe" type="checkbox" class="w-4 h-4 accent-green-600 rounded">
+        <span class="text-sm text-gray-600">아이디·비밀번호 저장</span>
+      </label>
+      <button type="button" onclick="clearSavedLogin()" class="text-xs text-gray-400 hover:text-red-500 transition-colors">저장 삭제</button>
+    </div>
     <button type="submit" class="btn-login w-full text-white font-semibold py-3 rounded-xl transition-all duration-200 shadow-md mt-2">
       <i class="fas fa-sign-in-alt mr-2"></i>로그인
     </button>
@@ -130,10 +139,31 @@ function getLoginPage(): string {
 </div>
 
 <script>
+// 저장된 로그인 정보 불러오기
+(function() {
+  const saved = localStorage.getItem('savedLogin')
+  if (saved) {
+    try {
+      const { username, password } = JSON.parse(saved)
+      document.getElementById('username').value = username || ''
+      document.getElementById('password').value = password || ''
+      document.getElementById('rememberMe').checked = true
+    } catch(e) {}
+  }
+})()
+
+function clearSavedLogin() {
+  localStorage.removeItem('savedLogin')
+  document.getElementById('rememberMe').checked = false
+  document.getElementById('username').value = ''
+  document.getElementById('password').value = ''
+}
+
 document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault()
   const username = document.getElementById('username').value
   const password = document.getElementById('password').value
+  const rememberMe = document.getElementById('rememberMe').checked
   const errEl = document.getElementById('errorMsg')
   errEl.classList.add('hidden')
 
@@ -148,6 +178,12 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
       errEl.textContent = data.error || '로그인 실패'
       errEl.classList.remove('hidden')
       return
+    }
+    // 자동저장 처리
+    if (rememberMe) {
+      localStorage.setItem('savedLogin', JSON.stringify({ username, password }))
+    } else {
+      localStorage.removeItem('savedLogin')
     }
     localStorage.setItem('token', data.token)
     localStorage.setItem('role', data.role)
@@ -170,7 +206,7 @@ function getAppShell(): string {
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>병원 급식 예산 관리</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -181,48 +217,55 @@ function getAppShell(): string {
 </head>
 <body class="bg-gray-50">
 
+<!-- 모바일 사이드바 오버레이 -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+
 <!-- 사이드바 + 메인 레이아웃 -->
 <div class="flex h-screen overflow-hidden">
 
   <!-- 사이드바 -->
   <aside id="sidebar" class="sidebar w-64 flex-shrink-0 flex flex-col">
-    <!-- 로고 -->
-    <div class="p-5 border-b border-white/10">
+    <!-- 로고 + 모바일 닫기 버튼 -->
+    <div class="p-4 border-b border-white/10">
       <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
-          <i class="fas fa-hospital text-white text-lg"></i>
+        <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-hospital text-white text-base"></i>
         </div>
-        <div>
+        <div class="flex-1 min-w-0">
           <div class="text-white font-bold text-sm leading-tight">급식 예산 관리</div>
-          <div id="hospitalNameDisplay" class="text-white/60 text-xs mt-0.5">로딩중...</div>
+          <div id="hospitalNameDisplay" class="text-white/60 text-xs mt-0.5 truncate">로딩중...</div>
         </div>
+        <!-- 모바일 전용 닫기 버튼 -->
+        <button onclick="closeSidebar()" class="sidebar-close-btn text-white/70 hover:text-white w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10">
+          <i class="fas fa-times text-sm"></i>
+        </button>
       </div>
     </div>
 
     <!-- 월 선택 -->
     <div class="px-4 py-3 border-b border-white/10">
       <div class="flex items-center gap-2">
-        <button onclick="changeMonth(-1)" class="text-white/70 hover:text-white w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10">
+        <button onclick="changeMonth(-1)" class="text-white/70 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 active:bg-white/20">
           <i class="fas fa-chevron-left text-xs"></i>
         </button>
         <div class="flex-1 text-center">
           <span id="currentMonthDisplay" class="text-white font-semibold text-sm"></span>
         </div>
-        <button onclick="changeMonth(1)" class="text-white/70 hover:text-white w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10">
+        <button onclick="changeMonth(1)" class="text-white/70 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 active:bg-white/20">
           <i class="fas fa-chevron-right text-xs"></i>
         </button>
       </div>
     </div>
 
     <!-- 메뉴 -->
-    <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+    <nav class="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
       <div id="menuContainer"></div>
     </nav>
 
-    <!-- 로그아웃 -->
-    <div class="p-4 border-t border-white/10">
-      <div class="flex items-center gap-3 mb-3">
-        <div class="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+    <!-- 사용자 정보 + 로그아웃 -->
+    <div class="p-3 border-t border-white/10">
+      <div class="flex items-center gap-2 mb-2 px-1">
+        <div class="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
           <i class="fas fa-user text-white text-xs"></i>
         </div>
         <div class="flex-1 min-w-0">
@@ -230,24 +273,30 @@ function getAppShell(): string {
           <div id="roleDisplay" class="text-white/50 text-xs"></div>
         </div>
       </div>
-      <button onclick="logout()" class="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-white/70 hover:text-white hover:bg-white/10 text-sm transition">
-        <i class="fas fa-sign-out-alt"></i><span>로그아웃</span>
+      <button onclick="logout()" class="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-white/70 hover:text-white hover:bg-white/10 text-xs transition active:bg-white/20">
+        <i class="fas fa-sign-out-alt text-xs"></i><span>로그아웃</span>
       </button>
     </div>
   </aside>
 
   <!-- 메인 컨텐츠 -->
-  <main class="flex-1 flex flex-col overflow-hidden">
+  <main class="flex-1 flex flex-col overflow-hidden min-w-0">
     <!-- 상단 헤더 -->
-    <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
-      <div>
-        <h1 id="pageTitle" class="text-xl font-bold text-gray-800"></h1>
-        <p id="pageSubtitle" class="text-sm text-gray-500 mt-0.5"></p>
+    <header class="bg-white border-b border-gray-200 px-3 py-2 flex items-center gap-2 flex-shrink-0 md:px-6 md:py-4">
+      <!-- 모바일 햄버거 버튼 -->
+      <button id="hamburgerBtn" onclick="openSidebar()" class="hamburger-btn w-9 h-9 flex items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 active:bg-gray-200 flex-shrink-0">
+        <i class="fas fa-bars text-base"></i>
+      </button>
+      <!-- 타이틀 -->
+      <div class="flex-1 min-w-0">
+        <h1 id="pageTitle" class="text-base font-bold text-gray-800 truncate md:text-xl"></h1>
+        <p id="pageSubtitle" class="text-xs text-gray-500 truncate hidden md:block"></p>
       </div>
-      <div class="flex items-center gap-3">
-        <span id="headerMonth" class="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full"></span>
+      <!-- 우측 정보 -->
+      <div class="flex items-center gap-1.5 flex-shrink-0">
+        <span id="headerMonth" class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full font-medium md:text-sm md:px-3"></span>
         <button id="copyUrlBtn" onclick="copyServiceUrl()" title="서비스 URL 복사"
-          class="flex items-center gap-1.5 text-sm text-gray-500 bg-gray-100 hover:bg-green-100 hover:text-green-700 px-3 py-1 rounded-full transition-all duration-150 border border-transparent hover:border-green-300">
+          class="hidden md:flex items-center gap-1.5 text-sm text-gray-500 bg-gray-100 hover:bg-green-100 hover:text-green-700 px-3 py-1 rounded-full transition-all duration-150 border border-transparent hover:border-green-300">
           <i class="fas fa-link text-xs"></i>
           <span id="copyUrlLabel">URL 복사</span>
         </button>
@@ -255,12 +304,17 @@ function getAppShell(): string {
     </header>
 
     <!-- 페이지 컨텐츠 -->
-    <div id="pageContent" class="flex-1 overflow-y-auto p-6"></div>
-    <!-- 발주/식수 입력: DOM 보존용 영구 패널 (style.display로 전환) -->
-    <div id="orders-panel" style="display:none" class="flex-1 overflow-y-auto p-6"></div>
-    <div id="meals-panel"  style="display:none" class="flex-1 overflow-y-auto p-6"></div>
+    <div id="pageContent" class="flex-1 overflow-y-auto p-3 md:p-6"></div>
+    <!-- 발주/식수 입력: DOM 보존용 영구 패널 -->
+    <div id="orders-panel" style="display:none" class="flex-1 overflow-y-auto p-2 md:p-6"></div>
+    <div id="meals-panel"  style="display:none" class="flex-1 overflow-y-auto p-2 md:p-6"></div>
   </main>
 </div>
+
+<!-- 모바일 하단 네비게이션 바 -->
+<nav id="mobileBottomNav" class="mobile-bottom-nav">
+  <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
+</nav>
 
 <script src="/static/app.js"></script>
 </body>
