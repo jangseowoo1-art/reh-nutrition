@@ -368,8 +368,9 @@ function navigateTo(page, forceReload = false) {
   _showPanel(page)
 
   // orders / meals: 이미 렌더된 경우 재렌더 스킵 (DOM 보존)
+  // ※ orders는 환자군 카테고리 변경을 반영하기 위해 항상 새로 렌더링
   const cacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
-  if (!forceReload && (page === 'orders' || page === 'meals') && App._panelReady[cacheKey]) {
+  if (!forceReload && page === 'meals' && App._panelReady[cacheKey]) {
     return
   }
 
@@ -392,7 +393,7 @@ function navigateTo(page, forceReload = false) {
   }
 
   if (pages[page]) {
-    if (page === 'orders' || page === 'meals') App._panelReady[cacheKey] = true
+    if (page === 'meals') App._panelReady[cacheKey] = true
     pages[page]()
   } else {
     document.getElementById('pageContent').innerHTML =
