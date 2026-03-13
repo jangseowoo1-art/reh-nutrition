@@ -143,29 +143,35 @@
 /* ══════════════════════════════════════════
    발주 입력 테이블
 ══════════════════════════════════════════ */
-.order-table { font-size: 13px; border-collapse: collapse; }
-.order-table th { background: #166534; color: white; padding: 8px 8px; font-size: 11px; text-align: center; border: 1px solid #1e7a3e; position: sticky; top: 0; z-index: 10; }
-.order-table td { padding: 5px 4px; border: 1px solid #d1d5db; }
-.order-table .date-col { background: #f8fafc; font-weight: 600; font-size: 12px; text-align: center; color: #374151; }
+/* ── 발주 테이블 ─────────────────────────── */
+.order-table { font-size: 12px; border-collapse: collapse; table-layout: auto; }
+.order-table th { background: #166534; color: white; padding: 5px 3px; font-size: 10px; text-align: center; border: 1px solid #1e7a3e; position: sticky; top: 0; z-index: 10; white-space: nowrap; }
+.order-table td { padding: 2px 2px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; }
+.order-table .date-col { background: #f8fafc; font-weight: 700; font-size: 12px; text-align: center; color: #374151; min-width: 28px; width: 28px; }
 .order-table .weekend-row td.date-col { background: #fef9c3; color: #92400e; }
 .order-table .holiday-row td.date-col { background: #fee2e2; color: #991b1b; }
+/* 입력칸: 가운데 정렬, 너비 축소 */
 .order-table input[type="text"].order-input,
-.order-table input[type="number"] { width: 90px; text-align: right; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; background: #f9fafb; -moz-appearance: textfield; appearance: textfield; }
-/* 스피너(위아래 화살표) 제거 */
+.order-table input[type="number"] { width: 62px; text-align: right; padding: 3px 5px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; background: #f9fafb; -moz-appearance: textfield; appearance: textfield; display: block; margin: 0 auto; }
+/* 스피너 제거 */
 .order-table input[type="number"]::-webkit-outer-spin-button,
 .order-table input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .order-table input[type="text"].order-input:focus,
 .order-table input[type="number"]:focus { border-color: #16a34a; outline: none; box-shadow: 0 0 0 2px rgba(22,163,74,0.15); background: #fff; }
-.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; }
-.order-table td[id^="dayTarget-"] { background: #eff6ff; border-left: 2px solid #bfdbfe; text-align: right; padding-right: 6px; white-space: nowrap; }
+.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; text-align: center; font-size: 11px; min-width: 58px; }
+.order-table td[id^="dayTarget-"] { background: #eff6ff; border-left: 2px solid #bfdbfe; text-align: center; white-space: nowrap; }
 .order-table .weekend-row td[id^="dayTarget-"] { background: #fefce8; }
 .order-table .holiday-row td[id^="dayTarget-"] { background: #fff1f2; }
-.order-table td[id^="dayPct-"] { border-left: 2px solid #93c5fd; text-align: center; white-space: nowrap; min-width: 54px; transition: background 0.2s; }
-.order-table .vendor-pct-cell { border-left: 1px solid #c7d2fe; text-align: center; white-space: nowrap; transition: background 0.2s; }
 .order-table td.covered-target { background: #f8fafc !important; border-left: 2px solid #e2e8f0; }
-.order-table .week-summary-row td { border-top: 2px solid #86efac; border-bottom: 1px solid #86efac; }
-.order-table .current-week-row td { box-shadow: inset 0 2px 0 #0284c7, inset 0 -1px 0 #0284c7; }
+/* 주간 요약행 */
+.order-table .week-summary-row td { border-top: 2px solid #86efac; border-bottom: 2px solid #86efac; vertical-align: middle; font-size: 10px; }
+.order-table .week-summary-row { border-top: 3px solid #16a34a !important; border-bottom: 2px solid #16a34a !important; }
+.order-table .current-week-row td { box-shadow: inset 0 2px 0 #0284c7, inset 0 -2px 0 #0284c7; }
 .order-table .current-week-row { position: relative; z-index: 1; }
+/* 입력 셀(td) 자체 패딩 최소화 */
+.order-table td:has(input.order-input) { padding: 2px 2px; }
+/* 일합계 열 정렬 */
+.order-table .total-col.text-center { font-size: 11px; }
 
 /* ══════════════════════════════════════════
    스케줄
@@ -345,11 +351,12 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   .toast { bottom: 72px; right: 12px; left: 12px; font-size: 13px; padding: 12px 16px; }
 
   /* 발주 입력 테이블 - 모바일 전용 최적화 */
-  .order-table { font-size: 11px; }
-  .order-table th { padding: 5px 3px; font-size: 10px; }
-  .order-table td { padding: 3px 2px; }
+  .order-table { font-size: 10px; }
+  .order-table th { padding: 4px 2px; font-size: 9px; }
+  .order-table td { padding: 2px 1px; }
   /* 발주 입력필드 - iOS zoom 방지 */
-  .order-table input[type="number"] { width: 68px; font-size: 16px !important; padding: 5px 3px; border-radius: 4px; }
+  .order-table input[type="text"].order-input,
+  .order-table input[type="number"] { width: 58px; font-size: 16px !important; padding: 4px 2px; border-radius: 4px; text-align: center; }
 
   /* 식수 입력 테이블 */
   .meal-table { font-size: 11px; }

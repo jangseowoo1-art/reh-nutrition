@@ -106,13 +106,14 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
   // ② 직원식 제외 식단가:
-  //    분자: 총금액 - 직원식 추정비용 (직원비율 = 직원식수 / 전체식수)
-  //    분모: 전체식수 - 직원식수 (환자 + 보호자)
-  const staffRatio = totalMealsForPrice > 0 ? (ms.total_staff||0) / totalMealsForPrice : 0
-  const staffEstimatedCost = Math.round(totalUsed * staffRatio)
-  const mealsNoStaff = (ms.total_patient||0) + (ms.total_guardian||0)  // 전체 - 직원
+  //    분자: 총금액 - 직원식 비용 (직원식 비용 = 총금액 × 직원식수/전체식수)
+  //    분모: 환자 + 보호자 (직원식수 제외)
+  //    예: 총금액 2,088,000 / 직원50명 / 전체160명 → 직원비용=652,500 → 직원제외금액=1,435,500 ÷ 110 = 13,050원/식
+  const mealsNoStaff = (ms.total_patient||0) + (ms.total_guardian||0)  // 환자 + 보호자
+  const staffCost = totalMealsForPrice > 0
+    ? Math.round(totalUsed * (ms.total_staff||0) / totalMealsForPrice) : 0
   const mealPriceNoStaff = mealsNoStaff > 0
-    ? Math.round((totalUsed - staffEstimatedCost) / mealsNoStaff) : 0
+    ? Math.round((totalUsed - staffCost) / mealsNoStaff) : 0
   // ③ 소모품/카드 제외 식단가: (총금액 - 소모품/카드) ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceNoSupply = totalMealsForPrice > 0
     ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
@@ -153,10 +154,10 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const prevSupplyUsed = prevSupply?.supply_used || 0
   // ① 전월 전체 식단가
   const prevMealPriceTotal = prevMealsForPrice > 0 ? Math.round(prevTotalUsed / prevMealsForPrice) : 0
-  // ② 전월 직원식 제외: (총금액-직원추정비) ÷ (전체-직원) = 환자+보호자
-  const prevStaffRatio = prevMealsForPrice > 0 ? (pms.total_staff||0) / prevMealsForPrice : 0
-  const prevStaffCost = Math.round(prevTotalUsed * prevStaffRatio)
+  // ② 전월 직원식 제외: (총금액 - 직원비용) ÷ (환자+보호자)
   const prevMealsNoStaff = (pms.total_patient||0) + (pms.total_guardian||0)
+  const prevStaffCost = prevMealsForPrice > 0
+    ? Math.round(prevTotalUsed * (pms.total_staff||0) / prevMealsForPrice) : 0
   const prevMealPriceNoStaff = prevMealsNoStaff > 0
     ? Math.round((prevTotalUsed - prevStaffCost) / prevMealsNoStaff) : 0
   // ③ 전월 소모품 제외 (비급여 제외 분모)
