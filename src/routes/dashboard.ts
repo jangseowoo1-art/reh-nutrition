@@ -106,13 +106,13 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
   // ② 직원식 제외 식단가:
-  //    분모: 환자식 수만 (직원+보호자 제외)
-  //    분자: 총금액 - 직원식 추정비용 (직원비율로 추정)
+  //    분자: 총금액 - 직원식 추정비용 (직원비율 = 직원식수 / 전체식수)
+  //    분모: 전체식수 - 직원식수 (환자 + 보호자)
   const staffRatio = totalMealsForPrice > 0 ? (ms.total_staff||0) / totalMealsForPrice : 0
   const staffEstimatedCost = Math.round(totalUsed * staffRatio)
-  const mealsPatientOnly = (ms.total_patient||0)  // 환자식 수만 분모로
-  const mealPriceNoStaff = mealsPatientOnly > 0
-    ? Math.round((totalUsed - staffEstimatedCost) / mealsPatientOnly) : 0
+  const mealsNoStaff = (ms.total_patient||0) + (ms.total_guardian||0)  // 전체 - 직원
+  const mealPriceNoStaff = mealsNoStaff > 0
+    ? Math.round((totalUsed - staffEstimatedCost) / mealsNoStaff) : 0
   // ③ 소모품/카드 제외 식단가: (총금액 - 소모품/카드) ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceNoSupply = totalMealsForPrice > 0
     ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
@@ -153,12 +153,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const prevSupplyUsed = prevSupply?.supply_used || 0
   // ① 전월 전체 식단가
   const prevMealPriceTotal = prevMealsForPrice > 0 ? Math.round(prevTotalUsed / prevMealsForPrice) : 0
-  // ② 전월 직원식 제외 (환자식만 분모)
+  // ② 전월 직원식 제외: (총금액-직원추정비) ÷ (전체-직원) = 환자+보호자
   const prevStaffRatio = prevMealsForPrice > 0 ? (pms.total_staff||0) / prevMealsForPrice : 0
   const prevStaffCost = Math.round(prevTotalUsed * prevStaffRatio)
-  const prevPatientOnly = (pms.total_patient||0)
-  const prevMealPriceNoStaff = prevPatientOnly > 0
-    ? Math.round((prevTotalUsed - prevStaffCost) / prevPatientOnly) : 0
+  const prevMealsNoStaff = (pms.total_patient||0) + (pms.total_guardian||0)
+  const prevMealPriceNoStaff = prevMealsNoStaff > 0
+    ? Math.round((prevTotalUsed - prevStaffCost) / prevMealsNoStaff) : 0
   // ③ 전월 소모품 제외 (비급여 제외 분모)
   const prevMealPriceNoSupply = prevMealsForPrice > 0
     ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0

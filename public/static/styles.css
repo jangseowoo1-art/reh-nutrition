@@ -144,7 +144,7 @@
    발주 입력 테이블
 ══════════════════════════════════════════ */
 .order-table { font-size: 13px; border-collapse: collapse; }
-.order-table th { background: #166534; color: white; padding: 8px 8px; font-size: 11px; text-align: center; border: 1px solid #1e7a3e; }
+.order-table th { background: #166534; color: white; padding: 8px 8px; font-size: 11px; text-align: center; border: 1px solid #1e7a3e; position: sticky; top: 0; z-index: 10; }
 .order-table td { padding: 5px 4px; border: 1px solid #d1d5db; }
 .order-table .date-col { background: #f8fafc; font-weight: 600; font-size: 12px; text-align: center; color: #374151; }
 .order-table .weekend-row td.date-col { background: #fef9c3; color: #92400e; }
@@ -235,11 +235,21 @@
 ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 6px; }
 ::-webkit-scrollbar-thumb { background: #6ee7b7; border-radius: 6px; border: 2px solid #f1f5f9; }
 ::-webkit-scrollbar-thumb:hover { background: #34d399; }
-/* 발주입력 가로 스크롤바 더 크게 */
-.orders-scroll-wrap::-webkit-scrollbar { height: 14px; }
-.orders-scroll-wrap::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
-.orders-scroll-wrap::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 3px solid #dcfce7; }
-.orders-scroll-wrap::-webkit-scrollbar-thumb:hover { background: #166534; }
+/* 발주입력 가로 스크롤바 (orders-panel 기반) */
+.orders-scroll-wrap { position: relative; }
+/* orders-panel 스크롤바 */
+#orders-panel::-webkit-scrollbar { width: 8px; height: 14px; }
+#orders-panel::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
+#orders-panel::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 3px solid #dcfce7; }
+#orders-panel::-webkit-scrollbar-thumb:hover { background: #166534; }
+/* 하단 고정 가로 스크롤 미러 */
+#orders-hscroll-mirror { position: sticky; bottom: 0; overflow-x: auto; overflow-y: hidden; height: 18px; background: #dcfce7; border-top: 2px solid #16a34a; border-radius: 0 0 8px 8px; z-index: 50; }
+#orders-hscroll-mirror::-webkit-scrollbar { height: 14px; }
+#orders-hscroll-mirror::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
+#orders-hscroll-mirror::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 3px solid #dcfce7; }
+#orders-hscroll-mirror::-webkit-scrollbar-thumb:hover { background: #166534; }
+/* 발주 테이블 sticky 헤더 */
+.order-table thead th { position: sticky; top: 0; z-index: 20; }
 
 /* ══════════════════════════════════════════
    헤더 악센트

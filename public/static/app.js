@@ -1102,7 +1102,7 @@ async function renderOrders() {
       </div>
     </div>
 
-    <div class="overflow-x-auto orders-scroll-wrap" style="-webkit-overflow-scrolling:touch;padding-bottom:4px">
+    <div class="orders-scroll-wrap" id="ordersScrollWrap" style="padding-bottom:6px">
       <!-- 모바일 스크롤 안내 -->
       <div class="scroll-hint">
         <i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 발주 입력
@@ -1110,17 +1110,13 @@ async function renderOrders() {
       <table class="order-table w-full" id="ordersTable">
         <thead style="position:sticky;top:0;z-index:20">
           <tr>
-            <th rowspan="2" class="sticky left-0 z-10 bg-gray-800" style="min-width:40px">일</th>
-            <th rowspan="2" style="min-width:24px">요일</th>
-            <th rowspan="2" style="min-width:44px;font-size:10px">발주<br>일수</th>
-            <th rowspan="2" style="min-width:110px;font-size:10px;background:#1e3a8a;color:white;padding:4px 5px;">
-              <div style="font-size:11px;font-weight:800;color:#93c5fd;letter-spacing:0.5px">📊 일발주 진행률</div>
-              <div style="font-size:10px;color:#bfdbfe;margin-top:2px;font-weight:600">일발주 / 일 목표</div>
-            </th>
+            <th rowspan="2" class="sticky left-0 z-30 bg-gray-800" style="min-width:40px">일</th>
+            <th rowspan="2" class="sticky z-30 bg-gray-800" style="min-width:28px;left:40px">요일</th>
+            <th rowspan="2" class="sticky z-30 bg-gray-800" style="min-width:44px;font-size:10px;left:68px">발주<br>일수</th>
             ${vendors.map((v, vi) => {
               const cols = getVendorCols(v.tax_type)
               const borderLeft = vi > 0 ? 'border-left:3px solid #334155;' : ''
-              return `<th colspan="${cols + 1}" style="min-width:${cols*88+52}px;${borderLeft}">
+              return `<th colspan="${cols}" style="min-width:${cols*88}px;${borderLeft}">
                 <div style="font-size:11px">${v.name}</div>
                 <div style="font-size:9px;opacity:0.7">${getTaxTypeLabel(v.tax_type)}</div>
               </th>`
@@ -1236,36 +1232,9 @@ async function renderOrders() {
               const dColor = dOver?'#dc2626':dWarn?'#d97706':'#16a34a'
               const dBg = dOver?'#fee2e2':dWarn?'#fef3c7':(dayPct!==null&&dayTotal>0?'#f0fdf4':'')
 
-              // 진행률 셀
-              let pctHtml = ''
-              if (isCovered) {
-                pctHtml = `<div style="color:#9ca3af;font-size:9px;text-align:center;line-height:1.4">🔗포함됨<br><span style="color:#93c5fd;font-size:8px">${coveredBy?.slice(5)}</span></div>`
-              } else if (dayPct!==null && dayTotal>0) {
-                const ml = multiDayCount>1?`<span style="color:#60a5fa;font-size:8px"> ${multiDayCount}일치</span>`:''
-                pctHtml = `<div style="color:${dColor};font-size:13px;font-weight:800;line-height:1.1">${dayPct}%${dOver?' 🚨':dWarn?' ⚠️':''}</div><div style="font-size:8px;line-height:1.3"><span style="color:#374151">${fmtMan(dayTotal)}</span><span style="color:#9ca3af"> /일 ${fmtMan(adjBudget)}</span>${ml}</div>`
-              } else {
-                const ml = multiDayCount>1?` ${multiDayCount}일치`:''
-                pctHtml = `<div style="color:#d1d5db;font-size:11px">-</div><div style="color:#93c5fd;font-size:8px">목표 ${fmtMan(adjBudget)}${ml}</div>`
-              }
-
-              // 업체별 셀 (일별% + 주별%)
+              // 업체별 입력 셀
               const vendorCells = vendors.map((v, vi) => {
-                const vDB = vendorDailyBudgets[v.id]||0
-                const vWB = vDB*5
-                const vDayAmt = (orderData||[]).filter(o=>o.vendor_id===v.id&&o.order_date===dateStr).reduce((s,o)=>s+(o.total_amount||0),0)
-                const vWeekAmt = (orderData||[]).filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
-                const vAdjDB = isCovered?0:vDB*multiDayCount
-                const vDPct = vAdjDB>0?Math.round(vDayAmt/vAdjDB*100):null
-                const vWPct = vWB>0?Math.round(vWeekAmt/vWB*100):null
-                const vDO = vDPct!==null&&vDPct>=100; const vDW = vDPct!==null&&vDPct>=80&&!vDO
-                const vWO = vWPct!==null&&vWPct>=100; const vWW = vWPct!==null&&vWPct>=80&&!vWO
-                const vDC = vDO?'#dc2626':vDW?'#d97706':'#16a34a'
-                const vWC = vWO?'#dc2626':vWW?'#d97706':'#6366f1'
-                const vBg = vDO?'#fee2e2':vDW?'#fef3c7':''
-                const inputCells = getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)
-                const dayTxt = vDPct!==null?`<div style="color:${vDC};font-size:10px;font-weight:700;line-height:1.2">${vDPct}%${vDO?' 🚨':vDW?' ⚠️':''}</div>`:`<div style="color:#d1d5db;font-size:9px">일 -</div>`
-                const weekTxt = vWPct!==null?`<div style="color:${vWC};font-size:9px;font-weight:600;line-height:1.2">${vWO?'🚨':vWW?'⚠️':''}주${vWPct}%</div>`:`<div style="color:#d1d5db;font-size:8px">주 -</div>`
-                return `${inputCells}<td id="vpct-${v.id}-${dateStr}" class="text-center vendor-pct-cell" data-vendor="${v.id}" data-date="${dateStr}" style="background:${vBg};min-width:50px;padding:2px 3px;">${dayTxt}${weekTxt}</td>`
+                return getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)
               }).join('')
 
               rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
@@ -1279,7 +1248,6 @@ async function renderOrders() {
                   </select>
                   ${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px">${multiDayCount}일치</div>`:''}
                 </td>
-                <td id="dayPct-${dateStr}" class="text-center" style="font-size:10px;padding:3px 4px;background:${dBg};border-left:2px solid #bfdbfe;">${pctHtml}</td>
                 ${vendorCells}
                 <td class="total-col text-right pr-2 text-xs" id="dayTotal-${dateStr}" style="${dOver?'color:#dc2626;font-weight:700':dWarn?'color:#d97706;font-weight:600':''}">${dayTotal>0?fmt(dayTotal):''}</td>
               </tr>`)
@@ -1290,8 +1258,7 @@ async function renderOrders() {
         <tfoot>
           <tr class="bg-gray-100 font-bold text-xs">
             <td colspan="2" class="text-center py-2 sticky left-0 bg-gray-100">합계</td>
-            <td class="bg-gray-100"></td>
-            <td class="text-center" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;background:#f0fdf4;">${monthPct}%<div style="font-size:9px;color:#6b7280;font-weight:400">${fmtMan(monthTotal)} / ${fmtMan(totalBudget)}</div></td>
+            <td class="text-center bg-gray-100" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>
             ${vendors.map(v => getVendorTotalCellsWithPct(v, orderData||[])).join('')}
             <td class="text-right pr-2 text-green-700 font-bold" id="vfoot-month-total">
               ${fmt((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}
@@ -1370,6 +1337,58 @@ async function renderOrders() {
   }
 
   bindOrderInputEvents()
+  setupOrdersScrollSync()
+}
+
+// ── 발주 테이블 하단 스크롤 미러 동기화 ──────────────────────────
+function setupOrdersScrollSync() {
+  requestAnimationFrame(() => {
+    const panel = document.getElementById('orders-panel') || document.getElementById('pageContent')
+    const table = document.getElementById('ordersTable')
+    if (!panel || !table) return
+
+    // 기존 미러 제거
+    const existingMirror = document.getElementById('orders-hscroll-mirror')
+    if (existingMirror) existingMirror.remove()
+
+    // 미러 스크롤 컨테이너 생성 (하단 고정 가로스크롤)
+    const mirror = document.createElement('div')
+    mirror.id = 'orders-hscroll-mirror'
+    // 내부 너비 맞춤 div
+    const inner = document.createElement('div')
+    inner.style.cssText = `height:1px;`
+    // 테이블 너비에 맞춤
+    const setMirrorWidth = () => {
+      inner.style.width = table.scrollWidth + 'px'
+    }
+    setMirrorWidth()
+    mirror.appendChild(inner)
+
+    // orders-panel에 sticky bottom으로 삽입
+    panel.appendChild(mirror)
+
+    // 스크롤 동기화 (mirror ↔ panel)
+    let syncingMirror = false, syncingPanel = false
+    mirror.addEventListener('scroll', () => {
+      if (syncingMirror) return
+      syncingPanel = true
+      panel.scrollLeft = mirror.scrollLeft
+      setTimeout(() => syncingPanel = false, 20)
+    })
+    panel.addEventListener('scroll', () => {
+      if (syncingPanel) return
+      syncingMirror = true
+      mirror.scrollLeft = panel.scrollLeft
+      setTimeout(() => syncingMirror = false, 20)
+      setMirrorWidth()
+    })
+
+    // ResizeObserver로 테이블 크기 변경 감지
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(setMirrorWidth)
+      ro.observe(table)
+    }
+  })
 }
 
 // ── 발주 전체 수동 저장 ────────────────────────────────────────
@@ -1591,38 +1610,30 @@ function getVendorTotalCells(v, orderData) {
   return `<td class="text-right pr-2 text-blue-700 font-bold text-xs total-col">${total>0?fmt(total):''}</td>`
 }
 
-// 업체 서브헤더 (% 컬럼 포함)
+// 업체 서브헤더 (주 진행률 열 없음)
 function getVendorSubHeadersWithPct(v, borderLeft = '') {
   const firstBorder = borderLeft ? `style="${borderLeft}min-width:80px;font-size:10px"` : `style="min-width:80px;font-size:10px"`
-  const pctTh = `<th style="min-width:56px;font-size:9px;background:#1e3a8a;color:#93c5fd;padding:3px 2px;line-height:1.3"><div style="font-size:8px;color:#bfdbfe;font-weight:700">주 발주</div><div style="font-size:9px;font-weight:800;color:#60a5fa">진행률%</div></th>`
   if (v.tax_type === 'mixed') {
-    return `<th ${firstBorder}>과세</th><th style="min-width:80px;font-size:10px">면세</th><th style="min-width:80px;font-size:10px;background:#1a2f4a">소계</th>${pctTh}`
+    return `<th ${firstBorder}>과세</th><th style="min-width:80px;font-size:10px">면세</th><th style="min-width:80px;font-size:10px;background:#1a2f4a">소계</th>`
   }
   if (v.tax_type === 'taxable') {
-    return `<th ${firstBorder}>과세</th>${pctTh}`
+    return `<th ${firstBorder}>과세</th>`
   }
-  return `<th ${firstBorder}>면세</th>${pctTh}`
+  return `<th ${firstBorder}>면세</th>`
 }
 
-// 업체 합계 셀 (% 컬럼 포함)
+// 업체 합계 셀 (주 진행률 열 없음 — 합계행에 월 달성률만 id로 남김)
 function getVendorTotalCellsWithPct(v, orderData) {
   const filtered = orderData.filter(o => o.vendor_id === v.id)
   const totalTaxable = filtered.reduce((s, o) => s + (o.taxable_amount||0), 0)
   const totalExempt = filtered.reduce((s, o) => s + (o.exempt_amount||0), 0)
   const total = filtered.reduce((s, o) => s + (o.total_amount||0), 0)
-  const monthPct = v.monthly_budget > 0 ? Math.round(total / v.monthly_budget * 100) : null
-  const mOver = monthPct !== null && monthPct >= 100
-  const mWarn = monthPct !== null && monthPct >= 80 && !mOver
-  const mColor = mOver ? '#dc2626' : mWarn ? '#d97706' : '#166534'
-  const mBg = mOver ? '#fee2e2' : mWarn ? '#fef3c7' : '#f0fdf4'
-  // pct 셀에 id 추가 (실시간 업데이트용)
-  const pctCell = `<td class="text-center" id="vfoot-pct-${v.id}" style="font-size:10px;font-weight:700;color:${mColor};background:${mBg};">${monthPct !== null ? monthPct + '%' + (mOver ? ' 🚨' : mWarn ? ' ⚠️' : '') : '-'}</td>`
   if (v.tax_type === 'mixed') {
     return `<td class="text-right pr-1 text-xs">${totalTaxable>0?fmt(totalTaxable):''}</td>
             <td class="text-right pr-1 text-xs">${totalExempt>0?fmt(totalExempt):''}</td>
-            <td class="text-right pr-2 text-blue-700 font-bold text-xs total-col" id="vfoot-amt-${v.id}">${total>0?fmt(total):''}</td>${pctCell}`
+            <td class="text-right pr-2 text-blue-700 font-bold text-xs total-col" id="vfoot-amt-${v.id}">${total>0?fmt(total):''}</td>`
   }
-  return `<td class="text-right pr-2 text-blue-700 font-bold text-xs total-col" id="vfoot-amt-${v.id}">${total>0?fmt(total):''}</td>${pctCell}`
+  return `<td class="text-right pr-2 text-blue-700 font-bold text-xs total-col" id="vfoot-amt-${v.id}">${total>0?fmt(total):''}</td>`
 }
 
 function bindOrderInputEvents() {
@@ -1912,16 +1923,16 @@ function updateBudgetProgressPanel() {
     // 식단가 계산용 식수: 비급여 제외 (환자+직원+보호자)
     const totalMeals = ms.totalMeals || 0  // 전체 식수 (비급여 포함) - 표시용
     const totalMealsForPrice = (ms.totalPatient||0) + (ms.totalStaff||0) + (ms.totalGuardian||0)
-    // 직원식 비율 계산 (비급여 제외 분모)
+    // 직원식 비율 계산 (비급여 제외 분모 기준)
     const staffRatio = totalMealsForPrice > 0 ? (ms.totalStaff||0) / totalMealsForPrice : 0
     const staffTotal = Math.round(monthTotal * staffRatio)
-    // 환자식 수만 분모 (직원식 제외)
-    const patientOnlyMeals = (ms.totalPatient||0)
+    // ② 직원식 제외 분모: 전체식수 - 직원식수 = 환자 + 보호자
+    const mealsNoStaff = (ms.totalPatient||0) + (ms.totalGuardian||0)
 
     // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
     const mp1 = totalMealsForPrice > 0 ? Math.round(monthTotal / totalMealsForPrice) : 0
-    // ② 직원식 제외: (총금액 - 직원추정비) ÷ 환자식수
-    const mp2 = patientOnlyMeals > 0 ? Math.round((monthTotal - staffTotal) / patientOnlyMeals) : 0
+    // ② 직원식 제외: (총금액 - 직원추정비) ÷ (환자 + 보호자)
+    const mp2 = mealsNoStaff > 0 ? Math.round((monthTotal - staffTotal) / mealsNoStaff) : 0
     // ③ 소모품/카드 제외: (총금액 - 소모품) ÷ (환자+직원+보호자) — 비급여 제외
     const mp3 = totalMealsForPrice > 0 ? Math.round((monthTotal - supplyTotal) / totalMealsForPrice) : 0
     const tgt = ms.targetMealPrice
@@ -2004,71 +2015,12 @@ function updateDayTotal(date) {
       pctHtml = `<div style="color:#d1d5db;font-size:11px">-</div><div style="color:#93c5fd;font-size:8px">목표 ${fmtMan(adjBudget)}${ml}</div>`
     }
 
-    const pctCell = document.getElementById(`dayPct-${date}`)
-    if (pctCell) {
-      pctCell.innerHTML = pctHtml
-      pctCell.style.background = dBg
-    }
-
     // 일 합계 셀 색상 업데이트
     if (dayTotalEl) {
       dayTotalEl.style.color = dOver ? '#dc2626' : dWarn ? '#d97706' : ''
       dayTotalEl.style.fontWeight = (dOver || dWarn) ? '700' : ''
     }
 
-    // ── 업체별 % 셀(vpct) 실시간 갱신 ──
-    const vendorBudgets = window._ordersVendorDailyBudgets || {}
-    const vendors = window._ordersVendors || []
-    // 현재 날짜 주간 범위
-    const dateObj = new Date(date)
-    const thisMon = new Date(dateObj)
-    thisMon.setDate(dateObj.getDate() - (dateObj.getDay() === 0 ? 6 : dateObj.getDay() - 1))
-    const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate() + 6)
-    const weekKey = thisMon.toISOString().split('T')[0]
-    const weekEndKey = thisSun.toISOString().split('T')[0]
-
-    vendors.forEach(v => {
-      const vDB = vendorBudgets[v.id] || 0
-      const vWB = vDB * 5
-      const vDayAmt = vendorTotals[v.id] || 0
-
-      // 주간 합계: DOM에서 읽기
-      let vWeekAmt = 0
-      const seenDates = new Set()
-      document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`).forEach(inp => {
-        const d = inp.dataset.date
-        if (seenDates.has(d)) return
-        seenDates.add(d)
-        if (d < weekKey || d > weekEndKey) return
-        const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
-        const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
-        const t2 = parseInt(tx?.value || 0) || 0
-        const e2 = parseInt(ex?.value || 0) || 0
-        vWeekAmt += t2 + Math.round(t2 * 0.1) + e2
-      })
-
-      const vAdjDB = isCovered ? 0 : vDB * multidays
-      const vDPct = vAdjDB > 0 ? Math.round(vDayAmt / vAdjDB * 100) : null
-      const vWPct = vWB > 0 ? Math.round(vWeekAmt / vWB * 100) : null
-      const vDO = vDPct !== null && vDPct >= 100; const vDW = vDPct !== null && vDPct >= 80 && !vDO
-      const vWO = vWPct !== null && vWPct >= 100; const vWW = vWPct !== null && vWPct >= 80 && !vWO
-      const vDC = vDO ? '#dc2626' : vDW ? '#d97706' : '#16a34a'
-      const vWC = vWO ? '#dc2626' : vWW ? '#d97706' : '#6366f1'
-      const vBg = vDO ? '#fee2e2' : vDW ? '#fef3c7' : ''
-
-      const dayTxt = vDPct !== null
-        ? `<div style="color:${vDC};font-size:10px;font-weight:700;line-height:1.2">${vDPct}%${vDO ? ' 🚨' : vDW ? ' ⚠️' : ''}</div>`
-        : `<div style="color:#d1d5db;font-size:9px">일 -</div>`
-      const weekTxt = vWPct !== null
-        ? `<div style="color:${vWC};font-size:9px;font-weight:600;line-height:1.2">${vWO ? '🚨' : vWW ? '⚠️' : ''}주${vWPct}%</div>`
-        : `<div style="color:#d1d5db;font-size:8px">주 -</div>`
-
-      const vpctCell = document.getElementById(`vpct-${v.id}-${date}`)
-      if (vpctCell) {
-        vpctCell.innerHTML = dayTxt + weekTxt
-        vpctCell.style.background = vBg
-      }
-    })
   }
 }
 
@@ -2551,32 +2503,46 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
       <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-table text-gray-500 mr-1"></i>업체별 월별 발주 상세</h3>
       <div class="overflow-x-auto" style="min-width:100%">
-        <table class="data-table text-xs" style="width:100%;min-width:${120 + months.length*72 + 80}px;table-layout:fixed;border-collapse:collapse">
+        <table class="data-table text-xs" style="width:100%;min-width:${130 + months.length*68 + 88}px;table-layout:fixed;border-collapse:separate;border-spacing:0;border:2px solid #d1d5db;border-radius:8px;overflow:hidden">
           <colgroup>
-            <col style="width:120px;min-width:120px">
-            ${months.map(()=>`<col style="width:72px;min-width:60px">`).join('')}
-            <col style="width:80px;min-width:70px">
+            <col style="width:130px;min-width:130px">
+            ${months.map((m,i)=>`<col style="width:68px;min-width:60px;${(i+1)%3===0?'border-right:2px solid #6b7280':''}">`).join('')}
+            <col style="width:88px;min-width:78px">
           </colgroup>
           <thead>
-            <tr>
-              <th class="text-left pl-3 sticky left-0 bg-gray-800 z-10" style="min-width:120px">업체명</th>
-              ${months.map(m=>`<th class="text-right pr-2">${m}</th>`).join('')}
-              <th class="bg-green-800 text-right pr-2">연간합계</th>
+            <tr style="background:#1f2937">
+              <th class="text-left pl-3 sticky left-0 z-20" style="min-width:130px;background:#1f2937;color:white;padding:7px 6px;border-right:2px solid #4b5563">업체명</th>
+              ${months.map((m,i)=>{
+                const isQEnd = (i+1)%3===0
+                const isLast = i===months.length-1
+                return `<th class="text-right" style="padding:7px 6px;color:white;${isQEnd&&!isLast?'border-right:2px solid #9ca3af;background:#374151':''}">${m}</th>`
+              }).join('')}
+              <th class="text-right" style="padding:7px 8px;color:#86efac;font-weight:800;background:#166534;border-left:2px solid #4ade80">연간합계</th>
             </tr>
           </thead>
           <tbody>
-            ${vendors.map(v => `
-            <tr>
-              <td class="pl-3 font-medium sticky left-0 bg-white z-10" style="min-width:120px">${v.name}</td>
-              ${v.monthly.map(val=>`<td class="text-right pr-2">${val>0?fmtMan(val):''}</td>`).join('')}
-              <td class="text-right pr-2 font-bold text-green-700">${fmtMan(v.total)}</td>
+            ${vendors.map((v,ri) => `
+            <tr style="${ri%2===0?'background:#f9fafb':'background:white'}">
+              <td class="pl-3 font-semibold sticky left-0 z-10" style="min-width:130px;background:${ri%2===0?'#f1f5f9':'#ffffff'};border-right:2px solid #e5e7eb;padding:6px 6px;color:#1e293b">${v.name}</td>
+              ${v.monthly.map((val,i)=>{
+                const isQEnd = (i+1)%3===0
+                const isLast = i===v.monthly.length-1
+                const borderR = isQEnd&&!isLast ? 'border-right:2px solid #d1d5db;' : 'border-right:1px solid #f1f5f9;'
+                return `<td class="text-right" style="padding:6px 6px;${borderR}${val>0?'color:#1e293b':'color:#d1d5db'}">${val>0?fmtMan(val)+'만':'-'}</td>`
+              }).join('')}
+              <td class="text-right font-bold" style="padding:6px 8px;color:#166534;border-left:2px solid #86efac;background:${ri%2===0?'#f0fdf4':'#ecfdf5'}">${v.total>0?fmtMan(v.total)+'만':'-'}</td>
             </tr>`).join('')}
           </tbody>
           <tfoot>
-            <tr class="bg-green-50 font-bold">
-              <td class="pl-3 sticky left-0 bg-green-50 z-10">합계</td>
-              ${usedByMonth.map(v=>`<td class="text-right pr-2">${v>0?fmtMan(v):''}</td>`).join('')}
-              <td class="text-right pr-2 text-green-700">${fmtMan(totalUsed)}</td>
+            <tr style="background:#e8f5e9;border-top:2px solid #4ade80">
+              <td class="pl-3 font-bold sticky left-0 z-10" style="background:#dcfce7;border-right:2px solid #4ade80;padding:7px 6px;color:#166534">합 계</td>
+              ${usedByMonth.map((v,i)=>{
+                const isQEnd = (i+1)%3===0
+                const isLast = i===usedByMonth.length-1
+                const borderR = isQEnd&&!isLast ? 'border-right:2px solid #4ade80;' : 'border-right:1px solid #bbf7d0;'
+                return `<td class="text-right font-bold" style="padding:7px 6px;${borderR}color:#15803d">${v>0?fmtMan(v)+'만':'-'}</td>`
+              }).join('')}
+              <td class="text-right font-bold" style="padding:7px 8px;color:#166534;border-left:2px solid #4ade80;background:#bbf7d0">${fmtMan(totalUsed)}만</td>
             </tr>
           </tfoot>
         </table>
@@ -2644,33 +2610,49 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
         <canvas id="chart-vendorMonthly" height="120"></canvas>
         <!-- 업체별 월별 사용금액 데이터 테이블 -->
         <div class="mt-4 overflow-x-auto" id="vendorMonthlyTableWrap">
-          <table class="w-full text-xs border-collapse" style="min-width:900px">
+          <table class="text-xs border-collapse" style="width:100%;min-width:${110 + months.length*60 + 70 + 50}px;table-layout:fixed">
+            <colgroup>
+              <col style="width:110px;min-width:110px">
+              ${months.map(()=>`<col style="width:60px;min-width:50px">`).join('')}
+              <col style="width:70px;min-width:65px">
+              <col style="width:50px;min-width:45px">
+            </colgroup>
             <thead>
               <tr class="bg-indigo-700 text-white">
-                <th class="text-left pl-3 py-1.5 sticky left-0 bg-indigo-700 min-w-[110px] z-10">업체명</th>
-                ${months.map(m=>`<th class="text-right pr-2 py-1.5 whitespace-nowrap min-w-[55px]">${m}</th>`).join('')}
-                <th class="text-right pr-2 py-1.5 bg-indigo-800 whitespace-nowrap min-w-[70px]">연간합계</th>
-                <th class="text-right pr-2 py-1.5 bg-indigo-800 whitespace-nowrap min-w-[50px]">최고월</th>
+                <th class="text-left pl-3 py-1.5 sticky left-0 bg-indigo-700 z-10" style="border-right:2px solid #4338ca">업체명</th>
+                ${months.map((m,i)=>{
+                  const isQEnd=(i+1)%3===0&&i!==months.length-1
+                  return `<th class="text-right pr-2 py-1.5 whitespace-nowrap" style="${isQEnd?'border-right:2px solid #818cf8':''}">${m}</th>`
+                }).join('')}
+                <th class="text-right pr-2 py-1.5 bg-indigo-800 whitespace-nowrap" style="border-left:2px solid #818cf8">연간합계</th>
+                <th class="text-right pr-2 py-1.5 bg-indigo-800 whitespace-nowrap">최고월</th>
               </tr>
             </thead>
             <tbody>
               ${vendors.map((v,vi) => {
                 const maxVal = Math.max(...v.monthly)
                 const maxIdx = v.monthly.indexOf(maxVal)
-                return `<tr class="${vi%2===0?'bg-white':'bg-indigo-50'} hover:bg-indigo-100">
-                  <td class="pl-3 py-1.5 font-medium sticky left-0 z-10 ${vi%2===0?'bg-white':'bg-indigo-50'}">${v.name}</td>
-                  ${v.monthly.map((val,mi)=>`<td class="text-right pr-2 py-1.5 ${mi===maxIdx&&val>0?'font-bold text-indigo-700 bg-indigo-100':''}">${val>0?fmtMan(val):''}</td>`).join('')}
-                  <td class="text-right pr-2 py-1.5 font-bold text-indigo-700 bg-indigo-50">${fmtMan(v.total)}</td>
+                const rowBg = vi%2===0?'bg-white':'bg-indigo-50'
+                return `<tr class="${rowBg} hover:bg-indigo-100">
+                  <td class="pl-3 py-1.5 font-medium sticky left-0 z-10 ${rowBg}" style="border-right:2px solid #c7d2fe">${v.name}</td>
+                  ${v.monthly.map((val,mi)=>{
+                    const isQEnd=(mi+1)%3===0&&mi!==months.length-1
+                    return `<td class="text-right pr-2 py-1.5 ${mi===maxIdx&&val>0?'font-bold text-indigo-700 bg-indigo-100':''}" style="${isQEnd?'border-right:2px solid #c7d2fe':''}">${val>0?fmtMan(val):''}</td>`
+                  }).join('')}
+                  <td class="text-right pr-2 py-1.5 font-bold text-indigo-700 bg-indigo-50" style="border-left:2px solid #c7d2fe">${fmtMan(v.total)}</td>
                   <td class="text-right pr-2 py-1.5 text-indigo-600">${maxVal>0?months[maxIdx]:'—'}</td>
                 </tr>`
               }).join('')}
             </tbody>
             <tfoot>
               <tr class="bg-indigo-100 font-bold">
-                <td class="pl-3 py-1.5 sticky left-0 z-10 bg-indigo-100 text-indigo-800">월별 합계</td>
-                ${usedByMonth.map(v=>`<td class="text-right pr-2 py-1.5 text-indigo-700">${v>0?fmtMan(v):''}</td>`).join('')}
-                <td class="text-right pr-2 py-1.5 text-indigo-800">${fmtMan(totalUsed)}</td>
-                <td class="text-right pr-2 py-1.5 text-gray-400">—</td>
+                <td class="pl-3 py-1.5 sticky left-0 z-10 bg-indigo-100 text-indigo-800" style="border-right:2px solid #a5b4fc;border-top:2px solid #a5b4fc">월별 합계</td>
+                ${usedByMonth.map((v,i)=>{
+                  const isQEnd=(i+1)%3===0&&i!==usedByMonth.length-1
+                  return `<td class="text-right pr-2 py-1.5 text-indigo-700" style="${isQEnd?'border-right:2px solid #a5b4fc;':''}border-top:2px solid #a5b4fc">${v>0?fmtMan(v):''}</td>`
+                }).join('')}
+                <td class="text-right pr-2 py-1.5 text-indigo-800" style="border-left:2px solid #a5b4fc;border-top:2px solid #a5b4fc">${fmtMan(totalUsed)}</td>
+                <td class="text-right pr-2 py-1.5 text-gray-400" style="border-top:2px solid #a5b4fc">—</td>
               </tr>
             </tfoot>
           </table>
@@ -3615,10 +3597,10 @@ async function renderAdminDashboard() {
           ${totalIssues > 0 ? `
           <div>
             <button onclick="toggleHospIssues('hissue-${h.hospital.id}')" class="flex items-center justify-between w-full text-xs text-gray-500 hover:text-gray-700 py-1 px-2 rounded-lg hover:bg-gray-50 transition-colors">
-              <span class="font-semibold"><i class="fas fa-chevron-down mr-1 transition-transform" id="hissue-icon-${h.hospital.id}"></i>이슈 목록 ${totalIssues}건</span>
+              <span class="font-semibold"><i class="fas fa-chevron-right mr-1 transition-transform" id="hissue-icon-${h.hospital.id}"></i>이슈 목록 ${totalIssues}건</span>
               <span>${dangerIssues.length>0?`<span class="text-red-500 font-bold">위험 ${dangerIssues.length}건</span>`:''} ${warnIssues.length>0?`<span class="text-amber-500">경고 ${warnIssues.length}건</span>`:''}</span>
             </button>
-            <div id="hissue-${h.hospital.id}" class="space-y-1 mt-1">
+            <div id="hissue-${h.hospital.id}" class="space-y-1 mt-1" style="display:none">
               ${dangerIssues.map(i=>`
               <div class="flex items-center gap-1 text-xs bg-red-50 text-red-700 px-2 py-1 rounded-lg border border-red-100">
                 <i class="fas fa-exclamation-circle text-red-400 flex-shrink-0"></i><span>${i.msg}</span>
@@ -3859,12 +3841,15 @@ window.switchAdminTab = (tab) => {
 // 병원별 이슈 접기/펼치기 토글
 window.toggleHospIssues = (id) => {
   const el = document.getElementById(id)
-  const iconEl = document.getElementById(`${id.replace('hissue-','hissue-icon-')}`)
+  const iconId = id.replace('hissue-', 'hissue-icon-')
+  const iconEl = document.getElementById(iconId)
   if (!el) return
-  const isHidden = el.style.display === 'none' || el.classList.contains('hidden')
-  el.style.display = isHidden ? '' : 'none'
+  const isHidden = el.style.display === 'none' || el.style.display === ''
+  el.style.display = isHidden ? 'block' : 'none'
   if (iconEl) {
-    iconEl.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)'
+    iconEl.className = isHidden
+      ? 'fas fa-chevron-down mr-1 transition-transform'
+      : 'fas fa-chevron-right mr-1 transition-transform'
   }
 }
 
