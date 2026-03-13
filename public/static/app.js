@@ -1242,207 +1242,22 @@ async function renderOrders() {
             }).join('')}
           </tr>
         </thead>
-        <tbody>
-          ${(() => {
-            // 다일치 커버 날짜 사전 계산
-            const coveredDates = {}
-            const multiDayMap = {}
-            ;(orderData||[]).forEach(o => {
-              if (o.is_multi_day && o.multi_day_start && o.multi_day_end) {
-                const s = new Date(o.multi_day_start), e = new Date(o.multi_day_end)
-                const cnt = Math.round((e-s)/(1000*60*60*24))+1
-                multiDayMap[o.multi_day_start] = Math.max(multiDayMap[o.multi_day_start]||0, cnt)
-                for (let d = new Date(s); d <= e; d.setDate(d.getDate()+1)) {
-                  const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-                  if (ds !== o.multi_day_start) coveredDates[ds] = o.multi_day_start
-                }
-              }
-            })
-            // 업체별 일일예산
-            const vendorDailyBudgets = {}
-            ;(vendors||[]).forEach(v => {
-              vendorDailyBudgets[v.id] = workingDays > 0 ? Math.round((v.monthly_budget||0)/workingDays) : 0
-            })
-            window._ordersCoveredDates = coveredDates
-            window._ordersMultiDayMap = multiDayMap
-            window._ordersVendors = vendors
-            window._ordersVendorDailyBudgets = vendorDailyBudgets
-
-            // 카테고리별 일별 발주 맵 생성
-            // catDailyMap[date][categoryId] = { taxable, exempt, vat, total }
-            const catDailyMap = {}
-            ;(catOrderData?.dailyByCategory || []).forEach(r => {
-              if (!catDailyMap[r.order_date]) catDailyMap[r.order_date] = {}
-              catDailyMap[r.order_date][r.patient_category_id] = r
-            })
-            window._catDailyMap = catDailyMap
-
-            // 카테고리별 목표 설정 맵
-            const catSettingsMap = {}
-            ;(catOrderData?.settings || []).forEach(s => { catSettingsMap[s.patient_category_id] = s })
-            window._catSettingsMap = catSettingsMap
-
-            const rows = []
-            const renderedWeeks = new Set()
-            let weekNumber = 0  // 주차 번호 카운터
-
-            for (let i = 0; i < days; i++) {
-              const day = i + 1
-              const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
-              const weekend = isWeekend(App.currentYear, App.currentMonth, day)
-              const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-              const rowClass = dow === '일' ? 'holiday-row' : weekend ? 'weekend-row' : ''
-
-              // 이 날짜의 주 범위 (월~일)
-              const dateObj = new Date(dateStr)
-              const thisMon = new Date(dateObj)
-              thisMon.setDate(dateObj.getDate() - (dateObj.getDay()===0 ? 6 : dateObj.getDay()-1))
-              const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate()+6)
-              const weekKey = thisMon.toISOString().split('T')[0]
-              const weekEndKey = thisSun.toISOString().split('T')[0]
-
-              // 주간 요약행: 주차별 처음에만 삽입
-              if (!renderedWeeks.has(weekKey)) {
-                renderedWeeks.add(weekKey)
-                weekNumber++  // 주차 번호 증가
-                const wTotal = (orderData||[]).filter(o=>o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
-                const wPct = weekBudget>0 ? Math.round(wTotal/weekBudget*100) : null
-                const wOver = wPct!==null&&wPct>=100; const wWarn = wPct!==null&&wPct>=80&&!wOver
-                // 이번 주 여부
-                const isCurrentWeek = todayStr>=weekKey && todayStr<=weekEndKey
-                // 상태별 테두리 색상: 정상 녹색/주의 노랑/초과 빨강 (현재 주는 더 굵게)
-                const wColor = wOver?'#dc2626':wWarn?'#d97706':'#166534'
-                const wBg = wOver?'#fee2e2':wWarn?'#fef3c7':(isCurrentWeek?'#e0f2fe':'#f0fdf4')
-                const wBorderColor = wOver?'#dc2626':wWarn?'#f59e0b':'#16a34a'
-                const wBorderW = isCurrentWeek ? '3px' : '2px'
-                const wBorderStyle = isCurrentWeek ? 'double' : 'solid'
-                const wLabel = `${weekKey.slice(5).replace('-','/')}~${weekEndKey.slice(5).replace('-','/')}`
-                const curBadge = isCurrentWeek ? `<span style="background:#0284c7;color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;margin-left:4px;vertical-align:middle">이번주</span>` : ''
-                // 업체별 주간 셀 (금액+진행률 합쳐서 한 셀로)
-                const vWeekCells = vendors.map((v, vi) => {
-                  const vWAmt = (orderData||[]).filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
-                  const vWB = (vendorDailyBudgets[v.id]||0)*5
-                  const vWPct = vWB>0?Math.round(vWAmt/vWB*100):null
-                  const vWO = vWPct!==null&&vWPct>=100; const vWW = vWPct!==null&&vWPct>=80&&!vWO
-                  const vWC = vWO?'#dc2626':vWW?'#d97706':'#166534'
-                  const vWBg2 = vWO?'#fee2e2':vWW?'#fef3c7':(isCurrentWeek?'#dbeafe':'#f0fdf4')
-                  const cols = getVendorCols(v.tax_type)
-                  const bl = vi > 0 ? `border-left:3px solid ${isCurrentWeek?'#93c5fd':'#86efac'};` : ''
-                  const pctBar = vWPct!==null ? `<div style="height:3px;background:#e5e7eb;border-radius:2px;margin-top:2px"><div style="height:3px;width:${Math.min(vWPct,100)}%;background:${vWC};border-radius:2px"></div></div>` : ''
-                  const vAmtTxt = vWAmt>0?fmtMan(vWAmt):'-'
-                  const vPctTxt = vWPct!==null?`${vWPct}%${vWO?' 🚨':vWW?' ⚠️':''}`:''
-                  // mixed: 첫 2열 비움, 소계열에 금액+진행률 표시
-                  if(cols===3){
-                    return `<td style="${bl}background:${vWBg2};padding:2px 0"></td><td style="background:${vWBg2};padding:2px 0"></td><td id="vwpct-${v.id}-${weekKey}" style="background:${vWBg2};padding:3px 4px;text-align:center;"><div style="font-size:10px;font-weight:700;color:${vWC}">${vAmtTxt}</div><div style="font-size:9px;font-weight:600;color:${vWC}">${vPctTxt}</div>${pctBar}</td>`
-                  }
-                  return `<td id="vwpct-${v.id}-${weekKey}" style="${bl}background:${vWBg2};padding:3px 4px;text-align:center;"><div style="font-size:10px;font-weight:700;color:${vWC}">${vAmtTxt}</div><div style="font-size:9px;font-weight:600;color:${vWC}">${vPctTxt}</div>${pctBar}</td>`
-                }).join('')
-                const rowBorderStyle = `border-top:${wBorderW} ${wBorderStyle} ${wBorderColor};border-bottom:${wBorderW} ${wBorderStyle} ${wBorderColor};`
-                // 주간 요약행: 좌측 sticky 셀에 주차+날짜범위+진행률 통합
-                const wPctBar = wPct!==null ? `<div style="height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin-top:3px"><div style="height:4px;width:${Math.min(wPct,100)}%;background:${wColor};border-radius:2px"></div></div>` : ''
-                const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver?'#dc2626':wWarn?'#d97706':'#166534')
-                rows.push(`<tr class="week-summary-row${isCurrentWeek?' current-week-row':''}" data-week-key="${weekKey}" data-week-num="${weekNumber}" style="background:${wBg};${rowBorderStyle}">
-                  <td colspan="3" class="sticky left-0" id="weekPctCell-${weekKey}" style="background:${wBg};padding:3px 5px;min-width:106px;border-right:3px solid ${wBorderColor};">
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
-                      <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumber}주${isCurrentWeek?'(현재)':''}</div>
-                      <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
-                    </div>
-                    <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${wLabel}</div>
-                    <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
-                    ${wPctBar}
-                  </td>
-                  ${vWeekCells}
-                  <td style="background:${wBg};padding:3px 4px;text-align:center;border-left:1px solid rgba(0,0,0,0.08);"><div style="font-size:11px;font-weight:700;color:${wColor}">${wTotal>0?fmtMan(wTotal):'-'}</div><div style="font-size:9px;color:${wColor};font-weight:600">${wPct!==null?wPct+'%':''}</div></td>
-                </tr>`)
-              }
-
-              // 일반 날짜 행
-              const isCovered = !!coveredDates[dateStr]
-              const coveredBy = coveredDates[dateStr]
-              let dayTotal = 0
-              ;(orderData||[]).filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
-              const multiDayCount = multiDayMap[dateStr] || 1
-              const adjBudget = isCovered ? 0 : dailyBudget * multiDayCount
-              const dayPct = adjBudget>0 ? Math.round(dayTotal/adjBudget*100) : null
-              const dOver = dayPct!==null&&dayPct>=100; const dWarn = dayPct!==null&&dayPct>=80&&!dOver
-              const dColor = dOver?'#dc2626':dWarn?'#d97706':'#16a34a'
-              const dBg = dOver?'#fee2e2':dWarn?'#fef3c7':(dayPct!==null&&dayTotal>0?'#f0fdf4':'')
-
-              // 업체별 입력 셀
-              const vendorCells = vendors.map((v, vi) => {
-                return getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)
-              }).join('')
-
-              // 카테고리별 셀 생성
-              const catCells = (patientCats||[]).map((cat, ci) => {
-                const catData = catDailyMap[dateStr]?.[cat.id] || {}
-                const catTotal = catData.total || 0
-                const catTaxable = catData.taxable || 0
-                const catExempt = catData.exempt || 0
-                const catBorder = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
-                const catColor = getCategoryColorHex(cat.category_key)
-                const catSettings = catSettingsMap[cat.id] || {}
-                const catDailyBudget = catSettings.working_days > 0 ? Math.round((catSettings.monthly_budget||0)/catSettings.working_days) : 0
-                const catPct = catDailyBudget > 0 ? Math.round(catTotal/catDailyBudget*100) : null
-                const catOver = catPct !== null && catPct >= 100
-                return `<td style="${catBorder}padding:2px 2px;min-width:80px;text-align:center">
-                  <input type="text" inputmode="numeric" pattern="[0-9,]*"
-                    class="cat-order-input" style="width:72px;font-size:11px;text-align:right;padding:2px 4px;border:1px solid ${catColor}40;border-radius:3px;background:${catTotal>0?catColor+'10':'#fff'}"
-                    data-category="${cat.id}" data-date="${dateStr}"
-                    value="${catTotal > 0 ? fmt(catTotal) : ''}" placeholder="0">
-                  ${catPct !== null && catTotal > 0 ? `<div style="font-size:8px;color:${catOver?'#dc2626':catColor};font-weight:600">${catPct}%</div>` : ''}
-                </td>`
-              }).join('')
-
-              rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
-                <td class="date-col sticky left-0 z-10" style="width:30px">${day}</td>
-                <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};width:24px">${dow}</td>
-                <td class="text-center" style="font-size:10px;width:52px">
-                  <select class="multiday-select" data-date="${dateStr}"
-                    style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:48px"
-                    onchange="updateMultiDayNote(this)">
-                    ${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}
-                  </select>
-                  ${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px;white-space:nowrap">${multiDayCount}일치</div>`:''}
-                </td>
-                ${vendorCells}
-                ${catCells}
-                <td class="total-col text-center text-xs" id="dayTotal-${dateStr}" style="${dOver?'color:#dc2626;font-weight:700;background:#fee2e2':dWarn?'color:#d97706;font-weight:600;background:#fef3c7':''}">${dayTotal>0?fmt(dayTotal):''}</td>
-              </tr>`)
-            }
-            return rows.join('')
-          })()}
+        <tbody id="ordersTbody">
+          <tr><td colspan="99" class="text-center py-8 text-gray-400" style="font-size:13px"><div class="loading-spinner" style="display:inline-block;margin-right:8px"></div>발주 데이터 로딩 중...</td></tr>
         </tbody>
-        <tfoot>
-          <tr class="bg-gray-100 font-bold text-xs">
-            <td colspan="2" class="text-center py-1.5 sticky left-0 bg-gray-100">합계</td>
-            <td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>
-            ${vendors.map(v => getVendorTotalCellsWithPct(v, orderData||[])).join('')}
-            ${(patientCats||[]).map((cat, ci) => {
-              const catMonthly = (catOrderData?.monthly||[]).find(m => m.patient_category_id === cat.id) || {}
-              const catTotal = catMonthly.total || 0
-              const catSettings = catSettingsMap?.[cat.id] || {}
-              const catBudget = catSettings.monthly_budget || 0
-              const catPct = catBudget > 0 ? Math.round(catTotal/catBudget*100) : null
-              const catOver = catPct !== null && catPct >= 100
-              const catColor = getCategoryColorHex(cat.category_key)
-              const borderLeft = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
-              return `<td style="${borderLeft}text-align:center;background:${catColor}10;padding:4px 2px">
-                <div style="font-size:11px;font-weight:700;color:${catOver?'#dc2626':catColor}">${catTotal>0?fmtMan(catTotal):'-'}</div>
-                ${catPct!==null ? `<div style="font-size:9px;color:${catOver?'#dc2626':'#6b7280'}">${catPct}%</div>` : ''}
-              </td>`
-            }).join('')}
-            <td class="text-center text-green-700 font-bold" id="vfoot-month-total" style="font-size:11px">
-              ${fmt((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}
-            </td>
-          </tr>
-        </tfoot>
+        <tfoot id="ordersTfoot"></tfoot>
       </table>
     </div>
   </div>
-
   <!-- 다수일 발주 빠른 입력 패널 -->
   <div id="quickMultiDayPanel" class="hidden bg-white rounded-2xl shadow-sm border border-green-200 p-5 mt-4">
+    QUICK_MULTIDAY_PLACEHOLDER
+  </div>`
+
+  // quickMultiDay 패널 HTML을 별도로 삽입 (innerHTML 크기 줄이기)
+  const qmPanel = document.getElementById('quickMultiDayPanel')
+  if (qmPanel) {
+    qmPanel.innerHTML = `
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-gray-800"><i class="fas fa-calendar-plus text-green-600 mr-2"></i>다수일 발주 입력 (주말·공휴일·명절)</h3>
       <button onclick="document.getElementById('quickMultiDayPanel').classList.add('hidden')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
@@ -1452,8 +1267,7 @@ async function renderOrders() {
       주말·공휴일이 포함된 다수일 발주를 넣을 때 사용합니다. 시작일에 N일치 금액을 한 번에 입력합니다.
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-        <input type="date" id="qdStart" class="form-input" value="${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}">
-      </div>
+      <input type="date" id="qdStart" class="form-input" value="${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}">
       <div>
         <label class="block text-xs font-semibold text-gray-600 mb-1">발주 일수</label>
         <div class="flex gap-2">
@@ -1471,10 +1285,12 @@ async function renderOrders() {
       </div>
       <div>
         <label class="block text-xs font-semibold text-gray-600 mb-1">비고 (자동입력)</label>
-        <input type="text" id="qdNote" class="form-input" placeholder="예: 설 연휴 3일치" id="qdNote">
+        <input type="text" id="qdNote" class="form-input" placeholder="예: 설 연휴 3일치">
       </div>
     </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+      <div>
+        <label class="block text-xs font-semibold text-gray-600 mb-1">과세금액 (원)</label>
         <input type="number" id="qdTaxable" class="form-input" placeholder="0" min="0">
       </div>
       <div>
@@ -1485,10 +1301,10 @@ async function renderOrders() {
     <div class="flex gap-3">
       <button onclick="saveQuickMultiDay()" class="btn btn-primary flex-1"><i class="fas fa-save mr-1"></i>다수일 발주 저장</button>
       <button onclick="document.getElementById('quickMultiDayPanel').classList.add('hidden')" class="btn btn-secondary">취소</button>
-    </div>
-  </div>`
+    </div>`
+  }
 
-  // 전역에 예산 데이터 저장 (실시간 업데이트용)
+  // 전역 예산 데이터 저장 (실시간 업데이트용)
   const vendorDailyBudgets2 = {}
   ;(vendors||[]).forEach(v => {
     vendorDailyBudgets2[v.id] = workingDays>0 ? Math.round((v.monthly_budget||0)/workingDays) : 0
@@ -1510,8 +1326,186 @@ async function renderOrders() {
     vendors: vendors || []
   }
 
-  bindOrderInputEvents()
-  setupOrdersScrollSync()
+  // tbody/tfoot를 requestAnimationFrame 후 비동기 렌더링
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      const _coveredDates = {}
+      const _multiDayMap = {}
+      ;(orderData||[]).forEach(o => {
+        if (o.is_multi_day && o.multi_day_start && o.multi_day_end) {
+          const s = new Date(o.multi_day_start), e = new Date(o.multi_day_end)
+          const cnt = Math.round((e-s)/(1000*60*60*24))+1
+          _multiDayMap[o.multi_day_start] = Math.max(_multiDayMap[o.multi_day_start]||0, cnt)
+          for (let d = new Date(s); d <= e; d.setDate(d.getDate()+1)) {
+            const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+            if (ds !== o.multi_day_start) _coveredDates[ds] = o.multi_day_start
+          }
+        }
+      })
+      const _vendorDailyBudgets = {}
+      ;(vendors||[]).forEach(v => { _vendorDailyBudgets[v.id] = workingDays > 0 ? Math.round((v.monthly_budget||0)/workingDays) : 0 })
+      window._ordersCoveredDates = _coveredDates
+      window._ordersMultiDayMap = _multiDayMap
+      window._ordersVendors = vendors
+      window._ordersVendorDailyBudgets = _vendorDailyBudgets
+
+      const _catDailyMap = {}
+      ;(catOrderData?.dailyByCategory || []).forEach(r => {
+        if (!_catDailyMap[r.order_date]) _catDailyMap[r.order_date] = {}
+        _catDailyMap[r.order_date][r.patient_category_id] = r
+      })
+      window._catDailyMap = _catDailyMap
+      const _catSettingsMap = {}
+      ;(catOrderData?.settings || []).forEach(s => { _catSettingsMap[s.patient_category_id] = s })
+      window._catSettingsMap = _catSettingsMap
+
+      _buildOrdersTbody({
+        days, orderData: orderData||[], vendors: vendors||[],
+        patientCats: patientCats||[], coveredDates: _coveredDates,
+        multiDayMap: _multiDayMap, vendorDailyBudgets: _vendorDailyBudgets,
+        catDailyMap: _catDailyMap, catSettingsMap: _catSettingsMap,
+        dailyBudget, weekBudget, weekStart, weekEnd, todayStr,
+        totalBudget, monthPct, orderMap
+      })
+      _buildOrdersTfoot({
+        vendors: vendors||[], patientCats: patientCats||[], orderData: orderData||[],
+        catOrderData, catSettingsMap: _catSettingsMap, monthPct, totalBudget
+      })
+    }, 0)
+  })
+
+  // ── _buildOrdersTbody: tbody 한 번에 생성 ──
+  function _buildOrdersTbody(p) {
+    const tbody = document.getElementById('ordersTbody')
+    if (!tbody) return
+    const { days, orderData, vendors, patientCats, coveredDates, multiDayMap,
+            vendorDailyBudgets, catDailyMap, catSettingsMap,
+            dailyBudget, weekBudget, weekStart, weekEnd, todayStr, orderMap } = p
+
+    const rows = []
+    const renderedWeeks = new Set()
+    let weekNumber = 0
+    for (let i = 0; i < days; i++) {
+      const day = i + 1
+      const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
+      const weekend = isWeekend(App.currentYear, App.currentMonth, day)
+      const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+      const rowClass = dow === '일' ? 'holiday-row' : weekend ? 'weekend-row' : ''
+      const dateObj = new Date(dateStr)
+      const thisMon = new Date(dateObj)
+      thisMon.setDate(dateObj.getDate() - (dateObj.getDay()===0 ? 6 : dateObj.getDay()-1))
+      const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate()+6)
+      const weekKey = thisMon.toISOString().split('T')[0]
+      const weekEndKey = thisSun.toISOString().split('T')[0]
+
+      if (!renderedWeeks.has(weekKey)) {
+        renderedWeeks.add(weekKey)
+        weekNumber++
+        const wTotal = orderData.filter(o=>o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+        const wPct = weekBudget>0 ? Math.round(wTotal/weekBudget*100) : null
+        const wOver = wPct!==null&&wPct>=100; const wWarn = wPct!==null&&wPct>=80&&!wOver
+        const isCurrentWeek = todayStr>=weekKey && todayStr<=weekEndKey
+        const wColor = wOver?'#dc2626':wWarn?'#d97706':'#166534'
+        const wBg = wOver?'#fee2e2':wWarn?'#fef3c7':(isCurrentWeek?'#e0f2fe':'#f0fdf4')
+        const wBorderColor = wOver?'#dc2626':wWarn?'#f59e0b':'#16a34a'
+        const wBW = isCurrentWeek ? '3px' : '2px'
+        const wBS = isCurrentWeek ? 'double' : 'solid'
+        const wLabel = `${weekKey.slice(5).replace('-','/')}~${weekEndKey.slice(5).replace('-','/')}`
+        const vWeekCells = vendors.map((v, vi) => {
+          const vWAmt = orderData.filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+          const vWB = (vendorDailyBudgets[v.id]||0)*5
+          const vWPct = vWB>0?Math.round(vWAmt/vWB*100):null
+          const vWO = vWPct!==null&&vWPct>=100; const vWW = vWPct!==null&&vWPct>=80&&!vWO
+          const vWC = vWO?'#dc2626':vWW?'#d97706':'#166534'
+          const vWBg2 = vWO?'#fee2e2':vWW?'#fef3c7':(isCurrentWeek?'#dbeafe':'#f0fdf4')
+          const cols = getVendorCols(v.tax_type)
+          const bl = vi > 0 ? `border-left:3px solid ${isCurrentWeek?'#93c5fd':'#86efac'};` : ''
+          const pctBar = vWPct!==null ? `<div style="height:3px;background:#e5e7eb;border-radius:2px;margin-top:2px"><div style="height:3px;width:${Math.min(vWPct,100)}%;background:${vWC};border-radius:2px"></div></div>` : ''
+          const vAmtTxt = vWAmt>0?fmtMan(vWAmt):'-'
+          const vPctTxt = vWPct!==null?`${vWPct}%${vWO?' 🚨':vWW?' ⚠️':''}`:''
+          if(cols===3){ return `<td style="${bl}background:${vWBg2};padding:2px 0"></td><td style="background:${vWBg2};padding:2px 0"></td><td id="vwpct-${v.id}-${weekKey}" style="background:${vWBg2};padding:3px 4px;text-align:center;"><div style="font-size:10px;font-weight:700;color:${vWC}">${vAmtTxt}</div><div style="font-size:9px;font-weight:600;color:${vWC}">${vPctTxt}</div>${pctBar}</td>` }
+          return `<td id="vwpct-${v.id}-${weekKey}" style="${bl}background:${vWBg2};padding:3px 4px;text-align:center;"><div style="font-size:10px;font-weight:700;color:${vWC}">${vAmtTxt}</div><div style="font-size:9px;font-weight:600;color:${vWC}">${vPctTxt}</div>${pctBar}</td>`
+        }).join('')
+        const catWeekCells = patientCats.map((cat, ci) => {
+          const bl = ci===0 ? 'border-left:3px solid #c4b5fd;' : ''
+          return `<td style="${bl}background:${isCurrentWeek?'#ede9fe':'#f5f3ff'};padding:2px 0"></td>`
+        }).join('')
+        const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver?'#dc2626':wWarn?'#d97706':'#166534')
+        const wPctBar = wPct!==null ? `<div style="height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin-top:3px"><div style="height:4px;width:${Math.min(wPct,100)}%;background:${wColor};border-radius:2px"></div></div>` : ''
+        rows.push(`<tr class="week-summary-row${isCurrentWeek?' current-week-row':''}" data-week-key="${weekKey}" data-week-num="${weekNumber}" style="background:${wBg};border-top:${wBW} ${wBS} ${wBorderColor};border-bottom:${wBW} ${wBS} ${wBorderColor};">
+          <td colspan="3" class="sticky left-0" id="weekPctCell-${weekKey}" style="background:${wBg};padding:3px 5px;min-width:106px;border-right:3px solid ${wBorderColor};">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
+              <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumber}주${isCurrentWeek?'(현재)':''}</div>
+              <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
+            </div>
+            <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${wLabel}</div>
+            <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
+            ${wPctBar}
+          </td>
+          ${vWeekCells}${catWeekCells}
+          <td style="background:${wBg};padding:3px 4px;text-align:center;"><div style="font-size:11px;font-weight:700;color:${wColor}">${wTotal>0?fmtMan(wTotal):'-'}</div><div style="font-size:9px;color:${wColor};font-weight:600">${wPct!==null?wPct+'%':''}</div></td>
+        </tr>`)
+      }
+
+      const isCovered = !!coveredDates[dateStr]
+      let dayTotal = 0
+      orderData.filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
+      const multiDayCount = multiDayMap[dateStr] || 1
+      const adjBudget = isCovered ? 0 : dailyBudget * multiDayCount
+      const dayPct = adjBudget>0 ? Math.round(dayTotal/adjBudget*100) : null
+      const dOver = dayPct!==null&&dayPct>=100; const dWarn = dayPct!==null&&dayPct>=80&&!dOver
+
+      const vendorCells = vendors.map((v, vi) => getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)).join('')
+      const catCells = patientCats.map((cat, ci) => {
+        const catData = catDailyMap[dateStr]?.[cat.id] || {}
+        const catTotal2 = catData.total || 0
+        const catBorder = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
+        const catColor2 = getCategoryColorHex(cat.category_key)
+        const catSettings2 = catSettingsMap[cat.id] || {}
+        const catDB = catSettings2.working_days > 0 ? Math.round((catSettings2.monthly_budget||0)/catSettings2.working_days) : 0
+        const catPct2 = catDB > 0 ? Math.round(catTotal2/catDB*100) : null
+        const catOver2 = catPct2 !== null && catPct2 >= 100
+        return `<td style="${catBorder}padding:2px 2px;min-width:80px;text-align:center"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:72px;font-size:11px;text-align:right;padding:2px 4px;border:1px solid ${catColor2}40;border-radius:3px;background:${catTotal2>0?catColor2+'10':'#fff'}" data-category="${cat.id}" data-date="${dateStr}" value="${catTotal2 > 0 ? fmt(catTotal2) : ''}" placeholder="0">${catPct2 !== null && catTotal2 > 0 ? `<div style="font-size:8px;color:${catOver2?'#dc2626':catColor2};font-weight:600">${catPct2}%</div>` : ''}</td>`
+      }).join('')
+
+      rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
+        <td class="date-col sticky left-0 z-10" style="width:30px">${day}</td>
+        <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};width:24px">${dow}</td>
+        <td class="text-center" style="font-size:10px;width:52px"><select class="multiday-select" data-date="${dateStr}" style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:48px" onchange="updateMultiDayNote(this)">${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}</select>${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px;white-space:nowrap">${multiDayCount}일치</div>`:''}</td>
+        ${vendorCells}${catCells}
+        <td class="total-col text-center text-xs" id="dayTotal-${dateStr}" style="${dOver?'color:#dc2626;font-weight:700;background:#fee2e2':dWarn?'color:#d97706;font-weight:600;background:#fef3c7':''}">${dayTotal>0?fmt(dayTotal):''}</td>
+      </tr>`)
+    }
+
+    tbody.innerHTML = rows.join('')
+    bindOrderInputEvents()
+    setupOrdersScrollSync()
+  }
+
+  function _buildOrdersTfoot(p) {
+    const tfoot = document.getElementById('ordersTfoot')
+    if (!tfoot) return
+    const { vendors, patientCats, orderData, catOrderData, catSettingsMap, monthPct, totalBudget } = p
+    tfoot.innerHTML = `<tr class="bg-gray-100 font-bold text-xs">
+      <td colspan="2" class="text-center py-1.5 sticky left-0 bg-gray-100">합계</td>
+      <td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>
+      ${vendors.map(v => getVendorTotalCellsWithPct(v, orderData||[])).join('')}
+      ${patientCats.map((cat, ci) => {
+        const cm = (catOrderData?.monthly||[]).find(m => m.patient_category_id === cat.id) || {}
+        const catTotal = cm.total || 0
+        const cs = catSettingsMap?.[cat.id] || {}
+        const catBudget = cs.monthly_budget || 0
+        const catPct = catBudget > 0 ? Math.round(catTotal/catBudget*100) : null
+        const catOver = catPct !== null && catPct >= 100
+        const catColor = getCategoryColorHex(cat.category_key)
+        const bl = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
+        return `<td style="${bl}text-align:center;background:${catColor}10;padding:4px 2px"><div style="font-size:11px;font-weight:700;color:${catOver?'#dc2626':catColor}">${catTotal>0?fmtMan(catTotal):'-'}</div>${catPct!==null?`<div style="font-size:9px;color:${catOver?'#dc2626':'#6b7280'}">${catPct}%</div>`:''}</td>`
+      }).join('')}
+      <td class="text-center text-green-700 font-bold" id="vfoot-month-total" style="font-size:11px">${fmt((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</td>
+    </tr>`
+  }
+
+
 }
 
 // ── 발주 테이블 하단 스크롤 미러 동기화 ──────────────────────────
@@ -1813,104 +1807,101 @@ function getVendorTotalCellsWithPct(v, orderData) {
 }
 
 function bindOrderInputEvents() {
-  document.querySelectorAll('.order-input').forEach(input => {
-    // 저장 핸들러 (change + blur 모두 처리, 중복 방지)
-    let _saveTimer = null
-    const saveHandler = async function() {
-      const vendorId = this.dataset.vendor
-      const date = this.dataset.date
-      const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
-      const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
+  const tbody = document.getElementById('ordersTbody')
+  if (!tbody) return
+
+  // ── 이벤트 위임: tbody에 하나만 등록 (개별 input마다 붙이지 않음) ──
+  const _saveTimers = {}
+  const _catSaveTimers = {}
+
+  const doOrderSave = async (vendorId, date) => {
+    const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
+    const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
+    const taxable = parseOrderVal(taxableEl?.value)
+    const exempt  = parseOrderVal(exemptEl?.value)
+    if (taxableEl) taxableEl.value = taxable > 0 ? taxable.toLocaleString() : ''
+    if (exemptEl)  exemptEl.value  = exempt  > 0 ? exempt.toLocaleString()  : ''
+    const vat = Math.round(taxable * 0.1)
+    const total = taxable + exempt + vat
+    const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
+    if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
+    updateDayTotal(date)
+    showAutoSaveIndicator('saving')
+    const res = await api('POST', '/api/orders/save', {
+      vendorId: parseInt(vendorId), orderDate: date,
+      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat
+    })
+    showAutoSaveIndicator(res?.success ? 'saved' : 'error')
+    updateBudgetProgressPanel()
+  }
+
+  tbody.addEventListener('input', function(e) {
+    const input = e.target
+    if (input.classList.contains('order-input')) {
+      input.value = input.value.replace(/[^0-9]/g, '')
+      const vendorId = input.dataset.vendor
+      const date = input.dataset.date
+      const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
+      const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
       const taxable = parseOrderVal(taxableEl?.value)
-      const exempt = parseOrderVal(exemptEl?.value)
-      // blur 시 콤마 포맷팅 적용
-      if (taxableEl && taxable > 0) taxableEl.value = taxable.toLocaleString()
-      else if (taxableEl) taxableEl.value = ''
-      if (exemptEl && exempt > 0) exemptEl.value = exempt.toLocaleString()
-      else if (exemptEl) exemptEl.value = ''
+      const exempt  = parseOrderVal(exemptEl?.value)
       const vat = Math.round(taxable * 0.1)
       const total = taxable + exempt + vat
       const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
       if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
       updateDayTotal(date)
-      showAutoSaveIndicator('saving')
-      const res = await api('POST', '/api/orders/save', {
-        vendorId: parseInt(vendorId), orderDate: date,
-        taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat
-      })
-      showAutoSaveIndicator(res?.success ? 'saved' : 'error')
       updateBudgetProgressPanel()
+    } else if (input.classList.contains('cat-order-input')) {
+      input.value = input.value.replace(/[^0-9]/g, '')
     }
-    // input: 입력 중 숫자만 허용 + 실시간 합계 업데이트
-    input.addEventListener('input', function() {
-      // 숫자 이외 문자 제거 (콤마 포함한 입력 중 중간 단계)
-      const raw = this.value.replace(/[^0-9]/g, '')
-      const num = parseInt(raw) || 0
-      // 커서 위치 보존 없이 단순 포맷팅 (입력 중이므로 콤마 없이 숫자만)
-      this.value = raw
-      const vendorId = this.dataset.vendor
-      const date = this.dataset.date
-      const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
-      const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
-      const taxable = parseOrderVal(taxableEl?.value)
-      const exempt = parseOrderVal(exemptEl?.value)
-      const vat = Math.round(taxable * 0.1)
-      const total = taxable + exempt + vat
-      const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
-      if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
-      updateDayTotal(date)
-      updateBudgetProgressPanel()
-    })
-    // focus: 포커스 시 콤마 제거하여 편집 편의성 확보
-    input.addEventListener('focus', function() {
-      const raw = parseOrderVal(this.value)
-      this.value = raw > 0 ? String(raw) : ''
-      this.select()
-    })
-    // change: 값 확정 시 저장
-    input.addEventListener('change', saveHandler)
-    // blur: 포커스 이탈 시 저장 (다른 탭으로 이동 포함)
-    input.addEventListener('blur', function() {
-      if (_saveTimer) clearTimeout(_saveTimer)
-      _saveTimer = setTimeout(() => saveHandler.call(this), 100)
-    })
-    // 엔터키로 다음 셀 이동
-    input.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        const inputs = [...document.querySelectorAll('.order-input')]
-        const idx = inputs.indexOf(this)
-        if (idx < inputs.length-1) { e.preventDefault(); inputs[idx+1].focus() }
-      }
-    })
   })
 
-  // 환자군 카테고리 입력 이벤트
-  document.querySelectorAll('.cat-order-input').forEach(input => {
-    let _catSaveTimer = null
-    input.addEventListener('focus', function() {
-      const raw = parseOrderVal(this.value)
-      this.value = raw > 0 ? String(raw) : ''
-      this.select()
-    })
-    input.addEventListener('input', function() {
-      this.value = this.value.replace(/[^0-9]/g, '')
-    })
-    input.addEventListener('blur', function() {
-      const val = parseOrderVal(this.value)
-      if (val > 0) this.value = val.toLocaleString()
-      else this.value = ''
-      if (_catSaveTimer) clearTimeout(_catSaveTimer)
-      _catSaveTimer = setTimeout(async () => {
-        await saveCatOrderInput(this)
-      }, 200)
-    })
-    input.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        const inputs = [...document.querySelectorAll('.cat-order-input')]
-        const idx = inputs.indexOf(this)
-        if (idx < inputs.length-1) { e.preventDefault(); inputs[idx+1].focus() }
-      }
-    })
+  tbody.addEventListener('focus', function(e) {
+    const input = e.target
+    if (input.classList.contains('order-input') || input.classList.contains('cat-order-input')) {
+      const raw = parseOrderVal(input.value)
+      input.value = raw > 0 ? String(raw) : ''
+      input.select()
+    }
+  }, true)
+
+  tbody.addEventListener('change', function(e) {
+    const input = e.target
+    if (input.classList.contains('order-input')) {
+      const key = `${input.dataset.vendor}-${input.dataset.date}`
+      if (_saveTimers[key]) clearTimeout(_saveTimers[key])
+      _saveTimers[key] = setTimeout(() => doOrderSave(input.dataset.vendor, input.dataset.date), 0)
+    }
+  })
+
+  tbody.addEventListener('blur', function(e) {
+    const input = e.target
+    if (input.classList.contains('order-input')) {
+      const key = `${input.dataset.vendor}-${input.dataset.date}`
+      if (_saveTimers[key]) clearTimeout(_saveTimers[key])
+      _saveTimers[key] = setTimeout(() => doOrderSave(input.dataset.vendor, input.dataset.date), 100)
+    } else if (input.classList.contains('cat-order-input')) {
+      const val = parseOrderVal(input.value)
+      if (val > 0) input.value = val.toLocaleString()
+      else input.value = ''
+      const ckey = `${input.dataset.category}-${input.dataset.date}`
+      if (_catSaveTimers[ckey]) clearTimeout(_catSaveTimers[ckey])
+      _catSaveTimers[ckey] = setTimeout(async () => { await saveCatOrderInput(input) }, 200)
+    }
+  }, true)
+
+  tbody.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== 'Tab') return
+    const input = e.target
+    if (input.classList.contains('order-input')) {
+      const inputs = [...tbody.querySelectorAll('.order-input')]
+      const idx = inputs.indexOf(input)
+      if (idx < inputs.length - 1) { e.preventDefault(); inputs[idx + 1].focus() }
+    } else if (input.classList.contains('cat-order-input')) {
+      const inputs = [...tbody.querySelectorAll('.cat-order-input')]
+      const idx = inputs.indexOf(input)
+      if (idx < inputs.length - 1) { e.preventDefault(); inputs[idx + 1].focus() }
+    }
   })
 }
 
