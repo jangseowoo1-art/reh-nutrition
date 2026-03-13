@@ -240,6 +240,25 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     GROUP BY patient_category_id
   `).bind(hospitalId, year, mm).all<any>()
 
+  // vendor_id + date + patient_category_id 조합 일별 데이터 (서브행 렌더링용)
+  const dailyByVendorCat = await c.env.DB.prepare(`
+    SELECT
+      order_date,
+      vendor_id,
+      patient_category_id,
+      COALESCE(taxable_amount, 0) as taxable,
+      COALESCE(exempt_amount, 0) as exempt,
+      COALESCE(vat_amount, 0) as vat,
+      COALESCE(total_amount, 0) as total,
+      id
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND patient_category_id IS NOT NULL
+      AND strftime('%Y', order_date) = ?
+      AND strftime('%m', order_date) = ?
+    ORDER BY order_date, vendor_id, patient_category_id
+  `).bind(hospitalId, year, mm).all<any>()
+
   const catSettings = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
@@ -250,6 +269,7 @@ orders.get('/category-monthly/:year/:month', async (c) => {
   return c.json({
     categories: cats.results || [],
     monthly: monthly.results || [],
+    dailyByVendorCat: dailyByVendorCat.results || [],
     settings: catSettings.results || []
   })
 })

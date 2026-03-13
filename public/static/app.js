@@ -1223,23 +1223,12 @@ async function renderOrders() {
                 <div style="font-size:9px;opacity:0.7">${getTaxTypeLabel(v.tax_type)}</div>
               </th>`
             }).join('')}
-            ${(patientCats||[]).length > 0 ? `
-            <th colspan="${(patientCats||[]).length}" style="border-left:3px solid #7c3aed;background:#4c1d95;font-size:11px">
-              환자군별 발주
-            </th>` : ''}
             <th rowspan="2" style="width:85px">일합계</th>
           </tr>
           <tr>
             ${vendors.map((v, vi) => {
               const borderLeft = vi > 0 ? 'border-left:3px solid #334155;' : ''
               return getVendorSubHeadersWithPct(v, borderLeft)
-            }).join('')}
-            ${(patientCats||[]).map((cat, ci) => {
-              const borderLeft = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
-              const catColor = getCategoryColorHex(cat.category_key)
-              return `<th style="width:80px;${borderLeft}background:${catColor}20;color:${catColor};font-size:10px">
-                ${cat.category_name}
-              </th>`
             }).join('')}
           </tr>
         </thead>
@@ -1350,10 +1339,12 @@ async function renderOrders() {
       window._ordersVendors = vendors
       window._ordersVendorDailyBudgets = _vendorDailyBudgets
 
+      // catDailyMap: date → vendor_id → category_id → row 구조
       const _catDailyMap = {}
-      ;(catOrderData?.dailyByCategory || []).forEach(r => {
+      ;(catOrderData?.dailyByVendorCat || []).forEach(r => {
         if (!_catDailyMap[r.order_date]) _catDailyMap[r.order_date] = {}
-        _catDailyMap[r.order_date][r.patient_category_id] = r
+        if (!_catDailyMap[r.order_date][r.vendor_id]) _catDailyMap[r.order_date][r.vendor_id] = {}
+        _catDailyMap[r.order_date][r.vendor_id][r.patient_category_id] = r
       })
       window._catDailyMap = _catDailyMap
       const _catSettingsMap = {}
@@ -1443,7 +1434,7 @@ async function renderOrders() {
             <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
             ${wPctBar}
           </td>
-          ${vWeekCells}${catWeekCells}
+          ${vWeekCells}
           <td style="background:${wBg};padding:3px 4px;text-align:center;"><div style="font-size:11px;font-weight:700;color:${wColor}">${wTotal>0?fmtMan(wTotal):'-'}</div><div style="font-size:9px;color:${wColor};font-weight:600">${wPct!==null?wPct+'%':''}</div></td>
         </tr>`)
       }
@@ -1457,25 +1448,40 @@ async function renderOrders() {
       const dOver = dayPct!==null&&dayPct>=100; const dWarn = dayPct!==null&&dayPct>=80&&!dOver
 
       const vendorCells = vendors.map((v, vi) => getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)).join('')
-      const catCells = patientCats.map((cat, ci) => {
-        const catData = catDailyMap[dateStr]?.[cat.id] || {}
-        const catTotal2 = catData.total || 0
-        const catBorder = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
-        const catColor2 = getCategoryColorHex(cat.category_key)
+      // 메인 행 (날짜별 업체 발주)
+      rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
+        <td class="date-col sticky left-0 z-10" ${patientCats.length > 0 ? `rowspan="${1 + patientCats.length}"` : ''} style="width:30px;vertical-align:top;padding-top:4px">${day}</td>
+        <td class="text-center" ${patientCats.length > 0 ? `rowspan="${1 + patientCats.length}"` : ''} style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};width:24px;vertical-align:top;padding-top:4px">${dow}</td>
+        <td class="text-center" ${patientCats.length > 0 ? `rowspan="${1 + patientCats.length}"` : ''} style="font-size:10px;width:52px;vertical-align:top;padding-top:2px"><select class="multiday-select" data-date="${dateStr}" style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:48px" onchange="updateMultiDayNote(this)">${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}</select>${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px;white-space:nowrap">${multiDayCount}일치</div>`:''}</td>
+        ${vendorCells}
+        <td class="total-col text-center text-xs" id="dayTotal-${dateStr}" ${patientCats.length > 0 ? `rowspan="${1 + patientCats.length}"` : ''} style="vertical-align:top;padding-top:4px;${dOver?'color:#dc2626;font-weight:700;background:#fee2e2':dWarn?'color:#d97706;font-weight:600;background:#fef3c7':''}">${dayTotal>0?fmt(dayTotal):''}</td>
+      </tr>`)
+
+      // 환자군 서브행 (업체별 × 환자군별)
+      patientCats.forEach(cat => {
+        const catColor = getCategoryColorHex(cat.category_key)
         const catSettings2 = catSettingsMap[cat.id] || {}
         const catDB = catSettings2.working_days > 0 ? Math.round((catSettings2.monthly_budget||0)/catSettings2.working_days) : 0
-        const catPct2 = catDB > 0 ? Math.round(catTotal2/catDB*100) : null
-        const catOver2 = catPct2 !== null && catPct2 >= 100
-        return `<td style="${catBorder}padding:2px 2px;min-width:80px;text-align:center"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:72px;font-size:11px;text-align:right;padding:2px 4px;border:1px solid ${catColor2}40;border-radius:3px;background:${catTotal2>0?catColor2+'10':'#fff'}" data-category="${cat.id}" data-date="${dateStr}" value="${catTotal2 > 0 ? fmt(catTotal2) : ''}" placeholder="0">${catPct2 !== null && catTotal2 > 0 ? `<div style="font-size:8px;color:${catOver2?'#dc2626':catColor2};font-weight:600">${catPct2}%</div>` : ''}</td>`
-      }).join('')
-
-      rows.push(`<tr class="${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}">
-        <td class="date-col sticky left-0 z-10" style="width:30px">${day}</td>
-        <td class="text-center" style="font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};width:24px">${dow}</td>
-        <td class="text-center" style="font-size:10px;width:52px"><select class="multiday-select" data-date="${dateStr}" style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:48px" onchange="updateMultiDayNote(this)">${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}</select>${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px;white-space:nowrap">${multiDayCount}일치</div>`:''}</td>
-        ${vendorCells}${catCells}
-        <td class="total-col text-center text-xs" id="dayTotal-${dateStr}" style="${dOver?'color:#dc2626;font-weight:700;background:#fee2e2':dWarn?'color:#d97706;font-weight:600;background:#fef3c7':''}">${dayTotal>0?fmt(dayTotal):''}</td>
-      </tr>`)
+        const catVendorCells = vendors.map((v, vi) => {
+          const catRow = (catDailyMap[dateStr]?.[v.id]?.[cat.id]) || {}
+          const taxable = catRow.taxable || 0
+          const exempt = catRow.exempt || 0
+          const total = catRow.total || 0
+          const vCols = getVendorCols(v.tax_type)
+          const bl = vi > 0 ? 'border-left:2px solid #334155;' : ''
+          const catPct2 = catDB > 0 ? Math.round(total/catDB*100) : null
+          const catOver2 = catPct2 !== null && catPct2 >= 100
+          if (vCols === 3) {
+            return `<td style="${bl}padding:1px 2px;background:${catColor}0d;border-top:1px dashed ${catColor}60"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:10px;text-align:right;padding:1px 3px;border:1px solid ${catColor}60;border-radius:2px;background:${taxable>0?catColor+'22':'transparent'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="taxable" data-date="${dateStr}" value="${taxable > 0 ? fmt(taxable) : ''}" placeholder="과세"></td><td style="padding:1px 2px;background:${catColor}0d;border-top:1px dashed ${catColor}60"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:10px;text-align:right;padding:1px 3px;border:1px solid ${catColor}60;border-radius:2px;background:${exempt>0?catColor+'22':'transparent'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="exempt" data-date="${dateStr}" value="${exempt > 0 ? fmt(exempt) : ''}" placeholder="면세"></td><td style="padding:1px 2px;background:${catColor}0d;border-top:1px dashed ${catColor}60;text-align:center;font-size:9px;color:${catColor};font-weight:600">${total > 0 ? fmtMan(total) : ''}${catPct2 !== null && total > 0 ? `<div style="font-size:8px;color:${catOver2?'#dc2626':catColor}">${catPct2}%</div>` : ''}</td>`
+          } else {
+            return `<td style="${bl}padding:1px 2px;background:${catColor}0d;border-top:1px dashed ${catColor}60"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:10px;text-align:right;padding:1px 3px;border:1px solid ${catColor}60;border-radius:2px;background:${total>0?catColor+'22':'transparent'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="total" data-date="${dateStr}" value="${total > 0 ? fmt(total) : ''}" placeholder="${v.tax_type === 'exempt' ? '면세' : '금액'}"></td>`
+          }
+        }).join('')
+        rows.push(`<tr class="cat-subrow" data-date="${dateStr}" data-cat="${cat.id}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="background:${catColor}06">
+          <td style="padding:2px 5px;white-space:nowrap;background:${catColor}14;border-top:1px dashed ${catColor}60;border-right:2px solid ${catColor}80"><span style="font-size:9px;font-weight:700;color:${catColor}">↳ ${cat.category_name}</span></td>
+          ${catVendorCells}
+        </tr>`)
+      })
     }
 
     tbody.innerHTML = rows.join('')
@@ -1491,17 +1497,6 @@ async function renderOrders() {
       <td colspan="2" class="text-center py-1.5 sticky left-0 bg-gray-100">합계</td>
       <td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>
       ${vendors.map(v => getVendorTotalCellsWithPct(v, orderData||[])).join('')}
-      ${patientCats.map((cat, ci) => {
-        const cm = (catOrderData?.monthly||[]).find(m => m.patient_category_id === cat.id) || {}
-        const catTotal = cm.total || 0
-        const cs = catSettingsMap?.[cat.id] || {}
-        const catBudget = cs.monthly_budget || 0
-        const catPct = catBudget > 0 ? Math.round(catTotal/catBudget*100) : null
-        const catOver = catPct !== null && catPct >= 100
-        const catColor = getCategoryColorHex(cat.category_key)
-        const bl = ci === 0 ? 'border-left:3px solid #7c3aed;' : ''
-        return `<td style="${bl}text-align:center;background:${catColor}10;padding:4px 2px"><div style="font-size:11px;font-weight:700;color:${catOver?'#dc2626':catColor}">${catTotal>0?fmtMan(catTotal):'-'}</div>${catPct!==null?`<div style="font-size:9px;color:${catOver?'#dc2626':'#6b7280'}">${catPct}%</div>`:''}</td>`
-      }).join('')}
       <td class="text-center text-green-700 font-bold" id="vfoot-month-total" style="font-size:11px">${fmt((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</td>
     </tr>`
   }
@@ -1885,7 +1880,7 @@ function bindOrderInputEvents() {
       const val = parseOrderVal(input.value)
       if (val > 0) input.value = val.toLocaleString()
       else input.value = ''
-      const ckey = `${input.dataset.category}-${input.dataset.date}`
+      const ckey = `${input.dataset.vendor}-${input.dataset.category}-${input.dataset.date}`
       if (_catSaveTimers[ckey]) clearTimeout(_catSaveTimers[ckey])
       _catSaveTimers[ckey] = setTimeout(async () => { await saveCatOrderInput(input) }, 200)
     }
@@ -1909,23 +1904,44 @@ function bindOrderInputEvents() {
 // 카테고리별 발주 저장
 async function saveCatOrderInput(input) {
   const categoryId = input.dataset.category
+  const vendorId = input.dataset.vendor
   const date = input.dataset.date
-  const total = parseOrderVal(input.value)
+  const field = input.dataset.field  // 'taxable', 'exempt', 'total'
 
-  if (!categoryId || !date) return
+  if (!categoryId || !date || !vendorId) return
 
-  // 카테고리 발주는 과세/면세 비율을 총액에서 계산 (기본: 전체 과세)
-  // 실제로는 총액만 저장하고 과세/면세 분리 없이 저장 (vendor_id = null)
+  // 같은 vendor+date+category 행의 과세/면세 값을 함께 읽어서 저장
+  const tbody = document.getElementById('ordersTbody')
+  const selBase = `.cat-order-input[data-category="${categoryId}"][data-vendor="${vendorId}"][data-date="${date}"]`
+  const taxableEl = tbody ? tbody.querySelector(`${selBase}[data-field="taxable"]`) : null
+  const exemptEl  = tbody ? tbody.querySelector(`${selBase}[data-field="exempt"]`)  : null
+  const totalEl   = tbody ? tbody.querySelector(`${selBase}[data-field="total"]`)   : null
+
+  let taxable = 0, exempt = 0
+  if (taxableEl) taxable = parseOrderVal(taxableEl.value)
+  if (exemptEl)  exempt  = parseOrderVal(exemptEl.value)
+  if (totalEl) {
+    // tax_type === 'exempt' 또는 단일 컬럼인 경우
+    const val = parseOrderVal(totalEl.value)
+    // vendor tax_type 판별: 부모 행에서 읽기 어려우므로 field로 구분
+    if (field === 'exempt') exempt = val
+    else taxable = val
+  }
+
+  const vat = Math.round(taxable * 0.1)
+
   showAutoSaveIndicator('saving')
   const res = await api('POST', '/api/orders/save-category', {
-    vendorId: null,
+    vendorId: parseInt(vendorId),
     orderDate: date,
     patientCategoryId: parseInt(categoryId),
-    taxableAmount: total,
-    exemptAmount: 0,
-    vatAmount: Math.round(total * 0.1)
+    taxableAmount: taxable,
+    exemptAmount: exempt,
+    vatAmount: vat
   })
   showAutoSaveIndicator(res?.success ? 'saved' : 'error')
+  // 서브행 합계 셀 업데이트
+  updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat)
   updateCatMonthTotal(categoryId)
 }
 
@@ -1952,6 +1968,15 @@ function showAutoSaveIndicator(state) {
     el.innerHTML = '<i class="fas fa-exclamation-circle mr-1"></i>저장 실패'
     _autoSaveTimer = setTimeout(() => { el.style.opacity = '0' }, 3000)
   }
+}
+
+// 서브행 합계 셀 실시간 업데이트 (과세+면세+vat)
+function updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat) {
+  const total = taxable + exempt + vat
+  // 합계 td: 3컬럼(mixed) 업체의 3번째 td에 해당 (현재는 동적 생성 기반 - 재렌더링으로 처리)
+  // 간단히 dayTotal 업데이트만 수행
+  updateDayTotal(date)
+  updateBudgetProgressPanel()
 }
 
 // 카테고리 월 합계 업데이트
