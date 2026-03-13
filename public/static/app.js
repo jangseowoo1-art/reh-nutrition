@@ -711,7 +711,7 @@ async function renderDashboard() {
               <i class="fas ${item.icon} text-xs"></i>
             </div>
             <div>
-              <div class="text-xs font-medium opacity-75">${item.label}${item.unit==='ea'?'<span class='text-orange-500 ml-1' style='font-size:9px'>(ea)</span>':''}</div>
+              <div class="text-xs font-medium opacity-75">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
               <div class="font-bold text-lg">${fmt(item.value)}<span class="text-xs font-normal opacity-60 ml-1">${item.unit==='ea'?'개':'식'}</span></div>
             </div>
           </div>
@@ -2208,7 +2208,7 @@ function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
   return [...baseCards, ...customCards, totalCard].map(item => {
     const unitStr = item.unit === 'ea' ? '개' : '식'
     return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-2 text-center" style="min-width:72px">
-      <div class="text-xs text-gray-500 font-medium mb-0.5">${item.label}${item.unit==='ea'?'<span class='text-xs text-orange-500 ml-0.5'>(ea)</span>':''}</div>
+      <div class="text-xs text-gray-500 font-medium mb-0.5">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
       <div class="text-base font-bold text-${item.color}-600" id="${item.id}">${fmt(item.val)}</div>
       <div class="text-xs text-gray-400">${unitStr}</div>
     </div>`
