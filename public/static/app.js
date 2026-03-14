@@ -980,6 +980,123 @@ async function renderDashboard() {
         </div>
       </div>` : ''}
 
+      <!-- 환자군별 식단가 현황 (월별 대시보드) -->
+      ${catDietPricesData.length > 0 ? (() => {
+        // buildMealPricePanel과 동일한 계산 로직 (대시보드용)
+        let dbWPriceSum = 0, dbWBudgetSum = 0
+        let dbWTargetSum = 0, dbWTargetBudgetSum = 0
+        const dbRows = catDietPricesData.map(cat => {
+          const color = getCategoryColorHex(cat.category_key)
+          const targetP = cat.targetPrice || 0
+          const monthBudget = cat.monthBudget || 0
+          const catMonthMeals = (mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
+          const monthDietPrice = catMonthMeals > 0 ? Math.round(cat.monthAmt / catMonthMeals) : 0
+          const isOverM = targetP > 0 && monthDietPrice > targetP
+          const isWarnM = targetP > 0 && monthDietPrice >= targetP * 0.9 && !isOverM
+          const priceColorM = isOverM ? '#dc2626' : isWarnM ? '#d97706' : color
+          if (cat.monthAmt > 0 && monthDietPrice > 0) {
+            dbWBudgetSum += cat.monthAmt; dbWPriceSum += cat.monthAmt * monthDietPrice
+          }
+          if (monthBudget > 0 && targetP > 0) {
+            dbWTargetBudgetSum += monthBudget; dbWTargetSum += monthBudget * targetP
+          }
+          const budgetPct = monthBudget > 0 ? Math.round(cat.monthAmt / monthBudget * 100) : null
+          return `<div style="border:1px solid ${color}30;border-radius:10px;padding:10px 12px;background:${color}06">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+              <div style="display:flex;align-items:center;gap:5px">
+                <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>
+                <span style="font-size:12px;font-weight:700;color:${color}">${cat.category_name}</span>
+              </div>
+              ${targetP>0?`<span style="font-size:9px;color:#9ca3af">목표: ${fmt(targetP)}원/식</span>`:''}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px">
+              <div style="text-align:center;padding:6px 4px;background:white;border-radius:7px;border:1px solid ${color}20">
+                <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">월 식단가</div>
+                <div style="font-size:13px;font-weight:900;color:${monthDietPrice>0?priceColorM:'#d1d5db'}">${monthDietPrice>0?fmt(monthDietPrice):'-'}</div>
+                <div style="font-size:8px;color:#6b7280">원/식</div>
+                ${isOverM?`<div style="font-size:8px;color:#dc2626;font-weight:700">▲초과</div>`:isWarnM?`<div style="font-size:8px;color:#d97706;font-weight:700">⚠주의</div>`:''}
+              </div>
+              <div style="text-align:center;padding:6px 4px;background:white;border-radius:7px;border:1px solid ${color}20">
+                <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">월 식수</div>
+                <div style="font-size:13px;font-weight:700;color:#374151">${catMonthMeals>0?fmt(catMonthMeals):'-'}</div>
+                <div style="font-size:8px;color:#9ca3af">식</div>
+              </div>
+              <div style="text-align:center;padding:6px 4px;background:${budgetPct!==null&&budgetPct>=100?'#fee2e2':budgetPct!==null&&budgetPct>=80?'#fef3c7':'white'};border-radius:7px;border:1px solid ${color}20">
+                <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">예산달성</div>
+                ${budgetPct!==null
+                  ?`<div style="font-size:12px;font-weight:700;color:${budgetPct>=100?'#dc2626':budgetPct>=80?'#d97706':color}">${budgetPct}%</div>
+                    <div style="font-size:8px;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden;margin-top:2px"><div style="height:100%;width:${Math.min(budgetPct,100)}%;background:${budgetPct>=100?'#dc2626':budgetPct>=80?'#f59e0b':color};border-radius:2px"></div></div>`
+                  :`<div style="font-size:9px;color:#d1d5db">미설정</div>`}
+              </div>
+            </div>
+          </div>`
+        })
+        const dbWeightedCurrent = dbWBudgetSum > 0 ? Math.round(dbWPriceSum / dbWBudgetSum) : 0
+        const dbWeightedTarget  = dbWTargetBudgetSum > 0 ? Math.round(dbWTargetSum / dbWTargetBudgetSum) : 0
+        const dbWDiff = dbWeightedCurrent > 0 && dbWeightedTarget > 0 ? dbWeightedCurrent - dbWeightedTarget : null
+        const dbWOver = dbWDiff !== null && dbWDiff > 0
+        const dbWWarn = dbWDiff !== null && !dbWOver && dbWeightedCurrent >= dbWeightedTarget * 0.9
+        const dbWColor = dbWOver ? '#dc2626' : dbWWarn ? '#d97706' : '#16a34a'
+        // 막대그래프
+        const dbBarHtml = dbWeightedTarget > 0 && dbWeightedCurrent > 0 ? (() => {
+          const maxV = Math.max(dbWeightedTarget, dbWeightedCurrent) * 1.15
+          const tPct = Math.min(Math.round(dbWeightedTarget / maxV * 100), 100)
+          const cPct = Math.min(Math.round(dbWeightedCurrent / maxV * 100), 100)
+          const bColor = dbWOver ? '#dc2626' : dbWWarn ? '#d97706' : '#16a34a'
+          return `<div style="margin-top:8px">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:#6b7280;margin-bottom:4px">
+              <span>목표 대비 현재 가중평균</span>
+              <span style="font-weight:700;color:${bColor}">${Math.round(dbWeightedCurrent/dbWeightedTarget*100)}%</span>
+            </div>
+            <div style="margin-bottom:4px">
+              <div style="font-size:9px;color:#9ca3af;margin-bottom:2px">현재 <strong style="color:${bColor}">${fmt(dbWeightedCurrent)}원/식</strong></div>
+              <div style="background:#e5e7eb;border-radius:4px;height:12px;position:relative;overflow:visible">
+                <div style="height:100%;width:${cPct}%;background:${bColor};border-radius:4px"></div>
+                <div style="position:absolute;top:-3px;left:${tPct}%;transform:translateX(-50%);width:2px;height:18px;background:#7c3aed;border-radius:1px"></div>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:9px;color:#9ca3af;margin-bottom:2px">목표 <strong style="color:#7c3aed">${fmt(dbWeightedTarget)}원/식</strong> (▎마커)</div>
+              <div style="background:#e5e7eb;border-radius:4px;height:8px">
+                <div style="height:100%;width:${tPct}%;background:#c084fc;border-radius:4px"></div>
+              </div>
+            </div>
+          </div>`
+        })() : ''
+        return `<div class="mt-3 border-t border-gray-100 pt-3">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <span style="font-size:13px;font-weight:700;color:#374151"><i class="fas fa-calculator" style="color:#7c3aed;margin-right:5px"></i>환자군별 식단가 현황</span>
+            <span style="font-size:11px;color:#9ca3af">${App.currentYear}년 ${App.currentMonth}월</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:10px">
+            ${dbRows.join('')}
+          </div>
+          <!-- 가중평균 식단가 + 막대그래프 -->
+          <div style="padding:12px 14px;background:linear-gradient(135deg,#faf5ff,#f0f9ff);border-radius:12px;border:1px solid #c084fc40">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:12px;font-weight:700;color:#7c3aed"><i class="fas fa-balance-scale" style="margin-right:4px"></i>가중평균 식단가 <span style="font-size:10px;color:#9ca3af;font-weight:400">(발주금액 비중)</span></span>
+              ${dbWDiff!==null&&dbWeightedCurrent>0?`<span style="font-size:11px;font-weight:700;color:${dbWColor}">${dbWOver?'▲ +':'▼ '}${fmt(Math.abs(dbWDiff))}원 ${dbWOver?'초과':dbWWarn?'주의':'이내'}</span>`:''}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+              <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid #e9d5ff">
+                <div style="font-size:10px;color:#6b7280;margin-bottom:3px">목표 가중평균</div>
+                <div style="font-size:15px;font-weight:800;color:${dbWeightedTarget>0?'#7c3aed':'#d1d5db'}">${dbWeightedTarget>0?fmt(dbWeightedTarget)+'원/식':'미설정'}</div>
+                <div style="font-size:9px;color:#9ca3af;margin-top:2px">목표예산 비중 기준</div>
+              </div>
+              <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid ${dbWeightedCurrent>0?dbWColor+'60':'#e5e7eb'}">
+                <div style="font-size:10px;color:#6b7280;margin-bottom:3px">현재 가중평균</div>
+                <div style="font-size:15px;font-weight:800;color:${dbWeightedCurrent>0?dbWColor:'#d1d5db'}">${dbWeightedCurrent>0?fmt(dbWeightedCurrent)+'원/식':'미입력'}</div>
+                <div style="font-size:9px;color:#9ca3af;margin-top:2px">실발주 비중 기준</div>
+              </div>
+            </div>
+            ${dbBarHtml}
+          </div>
+          <div style="margin-top:8px;padding:7px 10px;background:#f8fafc;border-radius:8px;font-size:11px;color:#6b7280">
+            💡 <strong>식단가 계산</strong>: 카테고리 발주금액 ÷ 해당 환자군 월 식수 · <strong>가중평균</strong>: 발주금액 비중으로 가중합산
+          </div>
+        </div>`
+      })() : ''}
+
       <!-- 잔반 현황 -->
       <div class="mt-3 border-t border-gray-100 pt-3">
         <div class="flex items-center justify-between mb-2">
@@ -3131,7 +3248,8 @@ function renderMealsContent(content, mealData, customFields, patientCats) {
     </div>
   </div>
 
-  ${patientCats.length > 0 ? buildMealPricePanel(patientCats, customFields, mealData) : ''}`
+  `
+  // 환자군별 식단가 현황은 월별 대시보드로 이동됨
 
   bindMealInputEvents()
 }
@@ -3280,12 +3398,13 @@ function buildMealPricePanel(patientCats, customFields, mealData) {
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
       ${rows}
     </div>
-    <!-- 가중평균 식단가 요약 -->
+    <!-- 가중평균 식단가 요약 + 막대그래프 -->
     <div style="margin-top:12px;padding:12px 14px;background:linear-gradient(135deg,#faf5ff,#f0f9ff);border-radius:12px;border:1px solid #c084fc40">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <span style="font-size:12px;font-weight:700;color:#7c3aed"><i class="fas fa-balance-scale" style="margin-right:4px"></i>가중평균 식단가 <span style="font-size:10px;color:#9ca3af;font-weight:400">(발주금액 비중 기준)</span></span>
+        ${wDiff!==null&&weightedCurrentPrice>0?`<span style="font-size:11px;font-weight:700;color:${wColor}">${wOver?'▲ +':'▼ '}${fmt(Math.abs(wDiff))}원 ${wOver?'초과':wWarn?'주의':'이내'}</span>`:''}
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
         <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid #e9d5ff">
           <div style="font-size:10px;color:#6b7280;margin-bottom:3px">목표 가중평균</div>
           <div style="font-size:15px;font-weight:800;color:${weightedTargetPrice>0?'#7c3aed':'#d1d5db'}">${weightedTargetPrice>0?fmt(weightedTargetPrice)+'원/식':'미설정'}</div>
@@ -3294,11 +3413,42 @@ function buildMealPricePanel(patientCats, customFields, mealData) {
         <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid ${weightedCurrentPrice>0?wColor+'60':'#e5e7eb'}">
           <div style="font-size:10px;color:#6b7280;margin-bottom:3px">현재 가중평균</div>
           <div style="font-size:15px;font-weight:800;color:${weightedCurrentPrice>0?wColor:'#d1d5db'}">${weightedCurrentPrice>0?fmt(weightedCurrentPrice)+'원/식':'미입력'}</div>
-          ${wDiff!==null&&weightedCurrentPrice>0
-            ? `<div style="font-size:10px;font-weight:700;color:${wColor}">${wOver?'▲ +':'▼ '}${fmt(Math.abs(wDiff))}원 ${wOver?'초과':wWarn?'주의':'이내'}</div>`
-            : `<div style="font-size:9px;color:#9ca3af;margin-top:2px">카테고리별 실발주 비중</div>`}
+          <div style="font-size:9px;color:#9ca3af;margin-top:2px">카테고리별 실발주 비중</div>
         </div>
       </div>
+      <!-- 목표 대비 현재 막대그래프 -->
+      ${weightedTargetPrice>0&&weightedCurrentPrice>0 ? (() => {
+        const maxVal = Math.max(weightedTargetPrice, weightedCurrentPrice) * 1.15
+        const targetPct = Math.min(Math.round(weightedTargetPrice / maxVal * 100), 100)
+        const currentPct = Math.min(Math.round(weightedCurrentPrice / maxVal * 100), 100)
+        const barColor = wOver ? '#dc2626' : wWarn ? '#d97706' : '#16a34a'
+        const targetMarkerPct = Math.min(Math.round(weightedTargetPrice / maxVal * 100), 100)
+        return `<div style="margin-bottom:4px">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#6b7280;margin-bottom:4px">
+            <span>목표 대비 현재 식단가</span>
+            <span style="font-weight:700;color:${barColor}">${Math.round(weightedCurrentPrice/weightedTargetPrice*100)}%</span>
+          </div>
+          <!-- 현재 막대 -->
+          <div style="margin-bottom:5px">
+            <div style="font-size:9px;color:#9ca3af;margin-bottom:2px">현재 <strong style="color:${barColor}">${fmt(weightedCurrentPrice)}원</strong></div>
+            <div style="background:#e5e7eb;border-radius:4px;height:12px;position:relative;overflow:visible">
+              <div style="height:100%;width:${currentPct}%;background:${barColor};border-radius:4px;transition:width 0.5s;position:relative">
+                <span style="position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:8px;color:white;font-weight:700;white-space:nowrap">${currentPct>20?fmt(weightedCurrentPrice)+'원':''}</span>
+              </div>
+              <!-- 목표 위치 마커 -->
+              <div style="position:absolute;top:-3px;left:${targetMarkerPct}%;transform:translateX(-50%);width:2px;height:18px;background:#7c3aed;border-radius:1px"></div>
+            </div>
+          </div>
+          <!-- 목표 막대 -->
+          <div>
+            <div style="font-size:9px;color:#9ca3af;margin-bottom:2px">목표 <strong style="color:#7c3aed">${fmt(weightedTargetPrice)}원</strong></div>
+            <div style="background:#e5e7eb;border-radius:4px;height:8px">
+              <div style="height:100%;width:${targetPct}%;background:#c084fc;border-radius:4px"></div>
+            </div>
+          </div>
+          <div style="margin-top:4px;font-size:9px;color:#9ca3af;text-align:right">▎ 세로 마커 = 목표 위치</div>
+        </div>`
+      })() : weightedTargetPrice===0 ? `<div style="text-align:center;font-size:10px;color:#d1d5db;padding:6px">목표 식단가 미설정 시 그래프 표시 불가</div>` : ''}
     </div>
     <div style="margin-top:10px;padding:8px 12px;background:#f8fafc;border-radius:8px;font-size:11px;color:#6b7280">
       💡 <strong>식단가 계산 기준</strong>: 환자군 식수 + 직원 + 보호자 합산 (비급여 제외) · <strong>가중평균</strong>: 카테고리별 발주금액 비중으로 식단가 가중합산
@@ -5209,12 +5359,13 @@ async function renderAdminDashboard() {
                 <div class="grid grid-cols-${Math.min((h.catDietPrices||[]).length, 2)} gap-1 mb-2">
                   ${catRows2.join('')}
                 </div>
-                <!-- 가중평균 식단가 요약 -->
+                <!-- 가중평균 식단가 요약 + 막대그래프 -->
                 <div class="p-2 rounded-xl border" style="background:linear-gradient(135deg,#faf5ff,#f0f9ff);border-color:#c084fc40">
                   <div class="flex items-center justify-between mb-1">
                     <span class="text-xs font-bold text-purple-700"><i class="fas fa-balance-scale mr-1"></i>가중평균 식단가 <span class="text-gray-400 font-normal">(발주금액 비중)</span></span>
+                    ${wDiff!==null&&weightedCurrentPrice>0?`<span style="font-size:9px;font-weight:700;color:${wColor}">${wOver?'▲ +':'▼ '}${fmt(Math.abs(wDiff))}원 ${wOver?'초과':wWarn?'주의':'이내'}</span>`:''}
                   </div>
-                  <div class="grid grid-cols-2 gap-1.5">
+                  <div class="grid grid-cols-2 gap-1.5 mb-2">
                     <div class="p-1.5 bg-white rounded-lg border border-purple-100 text-center">
                       <div class="text-xs text-gray-400 mb-0.5">목표 가중평균</div>
                       <div class="text-sm font-bold text-purple-700">${weightedTargetPrice>0?fmt(weightedTargetPrice)+'원/식':'미설정'}</div>
@@ -5222,9 +5373,34 @@ async function renderAdminDashboard() {
                     <div class="p-1.5 bg-white rounded-lg border text-center" style="border-color:${weightedCurrentPrice>0?wColor+'40':'#e5e7eb'}">
                       <div class="text-xs text-gray-400 mb-0.5">현재 가중평균</div>
                       <div class="text-sm font-bold" style="color:${weightedCurrentPrice>0?wColor:'#d1d5db'}">${weightedCurrentPrice>0?fmt(weightedCurrentPrice)+'원/식':'미입력'}</div>
-                      ${wDiff!==null&&weightedCurrentPrice>0?`<div style="font-size:9px;font-weight:600;color:${wColor}">${wOver?'▲ +':'▼ '}${fmt(Math.abs(wDiff))}원</div>`:''}
                     </div>
                   </div>
+                  <!-- 목표 대비 현재 막대그래프 -->
+                  ${weightedTargetPrice>0&&weightedCurrentPrice>0 ? (() => {
+                    const maxVal2 = Math.max(weightedTargetPrice, weightedCurrentPrice) * 1.15
+                    const targetPct2 = Math.min(Math.round(weightedTargetPrice / maxVal2 * 100), 100)
+                    const currentPct2 = Math.min(Math.round(weightedCurrentPrice / maxVal2 * 100), 100)
+                    const barColor2 = wOver ? '#dc2626' : wWarn ? '#d97706' : '#16a34a'
+                    return `<div>
+                      <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:3px">
+                        <span>목표 대비</span>
+                        <span style="font-weight:700;color:${barColor2}">${Math.round(weightedCurrentPrice/weightedTargetPrice*100)}%</span>
+                      </div>
+                      <div style="margin-bottom:3px">
+                        <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">현재 ${fmt(weightedCurrentPrice)}원</div>
+                        <div style="background:#e5e7eb;border-radius:3px;height:9px;position:relative;overflow:visible">
+                          <div style="height:100%;width:${currentPct2}%;background:${barColor2};border-radius:3px"></div>
+                          <div style="position:absolute;top:-2px;left:${targetPct2}%;transform:translateX(-50%);width:2px;height:13px;background:#7c3aed;border-radius:1px"></div>
+                        </div>
+                      </div>
+                      <div>
+                        <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">목표 ${fmt(weightedTargetPrice)}원 (▎)</div>
+                        <div style="background:#e5e7eb;border-radius:3px;height:6px">
+                          <div style="height:100%;width:${targetPct2}%;background:#c084fc;border-radius:3px"></div>
+                        </div>
+                      </div>
+                    </div>`
+                  })() : ''}
                 </div>
               </div>`
             })() : ''}
