@@ -3518,79 +3518,18 @@ async function saveMealBatch() {
   }
 }
 
-// ── 커스텀 필드 모달 ──────────────────────────────────────────
+// ── 커스텀 필드 모달 (제거됨: 환자군은 관리자에서 설정, 자동 반영됨) ──────────────────────────────────────
+// 칸 생성 기능이 제거되고 관리자 > 병원설정 > 환자군에서 설정하면 자동 반영됩니다.
 function openCustomFieldModal() {
-  renderCustomFieldList()
-  document.getElementById('customFieldModal')?.classList.remove('hidden')
+  showToast('환자군 추가/관리는 관리자 페이지 > 병원설정에서 하세요', 'info')
 }
-
-function closeCustomFieldModal() {
-  document.getElementById('customFieldModal')?.classList.add('hidden')
-}
-
-function renderCustomFieldList() {
-  const cf = window._mealCustomFields || []
-  const listEl = document.getElementById('customFieldList')
-  if (!listEl) return
-  if (cf.length === 0) {
-    listEl.innerHTML = `<p class="text-xs text-gray-400 text-center py-2">아직 커스텀 칸이 없습니다.</p>`
-    return
-  }
-  listEl.innerHTML = cf.map(f => {
-    const unitLabel = f.unit_type === 'ea' ? '<span class="text-xs bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded ml-1">ea/개</span>' : '<span class="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded ml-1">식</span>'
-    return `
-    <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
-      <span class="text-sm font-medium text-gray-700"><i class="fas fa-grip-vertical text-gray-300 mr-2"></i>${f.field_name}${unitLabel}</span>
-      <button onclick="deleteCustomField(${f.id})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-trash"></i> 삭제</button>
-    </div>
-  `}).join('')
-}
-
+function closeCustomFieldModal() {}
+function renderCustomFieldList() {}
 async function addCustomField() {
-  const input = document.getElementById('newCustomFieldName')
-  const unitSel = document.getElementById('newCustomFieldUnit')
-  const name = input?.value?.trim()
-  const unitType = unitSel?.value || 'meal'
-  if (!name) { showToast('칸 이름을 입력하세요', 'warning'); return }
-  const result = await api('POST', '/api/meals/custom-fields', { fieldName: name, unitType })
-  if (result?.id) {
-    window._mealCustomFields.push(result)
-    if (input) input.value = ''
-    renderCustomFieldList()
-    showToast(`"${name}" 칸이 추가되었습니다`, 'success')
-    // 테이블 새로고침
-    const mealData = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
-    if (mealData) {
-      const meals = Array.isArray(mealData) ? mealData : (mealData.meals || [])
-      meals.forEach(m => { try { m._custom = JSON.parse(m.custom_data||'{}') } catch(e){ m._custom={} } })
-      const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
-      renderMealsContent(content, meals, window._mealCustomFields)
-      openCustomFieldModal()
-    }
-  } else {
-    showToast(result?.error || '추가 실패', 'error')
-  }
+  showToast('환자군 추가/관리는 관리자 페이지 > 병원설정에서 하세요', 'info')
 }
-
 async function deleteCustomField(id) {
-  if (!confirm('이 칸을 삭제하시겠습니까? 저장된 데이터는 유지됩니다.')) return
-  const result = await api('DELETE', `/api/meals/custom-fields/${id}`)
-  if (result?.success) {
-    window._mealCustomFields = window._mealCustomFields.filter(f => f.id !== id)
-    renderCustomFieldList()
-    showToast('삭제 완료', 'success')
-    // 테이블 새로고침
-    const mealData = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
-    if (mealData) {
-      const meals = Array.isArray(mealData) ? mealData : (mealData.meals || [])
-      meals.forEach(m => { try { m._custom = JSON.parse(m.custom_data||'{}') } catch(e){ m._custom={} } })
-      const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
-      renderMealsContent(content, meals, window._mealCustomFields)
-      openCustomFieldModal()
-    }
-  } else {
-    showToast('삭제 실패', 'error')
-  }
+  showToast('환자군 관리는 관리자 페이지 > 병원설정에서 하세요', 'info')
 }
 
 // ══════════════════════════════════════════════════════════════
