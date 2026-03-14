@@ -524,6 +524,7 @@ async function renderDashboard() {
   const pm = data.prevMonth || {}  // 전월 데이터
   // 백엔드에서 계산된 카테고리별 식단가 데이터 (있으면 우선 사용)
   const catDietPricesData = data.catDietPrices || []
+  window._catDietPricesData = catDietPricesData  // 실시간 패널에서 참조
   const todayPatientMealsDash = data.todayPatientMeals || 0
   const mealCustomFields = data.mealCustomFields || []
   const mealCustomTotals = data.mealCustomTotals || {}
@@ -1282,7 +1283,7 @@ async function renderOrders() {
           </div>
           <div style="text-align:right;min-width:36px">
             <div style="font-size:8px;color:#9ca3af">식수</div>
-            <div id="cat-mp-meals-${cat.id}" style="font-size:10px;font-weight:600;color:#374151">${(s.daily_meal_count||0) > 0 ? fmt(s.daily_meal_count)+'식' : (totalPatientMeals > 0 ? fmt(Math.round(totalPatientMeals / cats.length))+'식' : '-')}</div>
+            <div id="cat-mp-meals-${cat.id}" style="font-size:10px;font-weight:600;color:#374151">${(() => { const dc = catDietPricesData.find(d => d.id === cat.id); const m = dc?.todayCatMeals || 0; return m > 0 ? fmt(m)+'식' : '-' })()}</div>
           </div>
         </div>`
       }).join('')
@@ -2824,11 +2825,10 @@ function updateBudgetProgressPanel() {
         const s3 = catSetMap3[cat.id] || {}
         const targetPrice3 = s3.target_meal_price || 0
 
-        // 카테고리 식수: 설정된 일일 식수 우선, 없으면 전체 환자 식수를 예산 비중으로 배분
+        // 카테고리 식수: 영양사 페이지에서 입력한 실제 오늘 식수 (catDietPricesData에서)
         const catRatio = totalCatBudget > 0 ? (s3.monthly_budget||0) / totalCatBudget : (1 / catsList.length)
-        const catMeals = (s3.daily_meal_count > 0)
-          ? s3.daily_meal_count
-          : (totalPatientToday > 0 ? Math.round(totalPatientToday * catRatio) : 0)
+        const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
+        const catMeals = catDietEntry?.todayCatMeals || 0
         const catMealPrice = catMeals > 0 ? Math.round(catAmt / catMeals) : 0
 
         const color = getCategoryColorHex(cat.category_key)
@@ -2838,7 +2838,7 @@ function updateBudgetProgressPanel() {
         const mealsEl = document.getElementById(`cat-mp-meals-${cat.id}`)
 
         if (amtEl) amtEl.textContent = catAmt > 0 ? fmtMan(catAmt) : '-'
-        if (mealsEl) mealsEl.textContent = catMeals > 0 ? fmt(catMeals)+'식' : (s3.daily_meal_count > 0 ? fmt(s3.daily_meal_count)+'식' : (totalPatientToday > 0 ? fmt(Math.round(totalPatientToday*catRatio))+'식' : '-'))
+        if (mealsEl) mealsEl.textContent = catMeals > 0 ? fmt(catMeals)+'식' : '-'
 
         if (priceEl) {
           if (catMealPrice > 0) {
@@ -6934,17 +6934,10 @@ function renderCategoryBudgetList(cats, settings) {
             oninput="updateWeightedAvgTarget()">
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-2">
-        <div>
-          <label class="block text-xs text-gray-500 mb-1">일일 식수 (식/일) <span class="text-blue-400">※ 식단가 계산에 사용</span></label>
-          <input type="number" id="catDailyMeals-${cat.id}" value="${s.daily_meal_count||0}"
-            class="form-input text-sm py-1" placeholder="0">
-        </div>
-        <div>
-          <label class="block text-xs text-gray-500 mb-1">영업일수 (일)</label>
-          <input type="number" id="catWorkDays-${cat.id}" value="${s.working_days||0}"
-            class="form-input text-sm py-1" placeholder="0">
-        </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">영업일수 (일)</label>
+        <input type="number" id="catWorkDays-${cat.id}" value="${s.working_days||0}"
+          class="form-input text-sm py-1" placeholder="0">
       </div>
     </div>`
   }).join('')
@@ -7105,7 +7098,7 @@ async function saveCategoryBudgets(hospitalId) {
     monthly_budget: parseInt(document.getElementById(`catBudget-${cat.id}`)?.value || 0) || 0,
     target_meal_price: parseInt(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0) || 0,
     working_days: parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0,
-    daily_meal_count: parseInt(document.getElementById(`catDailyMeals-${cat.id}`)?.value || 0) || 0
+    daily_meal_count: 0
   }))
 
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`, { settings })
