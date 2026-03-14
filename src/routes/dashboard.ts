@@ -175,6 +175,84 @@ dashboard.get('/summary/:year/:month', async (c) => {
     `SELECT total_budget, meal_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
   ).bind(hospitalId, prevYear2, prevMonth).first<any>()
 
+  // ── 카테고리별 식단가 계산 ──────────────────────────────────
+  const patientCatsDash = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(hospitalId).all<any>()
+
+  const catMonthlyOrders = await c.env.DB.prepare(`
+    SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND patient_category_id IS NOT NULL
+      AND strftime('%Y', order_date) = ?
+      AND strftime('%m', order_date) = printf('%02d', ?)
+    GROUP BY patient_category_id
+  `).bind(hospitalId, year, month).all<any>()
+
+  const catTodayOrders = await c.env.DB.prepare(`
+    SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND patient_category_id IS NOT NULL
+      AND order_date = ?
+    GROUP BY patient_category_id
+  `).bind(hospitalId, today).all<any>()
+
+  const catSettingsDash = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+  `).bind(hospitalId, year, month).all<any>()
+
+  const prevCatSettingsDash = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+  `).bind(hospitalId, prevYear2, prevMonth).all<any>()
+
+  const todayPatientMealsDash = await c.env.DB.prepare(`
+    SELECT COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0) as patient_total
+    FROM daily_meals WHERE hospital_id = ? AND meal_date = ?
+  `).bind(hospitalId, today).first<any>()
+
+  const todayPatientMeals = todayPatientMealsDash?.patient_total || 0
+  const catMonthMap2: Record<number, number> = {}
+  ;(catMonthlyOrders.results||[]).forEach((r:any) => { catMonthMap2[r.patient_category_id] = r.total })
+  const catTodayMap2: Record<number, number> = {}
+  ;(catTodayOrders.results||[]).forEach((r:any) => { catTodayMap2[r.patient_category_id] = r.total })
+  const catSetMap3: Record<number, any> = {}
+  ;(catSettingsDash.results||[]).forEach((s3:any) => { catSetMap3[s3.patient_category_id] = s3 })
+  const prevCatSetMap3: Record<number, any> = {}
+  ;(prevCatSettingsDash.results||[]).forEach((s3:any) => { prevCatSetMap3[s3.patient_category_id] = s3 })
+
+  const totalCatBudgetDash = (catSettingsDash.results||[]).reduce((s3:number, c3:any) => s3+(c3.monthly_budget||0), 0)
+
+  const catDietPrices = (patientCatsDash.results||[]).map((cat:any) => {
+    const monthAmt = catMonthMap2[cat.id] || 0
+    const todayAmt = catTodayMap2[cat.id] || 0
+    const s3 = catSetMap3[cat.id] || {}
+    const targetPrice = s3.target_meal_price || 0
+    const monthBudget = s3.monthly_budget || 0
+    const workDays = s3.working_days || workingDays
+    const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
+    const todayCatMeals = todayPatientMeals > 0 ? Math.round(todayPatientMeals * catRatio) : 0
+    const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
+    const prevSet = prevCatSetMap3[cat.id] || {}
+    const prevTargetPrice = prevSet.target_meal_price || 0
+    const prevMonthBudget = prevSet.monthly_budget || 0
+    return {
+      id: cat.id, category_key: cat.category_key, category_name: cat.category_name,
+      monthAmt, todayAmt, monthBudget, targetPrice, workDays,
+      todayCatMeals, todayDietPrice, catRatio,
+      prevTargetPrice, prevMonthBudget
+    }
+  })
+
   // 전월 식단가 계산 (현재 월과 동일 로직)
   const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
   // 전월 총식수: 비급여 제외
@@ -205,6 +283,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealPriceNoStaff,
     mealPriceNoSupply,
     totalMeals,
+    catDietPrices,
+    todayPatientMeals,
     prevMonth: {
       month: prevMonth, year: parseInt(prevYear2),
       totalUsed: prevTotalUsed, totalMeals: prevTotalMeals,

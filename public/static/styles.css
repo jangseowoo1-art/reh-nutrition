@@ -144,21 +144,21 @@
    발주 입력 테이블
 ══════════════════════════════════════════ */
 /* ── 발주 테이블 ─────────────────────────── */
-.order-table { font-size: 12px; border-collapse: collapse; table-layout: fixed; width: auto; }
-.order-table th { background: #166534; color: white; padding: 5px 3px; font-size: 10px; text-align: center; border: 1px solid #1e7a3e; position: sticky; top: 0; z-index: 10; white-space: nowrap; }
+.order-table { font-size: 12px; border-collapse: collapse; table-layout: auto; width: auto; }
+.order-table th { background: #166534; color: white; padding: 5px 3px; font-size: 10px; text-align: center; border: 1px solid #1e7a3e; position: sticky; top: 0; z-index: 10; white-space: normal; word-break: keep-all; line-height: 1.3; }
 .order-table td { padding: 2px 2px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; }
 .order-table .date-col { background: #f8fafc; font-weight: 700; font-size: 12px; text-align: center; color: #374151; min-width: 28px; width: 28px; }
 .order-table .weekend-row td.date-col { background: #fef9c3; color: #92400e; }
 .order-table .holiday-row td.date-col { background: #fee2e2; color: #991b1b; }
-/* 입력칸: 가운데 정렬, 너비 축소 */
+/* 입력칸: 가운데 정렬, 글자 잘림 방지 */
 .order-table input[type="text"].order-input,
-.order-table input[type="number"] { width: 78px; text-align: right; padding: 3px 5px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; background: #f9fafb; -moz-appearance: textfield; appearance: textfield; display: block; margin: 0 auto; box-sizing: border-box; }
+.order-table input[type="number"] { text-align: right; padding: 3px 4px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; background: #f9fafb; -moz-appearance: textfield; appearance: textfield; display: block; margin: 0 auto; box-sizing: border-box; width: 100%; max-width: 68px; }
 /* 스피너 제거 */
 .order-table input[type="number"]::-webkit-outer-spin-button,
 .order-table input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .order-table input[type="text"].order-input:focus,
 .order-table input[type="number"]:focus { border-color: #16a34a; outline: none; box-shadow: 0 0 0 2px rgba(22,163,74,0.15); background: #fff; }
-.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; text-align: center; font-size: 11px; min-width: 82px; }
+.order-table .total-col { font-weight: 600; color: #166534; background: #f0fdf4; text-align: center; font-size: 11px; min-width: 64px; white-space: nowrap; }
 .order-table td[id^="dayTarget-"] { background: #eff6ff; border-left: 2px solid #bfdbfe; text-align: center; white-space: nowrap; }
 .order-table .weekend-row td[id^="dayTarget-"] { background: #fefce8; }
 .order-table .holiday-row td[id^="dayTarget-"] { background: #fff1f2; }
@@ -168,10 +168,22 @@
 .order-table .week-summary-row { border-top: 3px solid #16a34a !important; border-bottom: 2px solid #16a34a !important; }
 .order-table .current-week-row td { box-shadow: inset 0 2px 0 #0284c7, inset 0 -2px 0 #0284c7; }
 .order-table .current-week-row { position: relative; z-index: 1; }
-/* 입력 셀(td) 자체 패딩 최소화 */
-.order-table td:has(input.order-input) { padding: 2px 2px; }
-/* 일합계 열 정렬 */
-.order-table .total-col.text-center { font-size: 11px; }
+/* A+C 카테고리 행 스타일 */
+.order-table .cat-row-main td,
+.order-table .cat-row-sub td { padding: 2px 2px; vertical-align: middle; }
+.order-table .cat-row-main { border-top: 2px solid #e5e7eb; }
+.order-table .cat-row-sub { border-top: 1px dashed #e5e7eb; }
+/* 카테고리 입력칸 */
+.order-table .cat-order-input { display: block; width: 100%; box-sizing: border-box; text-align: right; font-size: 10px; padding: 2px 3px; border-radius: 2px; }
+.order-table .cat-order-input:focus { outline: none; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); }
+/* 일합계/비중 셀 */
+.order-table .cat-total-cell { min-width: 52px; }
+/* 주말/공휴일 - 카테고리 행 배경은 인라인 스타일이 우선, 날짜셀만 덮어쓰기 */
+.order-table .weekend-row td.date-col { background: #fef9c3 !important; }
+.order-table .holiday-row td.date-col { background: #fee2e2 !important; }
+/* 주말/공휴일 배경 (카테고리 없는 기존 행) */
+.order-table .weekend-row td { background: #fefce8; }
+.order-table .holiday-row td { background: #fff1f2; }
 
 /* ══════════════════════════════════════════
    스케줄
@@ -241,20 +253,46 @@
 ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 6px; }
 ::-webkit-scrollbar-thumb { background: #6ee7b7; border-radius: 6px; border: 2px solid #f1f5f9; }
 ::-webkit-scrollbar-thumb:hover { background: #34d399; }
-/* 발주입력 가로 스크롤바 (orders-panel 기반) */
-.orders-scroll-wrap { position: relative; }
-/* orders-panel: 세로는 부모가 처리, 가로 스크롤만 허용 */
-#orders-panel { overflow-x: auto !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
-#orders-panel::-webkit-scrollbar { width: 8px; height: 8px; }
-#orders-panel::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
-#orders-panel::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 2px solid #dcfce7; }
-#orders-panel::-webkit-scrollbar-thumb:hover { background: #166534; }
-/* 하단 고정 가로 스크롤 미러 — 모바일에서는 숨김 (직접 터치 스크롤 사용) */
-#orders-hscroll-mirror { position: sticky; bottom: 0; overflow-x: auto; overflow-y: hidden; height: 16px; background: #dcfce7; border-top: 2px solid #16a34a; border-radius: 0 0 8px 8px; z-index: 50; }
-#orders-hscroll-mirror::-webkit-scrollbar { height: 12px; }
-#orders-hscroll-mirror::-webkit-scrollbar-track { background: #dcfce7; border-radius: 7px; }
-#orders-hscroll-mirror::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 7px; border: 2px solid #dcfce7; }
-#orders-hscroll-mirror::-webkit-scrollbar-thumb:hover { background: #166534; }
+/* 발주입력 가로 스크롤바 (ordersTableScroller 기반) */
+.orders-scroll-wrap { position: relative; width: 100%; min-width: 0; }
+/* 테이블 스크롤 컨테이너 - 가로 스크롤은 여기서만 */
+#ordersTableScroller {
+  overflow-x: auto;
+  overflow-y: visible;
+  width: 100%;
+  min-width: 0;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+/* 스크롤바 숨기고 하단 미러바 사용 (데스크탑) */
+#ordersTableScroller::-webkit-scrollbar { height: 0px; }
+/* 하단 가로 스크롤바 */
+#orders-hscroll-bar {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 14px;
+  border-top: 1px solid #e5e7eb;
+  background: #f0fdf4;
+  border-radius: 0 0 8px 8px;
+  cursor: pointer;
+}
+#orders-hscroll-bar::-webkit-scrollbar { height: 10px; }
+#orders-hscroll-bar::-webkit-scrollbar-track { background: #dcfce7; border-radius: 6px; }
+#orders-hscroll-bar::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 6px; border: 2px solid #dcfce7; min-width: 40px; }
+#orders-hscroll-bar::-webkit-scrollbar-thumb:hover { background: #166534; }
+/* 모바일 */
+@media (max-width: 768px) {
+  #ordersTableScroller {
+    overflow-x: scroll;
+    -webkit-overflow-scrolling: touch;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  #ordersTableScroller::-webkit-scrollbar { height: 5px; }
+  #ordersTableScroller::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 4px; }
+  #orders-hscroll-bar { display: none !important; }
+  .orders-scroll-wrap { min-width: 0; }
+}
 /* 발주 테이블 sticky 헤더 */
 .order-table thead th { position: sticky; top: 0; z-index: 20; }
 
@@ -361,7 +399,7 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   .order-table td { padding: 2px 1px; }
   /* 발주 입력필드 - iOS zoom 방지 */
   .order-table input[type="text"].order-input,
-  .order-table input[type="number"] { width: 58px; font-size: 16px !important; padding: 4px 2px; border-radius: 4px; text-align: center; }
+  .order-table input[type="number"] { width: 100%; max-width: 60px; font-size: 16px !important; padding: 4px 2px; border-radius: 4px; text-align: right; }
 
   /* 식수 입력 테이블 */
   .meal-table { font-size: 11px; }
@@ -372,8 +410,10 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   /* 스케줄 셀 - 터치 영역 확보 */
   .schedule-cell { width: 26px; height: 26px; font-size: 10px; border-radius: 4px; }
 
-  /* 스크롤바 숨김 (모바일에선 불필요) */
+  /* 스크롤바 숨김 (모바일에선 불필요 - 발주 테이블 제외) */
   ::-webkit-scrollbar { width: 0; height: 0; }
+  /* 발주 테이블 스크롤러는 예외 */
+  #ordersTableScroller::-webkit-scrollbar { height: 5px; width: 0; }
 
   /* 대시보드 그리드 - 2열 유지 */
   .dash-4col { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }

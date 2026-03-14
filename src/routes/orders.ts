@@ -133,11 +133,21 @@ orders.post('/save', async (c) => {
   const body = await c.req.json()
   const { vendorId, orderDate, taxableAmount, exemptAmount, vatAmount, note, isMultiDay, multiDayStart, multiDayEnd, multiDayCount } = body
 
-  const totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount || 0)
+  // VAT 반올림 보정
+  const roundedVat = Math.round((taxableAmount || 0) * 0.1)
+  const totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount !== undefined ? vatAmount : roundedVat)
 
   const existing = await c.env.DB.prepare(
-    `SELECT id FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=?`
+    `SELECT id FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=? AND patient_category_id IS NULL`
   ).bind(hospitalId, vendorId, orderDate).first<any>()
+
+  // 모든 금액이 0이면 기존 레코드 삭제
+  if (totalAmount === 0 && !note && !isMultiDay) {
+    if (existing) {
+      await c.env.DB.prepare(`DELETE FROM daily_orders WHERE id=?`).bind(existing.id).run()
+    }
+    return c.json({ success: true, totalAmount: 0, deleted: true })
+  }
 
   if (existing) {
     await c.env.DB.prepare(
@@ -266,11 +276,35 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, year, month).all<any>()
 
+  // ── 오늘자 식수 조회 (카테고리별 식단가 계산용) ──
+  const today = new Date()
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
+  const todayMeals = await c.env.DB.prepare(`
+    SELECT
+      COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0) as patient_total,
+      COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0) as staff_total,
+      COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0) as guardian_total
+    FROM daily_meals
+    WHERE hospital_id = ? AND meal_date = ?
+  `).bind(hospitalId, todayStr).first<any>()
+
+  // ── 전월 카테고리 설정 조회 (전월 목표 식단가 비교용) ──
+  const prevMonthNum = parseInt(month) === 1 ? 12 : parseInt(month) - 1
+  const prevYearNum  = parseInt(month) === 1 ? parseInt(year) - 1 : parseInt(year)
+  const prevCatSettings = await c.env.DB.prepare(`
+    SELECT cos.*, hpc.category_key, hpc.category_name
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+  `).bind(hospitalId, prevYearNum, prevMonthNum).all<any>()
+
   return c.json({
     categories: cats.results || [],
     monthly: monthly.results || [],
     dailyByVendorCat: dailyByVendorCat.results || [],
-    settings: catSettings.results || []
+    settings: catSettings.results || [],
+    todayMeals: todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 },
+    prevSettings: prevCatSettings.results || []
   })
 })
 
@@ -317,6 +351,14 @@ orders.post('/save-category', async (c) => {
     WHERE hospital_id=? AND vendor_id=? AND order_date=?
       AND (patient_category_id = ? OR (patient_category_id IS NULL AND ? IS NULL))
   `).bind(hospitalId, vendorId, orderDate, patientCategoryId || null, patientCategoryId || null).first<any>()
+
+  if (totalAmount === 0 && !note) {
+    // 모든 금액이 0이면 기존 레코드 삭제 (빈 입력으로 초기화)
+    if (existing) {
+      await c.env.DB.prepare(`DELETE FROM daily_orders WHERE id=?`).bind(existing.id).run()
+    }
+    return c.json({ success: true, totalAmount: 0, deleted: true })
+  }
 
   if (existing) {
     await c.env.DB.prepare(`

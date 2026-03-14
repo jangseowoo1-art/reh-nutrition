@@ -518,6 +518,106 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const prevMealPriceNoSupply= prevTotalMeals > 0
         ? Math.round((prevTotalUsed-prevSupplyUsed)/prevTotalMeals) : 0
 
+      // ── 카테고리별 식단가 계산 ──────────────────────────────────
+      // 카테고리 목록
+      const patientCatsList = await c.env.DB.prepare(`
+        SELECT * FROM hospital_patient_categories
+        WHERE hospital_id = ? AND is_active = 1
+        ORDER BY sort_order, id
+      `).bind(h.id).all<any>()
+
+      // 카테고리별 월 발주금액
+      const catMonthlyOrders = await c.env.DB.prepare(`
+        SELECT
+          patient_category_id,
+          COALESCE(SUM(total_amount), 0) as total
+        FROM daily_orders
+        WHERE hospital_id = ?
+          AND patient_category_id IS NOT NULL
+          AND strftime('%Y', order_date) = ?
+          AND strftime('%m', order_date) = printf('%02d', ?)
+        GROUP BY patient_category_id
+      `).bind(h.id, hYear, hMonth).all<any>()
+
+      // 카테고리별 오늘 발주금액
+      const catTodayOrders = await c.env.DB.prepare(`
+        SELECT
+          patient_category_id,
+          COALESCE(SUM(total_amount), 0) as total
+        FROM daily_orders
+        WHERE hospital_id = ?
+          AND patient_category_id IS NOT NULL
+          AND order_date = ?
+        GROUP BY patient_category_id
+      `).bind(h.id, today).all<any>()
+
+      // 카테고리별 목표 설정 (target_meal_price 포함)
+      const catSettingsForDash = await c.env.DB.prepare(`
+        SELECT cos.*, hpc.category_key, hpc.category_name
+        FROM category_order_settings cos
+        JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+        WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+      `).bind(h.id, hYear, hMonth).all<any>()
+
+      // 전월 카테고리별 목표 설정
+      const prevCatSettingsForDash = await c.env.DB.prepare(`
+        SELECT cos.*, hpc.category_key, hpc.category_name
+        FROM category_order_settings cos
+        JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+        WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+      `).bind(h.id, prevYearStr, prevMonthNum).all<any>()
+
+      // 카테고리별 오늘 식수 (daily_meals 항암/요양 컬럼 - 아직 미생성이면 0)
+      // 현재는 예산 비중으로 배분 (오늘 환자 식수 기준)
+      const todayPatientMeals = (todayMeals?.bp||0) + (todayMeals?.lp||0) + (todayMeals?.dp||0)
+      const totalCatBudget2 = (catSettingsForDash.results||[]).reduce((s:number, c2:any) => s+(c2.monthly_budget||0), 0)
+
+      // 카테고리별 발주금액 맵
+      const catMonthMap: Record<number, number> = {}
+      ;(catMonthlyOrders.results||[]).forEach((r:any) => { catMonthMap[r.patient_category_id] = r.total })
+      const catTodayMap: Record<number, number> = {}
+      ;(catTodayOrders.results||[]).forEach((r:any) => { catTodayMap[r.patient_category_id] = r.total })
+      const catSetMap2: Record<number, any> = {}
+      ;(catSettingsForDash.results||[]).forEach((s2:any) => { catSetMap2[s2.patient_category_id] = s2 })
+      const prevCatSetMap2: Record<number, any> = {}
+      ;(prevCatSettingsForDash.results||[]).forEach((s2:any) => { prevCatSetMap2[s2.patient_category_id] = s2 })
+
+      // 카테고리별 식단가 계산
+      const catDietPrices = (patientCatsList.results||[]).map((cat:any) => {
+        const monthAmt = catMonthMap[cat.id] || 0
+        const todayAmt = catTodayMap[cat.id] || 0
+        const settings2 = catSetMap2[cat.id] || {}
+        const targetPrice = settings2.target_meal_price || 0
+        const monthBudget = settings2.monthly_budget || 0
+        const workDays = settings2.working_days || workingDays
+
+        // 카테고리 식수 배분 비중 (예산 기준)
+        const catRatio = totalCatBudget2 > 0 ? (monthBudget / totalCatBudget2) : (1 / Math.max((patientCatsList.results||[]).length, 1))
+        const todayCatMeals = todayPatientMeals > 0 ? Math.round(todayPatientMeals * catRatio) : 0
+        const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
+
+        // 전월 데이터
+        const prevSet = prevCatSetMap2[cat.id] || {}
+        const prevTargetPrice = prevSet.target_meal_price || 0
+        const prevMonthBudget = prevSet.monthly_budget || 0
+
+        return {
+          id: cat.id,
+          category_key: cat.category_key,
+          category_name: cat.category_name,
+          monthAmt,
+          todayAmt,
+          monthBudget,
+          targetPrice,
+          workDays,
+          todayCatMeals,
+          todayDietPrice,
+          catRatio,
+          prevTargetPrice,
+          prevMonthBudget
+        }
+      })
+
       // 이슈 목록 생성
       const issues: any[] = []
       // 1. 예산 초과 업체
@@ -583,6 +683,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         closingStatus: h.closing_status || 'open',
         activeYear: parseInt(hYear),
         activeMonth: parseInt(hMonth),
+        catDietPrices,
+        todayPatientMeals,
         prevMonth: {
           month: prevMonthNum, year: parseInt(prevYearStr),
           mealPriceTotal: prevMealPriceTotal,
@@ -1125,14 +1227,15 @@ adminRouter.post('/hospitals/:id/category-settings/:year/:month', async (c) => {
   for (const s of settings) {
     await c.env.DB.prepare(`
       INSERT INTO category_order_settings
-        (hospital_id, patient_category_id, year, month, monthly_budget, target_meal_price, working_days, updated_at)
-      VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        (hospital_id, patient_category_id, year, month, monthly_budget, target_meal_price, working_days, daily_meal_count, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(hospital_id, patient_category_id, year, month) DO UPDATE SET
         monthly_budget = excluded.monthly_budget,
         target_meal_price = excluded.target_meal_price,
         working_days = excluded.working_days,
+        daily_meal_count = excluded.daily_meal_count,
         updated_at = CURRENT_TIMESTAMP
-    `).bind(id, s.patient_category_id, year, month, s.monthly_budget || 0, s.target_meal_price || 0, s.working_days || 0).run()
+    `).bind(id, s.patient_category_id, year, month, s.monthly_budget || 0, s.target_meal_price || 0, s.working_days || 0, s.daily_meal_count || 0).run()
   }
 
   return c.json({ success: true })
