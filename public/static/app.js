@@ -5964,6 +5964,9 @@ async function openHospitalDetail(hospitalId) {
         <button class="tab-btn active flex-shrink-0" id="tab-info" onclick="switchHospTab('info')">
           <i class="fas fa-info-circle mr-1"></i>기본정보
         </button>
+        <button class="tab-btn flex-shrink-0" id="tab-categories" onclick="switchHospTab('categories')">
+          <i class="fas fa-layer-group mr-1"></i>환자군설정
+        </button>
         <button class="tab-btn flex-shrink-0" id="tab-budget" onclick="switchHospTab('budget')">
           <i class="fas fa-won-sign mr-1"></i>예산설정
         </button>
@@ -5972,9 +5975,6 @@ async function openHospitalDetail(hospitalId) {
         </button>
         <button class="tab-btn flex-shrink-0" id="tab-accounts" onclick="switchHospTab('accounts')">
           <i class="fas fa-user-circle mr-1"></i>계정관리
-        </button>
-        <button class="tab-btn flex-shrink-0" id="tab-categories" onclick="switchHospTab('categories')">
-          <i class="fas fa-layer-group mr-1"></i>환자군
         </button>
       </div>
 
@@ -6115,7 +6115,9 @@ async function openHospitalDetail(hospitalId) {
             <input id="hb-card" type="number" class="form-input" value="${s.card_budget||0}">
           </div>
           <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">목표 식단가 (원/식)</label>
+            <label class="block text-xs font-semibold text-gray-500 mb-1">목표 식단가 (원/식)
+              <span class="text-green-500 font-normal ml-1"><i class="fas fa-magic mr-0.5"></i>환자군설정 가중평균 자동반영</span>
+            </label>
             <input id="hb-mealprice" type="number" class="form-input" value="${s.meal_price||0}">
           </div>
           <div>
@@ -6738,7 +6740,7 @@ function getDefaultWorkingDays(year, month) {
 }
 
 function switchHospTab(tab) {
-  ['info','budget','vendors','accounts','categories'].forEach(t => {
+  ['info','categories','budget','vendors','accounts'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
   })
@@ -6981,7 +6983,7 @@ function renderCategoryBudgetList(cats, settings) {
       <span class="text-xs font-semibold text-purple-700"><i class="fas fa-balance-scale mr-1"></i>가중평균 목표 식단가 (자동계산)</span>
       <span id="weightedAvgTargetValue" class="text-sm font-bold text-purple-800">-</span>
     </div>
-    <div class="text-xs text-gray-400 mt-1">월 목표금액 비중 기준으로 카테고리별 목표 식단가를 가중평균합니다</div>`
+    <div class="text-xs text-gray-400 mt-1">월 목표금액 비중 기준 가중평균 → <span class="text-green-600 font-semibold">예산설정 탭 "목표 식단가"에 자동 반영</span></div>`
     el.parentNode.insertBefore(panel, el.nextSibling)
   }
   // 초기 계산
@@ -7003,9 +7005,23 @@ function updateWeightedAvgTarget() {
       return s + p * (b / totalBudget)
     }, 0)
   }
+  const roundedWeighted = Math.round(weighted)
   const el = document.getElementById('weightedAvgTargetValue')
   if (el) {
-    el.textContent = weighted > 0 ? `${Math.round(weighted).toLocaleString()}원/식` : '-'
+    el.textContent = roundedWeighted > 0 ? `${roundedWeighted.toLocaleString()}원/식` : '-'
+  }
+  // 예산설정 탭의 목표 식단가(hb-mealprice) 자동 적용
+  const mealPriceEl = document.getElementById('hb-mealprice')
+  if (mealPriceEl && roundedWeighted > 0) {
+    mealPriceEl.value = roundedWeighted
+    // 시각적 피드백: 자동입력 표시
+    mealPriceEl.style.background = '#f0fdf4'
+    mealPriceEl.style.borderColor = '#22c55e'
+    clearTimeout(mealPriceEl._resetTimer)
+    mealPriceEl._resetTimer = setTimeout(() => {
+      mealPriceEl.style.background = ''
+      mealPriceEl.style.borderColor = ''
+    }, 2000)
   }
 }
 
