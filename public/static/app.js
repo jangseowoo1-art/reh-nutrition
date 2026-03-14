@@ -1128,39 +1128,49 @@ async function renderOrders() {
   const weekEnd = new Date(weekStart)
   weekEnd.setDate(weekStart.getDate() + 6)
 
-  // 금액 계산
-  const monthTotal = (orderData||[]).reduce((s,o) => s+(o.total_amount||0), 0)
-
-  let todayTotal = 0, weekTotal = 0
-  ;(orderData||[]).forEach(o => {
-    if (o.order_date === todayStr) todayTotal += o.total_amount||0
-    const od = new Date(o.order_date)
-    if (od >= weekStart && od <= weekEnd) weekTotal += o.total_amount||0
-  })
-
   // ── 카테고리별 금액 계산 (A안+B안용) ──
   const catSettings2 = catOrderData?.settings || []
-  const catDailyData = catOrderData?.dailyByVendorCat || {}
-  // 카테고리별 월 합계
+  const catDailyData = catOrderData?.dailyByVendorCat || []  // flat 배열
+  const hasCatsData = (patientCats||[]).length > 0
+
+  // 카테고리별 월 합계 (monthly 집계에서)
   const catMonthTotals = {}  // { catId: amount }
   const catTodayTotals = {}
   const catWeekTotals  = {}
   ;(catOrderData?.monthly || []).forEach(r => {
     catMonthTotals[r.patient_category_id] = (catMonthTotals[r.patient_category_id]||0) + (r.total||0)
   })
-  // dailyByVendorCat 순회로 오늘/주간 카테고리 합계
-  Object.entries(catDailyData).forEach(([dateStr2, vMap]) => {
+  // dailyByVendorCat(flat 배열) 순회로 오늘/주간 카테고리 합계
+  ;(catDailyData).forEach(r => {
+    const dateStr2 = r.order_date
     const od2 = new Date(dateStr2)
     const isToday2 = dateStr2 === todayStr
     const isThisWeek2 = od2 >= weekStart && od2 <= weekEnd
-    Object.values(vMap).forEach(catMap => {
-      Object.entries(catMap).forEach(([catId, r]) => {
-        const amt = r.total || 0
-        if (isToday2)    catTodayTotals[catId] = (catTodayTotals[catId]||0) + amt
-        if (isThisWeek2) catWeekTotals[catId]  = (catWeekTotals[catId]||0)  + amt
-      })
-    })
+    const catId = r.patient_category_id
+    const amt = r.total || 0
+    if (isToday2)    catTodayTotals[catId] = (catTodayTotals[catId]||0) + amt
+    if (isThisWeek2) catWeekTotals[catId]  = (catWeekTotals[catId]||0)  + amt
   })
+
+  // 금액 계산 (카테고리 모드일 때는 catDailyData 합산, 아닐 때는 orderData 사용)
+  const catMonthTotal = catDailyData.reduce((s, r) => s + (r.total || 0), 0)
+  const normalMonthTotal = (orderData||[]).reduce((s,o) => s+(o.total_amount||0), 0)
+  const monthTotal = hasCatsData ? catMonthTotal : normalMonthTotal
+
+  let catTodayTotal = 0, catWeekTotal = 0
+  catDailyData.forEach(r => {
+    if (r.order_date === todayStr) catTodayTotal += r.total || 0
+    const od = new Date(r.order_date)
+    if (od >= weekStart && od <= weekEnd) catWeekTotal += r.total || 0
+  })
+  let normalTodayTotal = 0, normalWeekTotal = 0
+  ;(orderData||[]).forEach(o => {
+    if (o.order_date === todayStr) normalTodayTotal += o.total_amount||0
+    const od = new Date(o.order_date)
+    if (od >= weekStart && od <= weekEnd) normalWeekTotal += o.total_amount||0
+  })
+  const todayTotal = hasCatsData ? catTodayTotal : normalTodayTotal
+  const weekTotal  = hasCatsData ? catWeekTotal  : normalWeekTotal
 
   // 주간 예산 = 일일예산 × 5일(영업일)
   const weekBudget = dailyBudget * 5
@@ -1177,7 +1187,13 @@ async function renderOrders() {
     if (seenWeeks.has(wk)) continue
     seenWeeks.add(wk)
     const wkEnd = sun.toISOString().split('T')[0]
-    const wTotal = (orderData||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
+    // 카테고리 모드이면 catDailyData에서 주합계 계산, 아니면 orderData 사용
+    let wTotal = 0
+    if (hasCatsData) {
+      wTotal = catDailyData.filter(r => r.order_date >= wk && r.order_date <= wkEnd).reduce((s,r) => s+(r.total||0), 0)
+    } else {
+      wTotal = (orderData||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
+    }
     const wPct = weekBudget>0?Math.round(wTotal/weekBudget*100):0
     // 이번 주 여부
     const isCurWeek = todayStr>=wk && todayStr<=wkEnd
@@ -1678,7 +1694,21 @@ async function renderOrders() {
       if (!renderedWeeks.has(weekKey)) {
         renderedWeeks.add(weekKey)
         weekNumber++
-        const wTotal = orderData.filter(o=>o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+        // 카테고리 모드이면 catDailyMap에서, 아니면 orderData에서 주간 합계 계산
+        const hasCatsForWeek = patientCats.length > 0
+        let wTotal = 0
+        if (hasCatsForWeek) {
+          // catDailyMap: date → vendor_id → cat_id → row
+          Object.entries(catDailyMap).forEach(([dateKey, vMap]) => {
+            if (dateKey >= weekKey && dateKey <= weekEndKey) {
+              Object.values(vMap).forEach(catMap => {
+                Object.values(catMap).forEach(r => { wTotal += r.total || 0 })
+              })
+            }
+          })
+        } else {
+          wTotal = orderData.filter(o=>o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+        }
         const wPct = weekBudget>0 ? Math.round(wTotal/weekBudget*100) : null
         const wOver = wPct!==null&&wPct>=100; const wWarn = wPct!==null&&wPct>=80&&!wOver
         const isCurrentWeek = todayStr>=weekKey && todayStr<=weekEndKey
@@ -1689,7 +1719,17 @@ async function renderOrders() {
         const wBS = isCurrentWeek ? 'double' : 'solid'
         const wLabel = `${weekKey.slice(5).replace('-','/')}~${weekEndKey.slice(5).replace('-','/')}`
         const vWeekCells = vendors.map((v, vi) => {
-          const vWAmt = orderData.filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+          // 카테고리 모드이면 catDailyMap에서 업체별 주간 합계, 아니면 orderData 사용
+          let vWAmt = 0
+          if (hasCatsForWeek) {
+            Object.entries(catDailyMap).forEach(([dateKey, vMap]) => {
+              if (dateKey >= weekKey && dateKey <= weekEndKey && vMap[v.id]) {
+                Object.values(vMap[v.id]).forEach(r => { vWAmt += r.total || 0 })
+              }
+            })
+          } else {
+            vWAmt = orderData.filter(o=>o.vendor_id===v.id&&o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
+          }
           const vWB = (vendorDailyBudgets[v.id]||0)*5
           const vWPct = vWB>0?Math.round(vWAmt/vWB*100):null
           const vWO = vWPct!==null&&vWPct>=100; const vWW = vWPct!==null&&vWPct>=80&&!vWO
@@ -1730,7 +1770,16 @@ async function renderOrders() {
 
       const isCovered = !!coveredDates[dateStr]
       let dayTotal = 0
-      orderData.filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
+      const hasCatsForDay = patientCats.length > 0
+      if (hasCatsForDay) {
+        // 카테고리 모드: catDailyMap에서 해당 날짜 합산
+        const vMapDay = catDailyMap[dateStr] || {}
+        Object.values(vMapDay).forEach(catMap => {
+          Object.values(catMap).forEach(r => { dayTotal += r.total || 0 })
+        })
+      } else {
+        orderData.filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
+      }
       const multiDayCount = multiDayMap[dateStr] || 1
       const adjBudget = isCovered ? 0 : dailyBudget * multiDayCount
       const dayPct = adjBudget>0 ? Math.round(dayTotal/adjBudget*100) : null
