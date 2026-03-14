@@ -418,7 +418,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         .filter((f: any) => f.unit_type !== 'ea')
         .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
-      // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자)
+      // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자) + custom_data
       const todayMeals = await c.env.DB.prepare(`
         SELECT
           COALESCE(SUM(breakfast_patient),0) as bp,
@@ -432,10 +432,27 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           COALESCE(SUM(dinner_noncovered),0) as dn,
           COALESCE(SUM(breakfast_guardian),0) as bg,
           COALESCE(SUM(lunch_guardian),0) as lg,
-          COALESCE(SUM(dinner_guardian),0) as dg
+          COALESCE(SUM(dinner_guardian),0) as dg,
+          custom_data
         FROM daily_meals
         WHERE hospital_id=? AND meal_date=?
       `).bind(h.id, today).first<any>()
+
+      // 오늘 환자군별 실제 식수 (custom_data에서 집계)
+      const todayCatMealMap: Record<string, number> = {}
+      let todayCustomTotal = 0
+      if (todayMeals?.custom_data) {
+        try {
+          const cd = JSON.parse(todayMeals.custom_data || '{}')
+          ;(patientCatsList.results||[]).forEach((cat:any) => {
+            const fk = `cat_${cat.category_key}`
+            const fv = cd[fk] || {}
+            const cnt = (fv.bf||0) + (fv.l||0) + (fv.d||0)
+            todayCatMealMap[cat.id] = cnt
+            todayCustomTotal += cnt
+          })
+        } catch(e) {}
+      }
 
       // 오늘/이번주 발주
       const todayUsed = await c.env.DB.prepare(
@@ -567,9 +584,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
       `).bind(h.id, prevYearStr, prevMonthNum).all<any>()
 
-      // 카테고리별 오늘 식수 (daily_meals 항암/요양 컬럼 - 아직 미생성이면 0)
-      // 현재는 예산 비중으로 배분 (오늘 환자 식수 기준)
-      const todayPatientMeals = (todayMeals?.bp||0) + (todayMeals?.lp||0) + (todayMeals?.dp||0)
+      // 카테고리별 오늘 식수: custom_data에서 직접 집계 (이전의 환자 비중 추정 제거)
       const totalCatBudget2 = (catSettingsForDash.results||[]).reduce((s:number, c2:any) => s+(c2.monthly_budget||0), 0)
 
       // 카테고리별 발주금액 맵
@@ -591,9 +606,10 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         const monthBudget = settings2.monthly_budget || 0
         const workDays = settings2.working_days || workingDays
 
-        // 카테고리 식수 배분 비중 (예산 기준)
+        // 카테고리 식수 배분 비중 (예산 기준) - 월간 식단가 계산용
         const catRatio = totalCatBudget2 > 0 ? (monthBudget / totalCatBudget2) : (1 / Math.max((patientCatsList.results||[]).length, 1))
-        const todayCatMeals = todayPatientMeals > 0 ? Math.round(todayPatientMeals * catRatio) : 0
+        // 오늘 카테고리별 식수: custom_data에서 직접 읽은 실제 값
+        const todayCatMeals = todayCatMealMap[cat.id] || 0
         const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
 
         // 전월 데이터
@@ -678,13 +694,16 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         dailyOrders: dailyOrders.results || [],
         foodWaste: { totalWaste: foodWaste?.total_waste||0, totalCost: foodWaste?.total_cost||0 },
         todayMeals: todayMeals || { bp:0, lp:0, dp:0, bs:0, ls:0, ds:0, bn:0, ln:0, dn:0, bg:0, lg:0, dg:0 },
+        todayTotalMeals: (todayMeals?.bs||0)+(todayMeals?.ls||0)+(todayMeals?.ds||0)
+                       + (todayMeals?.bg||0)+(todayMeals?.lg||0)+(todayMeals?.dg||0)
+                       + todayCustomTotal,  // 직원+보호자+환자군 합계 (비급여 제외)
+        todayCatMeals: todayCatMealMap,  // 카테고리별 실제 오늘 식수
         issues,
         online: onlineMap[h.id] || null,
         closingStatus: h.closing_status || 'open',
         activeYear: parseInt(hYear),
         activeMonth: parseInt(hMonth),
         catDietPrices,
-        todayPatientMeals,
         prevMonth: {
           month: prevMonthNum, year: parseInt(prevYearStr),
           mealPriceTotal: prevMealPriceTotal,

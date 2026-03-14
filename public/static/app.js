@@ -4971,14 +4971,20 @@ async function renderAdminDashboard() {
         const dangerIssues = h.issues.filter(i=>i.level==='danger')
         const warnIssues = h.issues.filter(i=>i.level==='warning')
         const totalIssues = dangerIssues.length + warnIssues.length
-        // 오늘 식수 계산
+        // 오늘(현재까지의) 식수 계산 - custom_data 기반 환자군 포함
         const tm = h.todayMeals || {}
-        const todayBreakfast = (tm.bp||0)+(tm.bs||0)+(tm.bn||0)+(tm.bg||0)
-        const todayLunch     = (tm.lp||0)+(tm.ls||0)+(tm.ln||0)+(tm.lg||0)
-        const todayDinner    = (tm.dp||0)+(tm.ds||0)+(tm.dn||0)+(tm.dg||0)
-        const todayTotalMeals = todayBreakfast + todayLunch + todayDinner
-        // 오늘 치료식(일반 환자식) = breakfast_patient + lunch_patient + dinner_patient
-        const todayTherapy = (tm.bp||0)+(tm.lp||0)+(tm.dp||0)
+        // 조식/중식/석식: 직원+보호자+환자군(custom) 합산 (비급여 제외)
+        const todayCatMeals = h.todayCatMeals || {}
+        const todayCatCustomBf = (h.catDietPrices||[]).reduce((s,cat) => s + (todayCatMeals[cat.id]||0), 0)
+        // 식사별 소계: 직원+보호자만 표준컬럼, 환자군은 custom_data bf/l/d 없이 총합만 표시
+        const todayStaffMeals  = (tm.bs||0)+(tm.ls||0)+(tm.ds||0)
+        const todayGuardMeals  = (tm.bg||0)+(tm.lg||0)+(tm.dg||0)
+        // 조/중/석식은 직원+보호자로만 분리, 환자군은 별도 표시
+        const todayBreakfast = (tm.bs||0)+(tm.bg||0)
+        const todayLunch     = (tm.ls||0)+(tm.lg||0)
+        const todayDinner    = (tm.ds||0)+(tm.dg||0)
+        // 전체 합계: 직원+보호자+환자군 (h.todayTotalMeals 사용)
+        const todayTotalMeals = h.todayTotalMeals || (todayStaffMeals + todayGuardMeals + todayCatCustomBf)
         return `
         <div class="bg-white rounded-2xl shadow-sm border-2 ${borderColor} p-4 relative">
           <!-- 이슈 경고 배너 (이슈 있을 때만) -->
@@ -5088,39 +5094,43 @@ async function renderAdminDashboard() {
                 </div>
               </div>`
             })() : ''}
-            <!-- 카테고리별 목표 식단가 -->
+            <!-- 환자군별 목표 vs 실시간 식단가 -->
             ${(h.catDietPrices||[]).length > 0 ? `
             <div class="mt-2 pt-2 border-t border-blue-100">
-              <div class="text-xs text-purple-600 font-semibold mb-1.5"><i class="fas fa-layer-group mr-1"></i>환자군별 목표 식단가</div>
+              <div class="text-xs text-purple-600 font-semibold mb-1.5"><i class="fas fa-layer-group mr-1"></i>환자군별 식단가</div>
               <div class="grid grid-cols-${Math.min((h.catDietPrices||[]).length, 2)} gap-1">
                 ${(h.catDietPrices||[]).map(cat => {
                   const color = getCategoryColorHex(cat.category_key)
                   const targetP = cat.targetPrice || 0
-                  const todayDP = cat.todayDietPrice || 0
-                  const isOver = targetP > 0 && todayDP > targetP
-                  const isWarn = targetP > 0 && todayDP >= targetP * 0.9 && !isOver
-                  const priceColor = isOver ? '#dc2626' : isWarn ? '#d97706' : color
+                  // 월간 누적 식단가 (monthAmt / 월간 총 식수)
+                  const catMonthMeals = (h.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
+                  const monthDietPrice = catMonthMeals > 0 ? Math.round(cat.monthAmt / catMonthMeals) : 0
+                  const isOverM = targetP > 0 && monthDietPrice > targetP
+                  const isWarnM = targetP > 0 && monthDietPrice >= targetP * 0.9 && !isOverM
+                  const priceColorM = isOverM ? '#dc2626' : isWarnM ? '#d97706' : color
                   return `<div class="p-1.5 bg-white rounded-lg border" style="border-color:${color}30">
-                    <div class="flex items-center gap-1 mb-0.5">
+                    <div class="flex items-center gap-1 mb-1">
                       <span style="width:6px;height:6px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0"></span>
                       <span style="font-size:9px;font-weight:700;color:${color}">${cat.category_name}</span>
                     </div>
-                    <div style="font-size:10px;font-weight:700;color:${targetP>0?color:'#9ca3af'}">목표: ${targetP>0?fmt(targetP)+'원/식':'미설정'}</div>
-                    ${todayDP > 0 ? `<div style="font-size:10px;font-weight:700;color:${priceColor}">오늘: ${fmt(todayDP)}원/식</div>
-                    ${isOver?`<div style="font-size:8px;color:#dc2626">▲ +${fmt(todayDP-targetP)}원 초과</div>`:isWarn?`<div style="font-size:8px;color:#d97706">▲ 90% 초과</div>`:''}` : ''}
+                    <div style="font-size:9px;color:#9ca3af;margin-bottom:2px">목표</div>
+                    <div style="font-size:10px;font-weight:700;color:${targetP>0?color:'#d1d5db'}">${targetP>0?fmt(targetP)+'원/식':'미설정'}</div>
+                    <div style="font-size:9px;color:#9ca3af;margin-top:4px;margin-bottom:2px">현재(월간)</div>
+                    <div style="font-size:11px;font-weight:900;color:${monthDietPrice>0?priceColorM:'#d1d5db'}">${monthDietPrice>0?fmt(monthDietPrice)+'원/식':'미입력'}</div>
+                    ${isOverM?`<div style="font-size:8px;color:#dc2626">▲ +${fmt(monthDietPrice-targetP)}원 초과</div>`:isWarnM?`<div style="font-size:8px;color:#d97706">▲ 주의</div>`:''}
                   </div>`
                 }).join('')}
               </div>
             </div>` : ''}
           </div>
 
-          <!-- ③ 오늘 식수 현황 -->
+          <!-- ③ 현재까지의 총 식수 현황 -->
           <div class="mb-3 p-2.5 bg-gradient-to-r from-teal-50 to-cyan-50 rounded-xl border border-teal-100">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-semibold text-teal-700"><i class="fas fa-people-group mr-1"></i>오늘 식수</span>
+              <span class="text-xs font-semibold text-teal-700"><i class="fas fa-people-group mr-1"></i>현재까지의 총 식수</span>
               <span class="text-xs font-bold text-teal-800">${todayTotalMeals>0?`전체 ${fmt(todayTotalMeals)}식`:'입력 없음'}</span>
             </div>
-            <div class="grid grid-cols-4 gap-1 text-center">
+            <div class="grid grid-cols-3 gap-1 text-center mb-2">
               <div class="p-1.5 bg-white rounded-lg border border-teal-100">
                 <div class="text-xs text-teal-600 font-medium">조식</div>
                 <div class="text-sm font-bold text-gray-700">${todayBreakfast}</div>
@@ -5136,12 +5146,30 @@ async function renderAdminDashboard() {
                 <div class="text-sm font-bold text-gray-700">${todayDinner}</div>
                 <div class="text-xs text-gray-400">식</div>
               </div>
-              <div class="p-1.5 bg-white rounded-lg border border-indigo-100">
-                <div class="text-xs text-indigo-600 font-medium">치료식</div>
-                <div class="text-sm font-bold text-indigo-700">${todayTherapy}</div>
-                <div class="text-xs text-gray-400">명</div>
-              </div>
             </div>
+            <!-- 환자군별 오늘 실제 식수 -->
+            ${(h.catDietPrices||[]).length > 0 ? `
+            <div class="grid grid-cols-${Math.min((h.catDietPrices||[]).length+2, 4)} gap-1 text-center mb-1.5">
+              <div class="p-1.5 bg-white rounded-lg border border-blue-100">
+                <div class="text-xs text-blue-600 font-medium">직원식</div>
+                <div class="text-sm font-bold text-blue-700">${todayStaffMeals}</div>
+                <div class="text-xs text-gray-400">식</div>
+              </div>
+              <div class="p-1.5 bg-white rounded-lg border border-purple-100">
+                <div class="text-xs text-purple-600 font-medium">보호자</div>
+                <div class="text-sm font-bold text-purple-700">${todayGuardMeals}</div>
+                <div class="text-xs text-gray-400">식</div>
+              </div>
+              ${(h.catDietPrices||[]).map(cat => {
+                const color = getCategoryColorHex(cat.category_key)
+                const meals = (h.todayCatMeals||{})[cat.id] || 0
+                return `<div class="p-1.5 bg-white rounded-lg border" style="border-color:${color}30">
+                  <div class="text-xs font-medium" style="color:${color}">${cat.category_name}</div>
+                  <div class="text-sm font-bold" style="color:${color}">${meals||'-'}</div>
+                  <div class="text-xs text-gray-400">식</div>
+                </div>`
+              }).join('')}
+            </div>` : ''}
             <!-- 월간 누적 식수 -->
             ${h.totalMeals > 0 ? `
             <div class="mt-1.5 flex flex-col text-xs text-teal-600 bg-teal-50 rounded-lg px-2 py-1 gap-0.5">
@@ -5150,7 +5178,7 @@ async function renderAdminDashboard() {
                 <span class="font-semibold">${fmt(h.totalMeals)}식</span>
               </div>
               <div class="text-gray-400" style="font-size:10px">
-                환자 ${fmt(h.mealStats?.total_patient||0)} / 직원 ${fmt(h.mealStats?.total_staff||0)} / 비급여 ${fmt(h.mealStats?.total_noncovered||0)} / 보호자 ${fmt(h.mealStats?.total_guardian||0)}
+                직원 ${fmt(h.mealStats?.total_staff||0)} / 비급여 ${fmt(h.mealStats?.total_noncovered||0)} / 보호자 ${fmt(h.mealStats?.total_guardian||0)}
                 ${(h.mealCustomFields||[]).map(f=>`/ ${f.field_name} ${fmt((h.mealCustomTotals||{})[f.field_key]||0)}`).join('')}
               </div>
             </div>` : ''}
