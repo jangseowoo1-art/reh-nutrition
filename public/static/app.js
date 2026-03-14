@@ -3012,14 +3012,27 @@ async function renderMeals() {
   const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // API 응답: { meals: [...], customFields: [...], patientCategories: [...] }
-  const resp = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
+  // 식수 데이터 + 카테고리 발주 합계 병렬 로드
+  const [resp, catOrderData] = await Promise.all([
+    api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
+  ])
   if (!resp) return
 
   // 구버전(배열) 호환
   const mealData = Array.isArray(resp) ? resp : (resp.meals || [])
   window._mealCustomFields = Array.isArray(resp) ? [] : (resp.customFields || [])
   window._mealPatientCats = Array.isArray(resp) ? [] : (resp.patientCategories || [])
+
+  // 카테고리별 월 발주 합계: { catId: amount }
+  const catMonthTotals = {}
+  ;(catOrderData?.monthly || []).forEach(r => {
+    catMonthTotals[r.patient_category_id] = (catMonthTotals[r.patient_category_id]||0) + (r.total||0)
+  })
+  window._catMonthTotals = catMonthTotals
+
+  // 카테고리 설정(예산/목표식단가) 저장 - 발주 페이지에서 이미 로드됐으면 덮어쓰지 않음
+  window._catOrderSettings = catOrderData?.settings || window._catOrderSettings || []
 
   renderMealsContent(content, mealData, window._mealCustomFields, window._mealPatientCats)
 }
@@ -4971,20 +4984,27 @@ async function renderAdminDashboard() {
         const dangerIssues = h.issues.filter(i=>i.level==='danger')
         const warnIssues = h.issues.filter(i=>i.level==='warning')
         const totalIssues = dangerIssues.length + warnIssues.length
-        // 오늘(현재까지의) 식수 계산 - custom_data 기반 환자군 포함
+        // 월간 누적 식수 (mealStats + mealCustomTotals 기반)
+        const ms = h.mealStats || {}
+        const customTotals = h.mealCustomTotals || {}
+        const monthStaffMeals = ms.total_staff || 0
+        const monthGuardMeals = ms.total_guardian || 0
+        const monthNonCovMeals = ms.total_noncovered || 0
+        const monthCatCustomTotal = (h.catDietPrices||[]).reduce((s, cat) => {
+          return s + (customTotals[`cat_${cat.category_key}`] || 0)
+        }, 0)
+        const monthGrandTotal = h.totalMeals || (monthStaffMeals + monthGuardMeals + monthCatCustomTotal)
+
+        // 오늘 식수 (카테고리별 실시간) - 조/중/석 표시용
         const tm = h.todayMeals || {}
-        // 조식/중식/석식: 직원+보호자+환자군(custom) 합산 (비급여 제외)
         const todayCatMeals = h.todayCatMeals || {}
-        const todayCatCustomBf = (h.catDietPrices||[]).reduce((s,cat) => s + (todayCatMeals[cat.id]||0), 0)
-        // 식사별 소계: 직원+보호자만 표준컬럼, 환자군은 custom_data bf/l/d 없이 총합만 표시
         const todayStaffMeals  = (tm.bs||0)+(tm.ls||0)+(tm.ds||0)
         const todayGuardMeals  = (tm.bg||0)+(tm.lg||0)+(tm.dg||0)
-        // 조/중/석식은 직원+보호자로만 분리, 환자군은 별도 표시
-        const todayBreakfast = (tm.bs||0)+(tm.bg||0)
-        const todayLunch     = (tm.ls||0)+(tm.lg||0)
-        const todayDinner    = (tm.ds||0)+(tm.dg||0)
-        // 전체 합계: 직원+보호자+환자군 (h.todayTotalMeals 사용)
-        const todayTotalMeals = h.todayTotalMeals || (todayStaffMeals + todayGuardMeals + todayCatCustomBf)
+        const todayBreakfast   = (tm.bs||0)+(tm.bg||0)
+        const todayLunch       = (tm.ls||0)+(tm.lg||0)
+        const todayDinner      = (tm.ds||0)+(tm.dg||0)
+        const todayCatCustomBf = (h.catDietPrices||[]).reduce((s,cat) => s+(todayCatMeals[cat.id]||0), 0)
+        const todayTotalMeals  = h.todayTotalMeals || (todayStaffMeals + todayGuardMeals + todayCatCustomBf)
         return `
         <div class="bg-white rounded-2xl shadow-sm border-2 ${borderColor} p-4 relative">
           <!-- 이슈 경고 배너 (이슈 있을 때만) -->
@@ -5124,64 +5144,46 @@ async function renderAdminDashboard() {
             </div>` : ''}
           </div>
 
-          <!-- ③ 현재까지의 총 식수 현황 -->
+          <!-- ③ 월간 누적 식수 현황 -->
           <div class="mb-3 p-2.5 bg-gradient-to-r from-teal-50 to-cyan-50 rounded-xl border border-teal-100">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-semibold text-teal-700"><i class="fas fa-people-group mr-1"></i>현재까지의 총 식수</span>
-              <span class="text-xs font-bold text-teal-800">${todayTotalMeals>0?`전체 ${fmt(todayTotalMeals)}식`:'입력 없음'}</span>
+              <span class="text-xs font-semibold text-teal-700"><i class="fas fa-people-group mr-1"></i>이번달 누적 식수</span>
+              <span class="text-xs font-bold text-teal-800">${monthGrandTotal>0?`전체 ${fmt(monthGrandTotal)}식`:'입력 없음'}</span>
             </div>
-            <div class="grid grid-cols-3 gap-1 text-center mb-2">
-              <div class="p-1.5 bg-white rounded-lg border border-teal-100">
-                <div class="text-xs text-teal-600 font-medium">조식</div>
-                <div class="text-sm font-bold text-gray-700">${todayBreakfast}</div>
-                <div class="text-xs text-gray-400">식</div>
-              </div>
-              <div class="p-1.5 bg-white rounded-lg border border-teal-100">
-                <div class="text-xs text-teal-600 font-medium">중식</div>
-                <div class="text-sm font-bold text-gray-700">${todayLunch}</div>
-                <div class="text-xs text-gray-400">식</div>
-              </div>
-              <div class="p-1.5 bg-white rounded-lg border border-teal-100">
-                <div class="text-xs text-teal-600 font-medium">석식</div>
-                <div class="text-sm font-bold text-gray-700">${todayDinner}</div>
-                <div class="text-xs text-gray-400">식</div>
-              </div>
-            </div>
-            <!-- 환자군별 오늘 실제 식수 -->
-            ${(h.catDietPrices||[]).length > 0 ? `
+            <!-- 직원/보호자/환자군 월간 합계 -->
             <div class="grid grid-cols-${Math.min((h.catDietPrices||[]).length+2, 4)} gap-1 text-center mb-1.5">
               <div class="p-1.5 bg-white rounded-lg border border-blue-100">
-                <div class="text-xs text-blue-600 font-medium">직원식</div>
-                <div class="text-sm font-bold text-blue-700">${todayStaffMeals}</div>
+                <div class="text-xs text-blue-600 font-medium">직원</div>
+                <div class="text-sm font-bold text-blue-700">${monthStaffMeals>0?fmt(monthStaffMeals):'-'}</div>
                 <div class="text-xs text-gray-400">식</div>
               </div>
               <div class="p-1.5 bg-white rounded-lg border border-purple-100">
                 <div class="text-xs text-purple-600 font-medium">보호자</div>
-                <div class="text-sm font-bold text-purple-700">${todayGuardMeals}</div>
+                <div class="text-sm font-bold text-purple-700">${monthGuardMeals>0?fmt(monthGuardMeals):'-'}</div>
                 <div class="text-xs text-gray-400">식</div>
               </div>
               ${(h.catDietPrices||[]).map(cat => {
                 const color = getCategoryColorHex(cat.category_key)
-                const meals = (h.todayCatMeals||{})[cat.id] || 0
+                const meals = customTotals[`cat_${cat.category_key}`] || 0
                 return `<div class="p-1.5 bg-white rounded-lg border" style="border-color:${color}30">
                   <div class="text-xs font-medium" style="color:${color}">${cat.category_name}</div>
-                  <div class="text-sm font-bold" style="color:${color}">${meals||'-'}</div>
+                  <div class="text-sm font-bold" style="color:${color}">${meals>0?fmt(meals):'-'}</div>
                   <div class="text-xs text-gray-400">식</div>
                 </div>`
               }).join('')}
-            </div>` : ''}
-            <!-- 월간 누적 식수 -->
-            ${h.totalMeals > 0 ? `
-            <div class="mt-1.5 flex flex-col text-xs text-teal-600 bg-teal-50 rounded-lg px-2 py-1 gap-0.5">
-              <div class="flex justify-between">
-                <span>월간 누적</span>
-                <span class="font-semibold">${fmt(h.totalMeals)}식</span>
-              </div>
-              <div class="text-gray-400" style="font-size:10px">
-                직원 ${fmt(h.mealStats?.total_staff||0)} / 비급여 ${fmt(h.mealStats?.total_noncovered||0)} / 보호자 ${fmt(h.mealStats?.total_guardian||0)}
-                ${(h.mealCustomFields||[]).map(f=>`/ ${f.field_name} ${fmt((h.mealCustomTotals||{})[f.field_key]||0)}`).join('')}
-              </div>
-            </div>` : ''}
+            </div>
+            <!-- 오늘 입력된 식수 (소형) -->
+            ${todayTotalMeals>0 ? `
+            <div class="mt-1.5 flex items-center justify-between text-xs bg-white border border-teal-100 rounded-lg px-2 py-1">
+              <span class="text-teal-600 font-medium"><i class="fas fa-clock mr-1"></i>오늘 입력</span>
+              <span class="font-semibold text-teal-700">${fmt(todayTotalMeals)}식
+                <span class="text-gray-400 font-normal ml-1">(조${todayBreakfast}/중${todayLunch}/석${todayDinner}
+                ${(h.catDietPrices||[]).map(cat=>`· ${cat.category_name} ${(todayCatMeals[cat.id]||0)}식`).join('')})</span>
+              </span>
+            </div>` : `
+            <div class="mt-1.5 text-center text-xs text-gray-400 py-0.5">오늘 식수 미입력</div>`}
+            ${monthNonCovMeals > 0 ? `
+            <div class="mt-1 text-xs text-gray-400 text-right">비급여 ${fmt(monthNonCovMeals)}식 (합계 제외)</div>` : ''}
           </div>
 
           <!-- ④ 발주 현황 & 잔반 -->
