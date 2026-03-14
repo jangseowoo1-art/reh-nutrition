@@ -2747,13 +2747,14 @@ function updateBudgetProgressPanel() {
         return s + vTotal
       }, 0)
 
-    // 식단가 계산용 식수: 비급여 제외, ea 단위 커스텀 필드 제외
+    // 식단가 계산용 식수: 비급여 제외, ea 단위 커스텀 필드 제외, 환자(patient) 제외(환자군으로 대체)
     const customFields4price = (ms.mealCustomFields || []).filter(f => (f.unit_type||'meal') !== 'ea')
     const customMealSum = customFields4price.reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
-    const totalMeals = (ms.totalMeals || 0) + customMealSum  // 전체 식수 (비급여 제외 + 커스텀 ea제외) - 표시용
-    const totalMealsForPrice = (ms.totalPatient||0) + (ms.totalStaff||0) + (ms.totalGuardian||0) + customMealSum
-    // ② 직원식 제외 분모: 환자 + 보호자
-    const mealsNoStaff = (ms.totalPatient||0) + (ms.totalGuardian||0)
+    // 전체 식수: 직원+보호자+환자군(커스텀) — 비급여 제외, 환자(patient) 제외
+    const totalMeals = (ms.totalStaff||0) + (ms.totalGuardian||0) + customMealSum  // 표시용
+    const totalMealsForPrice = (ms.totalStaff||0) + (ms.totalGuardian||0) + customMealSum
+    // ② 직원식 제외 분모: 보호자 + 환자군
+    const mealsNoStaff = (ms.totalGuardian||0) + customMealSum
 
     // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
     const mp1 = totalMealsForPrice > 0 ? Math.round(monthTotal / totalMealsForPrice) : 0
@@ -3011,18 +3012,20 @@ async function renderMeals() {
   const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // API 응답: { meals: [...], customFields: [...] }
+  // API 응답: { meals: [...], customFields: [...], patientCategories: [...] }
   const resp = await api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`)
   if (!resp) return
 
   // 구버전(배열) 호환
   const mealData = Array.isArray(resp) ? resp : (resp.meals || [])
   window._mealCustomFields = Array.isArray(resp) ? [] : (resp.customFields || [])
+  window._mealPatientCats = Array.isArray(resp) ? [] : (resp.patientCategories || [])
 
-  renderMealsContent(content, mealData, window._mealCustomFields)
+  renderMealsContent(content, mealData, window._mealCustomFields, window._mealPatientCats)
 }
 
-function renderMealsContent(content, mealData, customFields) {
+function renderMealsContent(content, mealData, customFields, patientCats) {
+  patientCats = patientCats || []
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   const mealMap = {}
   mealData.forEach(m => {
@@ -3031,11 +3034,10 @@ function renderMealsContent(content, mealData, customFields) {
     try { m._custom = JSON.parse(m.custom_data || '{}') } catch(e) { m._custom = {} }
   })
 
-  // 월 합계 계산 (기본)
-  let monthTotal = { p:0, s:0, n:0, g:0, custom:{} }
+  // 월 합계 계산 (기본 - 환자 컬럼은 화면 표시 없음, 데이터 유지만)
+  let monthTotal = { s:0, n:0, g:0, custom:{} }
   customFields.forEach(f => { monthTotal.custom[f.field_key] = 0 })
   mealData.forEach(m => {
-    monthTotal.p += (m.breakfast_patient||0)+(m.lunch_patient||0)+(m.dinner_patient||0)
     monthTotal.s += (m.breakfast_staff||0)+(m.lunch_staff||0)+(m.dinner_staff||0)
     monthTotal.n += (m.breakfast_noncovered||0)+(m.lunch_noncovered||0)+(m.dinner_noncovered||0)
     monthTotal.g += (m.breakfast_guardian||0)+(m.lunch_guardian||0)+(m.dinner_guardian||0)
@@ -3046,15 +3048,14 @@ function renderMealsContent(content, mealData, customFields) {
   })
 
   // 기본 + 커스텀 합계 (커스텀 중 ea 단위는 grandTotal에서 제외)
-  const customTotal = Object.values(monthTotal.custom).reduce((s, v) => s + v, 0)
   const customTotalForMeals = customFields
     .filter(f => f.unit_type !== 'ea')
     .reduce((s, f) => s + (monthTotal.custom[f.field_key] || 0), 0)
-  // 총 식수: 비급여 제외, ea 커스텀 필드 제외
-  const grandTotal = monthTotal.p + monthTotal.s + monthTotal.g + customTotalForMeals
+  // 총 식수: 비급여 제외, ea 커스텀 필드 제외, 환자 제외(환자군으로 대체)
+  const grandTotal = monthTotal.s + monthTotal.g + customTotalForMeals
 
-  // 헤더 서브컬럼 생성: 환자/직원/비급/보호 + 커스텀필드들 + 합
-  const baseLabels = ['환자','직원','비급','보호']
+  // 헤더 서브컬럼 생성: 직원/비급/보호 + 환자군(커스텀필드)들 + 합
+  const baseLabels = ['직원','비급','보호']
   const customLabels = customFields.map(f => f.field_name)
   const allLabels = [...baseLabels, ...customLabels]
   const colCount = allLabels.length + 1  // +1 = 소계
@@ -3072,12 +3073,10 @@ function renderMealsContent(content, mealData, customFields) {
         <p class="text-xs text-gray-400 mt-0.5 hidden md:block">조식/중식/석식 × 식수 카테고리</p>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
-        <button onclick="openCustomFieldModal()" class="btn btn-sm" style="background:#6366f1;color:white;border:none;padding:6px 12px;border-radius:8px;font-size:12px;cursor:pointer">
-          <i class="fas fa-plus-circle mr-1"></i>칸 생성
-        </button>
         <button onclick="saveMealBatch()" class="btn btn-success btn-sm">
           <i class="fas fa-save"></i> 저장
         </button>
+        <!-- 칸 생성 버튼 제거: 환자군은 관리자에서 설정하면 자동 반영됩니다 -->
       </div>
     </div>
     <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
@@ -3100,7 +3099,7 @@ function renderMealsContent(content, mealData, customFields) {
               return allLabels.map((label, li) => {
                 const isFirst = li===0
                 const isLast = li===allLabels.length-1
-                const isCustom = li >= 4
+                const isCustom = li >= 3  // 직원(0)/비급(1)/보호(2) 이후부터 환자군 커스텀
                 const bg = isTot ? 'background:#0f2942;' : isCustom ? 'background:#1a2f4a;' : ''
                 const bl = isFirst ? `border-left:3px solid ${border};` : 'border-left:1px solid rgba(255,255,255,0.15);'
                 const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.15)` : ''
@@ -3119,32 +3118,14 @@ function renderMealsContent(content, mealData, customFields) {
     </div>
   </div>
 
-  <!-- 커스텀 칸 생성 모달 -->
-  <div id="customFieldModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
-    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm mx-4">
-      <h3 class="font-bold text-gray-800 mb-4"><i class="fas fa-plus-circle text-indigo-500 mr-2"></i>커스텀 식수 칸 관리</h3>
-      <div id="customFieldList" class="mb-4 space-y-2"></div>
-      <div class="flex gap-2">
-        <input type="text" id="newCustomFieldName" placeholder="새 칸 이름 (예: 간병인)" class="form-input flex-1 text-sm" maxlength="10">
-        <select id="newCustomFieldUnit" class="form-input text-sm" style="width:90px;flex-shrink:0">
-          <option value="meal">식 (식수포함)</option>
-          <option value="ea">ea/개 (미포함)</option>
-        </select>
-        <button onclick="addCustomField()" class="btn btn-success btn-sm px-4">추가</button>
-      </div>
-      <div class="text-xs text-gray-400 mt-1">· <b>식</b>: 총식수/식단가 포함 &nbsp;·&nbsp; <b>ea/개</b>: 개수 집계, 식수 미포함 (예: 공기밥)</div>
-      <div class="mt-4 text-right">
-        <button onclick="closeCustomFieldModal()" class="btn btn-sm bg-gray-100 text-gray-600 px-4">닫기</button>
-      </div>
-    </div>
-  </div>`
+  ${patientCats.length > 0 ? buildMealPricePanel(patientCats, customFields, mealData) : ''}`
 
   bindMealInputEvents()
 }
 
 function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
+  // 환자 카드 제거 (환자군 커스텀 필드로 대체), 직원/비급/보호만 기본 표시
   const baseCards = [
-    { label:'환자식', val:monthTotal.p, color:'blue', id:'mealSummary-p' },
     { label:'직원식', val:monthTotal.s, color:'green', id:'mealSummary-s' },
     { label:'비급여', val:monthTotal.n, color:'purple', id:'mealSummary-n' },
     { label:'보호자', val:monthTotal.g, color:'orange', id:'mealSummary-g' },
@@ -3161,6 +3142,108 @@ function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
       <div class="text-xs text-gray-400">${unitStr}</div>
     </div>`
   }).join('')
+}
+
+// ── 환자군별 식단가 패널 ──────────────────────────────────────
+function buildMealPricePanel(patientCats, customFields, mealData) {
+  // 카테고리 설정 (발주 예산)
+  const catSettings = window._catOrderSettings || []
+  const catSettingsMap = {}
+  catSettings.forEach(s => { catSettingsMap[s.patient_category_id] = s })
+
+  // 이번 달 전체 발주 합계 (catMonthTotals)
+  const catMonthTotals = window._catMonthTotals || {}
+
+  // 환자군별 식수 집계: customFields에서 cat_ 접두어 가진 것만
+  // mealData에서 custom_data의 cat_* 키 합산
+  const catMealTotals = {}  // { category_key: total_meals }
+  patientCats.forEach(cat => { catMealTotals[cat.category_key] = 0 })
+
+  mealData.forEach(m => {
+    let cd = {}
+    try { cd = JSON.parse(m.custom_data || '{}') } catch(e) {}
+    patientCats.forEach(cat => {
+      const fieldKey = `cat_${cat.category_key}`
+      const v = cd[fieldKey] || {}
+      catMealTotals[cat.category_key] = (catMealTotals[cat.category_key] || 0) + (v.bf||0) + (v.l||0) + (v.d||0)
+    })
+  })
+
+  // 기본 항목 (직원,비급,보호) 월 합계
+  const basicTotals = { staff: 0, noncovered: 0, guardian: 0 }
+  mealData.forEach(m => {
+    basicTotals.staff += (m.breakfast_staff||0)+(m.lunch_staff||0)+(m.dinner_staff||0)
+    basicTotals.noncovered += (m.breakfast_noncovered||0)+(m.lunch_noncovered||0)+(m.dinner_noncovered||0)
+    basicTotals.guardian += (m.breakfast_guardian||0)+(m.lunch_guardian||0)+(m.dinner_guardian||0)
+  })
+
+  const catColors = {
+    cancer: '#dc2626', nursing: '#16a34a', default_0: '#7c3aed',
+    default_1: '#0369a1', default_2: '#b45309', default_3: '#be185d'
+  }
+
+  const rows = patientCats.map((cat, ci) => {
+    const color = catColors[cat.category_key] || catColors[`default_${ci % 4}`] || '#6b7280'
+    const s = catSettingsMap[cat.id] || {}
+    const monthBudget = catMonthTotals[cat.id] || 0   // 실제 발주 총액
+    const targetBudget = s.monthly_budget || 0
+    const catMeals = catMealTotals[cat.category_key] || 0
+    // 식단가 = 발주금액 / (환자군 식수 + 직원 + 보호자)
+    // 비급여는 제외, 기본 직원/보호는 포함
+    const totalMealsForPrice = catMeals + basicTotals.staff + basicTotals.guardian
+    const mealPrice = totalMealsForPrice > 0 ? Math.round(monthBudget / totalMealsForPrice) : 0
+    // 환자군만 기준 식단가 (환자군 식수만으로)
+    const mealPriceCatOnly = catMeals > 0 ? Math.round(monthBudget / catMeals) : 0
+    const targetMealPrice = s.target_meal_price || 0
+    const priceDiff = targetMealPrice > 0 ? mealPrice - targetMealPrice : null
+
+    return `<div style="background:white;border-radius:12px;border:1px solid ${color}30;padding:12px 14px;border-left:4px solid ${color}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="background:${color};color:white;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">${cat.category_name}</span>
+          <span style="font-size:10px;color:#6b7280">식수: <strong style="color:${color}">${fmt(catMeals)}식</strong></span>
+        </div>
+        <div style="font-size:10px;color:#9ca3af">예산: ${targetBudget > 0 ? fmtWon(targetBudget) : '미설정'}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div style="background:${color}08;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:#6b7280;margin-bottom:2px">발주 총액</div>
+          <div style="font-size:13px;font-weight:700;color:${color}">${monthBudget > 0 ? fmtWon(monthBudget) : '-'}</div>
+        </div>
+        <div style="background:${color}08;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:#6b7280;margin-bottom:2px">식단가(전체기준)</div>
+          <div style="font-size:13px;font-weight:700;color:${mealPrice > 0 ? (priceDiff > 0 ? '#dc2626' : '#16a34a') : '#9ca3af'}">${mealPrice > 0 ? fmt(mealPrice)+'원' : '-'}</div>
+          ${priceDiff !== null && mealPrice > 0 ? `<div style="font-size:9px;font-weight:600;color:${priceDiff > 0 ? '#dc2626' : '#16a34a'}">${priceDiff > 0 ? '▲+' : '▼'}${fmt(Math.abs(priceDiff))}원</div>` : ''}
+        </div>
+        <div style="background:${color}08;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:#6b7280;margin-bottom:2px">식단가(환자군만)</div>
+          <div style="font-size:13px;font-weight:700;color:${mealPriceCatOnly > 0 ? color : '#9ca3af'}">${mealPriceCatOnly > 0 ? fmt(mealPriceCatOnly)+'원' : '-'}</div>
+          ${targetMealPrice > 0 ? `<div style="font-size:9px;color:#9ca3af">목표: ${fmt(targetMealPrice)}원</div>` : ''}
+        </div>
+      </div>
+    </div>`
+  }).join('')
+
+  // 전체 합산 식단가 (비급여 제외 전체 식수 기준)
+  const totalMeals = Object.values(catMealTotals).reduce((s,v)=>s+v,0) + basicTotals.staff + basicTotals.guardian
+  const totalBudget = Object.values(catMonthTotals).reduce((s,v)=>s+v,0)
+  const totalMealPrice = totalMeals > 0 ? Math.round(totalBudget / totalMeals) : 0
+
+  return `<div style="background:white;border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e5e7eb;padding:16px;margin-top:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="font-weight:700;color:#374151;font-size:14px"><i class="fas fa-calculator" style="color:#7c3aed;margin-right:4px"></i>환자군별 식단가 현황</h3>
+      <div style="font-size:11px;color:#9ca3af">
+        ${App.currentYear}년 ${App.currentMonth}월
+        ${totalMeals > 0 ? `| 전체 ${fmt(totalMeals)}식 · <strong style="color:#374151">${fmt(totalMealPrice)}원/식</strong>` : ''}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
+      ${rows}
+    </div>
+    <div style="margin-top:10px;padding:8px 12px;background:#f8fafc;border-radius:8px;font-size:11px;color:#6b7280">
+      💡 <strong>식단가 계산 기준</strong>: 환자군 식수 + 직원 + 보호자 합산 (비급여 제외) · 발주 금액은 해당 환자군 월별 카테고리 발주 총액 기준
+    </div>
+  </div>`
 }
 
 function buildMealRow(day, mealMap, customFields, colCount) {
@@ -3183,21 +3266,29 @@ function buildMealRow(day, mealMap, customFields, colCount) {
     d:  cd[f.field_key]?.d  || 0,
   }))
 
-  const bfSum = bp+bs+bn+bg2 + cVals.reduce((s,c)=>s+c.bf,0)
-  const lSum  = lp+ls+ln+lg  + cVals.reduce((s,c)=>s+c.l,0)
-  const dSum  = dp+ds+dn+dg  + cVals.reduce((s,c)=>s+c.d,0)
-  const tpSum = bp+lp+dp, tsSum=bs+ls+ds, tnSum=bn+ln+dn, tgSum=bg2+lg+dg
-  // 총 식수(t-total): 비급여 제외, ea 단위 커스텀 필드 제외
+  // 소계: 환자 컬럼 숨겼으므로 환자 제외 (직원+비급+보호+커스텀)
+  const bfSum = bs+bn+bg2 + cVals.reduce((s,c)=>s+c.bf,0)
+  const lSum  = ls+ln+lg  + cVals.reduce((s,c)=>s+c.l,0)
+  const dSum  = ds+dn+dg  + cVals.reduce((s,c)=>s+c.d,0)
+  const tsSum=bs+ls+ds, tnSum=bn+ln+dn, tgSum=bg2+lg+dg
+  // 총 식수(t-total): 비급여 제외, ea 단위 커스텀 필드 제외, 환자 제외(환자군으로 대체)
   const cValsForMeals = cVals.filter((_,i) => (customFields[i]?.unit_type||'meal') !== 'ea')
-  const tGrand = tpSum + tsSum + tgSum + cValsForMeals.reduce((s,c)=>s+c.bf+c.l+c.d,0)
+  const tGrand = tsSum + tgSum + cValsForMeals.reduce((s,c)=>s+c.bf+c.l+c.d,0)
 
   const mealSections = [
-    { prefix:'bf', border:'#3b82f6', bg:'#dbeafe', base:[{k:'bf_p',v:bp},{k:'bf_s',v:bs},{k:'bf_n',v:bn},{k:'bf_g',v:bg2}], cPrefix:'bf', sum:bfSum, sumId:`bf-sum-${dateStr}`, sumBg:'bg-blue-50 text-blue-800' },
-    { prefix:'l',  border:'#22c55e', bg:'#dcfce7', base:[{k:'l_p',v:lp},{k:'l_s',v:ls},{k:'l_n',v:ln},{k:'l_g',v:lg}],   cPrefix:'l',  sum:lSum,  sumId:`l-sum-${dateStr}`,  sumBg:'bg-green-50 text-green-800' },
-    { prefix:'d',  border:'#a855f7', bg:'#f3e8ff', base:[{k:'d_p',v:dp},{k:'d_s',v:ds},{k:'d_n',v:dn},{k:'d_g',v:dg}],   cPrefix:'d',  sum:dSum,  sumId:`d-sum-${dateStr}`,  sumBg:'bg-purple-50 text-purple-800' },
+    // 환자(bf_p, l_p, d_p)는 hidden input으로 유지 (데이터 보존), 표시 안 함
+    // base 배열에서 환자(_p) 항목 제거 → 직원/비급/보호만 표시
+    { prefix:'bf', border:'#3b82f6', bg:'#dbeafe', base:[{k:'bf_s',v:bs},{k:'bf_n',v:bn},{k:'bf_g',v:bg2}], cPrefix:'bf', sum:bfSum, sumId:`bf-sum-${dateStr}`, sumBg:'bg-blue-50 text-blue-800' },
+    { prefix:'l',  border:'#22c55e', bg:'#dcfce7', base:[{k:'l_s',v:ls},{k:'l_n',v:ln},{k:'l_g',v:lg}],   cPrefix:'l',  sum:lSum,  sumId:`l-sum-${dateStr}`,  sumBg:'bg-green-50 text-green-800' },
+    { prefix:'d',  border:'#a855f7', bg:'#f3e8ff', base:[{k:'d_s',v:ds},{k:'d_n',v:dn},{k:'d_g',v:dg}],   cPrefix:'d',  sum:dSum,  sumId:`d-sum-${dateStr}`,  sumBg:'bg-purple-50 text-purple-800' },
   ]
 
   let cells = ''
+  // 환자 hidden input (데이터 보존용 - 화면 미표시)
+  cells += `<td style="display:none">${makeMealInput('bf_p', dateStr, bp)}</td>`
+  cells += `<td style="display:none">${makeMealInput('l_p', dateStr, lp)}</td>`
+  cells += `<td style="display:none">${makeMealInput('d_p', dateStr, dp)}</td>`
+
   mealSections.forEach(sec => {
     sec.base.forEach((b, bi) => {
       const bl = bi===0 ? `border-left:3px solid ${sec.border};` : ''
@@ -3210,9 +3301,8 @@ function buildMealRow(day, mealMap, customFields, colCount) {
     cells += `<td class="font-semibold text-center ${sec.sumBg}" id="${sec.sumId}" style="border-left:1px solid ${sec.bg};border-right:3px solid ${sec.border}">${sec.sum||''}</td>`
   })
 
-  // 합계 열
-  cells += `<td class="text-center bg-gray-50" id="t-p-${dateStr}" style="border-left:3px solid #6b7280;border:1px solid #e5e7eb">${tpSum||''}</td>`
-  cells += `<td class="text-center bg-gray-50" id="t-s-${dateStr}" style="border:1px solid #e5e7eb">${tsSum||''}</td>`
+  // 합계 열 (환자 열 숨김)
+  cells += `<td class="text-center bg-gray-50" id="t-s-${dateStr}" style="border-left:3px solid #6b7280;border:1px solid #e5e7eb">${tsSum||''}</td>`
   cells += `<td class="text-center bg-gray-50" id="t-n-${dateStr}" style="border:1px solid #e5e7eb">${tnSum||''}</td>`
   cells += `<td class="text-center bg-gray-50" id="t-g-${dateStr}" style="border:1px solid #e5e7eb">${tgSum||''}</td>`
   cVals.forEach(cv => {
@@ -3239,34 +3329,31 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
       cD[f.field_key]  += cd[f.field_key]?.d||0
     })
   })
-  const bfTotal = mealData.reduce((s,m)=>s+(m.breakfast_patient||0)+(m.breakfast_staff||0)+(m.breakfast_noncovered||0)+(m.breakfast_guardian||0),0) + customFields.reduce((s,f)=>s+cBf[f.field_key],0)
-  const lTotal  = mealData.reduce((s,m)=>s+(m.lunch_patient||0)+(m.lunch_staff||0)+(m.lunch_noncovered||0)+(m.lunch_guardian||0),0) + customFields.reduce((s,f)=>s+cL[f.field_key],0)
-  const dTotal  = mealData.reduce((s,m)=>s+(m.dinner_patient||0)+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0) + customFields.reduce((s,f)=>s+cD[f.field_key],0)
+  // 환자 컬럼 제거: 직원/비급/보호 + 커스텀만 합산
+  const bfTotal = mealData.reduce((s,m)=>s+(m.breakfast_staff||0)+(m.breakfast_noncovered||0)+(m.breakfast_guardian||0),0) + customFields.reduce((s,f)=>s+cBf[f.field_key],0)
+  const lTotal  = mealData.reduce((s,m)=>s+(m.lunch_staff||0)+(m.lunch_noncovered||0)+(m.lunch_guardian||0),0) + customFields.reduce((s,f)=>s+cL[f.field_key],0)
+  const dTotal  = mealData.reduce((s,m)=>s+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0) + customFields.reduce((s,f)=>s+cD[f.field_key],0)
 
   let cells = `<td colspan="2" class="text-center py-2">월 합계</td>`
-  // 조식
-  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_patient||0),0))}</td>`
+  // 조식 (환자 제외: 직원/비급/보호 + 커스텀)
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_staff||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_noncovered||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_guardian||0),0))}</td>`
   customFields.forEach(f => { cells += `<td class="text-center">${fmt(cBf[f.field_key])}</td>` })
   cells += `<td class="text-center bg-blue-100 font-bold">${fmt(bfTotal)}</td>`
   // 중식
-  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_patient||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_staff||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_noncovered||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.lunch_guardian||0),0))}</td>`
   customFields.forEach(f => { cells += `<td class="text-center">${fmt(cL[f.field_key])}</td>` })
   cells += `<td class="text-center bg-green-100 font-bold">${fmt(lTotal)}</td>`
   // 석식
-  cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_patient||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_staff||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_noncovered||0),0))}</td>`
   cells += `<td class="text-center">${fmt(mealData.reduce((s,m)=>s+(m.dinner_guardian||0),0))}</td>`
   customFields.forEach(f => { cells += `<td class="text-center">${fmt(cD[f.field_key])}</td>` })
   cells += `<td class="text-center bg-purple-100 font-bold">${fmt(dTotal)}</td>`
-  // 합계열
-  cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.p)}</td>`
+  // 합계열 (환자 열 제거: 직원/비급/보호 + 커스텀)
   cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.s)}</td>`
   cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.n)}</td>`
   cells += `<td class="text-center bg-gray-200 font-bold">${fmt(monthTotal.g)}</td>`
@@ -3317,9 +3404,9 @@ async function saveMealRow(date) {
   const g = (k) => getMealVal(k, date)
   await api('POST', '/api/meals/save', {
     mealDate: date,
-    breakfastPatient: g('bf_p'), breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
-    lunchPatient: g('l_p'), lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
-    dinnerPatient: g('d_p'), dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
+    breakfastPatient: 0, breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
+    lunchPatient: 0, lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
+    dinnerPatient: 0, dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
     customData: buildCustomData(date)
   })
 }
@@ -3328,9 +3415,10 @@ function updateMealRowTotals(date) {
   const g = (k) => getMealVal(k, date)
   const cf = window._mealCustomFields || []
 
-  const bp=g('bf_p'),bs=g('bf_s'),bn=g('bf_n'),bg2=g('bf_g')
-  const lp=g('l_p'),ls=g('l_s'),ln=g('l_n'),lg=g('l_g')
-  const dp=g('d_p'),ds=g('d_s'),dn=g('d_n'),dg=g('d_g')
+  // 환자(bf_p 등)는 hidden input이므로 포함하지 않음
+  const bs=g('bf_s'),bn=g('bf_n'),bg2=g('bf_g')
+  const ls=g('l_s'),ln=g('l_n'),lg=g('l_g')
+  const ds=g('d_s'),dn=g('d_n'),dg=g('d_g')
 
   // 커스텀 합계
   let bfC=0, lC=0, dC=0
@@ -3341,16 +3429,15 @@ function updateMealRowTotals(date) {
     customTotals[f.field_key] = bfv+lv+dv
   })
 
-  const bfSum=(bp+bs+bn+bg2)+bfC, lSum=(lp+ls+ln+lg)+lC, dSum=(dp+ds+dn+dg)+dC
-  // 총 식수: 비급여 제외, ea 단위 커스텀 필드 제외
+  const bfSum=(bs+bn+bg2)+bfC, lSum=(ls+ln+lg)+lC, dSum=(ds+dn+dg)+dC
+  // 총 식수: 비급여 제외, ea 단위 커스텀 필드 제외, 환자 제외(환자군으로 대체)
   const customForMeals = cf.filter(f => (f.unit_type||'meal') !== 'ea')
-  const tGrand = (bp+lp+dp)+(bs+ls+ds)+(bg2+lg+dg) + customForMeals.reduce((s,f)=>s+(customTotals[f.field_key]||0),0)
+  const tGrand = (bs+ls+ds)+(bg2+lg+dg) + customForMeals.reduce((s,f)=>s+(customTotals[f.field_key]||0),0)
 
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v||'' }
   set(`bf-sum-${date}`, bfSum)
   set(`l-sum-${date}`, lSum)
   set(`d-sum-${date}`, dSum)
-  set(`t-p-${date}`, bp+lp+dp)
   set(`t-s-${date}`, bs+ls+ds)
   set(`t-n-${date}`, bn+ln+dn)
   set(`t-g-${date}`, bg2+lg+dg)
@@ -3360,7 +3447,7 @@ function updateMealRowTotals(date) {
 }
 
 function updateMealSummaryCards() {
-  let tp=0, ts=0, tn=0, tg=0
+  let ts=0, tn=0, tg=0
   const cf = window._mealCustomFields || []
   const customSums = {}
   cf.forEach(f => { customSums[f.field_key] = 0 })
@@ -3368,7 +3455,7 @@ function updateMealSummaryCards() {
   document.querySelectorAll('#mealTableBody tr[data-date]').forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
-    tp += g('bf_p')+g('l_p')+g('d_p')
+    // 환자(p) 제외: 환자군(커스텀 필드)으로 대체됨
     ts += g('bf_s')+g('l_s')+g('d_s')
     tn += g('bf_n')+g('l_n')+g('d_n')
     tg += g('bf_g')+g('l_g')+g('d_g')
@@ -3376,14 +3463,13 @@ function updateMealSummaryCards() {
       customSums[f.field_key] += g(`bf_c_${f.field_key}`)+g(`l_c_${f.field_key}`)+g(`d_c_${f.field_key}`)
     })
   })
-  // 총 식수: 비급여(tn) 제외, ea 단위 커스텀 필드 제외
+  // 총 식수: 비급여(tn) 제외, ea 단위 커스텀 필드 제외, 환자 제외
   const customTotalForMeals = cf
     .filter(f => (f.unit_type||'meal') !== 'ea')
     .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
-  const grand = tp+ts+tg+customTotalForMeals
+  const grand = ts+tg+customTotalForMeals
 
   const setCard = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=fmt(v) }
-  setCard('mealSummary-p', tp)
   setCard('mealSummary-s', ts)
   setCard('mealSummary-n', tn)
   setCard('mealSummary-g', tg)
@@ -3402,16 +3488,17 @@ async function saveMealBatch() {
   rows.forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
-    const baseTotal = ['bf_p','bf_s','bf_n','bf_g','l_p','l_s','l_n','l_g','d_p','d_s','d_n','d_g'].reduce((s,k)=>s+g(k),0)
+    // 환자(bf_p 등)는 hidden이므로 실질적으로 0이지만 baseTotal에서 제외해도 무관
+    const baseTotal = ['bf_s','bf_n','bf_g','l_s','l_n','l_g','d_s','d_n','d_g'].reduce((s,k)=>s+g(k),0)
     const cf = window._mealCustomFields || []
     const customSum = cf.reduce((s,f)=>s+g(`bf_c_${f.field_key}`)+g(`l_c_${f.field_key}`)+g(`d_c_${f.field_key}`),0)
     if (baseTotal + customSum > 0) {
       saved++
       promises.push(api('POST', '/api/meals/save', {
         mealDate: date,
-        breakfastPatient: g('bf_p'), breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
-        lunchPatient: g('l_p'), lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
-        dinnerPatient: g('d_p'), dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
+        breakfastPatient: 0, breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
+        lunchPatient: 0, lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
+        dinnerPatient: 0, dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
         customData: buildCustomData(date)
       }))
     }

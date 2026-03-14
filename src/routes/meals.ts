@@ -77,11 +77,37 @@ meals.put('/custom-fields/:id', async (c) => {
   return c.json({ success: true })
 })
 
-// ─── 월별 식수 조회 ───────────────────────────────────────────
+// ─── 월별 식수 조회 (환자군 자동 반영 포함) ───────────────────────
 meals.get('/:year/:month', async (c) => {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
   const { year, month } = c.req.param()
+
+  // 환자군 목록 조회
+  const patientCats = await c.env.DB.prepare(
+    `SELECT * FROM hospital_patient_categories WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+  ).bind(hospitalId).all<any>()
+
+  // 환자군 → meal_custom_fields 자동 동기화
+  // category_key를 field_key로 사용 (예: cancer → cancer, nursing → nursing)
+  const cats = patientCats.results || []
+  for (const cat of cats) {
+    const fieldKey = `cat_${cat.category_key}`
+    const existing = await c.env.DB.prepare(
+      `SELECT id FROM meal_custom_fields WHERE hospital_id = ? AND field_key = ?`
+    ).bind(hospitalId, fieldKey).first<any>()
+    if (!existing) {
+      await c.env.DB.prepare(
+        `INSERT INTO meal_custom_fields (hospital_id, field_key, field_name, sort_order, is_active, unit_type)
+         VALUES (?, ?, ?, ?, 1, 'meal')`
+      ).bind(hospitalId, fieldKey, cat.category_name, cat.sort_order || 99).run()
+    } else {
+      // 이름 동기화
+      await c.env.DB.prepare(
+        `UPDATE meal_custom_fields SET field_name = ?, is_active = 1 WHERE hospital_id = ? AND field_key = ?`
+      ).bind(cat.category_name, hospitalId, fieldKey).run()
+    }
+  }
 
   const [mealData, customFields] = await Promise.all([
     c.env.DB.prepare(
@@ -98,7 +124,8 @@ meals.get('/:year/:month', async (c) => {
 
   return c.json({
     meals: mealData.results,
-    customFields: customFields.results
+    customFields: customFields.results,
+    patientCategories: cats
   })
 })
 

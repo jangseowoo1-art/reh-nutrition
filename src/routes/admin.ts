@@ -1199,7 +1199,32 @@ adminRouter.put('/hospitals/:id/patient-categories', async (c) => {
     WHERE hospital_id = ? AND is_active = 1
     ORDER BY sort_order, id
   `).bind(id).all<any>()
-  return c.json({ success: true, categories: updated.results || [] })
+
+  // ── meal_custom_fields 자동 동기화 ──────────────────────────
+  // 환자군 저장 시 meal_custom_fields에도 cat_{category_key} 자동 반영
+  // 1. cat_ 접두어 가진 기존 필드 비활성화
+  await c.env.DB.prepare(`
+    UPDATE meal_custom_fields SET is_active = 0
+    WHERE hospital_id = ? AND field_key LIKE 'cat_%'
+  `).bind(id).run()
+
+  // 2. 활성 환자군들을 meal_custom_fields에 upsert (cat_ 접두어)
+  const activeCats = updated.results || []
+  for (let i = 0; i < activeCats.length; i++) {
+    const cat = activeCats[i]
+    const fieldKey = `cat_${cat.category_key}`
+    await c.env.DB.prepare(`
+      INSERT INTO meal_custom_fields
+        (hospital_id, field_key, field_name, sort_order, is_active, unit_type)
+      VALUES (?, ?, ?, ?, 1, 'meal')
+      ON CONFLICT(hospital_id, field_key) DO UPDATE SET
+        field_name = excluded.field_name,
+        sort_order = excluded.sort_order,
+        is_active = 1
+    `).bind(id, fieldKey, cat.category_name, i).run()
+  }
+
+  return c.json({ success: true, categories: activeCats })
 })
 
 // 카테고리별 월간 목표 설정 조회

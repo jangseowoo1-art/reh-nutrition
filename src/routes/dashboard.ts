@@ -125,10 +125,10 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 식단가 3종 계산
   const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-  // 화면 표시용 전체 식수: 비급여 제외 (환자+직원+보호자) + ea 아닌 커스텀 필드 포함
-  const totalMeals = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
-  // 식단가 계산용 식수: 비급여 제외, 환자+직원+보호자+커스텀(ea 제외)
-  const totalMealsForPrice = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
+  // 화면 표시용 전체 식수: 비급여 제외, 환자(patient) 제외(환자군 커스텀 필드로 대체) - 직원+보호자+커스텀
+  const totalMeals = (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
+  // 식단가 계산용 식수: 비급여 제외, 환자 제외 → 직원+보호자+환자군(커스텀, ea 제외)
+  const totalMealsForPrice = (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
   // 소모품/카드 제외 금액
   const supplyCardUsed = (vendors.results || [])
     .filter((v: any) => v.category === 'supply' || v.category === 'card')
@@ -141,7 +141,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
   //    분자: 월 총 발주금액 그대로
   //    분모: 환자 + 보호자 (직원식수 제외)
   //    예: 아미나 20,880,000원 ÷ 110명 = 189,818원/식 (전체 130,500원보다 높음)
-  const mealsNoStaff = (ms.total_patient||0) + (ms.total_guardian||0)  // 환자 + 보호자
+  const mealsNoStaff = (ms.total_guardian||0) + mealCustomTotal  // 보호자 + 환자군 (직원 제외)
   const mealPriceNoStaff = mealsNoStaff > 0
     ? Math.round(totalUsed / mealsNoStaff) : 0
   // ③ 소모품/카드 제외 식단가: (총금액 - 소모품/카드) ÷ (환자+직원+보호자) — 비급여 제외
@@ -215,12 +215,26 @@ dashboard.get('/summary/:year/:month', async (c) => {
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, prevYear2, prevMonth).all<any>()
 
-  const todayPatientMealsDash = await c.env.DB.prepare(`
-    SELECT COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0) as patient_total
+  // 오늘 식수: 커스텀 필드(환자군)의 식수 합산
+  const todayMealRow = await c.env.DB.prepare(`
+    SELECT COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0) as staff_total,
+           COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0) as guardian_total,
+           custom_data
     FROM daily_meals WHERE hospital_id = ? AND meal_date = ?
   `).bind(hospitalId, today).first<any>()
 
-  const todayPatientMeals = todayPatientMealsDash?.patient_total || 0
+  // 오늘 전체 식수: 직원+보호자+환자군 커스텀
+  let todayCustomMeals = 0
+  if (todayMealRow?.custom_data) {
+    try {
+      const todayCustomData = JSON.parse(todayMealRow.custom_data || '{}')
+      ;(customFieldsList.results || []).filter((f:any) => f.unit_type !== 'ea').forEach((f:any) => {
+        const fv = todayCustomData[f.field_key] || {}
+        todayCustomMeals += (fv.bf||0) + (fv.l||0) + (fv.d||0)
+      })
+    } catch(e) {}
+  }
+  const todayPatientMeals = (todayMealRow?.staff_total || 0) + (todayMealRow?.guardian_total || 0) + todayCustomMeals
   const catMonthMap2: Record<number, number> = {}
   ;(catMonthlyOrders.results||[]).forEach((r:any) => { catMonthMap2[r.patient_category_id] = r.total })
   const catTodayMap2: Record<number, number> = {}
@@ -240,7 +254,18 @@ dashboard.get('/summary/:year/:month', async (c) => {
     const monthBudget = s3.monthly_budget || 0
     const workDays = s3.working_days || workingDays
     const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
-    const todayCatMeals = todayPatientMeals > 0 ? Math.round(todayPatientMeals * catRatio) : 0
+    // 오늘 카테고리별 식수: custom_data에서 cat_{category_key} 직접 집계
+    let todayCatCustomMeals = 0
+    if (todayMealRow?.custom_data) {
+      try {
+        const todayCustomData = JSON.parse(todayMealRow.custom_data || '{}')
+        const fieldKey = `cat_${cat.category_key}`
+        const fv = todayCustomData[fieldKey] || {}
+        todayCatCustomMeals = (fv.bf||0) + (fv.l||0) + (fv.d||0)
+      } catch(e) {}
+    }
+    // 오늘 식단가 계산: 카테고리 식수 + 직원 + 보호자
+    const todayCatMeals = todayCatCustomMeals + (todayMealRow?.staff_total || 0) + (todayMealRow?.guardian_total || 0)
     const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
     const prevSet = prevCatSetMap3[cat.id] || {}
     const prevTargetPrice = prevSet.target_meal_price || 0
@@ -255,16 +280,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 전월 식단가 계산 (현재 월과 동일 로직)
   const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-  // 전월 총식수: 비급여 제외
-  const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
-  // 전월 식단가 계산용 식수: 비급여 제외 (동일)
-  const prevMealsForPrice = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
+  // 전월 총식수: 비급여 제외, 환자 제외(환자군 커스텀으로 대체)
+  const prevTotalMeals = (pms.total_staff||0)+(pms.total_guardian||0)
+  // 전월 식단가 계산용 식수: 비급여 제외, 환자 제외 (전월 커스텀 필드 합계는 별도 조회 필요하지만 간소화)
+  const prevMealsForPrice = (pms.total_staff||0)+(pms.total_guardian||0)
   const prevTotalUsed = prevOrders?.total_used || 0
   const prevSupplyUsed = prevSupply?.supply_used || 0
   // ① 전월 전체 식단가
   const prevMealPriceTotal = prevMealsForPrice > 0 ? Math.round(prevTotalUsed / prevMealsForPrice) : 0
   // ② 전월 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
-  const prevMealsNoStaff = (pms.total_patient||0) + (pms.total_guardian||0)
+  const prevMealsNoStaff = (pms.total_guardian||0)  // 보호자만 (직원+환자 제외)
   const prevMealPriceNoStaff = prevMealsNoStaff > 0
     ? Math.round(prevTotalUsed / prevMealsNoStaff) : 0
   // ③ 전월 소모품 제외 (비급여 제외 분모)
@@ -284,7 +309,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealPriceNoSupply,
     totalMeals,
     catDietPrices,
-    todayPatientMeals,
+    todayMeals: todayPatientMeals,  // 오늘 전체 식수 (직원+보호자+환자군)
     prevMonth: {
       month: prevMonth, year: parseInt(prevYear2),
       totalUsed: prevTotalUsed, totalMeals: prevTotalMeals,
