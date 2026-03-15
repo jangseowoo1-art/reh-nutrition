@@ -4377,6 +4377,8 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     }
   }
 
+  // ── 연간 차트 초기화: annual 탭이 display:none이므로 rAF로 지연 초기화
+  requestAnimationFrame(() => {
   // ── 연도별 비교 차트 ①: 예산 vs 사용금액
   new Chart(document.getElementById('chart-yrBudget'), {
     type:'bar', data:{
@@ -4496,6 +4498,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       plugins:[doughnutCenterPlugin]
     })
   }
+  }) // end rAF (연간 차트)
 
   // ── 연도별 항목별 원별 식단가 상세 차트 (탭 전환형)
   let yrMpDetailChart = null
@@ -4542,9 +4545,11 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   window.switchMpTypeTab('total')
 
 
-  // ── 월간 차트 초기화: DOM 레이아웃 완료 후 실행 (display:none 상태에서 0 크기 방지)
+  // ── 월간 차트 초기화: 차트를 먼저 초기화한 후 탭 전환
+  // 순서: monthly 보임(기본) → rAF → 차트 초기화(크기 정상) → switchAnaTab(탭 결정)
+  // annual 탭 요청 시에도 차트는 monthly 보이는 상태에서 초기화된 후 탭 전환
   requestAnimationFrame(() => {
-  // ── 식단가 3종 월별 (mpMonthly)
+    requestAnimationFrame(() => {
   new Chart(document.getElementById('chart-mpMonthly'), {
     type:'line', data:{
       labels:months,
@@ -4558,7 +4563,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     },
     options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
       scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } },
-    plugins: [mpPointLabelPlugin]
+    plugins: [pointLabelPlugin]
   })
 
   // ── 식수 스택 (막대 내부 숫자 표시)
@@ -4798,10 +4803,11 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     })
   }
 
-  }) // end requestAnimationFrame (월간 차트)
-
-  // 초기 탭: 기본은 월간 분석
-  switchAnaTab(activeTab || 'monthly')
+      // 차트 초기화 완료 후 탭 전환 (monthly 보인 상태에서 초기화했으므로 크기 정상)
+      const _initialTab = activeTab || 'monthly'
+      switchAnaTab(_initialTab)
+    }) // end inner rAF
+  }) // end outer rAF
 }
 
 window.switchAnaTab = (tab) => {
