@@ -1661,6 +1661,7 @@ async function renderOrders() {
             <div id="budgetForecastContent">
               <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
             </div>
+            <div id="budgetForecastWarn" style="display:none"></div>
           </div>
           <!-- 식단가 경고 -->
           <div id="dietPriceAlertCard" style="background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;padding:10px">
@@ -1680,6 +1681,7 @@ async function renderOrders() {
           <div id="vendorShareContent">
             <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
           </div>
+          <div id="vendorBiasAlert" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -1795,6 +1797,12 @@ async function renderOrders() {
     targetMealPrice,
     vendors: vendors || []
   }
+
+  // ── 인사이트 패널 먼저 초기화 (테이블 렌더링 전에 즉시 표시) ──
+  setTimeout(() => {
+    if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
+    if (typeof updateInsightPanel === 'function') updateInsightPanel()
+  }, 0)
 
   // tbody/tfoot를 requestAnimationFrame 후 비동기 렌더링
   requestAnimationFrame(() => {
@@ -2018,9 +2026,12 @@ async function renderOrders() {
       // 일수 선택기
       const daySelectHtml = `<select class="multiday-select" data-date="${dateStr}" style="border:1px solid ${multiDayCount>1?'#16a34a':'#e5e7eb'};border-radius:3px;padding:1px 2px;font-size:10px;background:${multiDayCount>1?'#f0fdf4':'#f9fafb'};cursor:pointer;color:${multiDayCount>1?'#166534':'#374151'};font-weight:${multiDayCount>1?'700':'400'};width:50px" onchange="updateMultiDayNote(this)">${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${multiDayCount===n?'selected':''}>${n}일</option>`).join('')}</select>${multiDayCount>1?`<div style="font-size:8px;color:#16a34a;font-weight:600;margin-top:1px;white-space:nowrap">${multiDayCount}일치</div>`:''}`
 
-      // 상세 토글 버튼
-      const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600" title="업체별 상세 발주 입력">
-        <span class="detail-arrow" data-date="${dateStr}">▼</span> 업체별 입력
+      // 상세 토글 버튼 (오늘은 기본 열림 → ▲, 나머지는 ▼)
+      const initArrow = isToday ? '▲' : '▼'
+      const initBtnBg = isToday ? (displayTotal>0?'#2563eb':'#16a34a') : (displayTotal>0?'#2563eb':'#e5e7eb')
+      const initBtnColor = (isToday || displayTotal>0) ? 'white' : '#6b7280'
+      const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${initBtnBg};color:${initBtnColor};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600" title="업체별 상세 발주 입력">
+        <span class="detail-arrow" data-date="${dateStr}">${initArrow}</span> 업체별 입력
       </button>` : ''
 
       rows.push(`<tr class="order-summary-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="background:${summaryRowBg};${summaryBorderTop}${isToday?'outline:2px solid #3b82f6;outline-offset:-1px;':''}${pastOpacity}">
@@ -2183,7 +2194,9 @@ async function renderOrders() {
             <td rowspan="${patientCats.length}" style="background:white;padding:3px 2px;text-align:center;vertical-align:middle;border-left:1px solid #e5e7eb;min-width:48px">
             </td>` : ''
 
-          const displayStyle = ci === 0 ? '' : 'display:none'
+          // 지난 날짜는 기본 닫힘, 오늘 날짜는 첫 번째 탭만 열림
+          const isDetailOpen = isToday && ci === 0
+          const displayStyle = isDetailOpen ? '' : 'display:none'
 
           return `<tr class="order-detail-row cat-tab-row ${rowClass}" data-date="${dateStr}" data-cat="${cat.id}" data-tab-index="${ci}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="${displayStyle};background:${catBgRow}">
             <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;padding:2px;border-right:1px solid #e2e8f0;vertical-align:top"></td>
@@ -2204,7 +2217,7 @@ async function renderOrders() {
       } else {
         // 카테고리 없는 경우: 상세 행에 업체 입력
         const vendorInputCells = vendors.map((v, vi) => getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)).join('')
-        rows.push(`<tr class="order-detail-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="display:none">
+        rows.push(`<tr class="order-detail-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="${isToday?'':'display:none'}">
           <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;text-align:center;font-size:10px;color:#94a3b8;border-right:1px solid #e2e8f0;padding:3px">↳</td>
           <td class="sticky z-10" style="width:24px;background:#f1f5f9;left:30px;padding:2px"></td>
           <td class="sticky z-10" style="width:56px;background:#f1f5f9;left:54px;padding:2px;border-right:1px solid #e2e8f0"></td>
@@ -3443,9 +3456,24 @@ function updateInsightPanel() {
         else catTotal += val
       })
 
-      // 식수 데이터: window._ordersMealStats 활용
-      const mealStats = window._ordersMealStats || {}
-      const catMealCount = (mealStats.catMonthTotal || {})[cat.id] || 0
+      // 식수 데이터: updateBudgetProgressPanel과 동일한 방식으로 계산
+      const mealStats2 = window._ordersMealStats || {}
+      const orderMealStats2 = mealStats2.mealCustomTotals || {}
+      const staffMeals2 = mealStats2.totalStaff || 0
+      const guardianMeals2 = mealStats2.totalGuardian || 0
+      // formula(catDietPricesData) 기반으로 식수 계산
+      const catDietEntry2 = (window._catDietPricesData || []).find(d => d.id === cat.id)
+      const mealsKeys2 = catDietEntry2?.mealsKeys || []
+      const hasFormula2 = mealsKeys2.length > 0
+      let catMealCount = 0
+      if (hasFormula2) {
+        if (mealsKeys2.includes('staff')) catMealCount += staffMeals2
+        if (mealsKeys2.includes('guardian')) catMealCount += guardianMeals2
+        mealsKeys2.filter(k => k.startsWith('cat_')).forEach(k => { catMealCount += (orderMealStats2[k] || 0) })
+      } else {
+        // formula 없으면 카테고리 key로 식수 직접 조회
+        catMealCount = (orderMealStats2[`cat_${cat.category_key}`] || 0)
+      }
       const curDietPrice = catMealCount > 0 ? Math.round(catTotal / catMealCount) : 0
       const diff2 = targetPrice > 0 ? curDietPrice - targetPrice : 0
       const diffPct = targetPrice > 0 ? Math.round(diff2 / targetPrice * 100) : null
@@ -3518,6 +3546,57 @@ function updateInsightPanel() {
     vendorShareEl.innerHTML = grandV > 0
       ? vendorBars
       : `<div style="font-size:10px;color:#9ca3af">발주 데이터 없음</div>`
+
+    // ── 업체 편중 감지 (70% 이상 시 경고) ──
+    if (grandV > 0) {
+      const biasedVendors = vendors.filter(v => {
+        const pct = Math.round((vendorTotals[v.id]||0)/grandV*100)
+        return pct >= 70
+      })
+      const biasEl = document.getElementById('vendorBiasAlert')
+      if (biasEl) {
+        if (biasedVendors.length > 0) {
+          const v = biasedVendors[0]
+          const bpct = Math.round((vendorTotals[v.id]||0)/grandV*100)
+          biasEl.innerHTML = `<div style="font-size:10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:5px 8px;margin-top:6px">⚠️ <strong style="color:#d97706">${v.name}</strong> 발주 비중 <strong style="color:#dc2626">${bpct}%</strong> — 편중 주의</div>`
+          biasEl.style.display = 'block'
+        } else {
+          biasEl.style.display = 'none'
+        }
+      }
+    }
+  }
+
+  // ── 5. 예산 소진 예상 경고 ──
+  const forecastWarnEl = document.getElementById('budgetForecastWarn')
+  if (forecastWarnEl && totalBudget > 0) {
+    const today2 = new Date()
+    const dayOfMonth = today2.getDate()
+    const daysInMonth2 = new Date(today2.getFullYear(), today2.getMonth()+1, 0).getDate()
+    const elapsedRatio = dayOfMonth / daysInMonth2
+    // 현재 발주 합계 (실시간)
+    let liveTotal2 = 0
+    document.querySelectorAll('.cat-order-input, .order-input').forEach(inp => {
+      const field = inp.dataset.field || inp.dataset.type
+      const val = parseOrderVal(inp.value)
+      if (field === 'taxable') liveTotal2 += val + Math.round(val * 0.1)
+      else if (field !== 'total') liveTotal2 += val
+    })
+    // 월간 누적 발주액은 monthOrdered 변수 사용 (이미 계산됨)
+    if (elapsedRatio > 0.05 && monthOrdered > 0) {
+      const projectedTotal = Math.round(monthOrdered / elapsedRatio)
+      const projectedPct = Math.round(projectedTotal / totalBudget * 100)
+      if (projectedPct >= 95) {
+        const projColor = projectedPct >= 110 ? '#dc2626' : '#d97706'
+        const projIcon = projectedPct >= 110 ? '🚨' : '⚠️'
+        forecastWarnEl.innerHTML = `<div style="font-size:10px;background:${projectedPct>=110?'#fee2e2':'#fef3c7'};border:1px solid ${projectedPct>=110?'#fca5a5':'#fde68a'};border-radius:6px;padding:5px 8px;margin-top:6px">${projIcon} 이달 예상 발주 <strong style="color:${projColor}">${fmtMan(projectedTotal)}</strong> (${projectedPct}%) — 예산 초과 예상</div>`
+        forecastWarnEl.style.display = 'block'
+      } else {
+        forecastWarnEl.style.display = 'none'
+      }
+    } else {
+      forecastWarnEl.style.display = 'none'
+    }
   }
 }
 
