@@ -2789,19 +2789,41 @@ function updateBudgetProgressPanel() {
 
   // ── 업체별 월 합계 카드 실시간 업데이트 ──
   const vendors = window._ordersVendors || []
+  const hasCatsForVsum = (window._patientCats || []).length > 0
   vendors.forEach(v => {
-    // DOM에서 해당 업체 입력값 전체 합산
+    // DOM에서 해당 업체 입력값 전체 합산 (일반 모드 + 카테고리 모드 모두 지원)
     let vMonthTotal = 0
-    const seenDates = new Set()
-    document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`).forEach(inp => {
-      const d = inp.dataset.date
-      if (seenDates.has(d)) return; seenDates.add(d)
-      const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
-      const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
-      const t = parseOrderVal(tx?.value)
-      const e = parseOrderVal(ex?.value)
-      vMonthTotal += t + Math.round(t*0.1) + e
-    })
+    if (hasCatsForVsum) {
+      // 카테고리 모드: cat-order-input으로 업체별 합산
+      const seenKeys = new Set()
+      document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"]`).forEach(inp => {
+        const d = inp.dataset.date
+        const catId = inp.dataset.category
+        const field = inp.dataset.field
+        const key = `${d}-${catId}-${field}`
+        if (seenKeys.has(key)) return; seenKeys.add(key)
+        const val = parseOrderVal(inp.value)
+        if (field === 'taxable') vMonthTotal += val + Math.round(val * 0.1)
+        else if (field === 'exempt') vMonthTotal += val
+        else if (field === 'total') {
+          // total 필드는 taxable/exempt 없을 때만 합산 (중복 방지)
+          const txEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${catId}"][data-field="taxable"][data-date="${d}"]`)
+          const exEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${catId}"][data-field="exempt"][data-date="${d}"]`)
+          if (!txEl && !exEl) vMonthTotal += val
+        }
+      })
+    } else {
+      const seenDates = new Set()
+      document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`).forEach(inp => {
+        const d = inp.dataset.date
+        if (seenDates.has(d)) return; seenDates.add(d)
+        const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
+        const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
+        const t = parseOrderVal(tx?.value)
+        const e = parseOrderVal(ex?.value)
+        vMonthTotal += t + Math.round(t*0.1) + e
+      })
+    }
     const vPct = v.monthly_budget > 0 ? Math.round(vMonthTotal / v.monthly_budget * 100) : null
     const vOver = vPct !== null && vPct >= 100
     const vWarn = vPct !== null && vPct >= 80 && !vOver
@@ -3127,6 +3149,8 @@ function updateDayTotal(date) {
         el.innerHTML = badge + amtDisp + pctDisp
       }
     })
+    // 카테고리 모드에서도 주별 진행률 실시간 업데이트
+    updateWeekPctCell(date)
     return
   }
 
@@ -3167,37 +3191,42 @@ function updateWeekPctCell(date) {
   // 이 주에 속한 모든 날짜 행의 발주금액 재합산
   const weekRows = document.querySelectorAll(`tr[data-week-start="${weekKey}"][data-date]`)
   let wTotal = 0
-  weekRows.forEach(wr => {
-    if (wr.dataset.covered === '1') return
-    const d = wr.dataset.date
-    const processedVendors = new Set()
-    document.querySelectorAll(`.order-input[data-date="${d}"]`).forEach(inp => {
-      const vendorId = inp.dataset.vendor
-      if (processedVendors.has(vendorId)) return
-      processedVendors.add(vendorId)
-      const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${d}"]`)
-      const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${d}"]`)
-      const t = parseInt(taxableEl?.value?.replace(/,/g,'') || 0) || 0
-      const e = parseInt(exemptEl?.value?.replace(/,/g,'') || 0) || 0
-      wTotal += t + Math.round(t * 0.1) + e
-    })
-    // 카테고리 모드일 때
-    document.querySelectorAll(`.cat-order-input[data-date="${d}"]`).forEach(inp => {
-      // cat-order-input이 있으면 기존 order-input은 몰침 (wTotal이 0이 되어야 함)
-    })
-  })
-  // 카테고리 모드 체크
+
   const patientCats = window._patientCats || []
-  if (patientCats.length > 0) {
-    wTotal = 0
+  const hasCats = patientCats.length > 0
+
+  if (hasCats) {
+    // 카테고리 모드: cat-order-input 합산
+    const seenKeys = new Set()
     weekRows.forEach(wr => {
       if (wr.dataset.covered === '1') return
       const d = wr.dataset.date
       document.querySelectorAll(`.cat-order-input[data-date="${d}"]`).forEach(inp => {
         const field = inp.dataset.field
+        const catId = inp.dataset.category
+        const vendor = inp.dataset.vendor
+        const key = `${d}-${vendor}-${catId}-${field}`
+        if (seenKeys.has(key)) return; seenKeys.add(key)
         const val = parseInt(inp.value?.replace(/,/g,'') || 0) || 0
         if (field === 'taxable') wTotal += val + Math.round(val * 0.1)
         else if (field === 'exempt') wTotal += val
+      })
+    })
+  } else {
+    // 일반 모드: order-input 합산
+    weekRows.forEach(wr => {
+      if (wr.dataset.covered === '1') return
+      const d = wr.dataset.date
+      const processedVendors = new Set()
+      document.querySelectorAll(`.order-input[data-date="${d}"]`).forEach(inp => {
+        const vendorId = inp.dataset.vendor
+        if (processedVendors.has(vendorId)) return
+        processedVendors.add(vendorId)
+        const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${d}"]`)
+        const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${d}"]`)
+        const t = parseInt(taxableEl?.value?.replace(/,/g,'') || 0) || 0
+        const e = parseInt(exemptEl?.value?.replace(/,/g,'') || 0) || 0
+        wTotal += t + Math.round(t * 0.1) + e
       })
     })
   }
@@ -3973,24 +4002,59 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   const mpTotalByMonth   = Array(12).fill(0)
   const mpNoStaffByMonth = Array(12).fill(0)
   const mpNoSupplyByMonth= Array(12).fill(0)
+
+  // ① 전체 식단가: 카테고리가 있으면 예산비중 가중평균, 없으면 총금액÷총식수
+  // data.annualCatDietPrices = [{id, category_key, category_name, monthlyDietPrices:[{month,monthAmt,monthMeals,dietPrice}]}]
+  const annualCatPrices = data.annualCatDietPrices || []
+
   for (let i=0; i<12; i++) {
     const used = usedByMonth[i]
     const patientM  = patientByMonth[i]
     const staffM    = staffByMonth[i]
     const guardM    = guardByMonth[i]
-    // 식단가 계산용: 비급여 제외 (환자+직원+보호자)
     const tmForPrice = patientM + staffM + guardM
-    // 직원식 제외 분모: 환자+보호자
     const mealsNoStaffM = patientM + guardM
     const supCost = supplyMap[i] || 0
-    if (tmForPrice > 0 && used > 0) {
-      // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) 비급여제외
-      mpTotalByMonth[i]    = Math.round(used / tmForPrice)
-      // ② 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
-      //    직원식 예산이 포함된 총금액을 환자 식수로 나누면 환자 1인당 실질 식비가 나옴
-      mpNoStaffByMonth[i]  = mealsNoStaffM > 0 ? Math.round(used / mealsNoStaffM) : 0
-      // ③ 소모품 제외: (총금액-소모품) ÷ (환자+직원+보호자) 비급여제외
-      mpNoSupplyByMonth[i] = Math.round((used - supCost) / tmForPrice)
+
+    if (used > 0) {
+      // ① 전체 식단가 — 카테고리 가중평균 우선
+      if (annualCatPrices.length > 0) {
+        // 이 달에 유효한 카테고리(발주금액>0이고 식단가>0) 수집
+        const activeCats = annualCatPrices
+          .map(cat => {
+            const md = (cat.monthlyDietPrices || []).find(d => d.month === i + 1) || {}
+            return { dietPrice: md.dietPrice || 0, monthAmt: md.monthAmt || 0 }
+          })
+          .filter(c => c.dietPrice > 0 && c.monthAmt > 0)
+
+        if (activeCats.length === 1) {
+          // 카테고리 1개: 해당 카테고리 식단가 그대로
+          mpTotalByMonth[i] = activeCats[0].dietPrice
+        } else if (activeCats.length >= 2) {
+          // 카테고리 2개 이상: 발주금액 비중 가중평균
+          const totalAmt = activeCats.reduce((s, c) => s + c.monthAmt, 0)
+          if (totalAmt > 0) {
+            mpTotalByMonth[i] = Math.round(
+              activeCats.reduce((s, c) => s + c.dietPrice * (c.monthAmt / totalAmt), 0)
+            )
+          }
+        } else if (tmForPrice > 0) {
+          // 카테고리 데이터 없는 달은 기존 방식 폴백
+          mpTotalByMonth[i] = Math.round(used / tmForPrice)
+        }
+      } else if (tmForPrice > 0) {
+        // 카테고리 미설정 병원: 기존 방식
+        mpTotalByMonth[i] = Math.round(used / tmForPrice)
+      }
+
+      // ② 직원식 제외 식단가
+      if (mealsNoStaffM > 0) {
+        mpNoStaffByMonth[i] = Math.round(used / mealsNoStaffM)
+      }
+      // ③ 소모품 제외 식단가
+      if (tmForPrice > 0) {
+        mpNoSupplyByMonth[i] = Math.round((used - supCost) / tmForPrice)
+      }
     }
   }
 
