@@ -377,6 +377,25 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const prevMealPriceNoSupply = prevMealsForPrice > 0
     ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0
 
+  // ── formula 기반 가중평균 전체 식단가 계산 ──────────────────────
+  // 카테고리가 있는 병원: 예산 비중 가중평균으로 전체 식단가 계산
+  // - 카테고리 1개: 해당 카테고리 식단가 = 전체 식단가
+  // - 카테고리 2개 이상: (각 카테고리 식단가 × 예산비중) 합산
+  let formulaMealPriceTotal = mealPriceTotal  // 기본값: 기존 계산
+  const activeCatDietPrices = catDietPrices.filter(c => c.monthDietPrice > 0 && c.monthAmt > 0)
+  if (activeCatDietPrices.length === 1) {
+    // 카테고리 1개: 해당 카테고리 식단가 = 전체 식단가
+    formulaMealPriceTotal = activeCatDietPrices[0].monthDietPrice
+  } else if (activeCatDietPrices.length >= 2) {
+    // 카테고리 2개 이상: 예산(발주금액) 비중 가중평균
+    const totalCatAmt = activeCatDietPrices.reduce((s, c) => s + c.monthAmt, 0)
+    if (totalCatAmt > 0) {
+      formulaMealPriceTotal = Math.round(
+        activeCatDietPrices.reduce((s, c) => s + (c.monthDietPrice * (c.monthAmt / totalCatAmt)), 0)
+      )
+    }
+  }
+
   return c.json({
     settings,
     vendors: vendors.results,
@@ -385,7 +404,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealCustomFields: customFieldsList.results || [],
     mealCustomTotals: customFieldTotals,
     overBudgetVendors,
-    mealPriceTotal,
+    mealPriceTotal: formulaMealPriceTotal,  // formula 기반 가중평균 (카테고리 없으면 기존 방식)
+    mealPriceRaw: mealPriceTotal,            // 기존 총발주÷총식수 방식 (참고용)
     mealPriceNoStaff,
     mealPriceNoSupply,
     totalMeals,

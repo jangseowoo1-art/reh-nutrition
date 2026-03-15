@@ -922,38 +922,44 @@ async function renderDashboard() {
 
       <!-- 가중평균 식단가 + 막대그래프 (A카드 바로 아래) -->
       ${catDietPricesData.length > 0 ? (() => {
-        // 가중평균 계산
-        let dbWPriceSum = 0, dbWBudgetSum = 0
-        let dbWTargetSum = 0, dbWTargetBudgetSum = 0
-        // 카테고리 1개 여부 판단
+        // ── 카테고리별 식단가 계산 (formula 기반) ──
         const isSingleCat = catDietPricesData.length === 1
-        catDietPricesData.forEach(cat => {
-          const targetP = cat.targetPrice || 0
-          const monthBudget = cat.monthBudget || 0
-          // formula 기반 식단가 우선 사용, 없으면 mealCustomTotals 기반 폴백
-          const catMonthMeals = cat.monthMeals !== undefined
-            ? (cat.monthMeals || 0)
-            : ((mealCustomTotals||{})[`cat_${cat.category_key}`] || 0)
+
+        // 각 카테고리의 formula 식단가 산출
+        const catPriceList = catDietPricesData.map(cat => {
           const monthDietPrice = cat.monthDietPrice !== undefined
             ? (cat.monthDietPrice || 0)
-            : (catMonthMeals > 0 ? Math.round(cat.monthAmt / catMonthMeals) : 0)
-          if (cat.monthAmt > 0 && monthDietPrice > 0) {
-            dbWBudgetSum += cat.monthAmt; dbWPriceSum += cat.monthAmt * monthDietPrice
-          }
-          if (monthBudget > 0 && targetP > 0) {
-            dbWTargetBudgetSum += monthBudget; dbWTargetSum += monthBudget * targetP
-          }
+            : (() => {
+                const m = cat.monthMeals !== undefined ? (cat.monthMeals||0) : ((mealCustomTotals||{})[`cat_${cat.category_key}`]||0)
+                return m > 0 ? Math.round((cat.monthAmt||0) / m) : 0
+              })()
+          return { ...cat, _dietPrice: monthDietPrice }
         })
-        // 카테고리 1개: formula 식단가 직접 사용 (있으면), 없으면 총발주÷총식수
-        const totalCatMeals = catDietPricesData.reduce((s,cat) => s + (cat.monthMeals !== undefined ? (cat.monthMeals||0) : ((mealCustomTotals||{})[`cat_${cat.category_key}`]||0)), 0)
-        const totalCatAmt   = catDietPricesData.reduce((s,cat) => s + (cat.monthAmt||0), 0)
-        const singlePrice   = catDietPricesData[0]?.monthDietPrice !== undefined
-          ? (catDietPricesData[0]?.monthDietPrice || 0)
-          : (totalCatMeals > 0 ? Math.round(totalCatAmt / totalCatMeals) : 0)
-        const singleTarget  = catDietPricesData[0]?.targetPrice || 0
-        // 2개 이상: 가중평균
-        const dbWeightedCurrent = isSingleCat ? singlePrice : (dbWBudgetSum > 0 ? Math.round(dbWPriceSum / dbWBudgetSum) : 0)
-        const dbWeightedTarget  = isSingleCat ? singleTarget : (dbWTargetBudgetSum > 0 ? Math.round(dbWTargetSum / dbWTargetBudgetSum) : 0)
+
+        // 활성(데이터 있는) 카테고리만 가중평균에 사용
+        const activeCats = catPriceList.filter(c => c._dietPrice > 0 && c.monthAmt > 0)
+        const totalAmt = activeCats.reduce((s,c) => s + c.monthAmt, 0)
+
+        // ① 전체 식단가 (가중평균)
+        let dbWeightedCurrent = 0
+        if (isSingleCat) {
+          // 카테고리 1개: 해당 식단가 = 전체 식단가
+          dbWeightedCurrent = catPriceList[0]._dietPrice
+        } else if (totalAmt > 0) {
+          // 카테고리 2개+: 발주금액 비중 가중평균
+          dbWeightedCurrent = Math.round(activeCats.reduce((s,c) => s + c._dietPrice * (c.monthAmt / totalAmt), 0))
+        }
+
+        // ② 목표 식단가 (예산 비중 가중평균)
+        const catsWithTarget = catPriceList.filter(c => c.monthBudget > 0 && c.targetPrice > 0)
+        const totalBudgetForTarget = catsWithTarget.reduce((s,c) => s + c.monthBudget, 0)
+        let dbWeightedTarget = 0
+        if (isSingleCat) {
+          dbWeightedTarget = catPriceList[0]?.targetPrice || 0
+        } else if (totalBudgetForTarget > 0) {
+          dbWeightedTarget = Math.round(catsWithTarget.reduce((s,c) => s + c.targetPrice * (c.monthBudget / totalBudgetForTarget), 0))
+        }
+
         const dbWDiff = dbWeightedCurrent > 0 && dbWeightedTarget > 0 ? dbWeightedCurrent - dbWeightedTarget : null
         const dbWOver = dbWDiff !== null && dbWDiff > 0
         const dbWWarn = dbWDiff !== null && !dbWOver && dbWeightedCurrent >= dbWeightedTarget * 0.9
@@ -984,14 +990,18 @@ async function renderDashboard() {
             </div>
           </div>`
         })() : ''
-        const panelTitle = isSingleCat ? '월 식단가 (총발주÷총식수)' : '가중평균 식단가 (발주금액 비중)'
+        const panelTitle = isSingleCat ? `전체 식단가 (${catPriceList[0]?.category_name||''} 기준)` : '전체 식단가 (예산비중 가중평균)'
         const panelIcon  = isSingleCat ? 'fa-utensils' : 'fa-balance-scale'
+        const panelDesc  = isSingleCat
+          ? `${catPriceList[0]?.category_name||''} 발주금액 ÷ 설정 식수`
+          : activeCats.map(c => `${c.category_name} ${Math.round((c.monthAmt/totalAmt)*100)}%`).join(' + ')
         return `<div class="mt-3 p-3 rounded-xl border" style="background:linear-gradient(135deg,#faf5ff,#f0f9ff);border-color:#c084fc40">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
             <span style="font-size:12px;font-weight:700;color:#7c3aed"><i class="fas ${panelIcon}" style="margin-right:4px"></i>${panelTitle}</span>
             ${dbWDiff!==null&&dbWeightedCurrent>0?`<span style="font-size:11px;font-weight:700;color:${dbWColor}">${dbWOver?'▲ +':'▼ '}${fmt(Math.abs(dbWDiff))}원 ${dbWOver?'초과':dbWWarn?'주의':'이내'}</span>`:''}
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:${dbBarHtml?'0':'0'}px">
+          <div style="font-size:9px;color:#9ca3af;margin-bottom:6px">${panelDesc}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0px">
             <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid #e9d5ff">
               <div style="font-size:10px;color:#6b7280;margin-bottom:3px">목표</div>
               <div style="font-size:15px;font-weight:800;color:${dbWeightedTarget>0?'#7c3aed':'#d1d5db'}">${dbWeightedTarget>0?fmt(dbWeightedTarget)+'원/식':'미설정'}</div>
@@ -1322,14 +1332,17 @@ async function renderOrders() {
       const prevSetMap = {}
       ;(catOrderData?.prevSettings || []).forEach(s => { prevSetMap[s.patient_category_id] = s })
 
-      // 가중평균 목표 식단가 계산
+      // 가중평균 목표 식단가 계산 (예산 비중 기반)
+      const isSingleCatOrd = cats.length === 1
       const totalMonthBudget = cats.reduce((s,c) => s + (catSetMap[c.id]?.monthly_budget||0), 0)
-      const weightedTarget = totalMonthBudget > 0
-        ? Math.round(cats.reduce((s,c) => {
-            const w = (catSetMap[c.id]?.monthly_budget||0) / totalMonthBudget
-            return s + (catSetMap[c.id]?.target_meal_price||0) * w
-          }, 0))
-        : 0
+      const weightedTarget = isSingleCatOrd
+        ? (catSetMap[cats[0]?.id]?.target_meal_price || 0)
+        : (totalMonthBudget > 0
+          ? Math.round(cats.reduce((s,c) => {
+              const w = (catSetMap[c.id]?.monthly_budget||0) / totalMonthBudget
+              return s + (catSetMap[c.id]?.target_meal_price||0) * w
+            }, 0))
+          : 0)
 
       const catRows = cats.map(cat => {
         const color = getCategoryColorHex(cat.category_key)
@@ -1338,9 +1351,14 @@ async function renderOrders() {
         // 월 발주금액: window._catDietPricesData (대시보드에서 로드한 catDietPrices)
         const dcEntry = (window._catDietPricesData||[]).find(d => d.id === cat.id)
         const initMonthAmt = dcEntry?.monthAmt || 0
-        // 월 실입력 식수: dashData.mealCustomTotals['cat_xxx'] 사용
-        const initMonthMeals = (dashData?.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
-        const initMonthPrice = initMonthAmt > 0 && initMonthMeals > 0 ? Math.round(initMonthAmt / initMonthMeals) : 0
+        // 월 식수: formula 기반 (백엔드 monthMeals 우선, 없으면 폴백)
+        const initMonthMeals = dcEntry?.monthMeals !== undefined
+          ? (dcEntry.monthMeals || 0)
+          : ((dashData?.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0)
+        // 월 식단가: formula 기반 (백엔드 monthDietPrice 우선)
+        const initMonthPrice = dcEntry?.monthDietPrice !== undefined
+          ? (dcEntry.monthDietPrice || 0)
+          : (initMonthAmt > 0 && initMonthMeals > 0 ? Math.round(initMonthAmt / initMonthMeals) : 0)
         // 초기 목표 대비 계산
         const initIsOver = targetPrice > 0 && initMonthPrice > targetPrice
         const initIsWarn = targetPrice > 0 && initMonthPrice >= targetPrice * 0.9 && !initIsOver
@@ -1385,7 +1403,7 @@ async function renderOrders() {
           ${weightedTarget > 0 ? `<span style="font-size:10px;color:#6b7280">가중평균 목표: <strong style="color:#1f2937">${fmt(weightedTarget)}원/식</strong></span>` : ''}
         </div>
         <div style="font-size:9px;color:#9ca3af;margin-bottom:6px;display:flex;align-items:center;gap:4px">
-          <i class="fas fa-info-circle"></i> 월 발주금액 ÷ 월 실입력 식수 기준
+          <i class="fas fa-info-circle"></i> 선택한 예산항목 ÷ 선택한 식수항목 기준
         </div>
         ${catRows}
       </div>`
@@ -3998,7 +4016,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   </div>
 
   <!-- ════ 연간 분석 탭 ════ -->
-  <div id="anaContent-annual" class="hidden">
+  <div id="anaContent-annual" style="display:none">
     <!-- 연도별 요약 카드 (3개년) -->
     <div class="grid grid-cols-3 gap-3 mb-4">
       ${[yr1, yr2, yr3].map(yr => `
@@ -4240,6 +4258,12 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   </div>`
 
   // ── 공통 차트 색상
+  // 차트 초기화 전: 모든 탭 content를 잠시 visible로 설정 (hidden 상태에서 chart 초기화 시 0px 크기 방지)
+  ;['annual','monthly'].forEach(t => {
+    const el = document.getElementById(`anaContent-${t}`)
+    if (el) el.style.display = ''
+  })
+
   const COLORS = ['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6','#a855f7']
 
   // 꼭짓점 금액 레이블 플러그인 (업체명 옵션 포함)
@@ -4517,6 +4541,8 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   window.switchMpTypeTab('total')
 
 
+  // ── 월간 차트 초기화: DOM 레이아웃 완료 후 실행 (display:none 상태에서 0 크기 방지)
+  requestAnimationFrame(() => {
   // ── 식단가 3종 월별 (mpMonthly)
   new Chart(document.getElementById('chart-mpMonthly'), {
     type:'line', data:{
@@ -4771,6 +4797,8 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     })
   }
 
+  }) // end requestAnimationFrame (월간 차트)
+
   // 초기 탭: 기본은 월간 분석
   switchAnaTab(activeTab || 'monthly')
 }
@@ -4782,7 +4810,18 @@ window.switchAnaTab = (tab) => {
     if (btn) btn.className = t===tab
       ? 'px-3 py-1.5 text-sm font-medium rounded-lg bg-green-600 text-white'
       : 'px-3 py-1.5 text-sm font-medium rounded-lg bg-white border text-gray-600 hover:bg-gray-50'
-    if (cnt) cnt.classList.toggle('hidden', t!==tab)
+    if (cnt) cnt.style.display = t===tab ? '' : 'none'
+  })
+  // 탭 전환 후 Chart.js 인스턴스 resize (hidden 상태에서 0 크기로 초기화된 경우 복구)
+  // rAF를 두 번 중첩해서 레이아웃이 완전히 계산된 후 resize 보장
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (typeof Chart !== 'undefined' && Chart.instances) {
+        Object.values(Chart.instances).forEach(chart => {
+          try { chart.resize() } catch(e) {}
+        })
+      }
+    })
   })
 }
 
