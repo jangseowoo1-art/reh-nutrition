@@ -1583,25 +1583,59 @@ async function renderOrders() {
     </div>
     
     <!-- 월별 업체 합계 요약 -->
-    <div class="px-3 py-2 border-b border-gray-100 bg-gray-50 overflow-x-auto" style="-webkit-overflow-scrolling:touch">
+    <div class="px-3 py-2 border-b border-gray-100 bg-gray-50" style="-webkit-overflow-scrolling:touch">
+      <!-- 등록 업체 칩 목록 -->
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-size:10px;font-weight:700;color:#6b7280;white-space:nowrap"><i class="fas fa-store" style="color:#3b82f6;margin-right:3px"></i>등록 업체</span>
+        ${vendors.map(v => {
+          const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          const taxBg = v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
+          const taxColor = v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
+          return `<span style="display:inline-flex;align-items:center;gap:3px;background:white;border:1px solid #e5e7eb;border-radius:20px;padding:2px 8px;font-size:10px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap" onclick="openTodayDetailForVendor(${v.id})" title="클릭하면 오늘 발주 입력 열기">
+            ${v.name}
+            <span style="background:${taxBg};color:${taxColor};font-size:8px;padding:0 3px;border-radius:4px;font-weight:700">${taxLabel}</span>
+          </span>`
+        }).join('')}
+      </div>
+      <!-- 업체별 카드 (진행률 바 포함) -->
+      <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch">
       <div class="flex gap-2 min-w-max text-xs" id="vendorSummaryRow">
         ${vendors.map(v => {
           const vOrders = (orderData || []).filter(o => o.vendor_id === v.id)
           const vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
-          const pct = v.monthly_budget > 0 ? (vTotal / v.monthly_budget * 100).toFixed(0) : null
-          const over = v.monthly_budget > 0 && vTotal > v.monthly_budget
-          const warn = !over && v.monthly_budget > 0 && parseFloat(pct||0) >= 80
-          return `<div id="vsum-${v.id}" class="flex flex-col items-center min-w-[70px] p-1.5 bg-white rounded-lg border ${over?'border-red-200':warn?'border-yellow-200':'border-gray-200'}">
-            <div class="font-semibold text-gray-700 text-center leading-tight mb-0.5" style="font-size:10px">${v.name.length > 6 ? v.name.substring(0,6)+'…' : v.name}</div>
-            <div class="font-bold vsum-amt ${over?'text-red-600':warn?'text-yellow-700':'text-green-700'}" style="font-size:11px">${fmtMan(vTotal)}</div>
-            ${pct !== null ? `<div class="vsum-pct ${over?'text-red-400':warn?'text-yellow-500':'text-gray-400'}" style="font-size:10px">${pct}%</div>` : `<div class="vsum-pct"></div>`}
+          const pctNum = v.monthly_budget > 0 ? Math.round(vTotal / v.monthly_budget * 100) : null
+          const over = pctNum !== null && pctNum >= 100
+          const warn = pctNum !== null && pctNum >= 80 && !over
+          const remain = v.monthly_budget > 0 ? v.monthly_budget - vTotal : null
+          const barColor = over ? '#dc2626' : warn ? '#d97706' : '#16a34a'
+          const borderColor = over ? '#fca5a5' : warn ? '#fcd34d' : '#d1fae5'
+          const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          return `<div id="vsum-${v.id}" style="min-width:100px;background:white;border-radius:10px;border:1px solid ${borderColor};padding:8px 10px;cursor:pointer;transition:box-shadow 0.15s" onclick="openTodayDetailForVendor(${v.id})" title="클릭 → 오늘 발주 입력">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+              <span style="font-size:10px;font-weight:700;color:#1f2937;white-space:nowrap;max-width:72px;overflow:hidden;text-overflow:ellipsis">${v.name}</span>
+              <span style="font-size:8px;padding:0 3px;border-radius:4px;background:${v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'};color:${v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'};font-weight:700">${taxLabel}</span>
+            </div>
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">
+              <span class="vsum-amt" style="font-size:12px;font-weight:800;color:${barColor}">${fmtMan(vTotal)}</span>
+              ${pctNum !== null ? `<span class="vsum-pct" style="font-size:10px;font-weight:700;color:${barColor}">${pctNum}%${over?' 🚨':warn?' ⚠️':''}</span>` : '<span class="vsum-pct"></span>'}
+            </div>
+            ${v.monthly_budget > 0 ? `
+            <div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-bottom:3px">
+              <div style="height:100%;width:${Math.min(pctNum||0,100)}%;background:${barColor};border-radius:3px;transition:width 0.4s"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
+              <span>목표 ${fmtMan(v.monthly_budget)}</span>
+              <span style="color:${remain<0?'#dc2626':'#6b7280'}">${remain<0?'초과 '+fmtMan(Math.abs(remain)):'잔여 '+fmtMan(remain)}</span>
+            </div>` : `<div style="font-size:9px;color:#d1d5db;text-align:center">목표 미설정</div>`}
           </div>`
         }).join('')}
-        <div class="flex flex-col items-center min-w-[70px] p-1.5 bg-green-50 rounded-lg border border-green-200">
-          <div class="font-semibold text-green-700 mb-0.5" style="font-size:10px">월 합계</div>
-          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:11px">${fmtMan((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</div>
-          ${totalBudget > 0 ? `<div class="text-gray-400" id="monthPctDisplay" style="font-size:10px">${monthPct}%</div>` : ''}
+        <div style="min-width:90px;background:#f0fdf4;border-radius:10px;border:1px solid #d1fae5;padding:8px 10px">
+          <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:3px">월 합계</div>
+          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:13px;font-weight:800">${fmtMan((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</div>
+          ${totalBudget > 0 ? `<div style="font-size:10px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}" id="monthPctDisplay">${monthPct}%</div>` : ''}
+          ${totalBudget > 0 ? `<div style="height:5px;background:#e5e7eb;border-radius:3px;margin-top:3px;overflow:hidden"><div style="height:100%;width:${Math.min(monthPct,100)}%;background:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};border-radius:3px"></div></div>` : ''}
         </div>
+      </div>
       </div>
     </div>
 
@@ -1667,7 +1701,7 @@ async function renderOrders() {
             }).join('')}
             ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155">일합계</th>` : ''}
             <th class="sticky z-30" style="min-width:80px;background:#1e3a5f;left:110px;padding:4px 3px">합계<br><span style="font-size:9px;opacity:0.8;font-weight:400">/ 진행률</span></th>
-            <th style="min-width:52px;background:#374151;font-size:11px;padding:4px 2px">상세<br><span style="font-size:9px;opacity:0.75;font-weight:400">입력</span></th>
+            <th style="min-width:64px;background:#374151;font-size:11px;padding:4px 2px">업체별<br><span style="font-size:9px;opacity:0.75;font-weight:400">입력</span></th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
@@ -1979,7 +2013,7 @@ async function renderOrders() {
 
       // 상세 토글 버튼
       const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600" title="업체별 상세 발주 입력">
-        <span class="detail-arrow" data-date="${dateStr}">▼</span> 상세
+        <span class="detail-arrow" data-date="${dateStr}">▼</span> 업체별 입력
       </button>` : ''
 
       rows.push(`<tr class="order-summary-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="background:${summaryRowBg};${summaryBorderTop}${isToday?'outline:2px solid #3b82f6;outline-offset:-1px;':''}${pastOpacity}">
@@ -1993,87 +2027,173 @@ async function renderOrders() {
         </td>
         <td style="text-align:center;vertical-align:middle;${summaryBorderTop}background:white;padding:3px 2px;border-left:1px solid #e5e7eb;min-width:52px">
           ${hasCats ? detailToggleBtn : ''}
-          ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600"><span class="detail-arrow" data-date="${dateStr}">▼</span> 상세</button>` : ''}
+          ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600"><span class="detail-arrow" data-date="${dateStr}">▼</span> 업체별 입력</button>` : ''}
         </td>
       </tr>`)
 
       // ── 상세 행 (기본 숨김, 아코디언 펼침) ──
       if (hasCats) {
-        // 카테고리별 상세 입력 행들
-        const detailRowsHtml = patientCats.map((cat, ci) => {
+        // ── 탭형 아코디언: 카테고리별 탭 + 업체별 정보 ──
+        // 탭 헤더 행 (단일 카테고리면 탭 없음)
+        const colCount = 3 + patientCats.length + 1 + 1  // sticky3 + catCols + total + btn
+
+        // 각 카테고리별 탭 상세 행 생성
+        const tabDetailRowsHtml = patientCats.map((cat, ci) => {
           const catColor = getCategoryColorHex(cat.category_key)
           const catSettings2 = catSettingsMap[cat.id] || {}
-          const catBgRow = catColor + '0e'
+          const catMonthBudget = catSettings2.monthly_budget || 0
+          const catBgRow = catColor + '08'
           const isFirstCat = ci === 0
 
-          // 카테고리 이름 셀
-          const catLabelCell = `<td style="padding:2px 4px;background:${catColor}22;border-left:3px solid ${catColor};vertical-align:middle;text-align:center;min-width:60px;white-space:nowrap;font-size:10px;font-weight:800;color:${catColor}">${cat.category_name}</td>`
+          // 이 카테고리의 오늘 입력 합계
+          const catDayAmt = catTotals[ci] || 0
+          const catDB2 = catSettings2.working_days > 0 ? Math.round(catMonthBudget/catSettings2.working_days) : 0
+          const catAdjBudget2 = isCovered ? 0 : catDB2 * multiDayCount
+          const catPctDay = catAdjBudget2 > 0 ? Math.round(catDayAmt/catAdjBudget2*100) : null
+          const catOver2 = catPctDay!==null&&catPctDay>=100
+          const catWarn2 = catPctDay!==null&&catPctDay>=80&&!catOver2
+          const catAmtColor2 = catOver2?'#dc2626':catWarn2?'#d97706':catColor
 
-          // 업체별 입력셀
-          const catVendorCells = vendors.map((v, vi) => {
+          // 이 카테고리의 월 누적 발주 (모든 날짜 합산)
+          let catMonthAccum = 0
+          Object.keys(catDailyMap).forEach(dk => {
+            Object.values(catDailyMap[dk] || {}).forEach(vMap => {
+              const r = vMap[cat.id] || {}
+              catMonthAccum += r.total || 0
+            })
+          })
+          const catMonthRemain = catMonthBudget > 0 ? catMonthBudget - catMonthAccum : null
+          const catMonthPct = catMonthBudget > 0 ? Math.round(catMonthAccum / catMonthBudget * 100) : null
+          const catMonthOver = catMonthPct!==null&&catMonthPct>=100
+          const catMonthWarn = catMonthPct!==null&&catMonthPct>=80&&!catMonthOver
+          const catMonthColor = catMonthOver?'#dc2626':catMonthWarn?'#d97706':catColor
+
+          // 탭 헤더 셀 (카테고리 구분)
+          const tabHeader = patientCats.length > 1 ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;padding-bottom:5px;border-bottom:2px solid ${catColor}40">
+            ${patientCats.map((c2, i2) => {
+              const c2Color = getCategoryColorHex(c2.category_key)
+              const isActive = i2 === ci
+              return `<span style="padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;cursor:pointer;border:1.5px solid ${isActive?c2Color:'#e5e7eb'};background:${isActive?c2Color:'white'};color:${isActive?'white':'#6b7280'}" onclick="switchOrderDetailTab('${dateStr}',${i2})">${c2.category_name}</span>`
+            }).join('')}
+          </div>` : ''
+
+          // 업체별 행 (월목표·누적·잔여·진행률·오늘입력)
+          const vendorRows = vendors.map((v, vi) => {
             const catRow = (catDailyMap[dateStr]?.[v.id]?.[cat.id]) || {}
             const taxable = catRow.taxable || 0
             const exempt = catRow.exempt || 0
             const total = catRow.total || 0
             const vCols = getVendorCols(v.tax_type)
-            const bl = vi > 0 ? `border-left:2px solid #33415520;` : ''
-            let vSumCell = ''
-            if (isFirstCat) {
-              const vDayAllCats = patientCats.reduce((s, pcat) => {
-                const r2 = (catDailyMap[dateStr]?.[v.id]?.[pcat.id]) || {}
-                return s + (r2.total || 0)
-              }, 0)
-              vSumCell = `<td id="vcat-sum-${v.id}-first-${dateStr}" rowspan="${patientCats.length}" style="border-top:1px solid #e5e7eb;padding:2px 3px;background:#f8fafc;border-left:2px solid #cbd5e1;text-align:center;font-size:11px;font-weight:700;color:#1e3a5f;min-width:60px;vertical-align:middle">${vDayAllCats>0?fmt(vDayAllCats):''}</td>`
-            }
+
+            // 업체 월 누적 (이 카테고리)
+            let vCatMonthAccum = 0
+            Object.keys(catDailyMap).forEach(dk => {
+              const r2 = (catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
+              vCatMonthAccum += r2.total || 0
+            })
+            const vRemain = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) - vCatMonthAccum : null
+            const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+            const taxBg = v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
+            const taxColor = v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
+
+            // 입력 필드
+            let inputFields = ''
             if (vCols === 3) {
-              return `<td style="${bl}padding:1px 2px;background:${catBgRow};min-width:64px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:60px;font-size:11px;text-align:right;padding:2px 3px;border:1px solid ${catColor}60;border-radius:3px;background:${taxable>0?catColor+'18':'white'};display:block;margin:0 auto" data-category="${cat.id}" data-vendor="${v.id}" data-field="taxable" data-date="${dateStr}" value="${taxable>0?fmt(taxable):''}" placeholder="0"></td><td style="padding:1px 2px;background:${catBgRow};min-width:64px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:60px;font-size:11px;text-align:right;padding:2px 3px;border:1px solid ${catColor}60;border-radius:3px;background:${exempt>0?catColor+'18':'white'};display:block;margin:0 auto" data-category="${cat.id}" data-vendor="${v.id}" data-field="exempt" data-date="${dateStr}" value="${exempt>0?fmt(exempt):''}" placeholder="0"></td><td id="vcatsubt-${v.id}-${cat.id}-${dateStr}" style="padding:1px 3px;background:${catColor}15;text-align:center;font-size:10px;font-weight:700;color:${catColor};min-width:60px;vertical-align:middle">${total>0?fmtMan(total):''}</td>${vSumCell}`
+              inputFields = `
+                <div style="display:flex;gap:3px;align-items:center;margin-top:4px">
+                  <div style="flex:1">
+                    <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">과세</div>
+                    <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid ${catColor}60;border-radius:4px;background:${taxable>0?catColor+'15':'white'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="taxable" data-date="${dateStr}" value="${taxable>0?fmt(taxable):''}" placeholder="0">
+                  </div>
+                  <div style="flex:1">
+                    <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">면세</div>
+                    <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid ${catColor}60;border-radius:4px;background:${exempt>0?catColor+'15':'white'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="exempt" data-date="${dateStr}" value="${exempt>0?fmt(exempt):''}" placeholder="0">
+                  </div>
+                  <div id="vcatsubt-${v.id}-${cat.id}-${dateStr}" style="flex:1;text-align:center;font-size:11px;font-weight:700;color:${catColor};padding:3px 2px;background:${catColor}10;border-radius:4px;margin-top:12px">${total>0?fmtMan(total):''}</div>
+                </div>`
             } else {
-              return `<td style="${bl}padding:1px 2px;background:${catBgRow};min-width:68px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:64px;font-size:11px;text-align:right;padding:2px 3px;border:1px solid ${catColor}60;border-radius:3px;background:${total>0?catColor+'18':'white'};display:block;margin:0 auto" data-category="${cat.id}" data-vendor="${v.id}" data-field="total" data-date="${dateStr}" value="${total>0?fmt(total):''}" placeholder="0"></td>${vSumCell}`
+              inputFields = `
+                <div style="margin-top:4px">
+                  <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">금액</div>
+                  <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid ${catColor}60;border-radius:4px;background:${total>0?catColor+'15':'white'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="total" data-date="${dateStr}" value="${total>0?fmt(total):''}" placeholder="0">
+                </div>`
             }
+
+            // 업체 월 목표 (카테고리 예산 / 업체 수로 균등 배분, 없으면 미설정)
+            const vMonthBudget = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0
+            const vMonthPct = vMonthBudget > 0 ? Math.round(vCatMonthAccum / vMonthBudget * 100) : null
+            const vMonthOver = vMonthPct!==null&&vMonthPct>=100
+            const vMonthWarn = vMonthPct!==null&&vMonthPct>=80&&!vMonthOver
+            const vMonthColor = vMonthOver?'#dc2626':vMonthWarn?'#d97706':catColor
+            const vRemainAmt = vMonthBudget > 0 ? vMonthBudget - vCatMonthAccum : null
+
+            return `<div id="vendor-card-${v.id}-${cat.id}-${dateStr}" style="background:white;border-radius:8px;border:1.5px solid ${total>0?catColor+'80':'#e5e7eb'};padding:8px 10px;min-width:140px;flex:1">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+                <span style="font-size:11px;font-weight:700;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90px">${v.name}</span>
+                <span style="font-size:8px;padding:1px 4px;border-radius:4px;background:${taxBg};color:${taxColor};font-weight:700">${taxLabel}</span>
+              </div>
+              ${inputFields}
+              <div style="margin-top:6px;padding-top:5px;border-top:1px solid #f3f4f6">
+                <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:2px">
+                  <span>월 누적</span>
+                  <span id="vcat-month-accum-${v.id}-${cat.id}" style="font-weight:700;color:${vMonthColor}">${vCatMonthAccum>0?fmtMan(vCatMonthAccum):'0'}</span>
+                </div>
+                ${vMonthBudget > 0 ? `
+                <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:3px">
+                  <span>월 목표</span>
+                  <span style="color:#6b7280">${fmtMan(vMonthBudget)}</span>
+                </div>
+                <div style="height:4px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
+                  <div style="height:4px;width:${Math.min(vMonthPct||0,100)}%;background:${vMonthColor};border-radius:2px;transition:width 0.3s"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:8px">
+                  <span style="color:${vMonthColor};font-weight:600">${vMonthPct!==null?vMonthPct+'%':''}</span>
+                  <span style="color:${vRemainAmt<0?'#dc2626':'#9ca3af'}">${vRemainAmt!==null?(vRemainAmt<0?'초과 '+fmtMan(Math.abs(vRemainAmt)):'잔여 '+fmtMan(vRemainAmt)):''}</span>
+                </div>` : `<div style="font-size:8px;color:#d1d5db;text-align:center">목표 미설정</div>`}
+              </div>
+            </div>`
           }).join('')
 
-          // 카테고리 소계 셀
-          const catDayAmt = catTotals[ci] || 0
-          const catSettings3 = catSettingsMap[cat.id] || {}
-          const catDB2 = catSettings3.working_days > 0 ? Math.round((catSettings3.monthly_budget||0)/catSettings3.working_days) : 0
-          const catAdjBudget2 = isCovered ? 0 : catDB2 * multiDayCount
-          const catPctDay = catAdjBudget2 > 0 ? Math.round(catDayAmt/catAdjBudget2*100) : null
-          const catOver2 = catPctDay!==null&&catPctDay>=100; const catWarn2 = catPctDay!==null&&catPctDay>=80&&!catOver2
-          const catAmtColor2 = catOver2?'#dc2626':catWarn2?'#d97706':catColor
-          const catSubtotalCell = `<td id="catDayTotal-${dateStr}-${cat.id}" style="padding:2px 4px;background:${catColor}18;border-left:2px solid ${catColor}50;text-align:center;vertical-align:middle;min-width:58px">
-            <div style="font-size:10px;font-weight:700;color:${catAmtColor2}">${catDayAmt>0?fmtMan(catDayAmt):'<span style="color:#d1d5db">-</span>'}</div>
-            ${catPctDay!==null?`<div style="font-size:8px;color:${catAmtColor2};font-weight:600">${catPctDay}%</div>`:''}
-          </td>`
+          // 카테고리 전체 소계 + 닫기 버튼 (첫번째 탭만 닫기 버튼 표시하면 헷갈리니 각 탭에 표시)
+          const catSummary = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1.5px solid ${catColor}30">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span id="catDayTotal-${dateStr}-${cat.id}" style="font-size:12px;font-weight:700;color:${catAmtColor2}">${catDayAmt>0?fmtMan(catDayAmt):'-'}</span>
+                ${catPctDay!==null?`<span style="font-size:10px;color:${catAmtColor2};font-weight:600">${catPctDay}%${catOver2?' 🚨':catWarn2?' ⚠️':''}</span>`:''}
+                ${catAdjBudget2>0?`<span style="font-size:9px;color:#9ca3af">/${fmtMan(catAdjBudget2)}</span>`:''}
+              </div>
+              <div>
+                <button onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:#64748b;color:white;border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-weight:600">▲ 닫기</button>
+              </div>
+            </div>`
 
-          if (isFirstCat) {
-            return `<tr class="order-detail-row cat-row-main ${rowClass}" data-date="${dateStr}" data-cat="${cat.id}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="display:none;background:${catBgRow}">
-              <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;text-align:center;vertical-align:middle;font-size:10px;color:#94a3b8;border-right:1px solid #e2e8f0;padding:2px"></td>
-              <td class="sticky z-10" style="width:24px;background:#f1f5f9;left:30px;padding:2px"></td>
-              <td class="sticky z-10" style="width:56px;background:#f1f5f9;left:54px;padding:2px;border-right:1px solid #e2e8f0;text-align:center;font-size:9px;color:#94a3b8">${multiDayCount}일</td>
-              ${catLabelCell}
-              ${catVendorCells}
-              ${catSubtotalCell}
-              <td rowspan="${patientCats.length}" id="dayRatioCell-detail-${dateStr}" class="sticky z-10" style="left:110px;padding:3px 4px;background:${dBg};text-align:center;vertical-align:middle;border-left:2px solid #d1d5db;min-width:80px">
-                <div style="font-size:11px;font-weight:700;color:${dColor}">${displayTotal>0?fmtMan(displayTotal):'-'}</div>
-                ${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%${dOver?' 🚨':dWarn?' ⚠️':''}</div>`:''}
-              </td>
-              <td rowspan="${patientCats.length}" style="background:white;padding:3px 2px;text-align:center;vertical-align:middle;border-left:1px solid #e5e7eb">
-                <button onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:#64748b;color:white;border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;font-weight:600">▲ 닫기</button>
-              </td>
-            </tr>`
-          } else {
-            return `<tr class="order-detail-row cat-row-sub ${rowClass}" data-date="${dateStr}" data-cat="${cat.id}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="display:none;background:${catBgRow}">
-              <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;padding:2px;border-right:1px solid #e2e8f0"></td>
-              <td class="sticky z-10" style="width:24px;background:#f1f5f9;left:30px;padding:2px"></td>
-              <td class="sticky z-10" style="width:56px;background:#f1f5f9;left:54px;padding:2px;border-right:1px solid #e2e8f0"></td>
-              ${catLabelCell}
-              ${catVendorCells}
-              ${catSubtotalCell}
-            </tr>`
-          }
+          // 전체 발주 합계 셀 (모든 카테고리 합산)
+          const grandSummary = isFirstCat ? `
+            <td id="dayRatioCell-detail-${dateStr}" rowspan="${patientCats.length}" class="sticky z-10" style="left:110px;padding:6px 4px;background:${dBg};text-align:center;vertical-align:middle;border-left:2px solid #d1d5db;min-width:80px">
+              <div style="font-size:11px;font-weight:700;color:${dColor}">${displayTotal>0?fmtMan(displayTotal):'-'}</div>
+              ${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%${dOver?' 🚨':dWarn?' ⚠️':''}</div>`:''}
+            </td>
+            <td rowspan="${patientCats.length}" style="background:white;padding:3px 2px;text-align:center;vertical-align:middle;border-left:1px solid #e5e7eb;min-width:48px">
+            </td>` : ''
+
+          const displayStyle = ci === 0 ? '' : 'display:none'
+
+          return `<tr class="order-detail-row cat-tab-row ${rowClass}" data-date="${dateStr}" data-cat="${cat.id}" data-tab-index="${ci}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="${displayStyle};background:${catBgRow}">
+            <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;padding:2px;border-right:1px solid #e2e8f0;vertical-align:top"></td>
+            <td class="sticky z-10" style="width:24px;background:#f1f5f9;left:30px;padding:2px;vertical-align:top"></td>
+            <td class="sticky z-10" style="width:56px;background:#f1f5f9;left:54px;padding:2px;border-right:1px solid #e2e8f0;text-align:center;font-size:9px;color:#94a3b8;vertical-align:top">${multiDayCount}일</td>
+            <td colspan="${patientCats.length}" style="padding:8px 10px;background:${catBgRow};vertical-align:top">
+              ${tabHeader}
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${vendorRows}
+              </div>
+              ${catSummary}
+            </td>
+            ${grandSummary}
+          </tr>`
         }).join('')
 
-        rows.push(detailRowsHtml)
+        rows.push(tabDetailRowsHtml)
       } else {
         // 카테고리 없는 경우: 상세 행에 업체 입력
         const vendorInputCells = vendors.map((v, vi) => getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)).join('')
@@ -2157,21 +2277,85 @@ async function renderOrders() {
         return `<td style="${bl}text-align:center;padding:3px 4px;min-width:76px;background:${catAmt>0?catColor+'10':''}"><div style="font-size:10px;font-weight:700;color:${catAmt>0?catColor:'#9ca3af'}">${catAmt>0?fmtMan(catAmt):'-'}</div></td>`
       }).join('') : `<td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>`}
       <td class="text-center sticky bg-gray-100" id="vfoot-month-total" style="left:110px;font-size:11px;min-width:80px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}">${fmtMan(monthTotal)}<div style="font-size:9px;font-weight:600">${monthPct}%</div></td>
-      <td style="background:#f3f4f6;text-align:center;padding:2px;font-size:9px;color:#9ca3af">상세</td>
+      <td style="background:#f3f4f6;text-align:center;padding:2px;font-size:9px;color:#9ca3af">업체별</td>
     </tr>`
   }
 
 
 }
 
+// ── 업체 카드 클릭 → 오늘 날짜 상세 자동 오픈 ──────────────────
+window.openTodayDetailForVendor = function(vendorId) {
+  const todayStr = new Date().toISOString().split('T')[0]
+  // 오늘 요약 행 찾기
+  const todayRow = document.querySelector(`tr.order-summary-row[data-date="${todayStr}"]`)
+  if (todayRow) {
+    // 상세가 닫혀 있으면 열기
+    const detailRows = document.querySelectorAll(`.order-detail-row[data-date="${todayStr}"]`)
+    const firstRow = detailRows[0]
+    const isOpen = firstRow && firstRow.style.display !== 'none'
+    if (!isOpen) toggleOrderDetail(todayStr)
+
+    // 탭 구조: 이 업체가 입력된 탭(카테고리)으로 전환
+    setTimeout(() => {
+      // 해당 업체 입력창 찾기
+      const inp = document.querySelector(`.cat-order-input[data-vendor="${vendorId}"][data-date="${todayStr}"]`)
+      if (inp) {
+        // 이 입력이 속한 탭 행 찾기
+        const tabRow = inp.closest(`tr.cat-tab-row[data-date="${todayStr}"]`)
+        if (tabRow) {
+          const tabIdx = parseInt(tabRow.dataset.tabIndex || '0')
+          // 이미 해당 탭이 열려있지 않으면 전환
+          if (tabRow.style.display === 'none') {
+            window.switchOrderDetailTab(todayStr, tabIdx)
+          }
+        }
+        // 스크롤 후 포커스 및 강조
+        setTimeout(() => {
+          todayRow.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          setTimeout(() => {
+            const cardEl = inp.closest('[id^="vendor-card-"]')
+            if (cardEl) {
+              cardEl.style.boxShadow = '0 0 0 2px #3b82f6'
+              setTimeout(() => { cardEl.style.boxShadow = '' }, 2000)
+            }
+            inp.style.outline = '2px solid #3b82f6'
+            inp.focus()
+            setTimeout(() => { inp.style.outline = '' }, 2000)
+          }, 200)
+        }, 100)
+      } else {
+        todayRow.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }, isOpen ? 50 : 200)
+  } else {
+    // 오늘 날짜가 이번 달에 없으면 그냥 테이블로 스크롤
+    const table = document.getElementById('ordersTable')
+    if (table) table.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
 // ── 아코디언: 상세 행 토글 ──────────────────────────────────────
 window.toggleOrderDetail = function(dateStr) {
   const detailRows = document.querySelectorAll(`.order-detail-row[data-date="${dateStr}"]`)
-  const isOpen = detailRows.length > 0 && detailRows[0].style.display !== 'none'
+  // 탭 구조: tab-index=0인 행이 보이면 열린 상태
+  const firstDetailRow = detailRows[0]
+  const isOpen = firstDetailRow && firstDetailRow.style.display !== 'none'
 
-  detailRows.forEach(row => {
-    row.style.display = isOpen ? 'none' : ''
-  })
+  if (isOpen) {
+    // 닫기: 모든 상세 행 숨기기
+    detailRows.forEach(row => { row.style.display = 'none' })
+  } else {
+    // 열기: tab-index=0 행만 표시 (탭 구조), 비탭은 모두 표시
+    detailRows.forEach(row => {
+      const tabIdx = row.dataset.tabIndex
+      if (tabIdx === undefined) {
+        row.style.display = ''  // 비탭 구조
+      } else {
+        row.style.display = tabIdx === '0' ? '' : 'none'  // 탭 구조: 첫 탭만 표시
+      }
+    })
+  }
 
   // 상세 버튼 화살표 방향 변경
   const arrowEl = document.querySelector(`.detail-arrow[data-date="${dateStr}"]`)
@@ -2185,10 +2369,26 @@ window.toggleOrderDetail = function(dateStr) {
   // 스크롤 동기화 재초기화
   if (!isOpen) {
     setTimeout(() => setupOrdersScrollSync(), 50)
-    // 상세가 열릴 때 해당 행 입력에 포커스
-    const firstInput = detailRows[0]?.querySelector('input.cat-order-input, input.order-input')
+    // 상세가 열릴 때 첫 번째 입력에 포커스
+    const firstInput = firstDetailRow?.querySelector('input.cat-order-input, input.order-input')
     if (firstInput) setTimeout(() => firstInput.focus(), 100)
   }
+}
+
+// ── 탭 전환: 날짜별 카테고리 탭 전환 ────────────────────────────
+window.switchOrderDetailTab = function(dateStr, tabIndex) {
+  const detailRows = document.querySelectorAll(`.order-detail-row.cat-tab-row[data-date="${dateStr}"]`)
+  detailRows.forEach(row => {
+    const idx = parseInt(row.dataset.tabIndex || '0')
+    row.style.display = idx === tabIndex ? '' : 'none'
+  })
+  // 탭 전환 후 첫 입력에 포커스
+  const activeRow = document.querySelector(`.order-detail-row.cat-tab-row[data-date="${dateStr}"][data-tab-index="${tabIndex}"]`)
+  if (activeRow) {
+    const inp = activeRow.querySelector('input.cat-order-input')
+    if (inp) setTimeout(() => inp.focus(), 80)
+  }
+  setTimeout(() => setupOrdersScrollSync(), 50)
 }
 
 // ── 발주 테이블 하단 스크롤 미러 동기화 ──────────────────────────
@@ -3465,6 +3665,63 @@ function updateDayTotal(date) {
     }
     // 카테고리 모드에서도 주별 진행률 실시간 업데이트
     updateWeekPctCell(date)
+
+    // ── 탭 내 업체 월 누적 금액 실시간 업데이트 ──
+    patientCats.forEach(cat => {
+      const catColor = getCategoryColorHex(cat.category_key)
+      const catSettings5 = (window._catSettingsMap || {})[cat.id] || {}
+      const catMonthBudget5 = catSettings5.monthly_budget || 0
+      const vendorsBudget = window._ordersVendors || []
+      const vCount = vendorsBudget.length || 1
+
+      vendorsBudget.forEach(v => {
+        const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
+        if (!accumEl) return
+        // 이 업체×카테고리의 전체 월 누적 합산 (현재 입력값 포함)
+        let vCatLiveTotal = 0
+        document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"]`).forEach(inp2 => {
+          const fld = inp2.dataset.field
+          const val2 = parseOrderVal(inp2.value)
+          if (fld === 'taxable') vCatLiveTotal += val2 + Math.round(val2 * 0.1)
+          else vCatLiveTotal += val2
+        })
+
+        const vMonthBudget5 = catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0
+        const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
+        const vMonthOver5 = vMonthPct5!==null&&vMonthPct5>=100
+        const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
+        const vMonthColor5 = vMonthOver5?'#dc2626':vMonthWarn5?'#d97706':catColor
+
+        accumEl.textContent = vCatLiveTotal > 0 ? fmtMan(vCatLiveTotal) : '0'
+        accumEl.style.color = vMonthColor5
+
+        // 업체 카드 테두리 색상 업데이트
+        const cardEl = document.getElementById(`vendor-card-${v.id}-${cat.id}-${date}`)
+        if (cardEl) {
+          const hasAmt = (catTotals[cat.id] || 0) > 0
+          cardEl.style.borderColor = hasAmt ? catColor + '80' : '#e5e7eb'
+          // 진행률 바 업데이트
+          const barEl = cardEl.querySelector('[id^="vbar-"]')
+          if (!barEl && vMonthBudget5 > 0) {
+            // 진행률 바가 있으면 너비 업데이트 (동적 선택)
+            const bars = cardEl.querySelectorAll('[style*="height:4px"]')
+            bars.forEach(bar => {
+              if (bar.style.width !== undefined && bar.parentElement) {
+                // 진행률 바 내부 div
+                const innerBar = bar.style.background && bar.style.background !== '#e5e7eb' ? bar : null
+                if (innerBar) {
+                  innerBar.style.width = Math.min(vMonthPct5||0, 100) + '%'
+                  innerBar.style.background = vMonthColor5
+                }
+              }
+            })
+          }
+        }
+      })
+    })
+
+    // 예산 진행 패널 갱신
+    if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
     return
   }
 
@@ -3490,6 +3747,7 @@ function updateDayTotal(date) {
   }
   // 주별 진행률 셀 실시간 업데이트
   updateWeekPctCell(date)
+  if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
 }
 
 function updateWeekPctCell(date) {
