@@ -1205,8 +1205,11 @@ async function renderOrders() {
 
   const settings = settingsData?.settings || {}
   const totalBudget = settings.total_budget || 0
-  const workingDays = settings.working_days || getDaysInMonth(App.currentYear, App.currentMonth)
-  const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
+  // working_days: 관리자 설정값 우선, 미설정 시 22일(평균 영업일) 사용
+  // 설정된 working_days가 없으면 일 예산을 계산할 수 없어 진행률이 의미없으므로
+  // totalBudget이 있을 때만 dailyBudget 계산
+  const workingDays = settings.working_days || 0
+  const dailyBudget = (totalBudget > 0 && workingDays > 0) ? Math.round(totalBudget / workingDays) : 0
   // 식단가 관련 데이터
   const mealStats = dashData?.mealStats || {}
   const targetMealPrice = settings.meal_price || 0
@@ -1994,18 +1997,22 @@ async function renderOrders() {
         const catAmtColor = catOver?'#dc2626':catWarn?'#d97706':(catAmt>0?catColor:'#9ca3af')
         const bl = ci === 0 ? `border-left:3px solid ${catColor}80;` : `border-left:2px solid ${catColor}40;`
         return `<td id="summCatAmt-${cat.id}-${dateStr}" style="${bl}${summaryBorderTop}padding:3px 4px;background:${catAmt>0?catColor+'12':summaryRowBg};text-align:center;vertical-align:middle;min-width:76px;${pastOpacity}">
+          <div style="font-size:8px;color:${catColor}99;margin-bottom:1px;font-weight:600">${cat.category_name}</div>
           <div style="font-size:11px;font-weight:700;color:${catAmtColor}">${catAmt>0?fmtMan(catAmt):'<span style="color:#e5e7eb">-</span>'}</div>
-          ${catPct!==null?`<div style="font-size:9px;color:${catAmtColor};font-weight:600">${catPct}%${catOver?' 🚨':catWarn?' ⚠️':''}</div>`:''}
+          ${catPct!==null?`<div style="font-size:9px;color:${catAmtColor};font-weight:600">${catPct}%${catOver?' 🚨':catWarn?' ⚠️':''}</div>`:(catAmt>0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}
         </td>`
       }).join('')
 
       // 카테고리 없을 때 일합계 셀
       const summaryNoCatCell = patientCats.length === 0 ? `<td id="dayTotal-${dateStr}" class="total-col text-center text-xs" style="${summaryBorderTop}vertical-align:middle;${dOver?'color:#dc2626;font-weight:700;background:#fee2e2':dWarn?'color:#d97706;font-weight:600;background:#fef3c7':''}">${dayTotal>0?fmt(dayTotal):''}</td>` : ''
 
-      // 진행률/합계 셀 (sticky)
+      // 진행률/합계 셀 (sticky) - 일별 발주금액 기준
       const totalCellHtml = `
+        <div style="font-size:9px;color:#9ca3af;margin-bottom:1px">일별 발주</div>
         <div style="font-size:11px;font-weight:700;color:${dColor}">${displayTotal>0?fmtMan(displayTotal):'<span style="color:#d1d5db">-</span>'}</div>
-        ${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%${dOver?' 🚨':dWarn?' ⚠️':''}</div>`:''}
+        ${dayPct!==null
+          ? `<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%${dOver?' 🚨':dWarn?' ⚠️':''}</div>`
+          : (displayTotal>0&&adjBudget===0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}
         ${adjBudget>0?`<div style="font-size:8px;color:#9ca3af">/${fmtMan(adjBudget)}</div>`:''}`
 
       // 일수 선택기
@@ -2119,8 +2126,8 @@ async function renderOrders() {
                 </div>`
             }
 
-            // 업체 월 목표 (카테고리 예산 / 업체 수로 균등 배분, 없으면 미설정)
-            const vMonthBudget = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0
+            // 업체 월 목표: 업체 자체 monthly_budget 사용, 없으면 카테고리 예산 균등 배분
+            const vMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0)
             const vMonthPct = vMonthBudget > 0 ? Math.round(vCatMonthAccum / vMonthBudget * 100) : null
             const vMonthOver = vMonthPct!==null&&vMonthPct>=100
             const vMonthWarn = vMonthPct!==null&&vMonthPct>=80&&!vMonthOver
@@ -3452,7 +3459,7 @@ function updateInsightPanel() {
           ${curDietPrice > 0
             ? `<div style="font-size:11px;font-weight:700;color:${dPriceColor}">${statusIcon} ${curDietPrice.toLocaleString()}원/인</div>
                ${targetPrice > 0 ? `<div style="font-size:9px;color:#9ca3af">목표 ${targetPrice.toLocaleString()}원 ${diffPct!==null?`<span style="color:${dPriceColor};font-weight:600">(${diff2>0?'+':''}${diffPct}%)</span>`:''}</div>` : ''}`
-            : `<div style="font-size:10px;color:#d1d5db">발주 미입력</div>`}
+            : (catTotal > 0 ? `<div style="font-size:10px;color:#9ca3af">⚠️ 식수 데이터 없음<div style="font-size:8px;color:#d1d5db">발주 ${fmtMan(catTotal)} 입력됨</div></div>` : `<div style="font-size:10px;color:#d1d5db">발주 미입력</div>`)}
         </div>
       </div>`
     }).join('')
@@ -3639,7 +3646,7 @@ function updateDayTotal(date) {
       const catAmtColor4 = catOver4?'#dc2626':catWarn4?'#d97706':(catAmt4>0?catColor:'#9ca3af')
       const summEl = document.getElementById(`summCatAmt-${cat.id}-${date}`)
       if (summEl) {
-        summEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:${catAmtColor4}">${catAmt4>0?fmtMan(catAmt4):'<span style="color:#e5e7eb">-</span>'}</div>${catPct4!==null?`<div style="font-size:9px;color:${catAmtColor4};font-weight:600">${catPct4}%${catOver4?' 🚨':catWarn4?' ⚠️':''}</div>`:''}`
+        summEl.innerHTML = `<div style="font-size:8px;color:${catColor}99;margin-bottom:1px;font-weight:600">${cat.category_name}</div><div style="font-size:11px;font-weight:700;color:${catAmtColor4}">${catAmt4>0?fmtMan(catAmt4):'<span style="color:#e5e7eb">-</span>'}</div>${catPct4!==null?`<div style="font-size:9px;color:${catAmtColor4};font-weight:600">${catPct4}%${catOver4?' 🚨':catWarn4?' ⚠️':''}</div>`:(catAmt4>0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}`
         summEl.style.background = catAmt4 > 0 ? catColor + '12' : ''
       }
     })
