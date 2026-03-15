@@ -1864,15 +1864,7 @@ async function renderOrders() {
         const weekLeftColspan = hasCatsWeek ? 4 : 3
         const weekTotalColspan = hasCatsWeek ? 2 : 1
         rows.push(`<tr class="week-summary-row${isCurrentWeek?' current-week-row':''}" data-week-key="${weekKey}" data-week-num="${weekNumber}" style="background:${wBg};border-top:${wBW} ${wBS} ${wBorderColor};border-bottom:${wBW} ${wBS} ${wBorderColor};">
-          <td colspan="${weekLeftColspan}" class="sticky left-0" id="weekPctCell-${weekKey}" data-week-num="${weekNumber}" data-week-is-current="${isCurrentWeek?'1':'0'}" data-week-label="${wLabel}" data-week-badge-bg="${wBadgeBg}" data-week-budget="${weekBudget}" style="background:${wBg};padding:3px 5px;min-width:${hasCatsWeek?150:106}px;border-right:3px solid ${wBorderColor};">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
-              <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumber}주${isCurrentWeek?'(현재)':''}</div>
-              <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
-            </div>
-            <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${wLabel}</div>
-            <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
-            ${wPctBar}
-          </td>
+          <td colspan="${weekLeftColspan}" class="sticky left-0" id="weekPctCell-${weekKey}" data-week-num="${weekNumber}" data-week-is-current="${isCurrentWeek?'1':'0'}" data-week-label="${wLabel}" data-week-budget="${weekBudget}" style="background:${wBg};padding:3px 5px;min-width:${hasCatsWeek?150:106}px;border-right:3px solid ${wBorderColor};">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
               <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumber}주${isCurrentWeek?'(현재)':''}</div>
               <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
@@ -3158,12 +3150,10 @@ function updateDayTotal(date) {
       dayTotalEl.style.fontWeight = (dOver || dWarn) ? '700' : ''
     }
   }
-
-  // ── 주별 진행률 셀 실시간 업데이트 ──
+  // 주별 진행률 셀 실시간 업데이트
   updateWeekPctCell(date)
 }
 
-// 해당 날짜가 속한 주의 진행률 셀을 재계산하여 업데이트
 function updateWeekPctCell(date) {
   const row = document.querySelector(`tr[data-date="${date}"]`)
   if (!row) return
@@ -3171,63 +3161,43 @@ function updateWeekPctCell(date) {
   if (!weekKey) return
   const weekPctCell = document.getElementById(`weekPctCell-${weekKey}`)
   if (!weekPctCell) return
-
   const budget = window._ordersBudget
   if (!budget) return
 
-  // 이 주에 속한 모든 날짜 행 수집
+  // 이 주에 속한 모든 날짜 행의 발주금액 재합산
   const weekRows = document.querySelectorAll(`tr[data-week-start="${weekKey}"][data-date]`)
   let wTotal = 0
-
-  const patientCats = window._patientCats || []
-  const hasCats = patientCats.length > 0
-
   weekRows.forEach(wr => {
+    if (wr.dataset.covered === '1') return
     const d = wr.dataset.date
-    const isCovered = wr.dataset.covered === '1'
-    if (isCovered) return
-    if (hasCats) {
-      patientCats.forEach(cat => {
-        document.querySelectorAll(`.cat-order-input[data-date="${d}"]`).forEach(inp => {
-          const field = inp.dataset.field
-          const val = parseInt(inp.value?.replace(/,/g,'') || 0) || 0
-          if (field === 'taxable') wTotal += val + Math.round(val * 0.1)
-          else if (field === 'exempt') wTotal += val
-        })
-      })
-    } else {
-      document.querySelectorAll(`.order-input[data-date="${d}"]`).forEach(inp => {
-        const vendorId = inp.dataset.vendor
-        const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${d}"]`)
-        const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${d}"]`)
-        if (!taxableEl || inp !== taxableEl && inp !== exemptEl) return
-        if (inp === taxableEl) {
-          const t = parseInt(inp.value?.replace(/,/g,'') || 0) || 0
-          wTotal += t + Math.round(t * 0.1)
-        } else if (inp === exemptEl) {
-          wTotal += parseInt(inp.value?.replace(/,/g,'') || 0) || 0
-        }
-      })
-    }
+    const processedVendors = new Set()
+    document.querySelectorAll(`.order-input[data-date="${d}"]`).forEach(inp => {
+      const vendorId = inp.dataset.vendor
+      if (processedVendors.has(vendorId)) return
+      processedVendors.add(vendorId)
+      const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${d}"]`)
+      const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${d}"]`)
+      const t = parseInt(taxableEl?.value?.replace(/,/g,'') || 0) || 0
+      const e = parseInt(exemptEl?.value?.replace(/,/g,'') || 0) || 0
+      wTotal += t + Math.round(t * 0.1) + e
+    })
+    // 카테고리 모드일 때
+    document.querySelectorAll(`.cat-order-input[data-date="${d}"]`).forEach(inp => {
+      // cat-order-input이 있으면 기존 order-input은 몰침 (wTotal이 0이 되어야 함)
+    })
   })
-
-  // 중복 합산 방지: 카테고리 없을 때 업체별로 한 번만 합산
-  if (!hasCats) {
+  // 카테고리 모드 체크
+  const patientCats = window._patientCats || []
+  if (patientCats.length > 0) {
     wTotal = 0
     weekRows.forEach(wr => {
-      const d = wr.dataset.date
       if (wr.dataset.covered === '1') return
-      const multidays = parseInt(wr.dataset.multidays || '1')
-      const processedVendors = new Set()
-      document.querySelectorAll(`.order-input[data-date="${d}"]`).forEach(inp => {
-        const vendorId = inp.dataset.vendor
-        if (processedVendors.has(vendorId)) return
-        processedVendors.add(vendorId)
-        const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${d}"]`)
-        const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${d}"]`)
-        const t = parseInt(taxableEl?.value?.replace(/,/g,'') || 0) || 0
-        const e = parseInt(exemptEl?.value?.replace(/,/g,'') || 0) || 0
-        wTotal += t + Math.round(t * 0.1) + e
+      const d = wr.dataset.date
+      document.querySelectorAll(`.cat-order-input[data-date="${d}"]`).forEach(inp => {
+        const field = inp.dataset.field
+        const val = parseInt(inp.value?.replace(/,/g,'') || 0) || 0
+        if (field === 'taxable') wTotal += val + Math.round(val * 0.1)
+        else if (field === 'exempt') wTotal += val
       })
     })
   }
@@ -3237,26 +3207,23 @@ function updateWeekPctCell(date) {
   const wOver = wPct !== null && wPct >= 100
   const wWarn = wPct !== null && wPct >= 80 && !wOver
   const wColor = wOver ? '#dc2626' : wWarn ? '#d97706' : '#166534'
-
   const isCurrentWeek = weekPctCell.dataset.weekIsCurrent === '1'
   const weekNum = weekPctCell.dataset.weekNum || ''
   const weekLabel = weekPctCell.dataset.weekLabel || ''
   const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver ? '#dc2626' : wWarn ? '#d97706' : '#166534')
-  const weekNumText = `${weekNum}주${isCurrentWeek ? '(현재)' : ''}`
-
   const wPctBar = wPct !== null
     ? `<div style="height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin-top:3px"><div style="height:4px;width:${Math.min(wPct,100)}%;background:${wColor};border-radius:2px"></div></div>`
     : ''
-
   weekPctCell.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
-      <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumText}</div>
+      <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNum}주${isCurrentWeek?'(현재)':''}</div>
       <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct !== null ? wPct + '%' : '-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
     </div>
     <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${weekLabel}</div>
     <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
     ${wPctBar}
   `
+}
 
 // ══════════════════════════════════════════════════════════════
 //  식수 입력 페이지
@@ -3684,25 +3651,21 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
   const dTotal  = mealData.reduce((s,m)=>s+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0) + customFields.reduce((s,f)=>s+cD[f.field_key],0)
 
   let cells = `<td colspan="2" class="text-center py-2">월 합계</td>`
-  // 조식 (환자 제외: 직원/비급/보호 + 커스텀)
   cells += `<td class="text-center" id="mealFoot-bf-s">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_staff||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-bf-n">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_noncovered||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-bf-g">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_guardian||0),0))}</td>`
   customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-bf-${f.field_key}">${fmt(cBf[f.field_key])}</td>` })
   cells += `<td class="text-center bg-blue-100 font-bold" id="mealFoot-bf-sum">${fmt(bfTotal)}</td>`
-  // 중식
   cells += `<td class="text-center" id="mealFoot-l-s">${fmt(mealData.reduce((s,m)=>s+(m.lunch_staff||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-l-n">${fmt(mealData.reduce((s,m)=>s+(m.lunch_noncovered||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-l-g">${fmt(mealData.reduce((s,m)=>s+(m.lunch_guardian||0),0))}</td>`
   customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-l-${f.field_key}">${fmt(cL[f.field_key])}</td>` })
   cells += `<td class="text-center bg-green-100 font-bold" id="mealFoot-l-sum">${fmt(lTotal)}</td>`
-  // 석식
   cells += `<td class="text-center" id="mealFoot-d-s">${fmt(mealData.reduce((s,m)=>s+(m.dinner_staff||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-d-n">${fmt(mealData.reduce((s,m)=>s+(m.dinner_noncovered||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-d-g">${fmt(mealData.reduce((s,m)=>s+(m.dinner_guardian||0),0))}</td>`
   customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-d-${f.field_key}">${fmt(cD[f.field_key])}</td>` })
   cells += `<td class="text-center bg-purple-100 font-bold" id="mealFoot-d-sum">${fmt(dTotal)}</td>`
-  // 합계열 (환자 열 제거: 직원/비급/보호 + 커스텀)
   cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-s">${fmt(monthTotal.s)}</td>`
   cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-n">${fmt(monthTotal.n)}</td>`
   cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-g">${fmt(monthTotal.g)}</td>`
@@ -3799,29 +3762,26 @@ function updateMealSummaryCards() {
   let ts=0, tn=0, tg=0
   const cf = window._mealCustomFields || []
   const customSums = {}
-  // 조식/중식/석식별 합계 (footer용)
-  const bfSums = { s:0, n:0, g:0 }, lSums = { s:0, n:0, g:0 }, dSums = { s:0, n:0, g:0 }
-  const bfCustom = {}, lCustom = {}, dCustom = {}
-  cf.forEach(f => { customSums[f.field_key] = 0; bfCustom[f.field_key]=0; lCustom[f.field_key]=0; dCustom[f.field_key]=0 })
+  const bfSums = {s:0,n:0,g:0}, lSums = {s:0,n:0,g:0}, dSums = {s:0,n:0,g:0}
+  const bfC = {}, lC = {}, dC = {}
+  cf.forEach(f => { customSums[f.field_key]=0; bfC[f.field_key]=0; lC[f.field_key]=0; dC[f.field_key]=0 })
 
   document.querySelectorAll('#mealTableBody tr[data-date]').forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
-    // 환자(p) 제외: 환자군(커스텀 필드)으로 대체됨
-    const bfs=g('bf_s'), bfn=g('bf_n'), bfg=g('bf_g')
-    const ls=g('l_s'), ln=g('l_n'), lg=g('l_g')
-    const ds=g('d_s'), dn=g('d_n'), dg=g('d_g')
-    ts += bfs+ls+ds; tn += bfn+ln+dn; tg += bfg+lg+dg
+    const bfs=g('bf_s'),bfn=g('bf_n'),bfg=g('bf_g')
+    const ls=g('l_s'),ln=g('l_n'),lg=g('l_g')
+    const ds=g('d_s'),dn=g('d_n'),dg=g('d_g')
+    ts+=bfs+ls+ds; tn+=bfn+ln+dn; tg+=bfg+lg+dg
     bfSums.s+=bfs; bfSums.n+=bfn; bfSums.g+=bfg
     lSums.s+=ls;   lSums.n+=ln;   lSums.g+=lg
     dSums.s+=ds;   dSums.n+=dn;   dSums.g+=dg
     cf.forEach(f => {
       const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
-      customSums[f.field_key] += bfv+lv+dv
-      bfCustom[f.field_key]+=bfv; lCustom[f.field_key]+=lv; dCustom[f.field_key]+=dv
+      customSums[f.field_key]+=bfv+lv+dv
+      bfC[f.field_key]+=bfv; lC[f.field_key]+=lv; dC[f.field_key]+=dv
     })
   })
-  // 총 식수: 비급여(tn) 제외, ea 단위 커스텀 필드 제외, 환자 제외
   const customTotalForMeals = cf
     .filter(f => (f.unit_type||'meal') !== 'ea')
     .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
@@ -3832,19 +3792,18 @@ function updateMealSummaryCards() {
   set('mealSummary-s', ts); set('mealSummary-n', tn); set('mealSummary-g', tg)
   cf.forEach(f => { set(`mealSummary-${f.field_key}`, customSums[f.field_key]) })
   set('mealSummary-total', grand)
-
-  // ── 하단 footer 행 실시간 업데이트 ──
-  const bfTotal = bfSums.s+bfSums.n+bfSums.g + cf.reduce((s,f)=>s+bfCustom[f.field_key],0)
-  const lTotal  = lSums.s+lSums.n+lSums.g   + cf.reduce((s,f)=>s+lCustom[f.field_key],0)
-  const dTotal  = dSums.s+dSums.n+dSums.g   + cf.reduce((s,f)=>s+dCustom[f.field_key],0)
-  set('mealFoot-bf-s', bfSums.s); set('mealFoot-bf-n', bfSums.n); set('mealFoot-bf-g', bfSums.g)
-  set('mealFoot-l-s',  lSums.s);  set('mealFoot-l-n',  lSums.n);  set('mealFoot-l-g',  lSums.g)
-  set('mealFoot-d-s',  dSums.s);  set('mealFoot-d-n',  dSums.n);  set('mealFoot-d-g',  dSums.g)
-  cf.forEach(f => { set(`mealFoot-bf-${f.field_key}`, bfCustom[f.field_key]); set(`mealFoot-l-${f.field_key}`, lCustom[f.field_key]); set(`mealFoot-d-${f.field_key}`, dCustom[f.field_key]) })
-  set('mealFoot-bf-sum', bfTotal); set('mealFoot-l-sum', lTotal); set('mealFoot-d-sum', dTotal)
-  set('mealFoot-t-s', ts); set('mealFoot-t-n', tn); set('mealFoot-t-g', tg)
-  cf.forEach(f => { set(`mealFoot-t-${f.field_key}`, customSums[f.field_key]) })
-  set('mealFoot-t-total', grand)
+  // 하단 footer 행 실시간 업데이트
+  const bfTotal = bfSums.s+bfSums.n+bfSums.g+cf.reduce((s,f)=>s+bfC[f.field_key],0)
+  const lTotal  = lSums.s+lSums.n+lSums.g  +cf.reduce((s,f)=>s+lC[f.field_key],0)
+  const dTotal  = dSums.s+dSums.n+dSums.g  +cf.reduce((s,f)=>s+dC[f.field_key],0)
+  set('mealFoot-bf-s',bfSums.s); set('mealFoot-bf-n',bfSums.n); set('mealFoot-bf-g',bfSums.g)
+  set('mealFoot-l-s', lSums.s);  set('mealFoot-l-n', lSums.n);  set('mealFoot-l-g', lSums.g)
+  set('mealFoot-d-s', dSums.s);  set('mealFoot-d-n', dSums.n);  set('mealFoot-d-g', dSums.g)
+  cf.forEach(f => { set(`mealFoot-bf-${f.field_key}`,bfC[f.field_key]); set(`mealFoot-l-${f.field_key}`,lC[f.field_key]); set(`mealFoot-d-${f.field_key}`,dC[f.field_key]) })
+  set('mealFoot-bf-sum',bfTotal); set('mealFoot-l-sum',lTotal); set('mealFoot-d-sum',dTotal)
+  set('mealFoot-t-s',ts); set('mealFoot-t-n',tn); set('mealFoot-t-g',tg)
+  cf.forEach(f => { set(`mealFoot-t-${f.field_key}`,customSums[f.field_key]) })
+  set('mealFoot-t-total',grand)
 }
 
 async function saveMealBatch() {
@@ -4014,51 +3973,24 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   const mpTotalByMonth   = Array(12).fill(0)
   const mpNoStaffByMonth = Array(12).fill(0)
   const mpNoSupplyByMonth= Array(12).fill(0)
-
-  // 카테고리 가중평균 전체 식단가 계산 (annualCatDietPrices 활용)
-  // 카테고리가 있는 달: 예산비중 가중평균, 없으면 기존 방식
-  const annualCatPricesData = catAnnualData?.annualCatDietPrices || []
-
   for (let i=0; i<12; i++) {
     const used = usedByMonth[i]
     const patientM  = patientByMonth[i]
     const staffM    = staffByMonth[i]
     const guardM    = guardByMonth[i]
+    // 식단가 계산용: 비급여 제외 (환자+직원+보호자)
     const tmForPrice = patientM + staffM + guardM
+    // 직원식 제외 분모: 환자+보호자
     const mealsNoStaffM = patientM + guardM
     const supCost = supplyMap[i] || 0
-
-    if (used > 0) {
-      // ① 전체 식단가: 카테고리가 있으면 가중평균, 없으면 기존 방식
-      if (annualCatPricesData.length > 0) {
-        // 카테고리별 해당 월 데이터 수집
-        const activeCats = annualCatPricesData
-          .map(cat => {
-            const md = (cat.monthlyDietPrices || []).find(d => d.month === i+1) || {}
-            return { dietPrice: md.dietPrice || 0, monthAmt: md.monthAmt || 0 }
-          })
-          .filter(c => c.dietPrice > 0 && c.monthAmt > 0)
-
-        if (activeCats.length === 1) {
-          mpTotalByMonth[i] = activeCats[0].dietPrice
-        } else if (activeCats.length >= 2) {
-          const totalAmt = activeCats.reduce((s,c) => s+c.monthAmt, 0)
-          if (totalAmt > 0) {
-            mpTotalByMonth[i] = Math.round(
-              activeCats.reduce((s,c) => s + (c.dietPrice * (c.monthAmt / totalAmt)), 0)
-            )
-          }
-        } else if (tmForPrice > 0) {
-          // 카테고리 데이터 없는 달은 기존 방식
-          mpTotalByMonth[i] = Math.round(used / tmForPrice)
-        }
-      } else if (tmForPrice > 0) {
-        mpTotalByMonth[i] = Math.round(used / tmForPrice)
-      }
-      // ② 직원식 제외
-      if (mealsNoStaffM > 0) mpNoStaffByMonth[i] = Math.round(used / mealsNoStaffM)
-      // ③ 소모품 제외
-      if (tmForPrice > 0) mpNoSupplyByMonth[i] = Math.round((used - supCost) / tmForPrice)
+    if (tmForPrice > 0 && used > 0) {
+      // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) 비급여제외
+      mpTotalByMonth[i]    = Math.round(used / tmForPrice)
+      // ② 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
+      //    직원식 예산이 포함된 총금액을 환자 식수로 나누면 환자 1인당 실질 식비가 나옴
+      mpNoStaffByMonth[i]  = mealsNoStaffM > 0 ? Math.round(used / mealsNoStaffM) : 0
+      // ③ 소모품 제외: (총금액-소모품) ÷ (환자+직원+보호자) 비급여제외
+      mpNoSupplyByMonth[i] = Math.round((used - supCost) / tmForPrice)
     }
   }
 
@@ -4323,16 +4255,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     <!-- 월간 상세 비교 차트 -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-        <h3 class="font-bold text-gray-700 text-sm mb-1"><i class="fas fa-utensils text-blue-500 mr-1"></i>식단가 3종 월별 추이 (당해 + 전년)</h3>
-        <div class="text-xs text-gray-400 mb-2 bg-blue-50 border border-blue-100 rounded-lg px-2 py-1">
-          <i class="fas fa-info-circle text-blue-400 mr-1"></i>
-          <strong>전체 식단가 계산 기준:</strong>
-          ${patientCatsForAnalysis.length >= 2
-            ? `환자군 <strong>${patientCatsForAnalysis.map(c=>c.category_name).join(', ')}</strong> — 발주금액 비중 <strong>가중평균</strong>`
-            : patientCatsForAnalysis.length === 1
-              ? `환자군 <strong>${patientCatsForAnalysis[0].category_name}</strong> — 해당 카테고리 식단가 적용`
-              : '총 발주금액 ÷ (환자+직원+보호자) 식수'}
-        </div>
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-utensils text-blue-500 mr-1"></i>식단가 3종 월별 추이 (당해 + 전년)</h3>
         <canvas id="chart-mpMonthly" height="220"></canvas>
       </div>
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
@@ -4708,7 +4631,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   window.switchMpTypeTab('total')
 
 
-  // ── 월간 차트 초기화: monthly 탭이 보이는 상태에서 즉시 초기화 (rAF 단일 레이어)
+  // ── 월간 차트 초기화: monthly 보이는 상태에서 단일 rAF로 초기화 후 탭 전환
   requestAnimationFrame(() => {
   new Chart(document.getElementById('chart-mpMonthly'), {
     type:'line', data:{
@@ -4963,7 +4886,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     })
   }
 
-      // 차트 초기화 완료 후 탭 전환 (monthly 보인 상태에서 초기화했으므로 크기 정상)
+      // 차트 초기화 완료 후 탭 전환
       const _initialTab = activeTab || 'monthly'
       switchAnaTab(_initialTab)
   }) // end rAF
@@ -4978,12 +4901,12 @@ window.switchAnaTab = (tab) => {
       : 'px-3 py-1.5 text-sm font-medium rounded-lg bg-white border text-gray-600 hover:bg-gray-50'
     if (cnt) cnt.style.display = t===tab ? '' : 'none'
   })
-  // 탭 전환 후 해당 탭의 Canvas만 resize (전체 인스턴스 대신 해당 탭 캔버스만)
+  // 탭 전환 후 해당 탭 캔버스만 resize (전체 인스턴스 대신 선택적 처리)
   requestAnimationFrame(() => {
     const cnt = document.getElementById(`anaContent-${tab}`)
     if (!cnt || typeof Chart === 'undefined') return
     cnt.querySelectorAll('canvas').forEach(canvas => {
-      const chart = Chart.getChart(canvas)
+      const chart = Chart.getChart ? Chart.getChart(canvas) : null
       if (chart) { try { chart.resize() } catch(e) {} }
     })
   })
@@ -7156,12 +7079,6 @@ function switchHospTab(tab) {
   // 환자군 탭으로 전환 시 데이터 로드
   if (tab === 'categories' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
-  }
-  // 예산설정 탭으로 전환 시: 업체별 합산금액 자동 계산 + 월 총 목표금액 자동 반영
-  if (tab === 'budget') {
-    setTimeout(() => {
-      if (typeof syncVendorBudgetTotal === 'function') syncVendorBudgetTotal()
-    }, 50)
   }
 }
 
