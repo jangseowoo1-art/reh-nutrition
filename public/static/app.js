@@ -1304,12 +1304,20 @@ async function renderOrders() {
   function pctColor(p) { return p >= 100 ? 'text-red-600' : p >= 80 ? 'text-yellow-600' : 'text-green-700' }
   function barColor(p) { return p >= 100 ? 'progress-red' : p >= 80 ? 'progress-yellow' : 'progress-green' }
 
+  // 초기 식수 합계: 직원+보호자+환자군 커스텀 필드 (ea 제외, 비급여 제외)
+  const initMealCustomFields = dashData?.mealCustomFields || []
+  const initMealCustomTotals = dashData?.mealCustomTotals || {}
+  const initCustomMealSum = initMealCustomFields
+    .filter(f => (f.unit_type||'meal') !== 'ea')
+    .reduce((s, f) => s + (Number(initMealCustomTotals[f.field_key]) || 0), 0)
+  const initTotalMeals = (mealStats.total_staff||0) + (mealStats.total_guardian||0) + initCustomMealSum
+
   content.innerHTML = `
   <!-- ── 식단가 실시간 패널 ── -->
   <div id="mealPricePanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
     <div class="flex items-center justify-between mb-3">
       <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-utensils text-blue-500 mr-1"></i>실시간 식단가</h3>
-      <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt((mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_guardian||0))}</strong>식</span>
+      <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt(initTotalMeals)}</strong>식</span>
     </div>
     <div class="grid grid-cols-3 gap-3">
       <div id="mpCard-total" class="rounded-xl p-3 ${targetMealPrice > 0 && dashData?.mealPriceTotal > targetMealPrice ? 'bg-red-50 border-2 border-red-300' : 'bg-blue-50'}">
@@ -1798,12 +1806,6 @@ async function renderOrders() {
     vendors: vendors || []
   }
 
-  // ── 인사이트 패널 먼저 초기화 (테이블 렌더링 전에 즉시 표시) ──
-  setTimeout(() => {
-    if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
-    if (typeof updateInsightPanel === 'function') updateInsightPanel()
-  }, 0)
-
   // tbody/tfoot를 requestAnimationFrame 후 비동기 렌더링
   requestAnimationFrame(() => {
     setTimeout(() => {
@@ -1850,6 +1852,10 @@ async function renderOrders() {
       _buildOrdersTfoot({
         vendors: vendors||[], patientCats: patientCats||[], orderData: orderData||[],
         catOrderData, catSettingsMap: _catSettingsMap, monthPct, totalBudget
+      })
+      // ── 테이블/tfoot 렌더링 완료 후 모든 실시간 패널 업데이트 ──
+      requestAnimationFrame(() => {
+        if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
       })
     }, 0)
   })
@@ -3443,30 +3449,50 @@ function updateInsightPanel() {
     const catRows = patientCats.map(cat => {
       const catColor = getCategoryColorHex(cat.category_key)
       const s = catSettingsMap[cat.id] || {}
-      const targetPrice = s.target_diet_price || 0
+      const targetPrice = s.target_meal_price || 0  // ← 버그 수정: target_diet_price → target_meal_price
       const monthlyBudget = s.monthly_budget || 0
       const workingDays = s.working_days || 0
 
-      // 이 카테고리의 현재 발주 총액
-      let catTotal = 0
-      document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
-        const field = inp.dataset.field
-        const val = parseOrderVal(inp.value)
-        if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
-        else catTotal += val
-      })
-
-      // 식수 데이터: updateBudgetProgressPanel과 동일한 방식으로 계산
+      // formula(catDietPricesData) 기반으로 발주금액 및 식수 계산 (updateBudgetProgressPanel과 동일 방식)
       const mealStats2 = window._ordersMealStats || {}
       const orderMealStats2 = mealStats2.mealCustomTotals || {}
       const staffMeals2 = mealStats2.totalStaff || 0
       const guardianMeals2 = mealStats2.totalGuardian || 0
-      // formula(catDietPricesData) 기반으로 식수 계산
       const catDietEntry2 = (window._catDietPricesData || []).find(d => d.id === cat.id)
+      const budgetKeys2 = catDietEntry2?.budgetKeys || []
       const mealsKeys2 = catDietEntry2?.mealsKeys || []
-      const hasFormula2 = mealsKeys2.length > 0
+      const hasFormula2 = budgetKeys2.length > 0 || mealsKeys2.length > 0
+
+      // 카테고리 key → id 맵
+      const catKeyIdMap2 = {}
+      patientCats.forEach(c2 => { catKeyIdMap2[c2.category_key] = c2.id })
+
+      // 발주 총액: budgetKeys 기반 (formula 있을 때), 없으면 해당 카테고리 직접 합산
+      let catTotal = 0
+      if (hasFormula2 && budgetKeys2.length > 0) {
+        budgetKeys2.forEach(bKey => {
+          const bCatId = catKeyIdMap2[bKey]
+          if (bCatId !== undefined) {
+            document.querySelectorAll(`.cat-order-input[data-category="${bCatId}"]`).forEach(inp => {
+              const field = inp.dataset.field
+              const val = parseOrderVal(inp.value)
+              if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
+              else catTotal += val
+            })
+          }
+        })
+      } else {
+        document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
+          const field = inp.dataset.field
+          const val = parseOrderVal(inp.value)
+          if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
+          else catTotal += val
+        })
+      }
+
+      // 식수: mealsKeys 기반 (formula 있을 때), 없으면 카테고리 key로 직접 조회
       let catMealCount = 0
-      if (hasFormula2) {
+      if (hasFormula2 && mealsKeys2.length > 0) {
         if (mealsKeys2.includes('staff')) catMealCount += staffMeals2
         if (mealsKeys2.includes('guardian')) catMealCount += guardianMeals2
         mealsKeys2.filter(k => k.startsWith('cat_')).forEach(k => { catMealCount += (orderMealStats2[k] || 0) })
