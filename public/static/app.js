@@ -1164,6 +1164,10 @@ async function renderOrders() {
   window._catOrderSettings = (catOrderData?.settings) || []
   window._catTodayMeals = catOrderData?.todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 }
   window._catPrevSettings = catOrderData?.prevSettings || []
+  // 발주 페이지에서 직접 접근 시 catDietPricesData 초기화 (대시보드 미방문 대비)
+  if (!window._catDietPricesData || window._catDietPricesData.length === 0) {
+    window._catDietPricesData = dashData?.catDietPrices || []
+  }
 
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   const orderMap = {}
@@ -1320,11 +1324,21 @@ async function renderOrders() {
         const color = getCategoryColorHex(cat.category_key)
         const s = catSetMap[cat.id] || {}
         const targetPrice = s.target_meal_price || 0
-        // 월 발주금액 / 월 식수로 초기 표시 (window._catDietPricesData에서 가져옴)
+        // 월 발주금액: window._catDietPricesData (대시보드에서 로드한 catDietPrices)
         const dcEntry = (window._catDietPricesData||[]).find(d => d.id === cat.id)
         const initMonthAmt = dcEntry?.monthAmt || 0
-        const initMonthMeals = (window._catMonthTotals2||{})[`cat_${cat.category_key}`] || dcEntry?.monthMeals || 0
+        // 월 실입력 식수: dashData.mealCustomTotals['cat_xxx'] 사용
+        const initMonthMeals = (dashData?.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
         const initMonthPrice = initMonthAmt > 0 && initMonthMeals > 0 ? Math.round(initMonthAmt / initMonthMeals) : 0
+        // 초기 목표 대비 계산
+        const initIsOver = targetPrice > 0 && initMonthPrice > targetPrice
+        const initIsWarn = targetPrice > 0 && initMonthPrice >= targetPrice * 0.9 && !initIsOver
+        const initPriceColor = initIsOver ? '#dc2626' : initIsWarn ? '#d97706' : color
+        const initDiffHtml = initMonthPrice > 0 && targetPrice > 0
+          ? (initIsOver
+              ? `<span style="color:#dc2626;font-size:10px">▲ +${fmt(initMonthPrice-targetPrice)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>`
+              : `<span style="color:#16a34a;font-size:10px">▼ ${fmt(targetPrice-initMonthPrice)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>`)
+          : (targetPrice > 0 ? `<div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>` : '<span style="font-size:9px;color:#d1d5db">미설정</span>')
         return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:${color}0d;border:1px solid ${color}30;margin-bottom:6px">
           <div style="display:flex;align-items:center;gap:4px;min-width:50px">
             <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0"></span>
@@ -1337,13 +1351,13 @@ async function renderOrders() {
             </div>
             <div style="text-align:center">
               <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">월 식단가</div>
-              <div id="cat-mp-price-${cat.id}" style="font-size:13px;font-weight:900;color:${color}">${initMonthPrice>0?fmt(initMonthPrice):'-'}</div>
+              <div id="cat-mp-price-${cat.id}" style="font-size:13px;font-weight:900;color:${initMonthPrice>0?initPriceColor:color}">${initMonthPrice>0?fmt(initMonthPrice):'-'}</div>
               <div style="font-size:8px;color:#6b7280">원/식</div>
             </div>
             <div style="text-align:center">
               <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">목표 대비</div>
               <div id="cat-mp-diff-${cat.id}" style="font-size:10px;font-weight:700;color:#9ca3af">
-                ${targetPrice > 0 ? `<div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>` : '미설정'}
+                ${initDiffHtml}
               </div>
             </div>
           </div>
@@ -7227,12 +7241,29 @@ function renderCategoryBudgetList(cats, settings) {
 function updateWeightedAvgTarget() {
   const cats = window._adminCatList || []
   if (cats.length === 0) return
-  // 카테고리 1개면 가중평균 패널 숨김 (비교 대상 없음)
+
   const panel = document.getElementById('weightedAvgTargetPanel')
+
+  // ── 카테고리 1개: 가중평균 패널 숨기고, 해당 카테고리 목표 식단가를 직접 반영 ──
   if (cats.length === 1) {
     if (panel) panel.style.display = 'none'
+    const cat = cats[0]
+    const singlePrice = parseFloat(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0)
+    const mealPriceEl = document.getElementById('hb-mealprice')
+    if (mealPriceEl && singlePrice > 0) {
+      mealPriceEl.value = Math.round(singlePrice)
+      mealPriceEl.style.background = '#f0fdf4'
+      mealPriceEl.style.borderColor = '#22c55e'
+      clearTimeout(mealPriceEl._resetTimer)
+      mealPriceEl._resetTimer = setTimeout(() => {
+        mealPriceEl.style.background = ''
+        mealPriceEl.style.borderColor = ''
+      }, 2000)
+    }
     return
   }
+
+  // ── 카테고리 2개 이상: 가중평균 계산 후 반영 ──
   if (panel) panel.style.display = ''
   const totalBudget = cats.reduce((s, cat) => {
     const b = parseFloat(document.getElementById(`catBudget-${cat.id}`)?.value || 0)
@@ -7255,7 +7286,6 @@ function updateWeightedAvgTarget() {
   const mealPriceEl = document.getElementById('hb-mealprice')
   if (mealPriceEl && roundedWeighted > 0) {
     mealPriceEl.value = roundedWeighted
-    // 시각적 피드백: 자동입력 표시
     mealPriceEl.style.background = '#f0fdf4'
     mealPriceEl.style.borderColor = '#22c55e'
     clearTimeout(mealPriceEl._resetTimer)
