@@ -1184,6 +1184,24 @@ adminRouter.get('/hospitals/:id/patient-categories', async (c) => {
   return c.json(cats.results || [])
 })
 
+// 카테고리별 식단가 계산 기준 저장 (budget_include_keys, meals_include_keys)
+adminRouter.put('/hospitals/:id/patient-categories/:catId/formula', async (c) => {
+  const { id, catId } = c.req.param()
+  const { budget_include_keys, meals_include_keys } = await c.req.json() as any
+
+  await c.env.DB.prepare(`
+    UPDATE hospital_patient_categories
+    SET budget_include_keys = ?, meals_include_keys = ?
+    WHERE hospital_id = ? AND id = ?
+  `).bind(
+    budget_include_keys ? JSON.stringify(budget_include_keys) : null,
+    meals_include_keys ? JSON.stringify(meals_include_keys) : null,
+    id, catId
+  ).run()
+
+  return c.json({ success: true })
+})
+
 // 카테고리 일괄 저장 (추가/수정/삭제 통합)
 adminRouter.put('/hospitals/:id/patient-categories', async (c) => {
   const id = c.req.param('id')
