@@ -1791,7 +1791,7 @@ async function renderOrders() {
   })
   const weekStartStr = weekStart.toISOString().split('T')[0]
   const weekEndStr = weekEnd.toISOString().split('T')[0]
-  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*5])), workingDays }
+  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*5])), workingDays, weeklyData }
   window._ordersData = orderData || []
   window._ordersVendors = vendors || []
   window._ordersMealStats = {
@@ -3073,39 +3073,59 @@ function updateBudgetProgressPanel() {
 
   // 주차별 카드 업데이트
   const wBudget = budget.weekBudget
-  const allInputNodes = document.querySelectorAll('.order-input')
-  // 주차별 발주 합계 재계산
+  // 저장된 weeklyData(주차 시작일/종료일 목록)로 주차별 집계
+  const savedWeeklyData = budget.weeklyData || []
+  // weekStart 기준으로 weeklyTotals 계산
   const weeklyTotals = {}
-  const procWk = {}
-  allInputNodes.forEach(inp => {
-    const date = inp.dataset.date
-    const vendor = inp.dataset.vendor
-    const wKey = `${date}-${vendor}`
-    if (procWk[wKey]) return
-    procWk[wKey] = true
-    const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
-    const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
-    const t2 = parseOrderVal(tx?.value)
-    const e2 = parseOrderVal(ex?.value)
-    const tot2 = t2+Math.round(t2*0.1)+e2
-    if (tot2 === 0) return
-    // 이 날짜가 몇 번째 주인지
-    const row = document.querySelector(`tr[data-date="${date}"]`)
-    const wkStart = row?.dataset.weekStart || ''
-    if (!wkStart) return
-    if (!weeklyTotals[wkStart]) weeklyTotals[wkStart] = 0
-    weeklyTotals[wkStart] += tot2
-  })
-  // 주차 카드별 업데이트
-  let wIdx = 1
-  document.querySelectorAll('[id^="week"][id$="-card"]').forEach(el => {
-    const num = el.id.replace('-card','').replace('week','')
-    if (isNaN(num)) return
-    const wkPct = wBudget>0 ? Math.round((weeklyTotals[Object.keys(weeklyTotals)[num-1]]||0)/wBudget*100) : 0
-    const wkAmt = weeklyTotals[Object.keys(weeklyTotals)[num-1]] || 0
-    // 이번주 여부는 todayStr이 해당 주 범위에 있는지
-    const isCW = el.innerHTML.includes('이번주')
-    updateBudgetCard(`week${num}-card`,`weekPct${num}`,`weekAmt${num}`,`weekBar${num}`, wkPct, wkAmt, isCW)
+  if (hasCats) {
+    // 카테고리 모드: cat-order-input 에서 날짜 기준으로 주차별 합산
+    const procCatWk = {}
+    document.querySelectorAll('.cat-order-input').forEach(inp => {
+      const date   = inp.dataset.date
+      const vendor = inp.dataset.vendor
+      const field  = inp.dataset.field
+      const wKey   = `${date}-${vendor}-${field}`
+      if (procCatWk[wKey]) return
+      procCatWk[wKey] = true
+      const val = parseOrderVal(inp.value)
+      if (val === 0) return
+      const amt = field === 'taxable' ? val + Math.round(val * 0.1) : val
+      // 해당 날짜가 속한 주차 시작일 찾기
+      const wEntry = savedWeeklyData.find(w => date >= w.wk && date <= w.wkEnd)
+      const wkStart = wEntry ? wEntry.wk : null
+      if (!wkStart) return
+      if (!weeklyTotals[wkStart]) weeklyTotals[wkStart] = 0
+      weeklyTotals[wkStart] += amt
+    })
+  } else {
+    // 일반 모드: order-input 에서 날짜 기준으로 주차별 합산
+    const procWk = {}
+    document.querySelectorAll('.order-input').forEach(inp => {
+      const date   = inp.dataset.date
+      const vendor = inp.dataset.vendor
+      const wKey   = `${date}-${vendor}`
+      if (procWk[wKey]) return
+      procWk[wKey] = true
+      const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
+      const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
+      const t2 = parseOrderVal(tx?.value)
+      const e2 = parseOrderVal(ex?.value)
+      const tot2 = t2 + Math.round(t2 * 0.1) + e2
+      if (tot2 === 0) return
+      const wEntry = savedWeeklyData.find(w => date >= w.wk && date <= w.wkEnd)
+      const wkStart = wEntry ? wEntry.wk : null
+      if (!wkStart) return
+      if (!weeklyTotals[wkStart]) weeklyTotals[wkStart] = 0
+      weeklyTotals[wkStart] += tot2
+    })
+  }
+  // 주차 카드별 업데이트 (savedWeeklyData 순서 기준으로 안정적으로 매핑)
+  savedWeeklyData.forEach((w, i) => {
+    const num  = i + 1
+    const wkAmt = weeklyTotals[w.wk] || 0
+    const wkPct = wBudget > 0 ? Math.round(wkAmt / wBudget * 100) : 0
+    const isCW  = (todayStr >= w.wk && todayStr <= w.wkEnd)
+    updateBudgetCard(`week${num}-card`, `weekPct${num}`, `weekAmt${num}`, `weekBar${num}`, wkPct, wkAmt, isCW)
   })
 
   // 월 합계 표시 업데이트
