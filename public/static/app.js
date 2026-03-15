@@ -3578,7 +3578,7 @@ function updateDayTotal(date) {
       </div>`
     }).join('')
 
-    ratioCell.innerHTML = `<div style="font-size:10px;font-weight:700;color:${dColor}">${grandTotal>0?fmt(grandTotal):'-'}</div>${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%</div>`:''}<div style="margin-top:3px;border-top:1px solid #e5e7eb;padding-top:2px">${barsHtml}</div>`
+    ratioCell.innerHTML = `<div style="font-size:9px;color:#9ca3af;margin-bottom:1px">일별 발주</div><div style="font-size:10px;font-weight:700;color:${dColor}">${grandTotal>0?fmt(grandTotal):'-'}</div>${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%</div>`:(grandTotal>0&&adjBudget===0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}<div style="margin-top:3px;border-top:1px solid #e5e7eb;padding-top:2px">${barsHtml}</div>`
     ratioCell.style.background = grandTotal > 0 ? dBg : '#f9fafb'
 
     // 카테고리별 소계 셀(vcatsubt) + 업체합산(vcat-sum) 업데이트
@@ -3657,7 +3657,7 @@ function updateDayTotal(date) {
       const grandPct2 = budgetAdj > 0 ? Math.round(grandTotal / budgetAdj * 100) : null
       const dOver2 = grandPct2!==null&&grandPct2>=100; const dWarn2 = grandPct2!==null&&grandPct2>=80&&!dOver2
       const dColor2 = dOver2?'#dc2626':dWarn2?'#d97706':(grandTotal>0?'#166534':'#6b7280')
-      summRatioEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:${dColor2}">${grandTotal>0?fmtMan(grandTotal):'<span style="color:#d1d5db">-</span>'}</div>${grandPct2!==null?`<div style="font-size:9px;color:${dColor2};font-weight:600">${grandPct2}%${dOver2?' 🚨':dWarn2?' ⚠️':''}</div>`:''}${budgetAdj>0?`<div style="font-size:8px;color:#9ca3af">/${fmtMan(budgetAdj)}</div>`:''}`
+      summRatioEl.innerHTML = `<div style="font-size:9px;color:#9ca3af;margin-bottom:1px">일별 발주</div><div style="font-size:11px;font-weight:700;color:${dColor2}">${grandTotal>0?fmtMan(grandTotal):'<span style="color:#d1d5db">-</span>'}</div>${grandPct2!==null?`<div style="font-size:9px;color:${dColor2};font-weight:600">${grandPct2}%${dOver2?' 🚨':dWarn2?' ⚠️':''}</div>`:(grandTotal>0&&budgetAdj===0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}${budgetAdj>0?`<div style="font-size:8px;color:#9ca3af">/${fmtMan(budgetAdj)}</div>`:''}`
       summRatioEl.style.background = dOver2?'#fee2e2':dWarn2?'#fef3c7':'#f8fafc'
     }
     // ── 상세 행 dayRatioCell-detail도 업데이트 ──
@@ -3693,7 +3693,8 @@ function updateDayTotal(date) {
           else vCatLiveTotal += val2
         })
 
-        const vMonthBudget5 = catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0
+        // 업체 자체 monthly_budget 우선, 없으면 카테고리 예산 균등 배분
+        const vMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
         const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
         const vMonthOver5 = vMonthPct5!==null&&vMonthPct5>=100
         const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
