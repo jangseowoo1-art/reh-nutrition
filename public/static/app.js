@@ -855,9 +855,13 @@ async function renderDashboard() {
           const targetP = cat.targetPrice || 0
           const monthBudget = cat.monthBudget || 0
           const catMonthAmt = cat.monthAmt || 0
-          // 월 식수는 mealCustomTotals에서 참조
-          const catMonthMeals2 = (mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
-          const monthDietPrice2 = catMonthMeals2 > 0 ? Math.round(catMonthAmt / catMonthMeals2) : 0
+          // 월 식단가: 백엔드 formula 계산값 우선, 없으면 mealCustomTotals 기반 폴백
+          const catMonthMeals2 = cat.monthMeals !== undefined
+            ? (cat.monthMeals || 0)
+            : ((mealCustomTotals||{})[`cat_${cat.category_key}`] || 0)
+          const monthDietPrice2 = cat.monthDietPrice !== undefined
+            ? (cat.monthDietPrice || 0)
+            : (catMonthMeals2 > 0 ? Math.round(catMonthAmt / catMonthMeals2) : 0)
           // 월 식단가 기준으로 초과/경고 판단
           const isOverM2 = targetP > 0 && monthDietPrice2 > targetP
           const isWarnM2 = targetP > 0 && monthDietPrice2 >= targetP * 0.9 && !isOverM2
@@ -911,7 +915,7 @@ async function renderDashboard() {
             <span style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-layer-group" style="color:#8b5cf6;margin-right:4px;font-size:11px"></i>환자군별 식단가 현황</span>
             ${weightedTarget2 > 0 ? `<span style="font-size:10px;color:#6b7280">가중평균 목표: <strong style="color:#1f2937">${fmt(weightedTarget2)}원/식</strong></span>` : ''}
           </div>
-          <div style="font-size:9px;color:#9ca3af;margin-bottom:6px"><i class="fas fa-info-circle"></i> 월 발주금액 ÷ 월 실입력 식수 기준</div>
+          <div style="font-size:9px;color:#9ca3af;margin-bottom:6px"><i class="fas fa-info-circle"></i> 선택한 예산항목 ÷ 선택한 식수항목 기준 (카테고리별 계산 기준 적용)</div>
           ${catCards}
         </div>`
       })()}
@@ -926,8 +930,13 @@ async function renderDashboard() {
         catDietPricesData.forEach(cat => {
           const targetP = cat.targetPrice || 0
           const monthBudget = cat.monthBudget || 0
-          const catMonthMeals = (mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
-          const monthDietPrice = catMonthMeals > 0 ? Math.round(cat.monthAmt / catMonthMeals) : 0
+          // formula 기반 식단가 우선 사용, 없으면 mealCustomTotals 기반 폴백
+          const catMonthMeals = cat.monthMeals !== undefined
+            ? (cat.monthMeals || 0)
+            : ((mealCustomTotals||{})[`cat_${cat.category_key}`] || 0)
+          const monthDietPrice = cat.monthDietPrice !== undefined
+            ? (cat.monthDietPrice || 0)
+            : (catMonthMeals > 0 ? Math.round(cat.monthAmt / catMonthMeals) : 0)
           if (cat.monthAmt > 0 && monthDietPrice > 0) {
             dbWBudgetSum += cat.monthAmt; dbWPriceSum += cat.monthAmt * monthDietPrice
           }
@@ -935,10 +944,12 @@ async function renderDashboard() {
             dbWTargetBudgetSum += monthBudget; dbWTargetSum += monthBudget * targetP
           }
         })
-        // 카테고리 1개: 총발주÷총식수로 단일 식단가 계산
-        const totalCatMeals = catDietPricesData.reduce((s,cat) => s + ((mealCustomTotals||{})[`cat_${cat.category_key}`]||0), 0)
+        // 카테고리 1개: formula 식단가 직접 사용 (있으면), 없으면 총발주÷총식수
+        const totalCatMeals = catDietPricesData.reduce((s,cat) => s + (cat.monthMeals !== undefined ? (cat.monthMeals||0) : ((mealCustomTotals||{})[`cat_${cat.category_key}`]||0)), 0)
         const totalCatAmt   = catDietPricesData.reduce((s,cat) => s + (cat.monthAmt||0), 0)
-        const singlePrice   = totalCatMeals > 0 ? Math.round(totalCatAmt / totalCatMeals) : 0
+        const singlePrice   = catDietPricesData[0]?.monthDietPrice !== undefined
+          ? (catDietPricesData[0]?.monthDietPrice || 0)
+          : (totalCatMeals > 0 ? Math.round(totalCatAmt / totalCatMeals) : 0)
         const singleTarget  = catDietPricesData[0]?.targetPrice || 0
         // 2개 이상: 가중평균
         const dbWeightedCurrent = isSingleCat ? singlePrice : (dbWBudgetSum > 0 ? Math.round(dbWPriceSum / dbWBudgetSum) : 0)
@@ -2898,23 +2909,57 @@ function updateBudgetProgressPanel() {
         else catTodayAmts[catId] = (catTodayAmts[catId]||0) + val
       })
 
-      // 카테고리별 월 식단가 업데이트 (월 발주금액 ÷ 월 실입력 식수)
+      // 카테고리별 월 식단가 업데이트 (formula 기반: 선택 예산항목 ÷ 선택 식수항목)
       catsList.forEach(cat => {
         const s3 = catSetMap3[cat.id] || {}
         const targetPrice3 = s3.target_meal_price || 0
 
-        // 월 발주금액: catDietPricesData에서 monthAmt 사용
+        // formula 설정 (백엔드에서 받은 catDietPricesData 활용)
         const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
-        // 월 발주금액 누적: 현재 입력된 모든 날짜의 cat-order-input 합산
+        const budgetKeys3 = catDietEntry?.budgetKeys || []
+        const mealsKeys3 = catDietEntry?.mealsKeys || []
+        const hasFormula3 = budgetKeys3.length > 0 || mealsKeys3.length > 0
+
+        // 카테고리 key → id 맵 (catsList에서 빌드)
+        const catKeyIdMap3 = {}
+        catsList.forEach(c2 => { catKeyIdMap3[c2.category_key] = c2.id })
+
+        // 월 발주금액: budgetKeys 기반으로 포함된 카테고리들의 합산 (현재 입력값 실시간 반영)
         let catMonthAmtLive = 0
-        document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
-          const field = inp.dataset.field
-          const val = parseOrderVal(inp.value)
-          if (field === 'taxable') catMonthAmtLive += val + Math.round(val*0.1)
-          else catMonthAmtLive += val
-        })
-        // 월 실입력 식수: mealCustomTotals에서 가져옴
-        const catMonthMeals = (window._ordersMealStats?.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
+        if (hasFormula3 && budgetKeys3.length > 0) {
+          budgetKeys3.forEach(bKey => {
+            const bCatId = catKeyIdMap3[bKey]
+            if (bCatId !== undefined) {
+              document.querySelectorAll(`.cat-order-input[data-category="${bCatId}"]`).forEach(inp => {
+                const field = inp.dataset.field
+                const val = parseOrderVal(inp.value)
+                if (field === 'taxable') catMonthAmtLive += val + Math.round(val*0.1)
+                else catMonthAmtLive += val
+              })
+            }
+          })
+        } else {
+          document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
+            const field = inp.dataset.field
+            const val = parseOrderVal(inp.value)
+            if (field === 'taxable') catMonthAmtLive += val + Math.round(val*0.1)
+            else catMonthAmtLive += val
+          })
+        }
+
+        // 월 실입력 식수: mealsKeys 기반으로 포함된 식수 항목 합산
+        const orderMealStats = window._ordersMealStats?.mealCustomTotals || {}
+        const staffMeals3 = window._ordersMealStats?.totalStaff || 0
+        const guardianMeals3 = window._ordersMealStats?.totalGuardian || 0
+        let catMonthMeals = 0
+        if (hasFormula3 && mealsKeys3.length > 0) {
+          if (mealsKeys3.includes('staff')) catMonthMeals += staffMeals3
+          if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
+          mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
+        } else {
+          catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0)
+        }
+
         const catMealPrice = catMonthAmtLive > 0 && catMonthMeals > 0 ? Math.round(catMonthAmtLive / catMonthMeals) : 0
 
         const color = getCategoryColorHex(cat.category_key)

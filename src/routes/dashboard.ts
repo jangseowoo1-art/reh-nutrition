@@ -246,26 +246,105 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   const totalCatBudgetDash = (catSettingsDash.results||[]).reduce((s3:number, c3:any) => s3+(c3.monthly_budget||0), 0)
 
+  // ── 카테고리별 식단가 독립 계산을 위한 헬퍼 ────────────────────
+  // meals_include_keys: ['staff','guardian','cat_cancer','cat_nursing'] 중 선택
+  // budget_include_keys: ['cancer','nursing',...] = category_key 목록 (해당 카테고리 발주금액 합산)
+  //
+  // buildMealsFromKeys: 특정 키 목록에 해당하는 식수 합계 반환
+  //   mealStatsRow: { total_staff, total_guardian }
+  //   customTotalsMap: { cat_cancer: N, cat_nursing: N, ... }  (month 또는 today용)
+  const buildMealsFromKeys = (mealsKeys: string[], mealStatsRow: {total_staff?:number,total_guardian?:number}|null, customTotalsMap: Record<string,number>): number => {
+    if (!mealsKeys || mealsKeys.length === 0) return 0
+    let total = 0
+    if (mealsKeys.includes('staff')) total += (mealStatsRow?.total_staff || 0)
+    if (mealsKeys.includes('guardian')) total += (mealStatsRow?.total_guardian || 0)
+    mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (customTotalsMap[k] || 0) })
+    return total
+  }
+
+  // 이번 달 직원/보호자 식수 맵 (mealStats에서)
+  const monthMealStatsRow = { total_staff: ms.total_staff||0, total_guardian: ms.total_guardian||0 }
+  // customFieldTotals는 이미 계산되어 있음 (월별 필드별 합계)
+
+  // 오늘 커스텀 필드별 식수 맵 (cat_{key} → 합계)
+  const todayCatCustomMap: Record<string, number> = {}
+  // 오늘 직원/보호자 식수
+  const todayMealStatsRow = { total_staff: todayMealRow?.staff_total||0, total_guardian: todayMealRow?.guardian_total||0 }
+  if (todayMealRow?.custom_data) {
+    try {
+      const todayCustomData = JSON.parse(todayMealRow.custom_data || '{}')
+      ;(customFieldsList.results || []).filter((f:any) => f.unit_type !== 'ea').forEach((f:any) => {
+        const fv = todayCustomData[f.field_key] || {}
+        todayCatCustomMap[f.field_key] = (fv.bf||0) + (fv.l||0) + (fv.d||0)
+      })
+    } catch(e) {}
+  }
+
+  // category_key → id 맵
+  const catKeyToIdMap: Record<string, number> = {}
+  ;(patientCatsDash.results||[]).forEach((cat:any) => { catKeyToIdMap[cat.category_key] = cat.id })
+
   const catDietPrices = (patientCatsDash.results||[]).map((cat:any) => {
-    const monthAmt = catMonthMap2[cat.id] || 0
-    const todayAmt = catTodayMap2[cat.id] || 0
     const s3 = catSetMap3[cat.id] || {}
     const targetPrice = s3.target_meal_price || 0
     const monthBudget = s3.monthly_budget || 0
     const workDays = s3.working_days || workingDays
     const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
-    // 오늘 카테고리별 식수: custom_data에서 cat_{category_key} 직접 집계
-    let todayCatCustomMeals = 0
-    if (todayMealRow?.custom_data) {
-      try {
-        const todayCustomData = JSON.parse(todayMealRow.custom_data || '{}')
-        const fieldKey = `cat_${cat.category_key}`
-        const fv = todayCustomData[fieldKey] || {}
-        todayCatCustomMeals = (fv.bf||0) + (fv.l||0) + (fv.d||0)
-      } catch(e) {}
+
+    // formula 설정 파싱
+    let budgetKeys: string[] = []
+    let mealsKeys: string[] = []
+    try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
+    try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+
+    // formula 설정이 없으면 기존 방식 (해당 카테고리 발주 ÷ 카테고리+직원+보호자)
+    const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
+
+    // ── 이번 달 발주금액 계산 (budget_include_keys 기반) ──
+    let monthAmt: number
+    if (hasFormula && budgetKeys.length > 0) {
+      monthAmt = budgetKeys.reduce((sum: number, key: string) => {
+        const catId = catKeyToIdMap[key]
+        return sum + (catId ? (catMonthMap2[catId] || 0) : 0)
+      }, 0)
+    } else {
+      monthAmt = catMonthMap2[cat.id] || 0
     }
-    // 오늘 식단가 계산: 카테고리 식수 + 직원 + 보호자
-    const todayCatMeals = todayCatCustomMeals + (todayMealRow?.staff_total || 0) + (todayMealRow?.guardian_total || 0)
+
+    // ── 이번 달 식수 계산 (meals_include_keys 기반) ──
+    let monthMeals: number
+    if (hasFormula && mealsKeys.length > 0) {
+      monthMeals = buildMealsFromKeys(mealsKeys, monthMealStatsRow, customFieldTotals)
+    } else {
+      // 기존 방식: 카테고리 식수 + 직원 + 보호자
+      const defaultCatKey = `cat_${cat.category_key}`
+      monthMeals = (customFieldTotals[defaultCatKey] || 0) + (ms.total_staff||0) + (ms.total_guardian||0)
+    }
+
+    // ── 이번 달 식단가 계산 ──
+    const monthDietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
+
+    // ── 오늘 발주금액 계산 (budget_include_keys 기반) ──
+    let todayAmt: number
+    if (hasFormula && budgetKeys.length > 0) {
+      todayAmt = budgetKeys.reduce((sum: number, key: string) => {
+        const catId = catKeyToIdMap[key]
+        return sum + (catId ? (catTodayMap2[catId] || 0) : 0)
+      }, 0)
+    } else {
+      todayAmt = catTodayMap2[cat.id] || 0
+    }
+
+    // ── 오늘 식수 계산 (meals_include_keys 기반) ──
+    let todayCatMeals: number
+    if (hasFormula && mealsKeys.length > 0) {
+      todayCatMeals = buildMealsFromKeys(mealsKeys, todayMealStatsRow, todayCatCustomMap)
+    } else {
+      // 기존 방식: 카테고리 식수 + 직원 + 보호자
+      const defaultCatKey = `cat_${cat.category_key}`
+      todayCatMeals = (todayCatCustomMap[defaultCatKey] || 0) + (todayMealRow?.staff_total || 0) + (todayMealRow?.guardian_total || 0)
+    }
+
     const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
     const prevSet = prevCatSetMap3[cat.id] || {}
     const prevTargetPrice = prevSet.target_meal_price || 0
@@ -273,8 +352,10 @@ dashboard.get('/summary/:year/:month', async (c) => {
     return {
       id: cat.id, category_key: cat.category_key, category_name: cat.category_name,
       monthAmt, todayAmt, monthBudget, targetPrice, workDays,
+      monthMeals, monthDietPrice,
       todayCatMeals, todayDietPrice, catRatio,
-      prevTargetPrice, prevMonthBudget
+      prevTargetPrice, prevMonthBudget,
+      budgetKeys, mealsKeys
     }
   })
 
@@ -439,6 +520,120 @@ dashboard.get('/annual/:year', async (c) => {
      GROUP BY month ORDER BY month`
   ).bind(hospitalId, year).all<any>()
 
+  // ── 연간 카테고리별 formula 기반 식단가 계산을 위한 추가 데이터 ──
+
+  // 활성 카테고리 목록 (formula 포함)
+  const annualCats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id
+  `).bind(hospitalId).all<any>()
+
+  // 커스텀 식수 필드 목록 (카테고리 식수 필드 확인용)
+  const annualCustomFields = await c.env.DB.prepare(
+    `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+  ).bind(hospitalId).all<any>()
+
+  // 월별 카테고리 발주금액 (patient_category_id 기반)
+  const annualCatOrders = await c.env.DB.prepare(`
+    SELECT patient_category_id,
+           strftime('%m', order_date) as month,
+           COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND patient_category_id IS NOT NULL
+      AND strftime('%Y', order_date) = ?
+    GROUP BY patient_category_id, month
+    ORDER BY patient_category_id, month
+  `).bind(hospitalId, year).all<any>()
+
+  // 월별 직원/보호자 식수 (mealMonthly에 이미 있지만 formula 계산 시 필요)
+  // 월별 커스텀 필드 식수 집계 (cat_{key} 형태)
+  const annualMealCustomData = await c.env.DB.prepare(
+    `SELECT strftime('%m', meal_date) as month,
+            custom_data,
+            COALESCE(breakfast_staff+lunch_staff+dinner_staff, 0) as total_staff,
+            COALESCE(breakfast_guardian+lunch_guardian+dinner_guardian, 0) as total_guardian
+     FROM daily_meals
+     WHERE hospital_id = ? AND strftime('%Y', meal_date) = ?
+       AND custom_data IS NOT NULL AND custom_data != '{}'`
+  ).bind(hospitalId, year).all<any>()
+
+  // 월별 커스텀 필드 합계 집계: monthCustomTotals[month][fieldKey] = sum
+  const monthCustomTotals: Record<string, Record<string,number>> = {}
+  const monthStaffTotals: Record<string, number> = {}
+  const monthGuardianTotals: Record<string, number> = {}
+  ;(annualMealCustomData.results || []).forEach((row: any) => {
+    const m = String(parseInt(row.month))  // '01' → '1'
+    if (!monthCustomTotals[m]) monthCustomTotals[m] = {}
+    monthStaffTotals[m] = (monthStaffTotals[m] || 0) + (row.total_staff || 0)
+    monthGuardianTotals[m] = (monthGuardianTotals[m] || 0) + (row.total_guardian || 0)
+    try {
+      const cd = JSON.parse(row.custom_data || '{}')
+      ;(annualCustomFields.results || []).filter((f: any) => f.unit_type !== 'ea').forEach((f: any) => {
+        const fv = cd[f.field_key] || {}
+        monthCustomTotals[m][f.field_key] = (monthCustomTotals[m][f.field_key] || 0) + (fv.bf||0) + (fv.l||0) + (fv.d||0)
+      })
+    } catch(e) {}
+  })
+
+  // 월별 카테고리 발주 맵: catOrderMap[catId][month] = total
+  const annualCatKeyToIdMap: Record<string, number> = {}
+  ;(annualCats.results || []).forEach((cat: any) => { annualCatKeyToIdMap[cat.category_key] = cat.id })
+  const catOrderMap: Record<number, Record<string, number>> = {}
+  ;(annualCatOrders.results || []).forEach((r: any) => {
+    if (!catOrderMap[r.patient_category_id]) catOrderMap[r.patient_category_id] = {}
+    catOrderMap[r.patient_category_id][String(parseInt(r.month))] = r.total
+  })
+
+  // 연간 카테고리별 월별 식단가 계산
+  const annualCatDietPrices = (annualCats.results || []).map((cat: any) => {
+    let budgetKeys: string[] = []
+    let mealsKeys: string[] = []
+    try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
+    try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+    const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
+
+    const monthlyDietPrices: Array<{month: number, monthAmt: number, monthMeals: number, dietPrice: number}> = []
+    for (let m = 1; m <= 12; m++) {
+      const mStr = String(m)
+      // 발주금액
+      let monthAmt: number
+      if (hasFormula && budgetKeys.length > 0) {
+        monthAmt = budgetKeys.reduce((sum: number, key: string) => {
+          const catId = annualCatKeyToIdMap[key]
+          return sum + (catId ? (catOrderMap[catId]?.[mStr] || 0) : 0)
+        }, 0)
+      } else {
+        monthAmt = catOrderMap[cat.id]?.[mStr] || 0
+      }
+      // 식수
+      let monthMeals: number
+      const mCustom = monthCustomTotals[mStr] || {}
+      const mStaff = monthStaffTotals[mStr] || 0
+      const mGuardian = monthGuardianTotals[mStr] || 0
+      if (hasFormula && mealsKeys.length > 0) {
+        let total = 0
+        if (mealsKeys.includes('staff')) total += mStaff
+        if (mealsKeys.includes('guardian')) total += mGuardian
+        mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (mCustom[k] || 0) })
+        monthMeals = total
+      } else {
+        const defaultCatKey = `cat_${cat.category_key}`
+        monthMeals = (mCustom[defaultCatKey] || 0) + mStaff + mGuardian
+      }
+      const dietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
+      monthlyDietPrices.push({ month: m, monthAmt, monthMeals, dietPrice })
+    }
+    return {
+      id: cat.id,
+      category_key: cat.category_key,
+      category_name: cat.category_name,
+      budgetKeys,
+      mealsKeys,
+      monthlyDietPrices
+    }
+  })
+
   return c.json({
     monthly: monthly.results,
     mealMonthly: mealMonthly.results,
@@ -448,7 +643,8 @@ dashboard.get('/annual/:year', async (c) => {
     prevYearMeals: prevYearMeals.results || [],
     prevYearOrders: prevYearOrders.results || [],
     supplyAnnual: supplyAnnual.results || [],
-    staffAnnual: staffAnnual.results || []
+    staffAnnual: staffAnnual.results || [],
+    annualCatDietPrices: annualCatDietPrices || []
   })
 })
 

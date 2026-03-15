@@ -418,10 +418,101 @@ orders.get('/category-annual/:year', async (c) => {
     ORDER BY hpc.sort_order, cos.month
   `).bind(hospitalId, year).all<any>()
 
+  // ── formula 기반 카테고리 식단가 계산을 위한 월별 식수 데이터 ──
+  const customFields = await c.env.DB.prepare(
+    `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+  ).bind(hospitalId).all<any>()
+
+  const mealCustomRows = await c.env.DB.prepare(
+    `SELECT strftime('%m', meal_date) as month,
+            custom_data,
+            COALESCE(breakfast_staff+lunch_staff+dinner_staff, 0) as total_staff,
+            COALESCE(breakfast_guardian+lunch_guardian+dinner_guardian, 0) as total_guardian
+     FROM daily_meals
+     WHERE hospital_id = ? AND strftime('%Y', meal_date) = ?`
+  ).bind(hospitalId, year).all<any>()
+
+  // 월별 커스텀 필드 식수 집계
+  const catMealMonthMap: Record<string, Record<string,number>> = {}
+  const staffMonthMap: Record<string, number> = {}
+  const guardianMonthMap: Record<string, number> = {}
+  ;(mealCustomRows.results || []).forEach((row: any) => {
+    const m = String(parseInt(row.month))
+    staffMonthMap[m] = (staffMonthMap[m] || 0) + (row.total_staff || 0)
+    guardianMonthMap[m] = (guardianMonthMap[m] || 0) + (row.total_guardian || 0)
+    if (!catMealMonthMap[m]) catMealMonthMap[m] = {}
+    try {
+      const cd = JSON.parse(row.custom_data || '{}')
+      ;(customFields.results || []).filter((f: any) => f.unit_type !== 'ea').forEach((f: any) => {
+        const fv = cd[f.field_key] || {}
+        catMealMonthMap[m][f.field_key] = (catMealMonthMap[m][f.field_key] || 0) + (fv.bf||0) + (fv.l||0) + (fv.d||0)
+      })
+    } catch(e) {}
+  })
+
+  // 카테고리 key → id 맵
+  const catKeyIdMap: Record<string, number> = {}
+  ;(cats.results || []).forEach((cat: any) => { catKeyIdMap[cat.category_key] = cat.id })
+
+  // 카테고리별 월 발주맵: catOrderMonthMap[catId][month] = total
+  const catOrderMonthMap: Record<number, Record<string,number>> = {}
+  ;(annual.results || []).forEach((r: any) => {
+    if (!catOrderMonthMap[r.patient_category_id]) catOrderMonthMap[r.patient_category_id] = {}
+    catOrderMonthMap[r.patient_category_id][String(parseInt(r.month))] = r.total
+  })
+
+  // 카테고리별 월별 formula 식단가 계산
+  const catDietPriceAnnual = (cats.results || []).map((cat: any) => {
+    let budgetKeys: string[] = []
+    let mealsKeys: string[] = []
+    try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
+    try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+    const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
+
+    const monthly: Array<{month: number, monthAmt: number, monthMeals: number, dietPrice: number}> = []
+    for (let m = 1; m <= 12; m++) {
+      const mStr = String(m)
+      let monthAmt: number
+      if (hasFormula && budgetKeys.length > 0) {
+        monthAmt = budgetKeys.reduce((sum: number, key: string) => {
+          const catId = catKeyIdMap[key]
+          return sum + (catId ? (catOrderMonthMap[catId]?.[mStr] || 0) : 0)
+        }, 0)
+      } else {
+        monthAmt = catOrderMonthMap[cat.id]?.[mStr] || 0
+      }
+      const mCustom = catMealMonthMap[mStr] || {}
+      const mStaff = staffMonthMap[mStr] || 0
+      const mGuardian = guardianMonthMap[mStr] || 0
+      let monthMeals: number
+      if (hasFormula && mealsKeys.length > 0) {
+        let total = 0
+        if (mealsKeys.includes('staff')) total += mStaff
+        if (mealsKeys.includes('guardian')) total += mGuardian
+        mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (mCustom[k] || 0) })
+        monthMeals = total
+      } else {
+        const defaultCatKey = `cat_${cat.category_key}`
+        monthMeals = (mCustom[defaultCatKey] || 0) + mStaff + mGuardian
+      }
+      const dietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
+      monthly.push({ month: m, monthAmt, monthMeals, dietPrice })
+    }
+    return {
+      id: cat.id,
+      category_key: cat.category_key,
+      category_name: cat.category_name,
+      budgetKeys,
+      mealsKeys,
+      monthly
+    }
+  })
+
   return c.json({
     categories: cats.results || [],
     annualByCategory: annual.results || [],
-    annualSettings: annualSettings.results || []
+    annualSettings: annualSettings.results || [],
+    catDietPriceAnnual
   })
 })
 
