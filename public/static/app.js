@@ -937,17 +937,21 @@ async function renderDashboard() {
         })
 
         // 활성(데이터 있는) 카테고리만 가중평균에 사용
-        const activeCats = catPriceList.filter(c => c._dietPrice > 0 && c.monthAmt > 0)
-        const totalAmt = activeCats.reduce((s,c) => s + c.monthAmt, 0)
+        const activeCats = catPriceList.filter(c => c._dietPrice > 0)
+        const totalBudgetW = activeCats.reduce((s,c) => s + (c.monthBudget||0), 0)
+        const totalAmtW = activeCats.reduce((s,c) => s + c.monthAmt, 0)
 
-        // ① 전체 식단가 (가중평균)
+        // ① 전체 식단가 (예산비중 가중평균, 예산 미설정 시 발주금액 비중 폴백)
         let dbWeightedCurrent = 0
         if (isSingleCat) {
           // 카테고리 1개: 해당 식단가 = 전체 식단가
           dbWeightedCurrent = catPriceList[0]._dietPrice
-        } else if (totalAmt > 0) {
-          // 카테고리 2개+: 발주금액 비중 가중평균
-          dbWeightedCurrent = Math.round(activeCats.reduce((s,c) => s + c._dietPrice * (c.monthAmt / totalAmt), 0))
+        } else if (totalBudgetW > 0) {
+          // 카테고리 2개+: 예산 비중 가중평균 (핵심 수정)
+          dbWeightedCurrent = Math.round(activeCats.reduce((s,c) => s + c._dietPrice * ((c.monthBudget||0) / totalBudgetW), 0))
+        } else if (totalAmtW > 0) {
+          // 예산 미설정 시: 발주금액 비중 가중평균 폴백
+          dbWeightedCurrent = Math.round(activeCats.reduce((s,c) => s + c._dietPrice * (c.monthAmt / totalAmtW), 0))
         }
 
         // ② 목표 식단가 (예산 비중 가중평균)
@@ -994,7 +998,9 @@ async function renderDashboard() {
         const panelIcon  = isSingleCat ? 'fa-utensils' : 'fa-balance-scale'
         const panelDesc  = isSingleCat
           ? `${catPriceList[0]?.category_name||''} 발주금액 ÷ 설정 식수`
-          : activeCats.map(c => `${c.category_name} ${Math.round((c.monthAmt/totalAmt)*100)}%`).join(' + ')
+          : (totalBudgetW > 0
+            ? activeCats.map(c => `${c.category_name} ${Math.round(((c.monthBudget||0)/totalBudgetW)*100)}%`).join(' + ') + ' (예산비중)'
+            : activeCats.map(c => `${c.category_name} ${totalAmtW>0?Math.round((c.monthAmt/totalAmtW)*100):0}%`).join(' + ') + ' (발주비중)')
         return `<div class="mt-3 p-3 rounded-xl border" style="background:linear-gradient(135deg,#faf5ff,#f0f9ff);border-color:#c084fc40">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
             <span style="font-size:12px;font-weight:700;color:#7c3aed"><i class="fas ${panelIcon}" style="margin-right:4px"></i>${panelTitle}</span>
@@ -4325,26 +4331,39 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     const supCost = supplyMap[i] || 0
 
     if (used > 0) {
-      // ① 전체 식단가 — 카테고리 가중평균 우선
+      // ① 전체 식단가 — 카테고리 예산비중 가중평균 우선
       if (annualCatPrices.length > 0) {
-        // 이 달에 유효한 카테고리(발주금액>0이고 식단가>0) 수집
+        // 이 달에 유효한 카테고리(식단가>0) 수집, 예산 비중 기준
         const activeCats = annualCatPrices
           .map(cat => {
             const md = (cat.monthlyDietPrices || []).find(d => d.month === i + 1) || {}
-            return { dietPrice: md.dietPrice || 0, monthAmt: md.monthAmt || 0 }
+            return {
+              dietPrice: md.dietPrice || 0,
+              monthAmt: md.monthAmt || 0,
+              monthlyBudget: cat.monthlyBudget || 0
+            }
           })
-          .filter(c => c.dietPrice > 0 && c.monthAmt > 0)
+          .filter(c => c.dietPrice > 0)
 
         if (activeCats.length === 1) {
           // 카테고리 1개: 해당 카테고리 식단가 그대로
           mpTotalByMonth[i] = activeCats[0].dietPrice
         } else if (activeCats.length >= 2) {
-          // 카테고리 2개 이상: 발주금액 비중 가중평균
-          const totalAmt = activeCats.reduce((s, c) => s + c.monthAmt, 0)
-          if (totalAmt > 0) {
+          // 카테고리 2개 이상: 예산 비중 가중평균 (예산 미설정 시 발주금액 비중)
+          const totalBudgetW = activeCats.reduce((s, c) => s + c.monthlyBudget, 0)
+          if (totalBudgetW > 0) {
+            // 예산 비중 가중평균: Σ(식단가 × 예산비중)
             mpTotalByMonth[i] = Math.round(
-              activeCats.reduce((s, c) => s + c.dietPrice * (c.monthAmt / totalAmt), 0)
+              activeCats.reduce((s, c) => s + c.dietPrice * (c.monthlyBudget / totalBudgetW), 0)
             )
+          } else {
+            // 예산 미설정 시 발주금액 비중으로 폴백
+            const totalAmtW = activeCats.reduce((s, c) => s + c.monthAmt, 0)
+            if (totalAmtW > 0) {
+              mpTotalByMonth[i] = Math.round(
+                activeCats.reduce((s, c) => s + c.dietPrice * (c.monthAmt / totalAmtW), 0)
+              )
+            }
           }
         } else if (tmForPrice > 0) {
           // 카테고리 데이터 없는 달은 기존 방식 폴백

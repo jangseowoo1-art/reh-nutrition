@@ -652,6 +652,7 @@ dashboard.get('/annual/:year', async (c) => {
       id: cat.id,
       category_key: cat.category_key,
       category_name: cat.category_name,
+      monthlyBudget: cat.monthly_budget || 0,
       budgetKeys,
       mealsKeys,
       monthlyDietPrices
