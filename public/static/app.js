@@ -2973,6 +2973,7 @@ function updateBudgetProgressPanel() {
         if (hasFormula3 && mealsKeys3.length > 0) {
           if (mealsKeys3.includes('staff')) catMonthMeals += staffMeals3
           if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
+          // noncovered는 항상 제외 (mealsKeys3에 포함되어 있어도 무시)
           mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
         } else {
           catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0)
@@ -7197,11 +7198,10 @@ function renderCategoryBudgetList(cats, settings) {
     const budgetOptions = cats.map(c => ({
       key: c.category_key, label: c.category_name + ' 예산'
     }))
-    // 식수 항목 선택지 구성
+    // 식수 항목 선택지 구성 (비급여식은 식단가 계산에서 항상 제외 → 선택 불가)
     const mealsOptions = [
       { key: 'staff', label: '직원식' },
       { key: 'guardian', label: '보호자식' },
-      { key: 'noncovered', label: '비급여식' },
       ...cats.map(c => ({ key: `cat_${c.category_key}`, label: c.category_name + ' 식수' }))
     ]
 
@@ -7245,7 +7245,8 @@ function renderCategoryBudgetList(cats, settings) {
           <div class="bg-blue-50 rounded-lg p-2 text-xs text-blue-700 mb-2">
             <i class="fas fa-info-circle mr-1"></i>
             <b>계산식:</b> 선택한 예산 합계 ÷ 선택한 식수 합계<br>
-            <span class="text-gray-500">체크 없으면 전체 예산/식수 기준</span>
+            <span class="text-gray-500">체크 없으면 전체 예산/식수 기준</span><br>
+            <span class="text-red-500 font-medium"><i class="fas fa-ban mr-1"></i>비급여 식수는 식단가 계산에서 항상 제외됩니다</span>
           </div>
           <!-- 예산 포함 항목 -->
           <div>

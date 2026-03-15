@@ -253,11 +253,13 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // buildMealsFromKeys: 특정 키 목록에 해당하는 식수 합계 반환
   //   mealStatsRow: { total_staff, total_guardian }
   //   customTotalsMap: { cat_cancer: N, cat_nursing: N, ... }  (month 또는 today용)
+  // ⚠️ 비급여(noncovered)는 식단가 계산 분모에서 항상 제외 — 별도 선택 불가
   const buildMealsFromKeys = (mealsKeys: string[], mealStatsRow: {total_staff?:number,total_guardian?:number}|null, customTotalsMap: Record<string,number>): number => {
     if (!mealsKeys || mealsKeys.length === 0) return 0
     let total = 0
     if (mealsKeys.includes('staff')) total += (mealStatsRow?.total_staff || 0)
     if (mealsKeys.includes('guardian')) total += (mealStatsRow?.total_guardian || 0)
+    // noncovered는 명시적으로 제외 (설정에 포함되어 있어도 무시)
     mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (customTotalsMap[k] || 0) })
     return total
   }
@@ -635,10 +637,12 @@ dashboard.get('/annual/:year', async (c) => {
         let total = 0
         if (mealsKeys.includes('staff')) total += mStaff
         if (mealsKeys.includes('guardian')) total += mGuardian
+        // noncovered는 항상 제외 (설정에 포함되어도 무시)
         mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (mCustom[k] || 0) })
         monthMeals = total
       } else {
         const defaultCatKey = `cat_${cat.category_key}`
+        // 기존 방식도 noncovered 제외: 카테고리 식수 + 직원 + 보호자
         monthMeals = (mCustom[defaultCatKey] || 0) + mStaff + mGuardian
       }
       const dietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
