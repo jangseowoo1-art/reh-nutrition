@@ -746,6 +746,19 @@ adminRouter.post('/hospitals/:id/vendors', async (c) => {
   return c.json({ success: true })
 })
 
+// ── 업체 순서 일괄 변경 (반드시 :vid 라우트보다 위에 있어야 함) ───
+adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
+  const hospitalId = c.req.param('id')
+  const { order } = await c.req.json() // order: [{id, sort_order}]
+  if (!Array.isArray(order)) return c.json({ error: 'invalid' }, 400)
+  const stmts = order.map((item: any) =>
+    c.env.DB.prepare(`UPDATE vendors SET sort_order=? WHERE id=? AND hospital_id=?`)
+      .bind(item.sort_order, item.id, hospitalId)
+  )
+  await c.env.DB.batch(stmts)
+  return c.json({ success: true })
+})
+
 // ── 병원별 업체 수정 (관리자용) ───────────────────────────────
 adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
@@ -766,19 +779,6 @@ adminRouter.delete('/hospitals/:id/vendors/:vid', async (c) => {
   await c.env.DB.prepare(`
     UPDATE vendors SET is_active=0 WHERE id=? AND hospital_id=?
   `).bind(vid, hospitalId).run()
-  return c.json({ success: true })
-})
-
-// ── 업체 순서 일괄 변경 ───────────────────────────────────────
-adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
-  const hospitalId = c.req.param('id')
-  const { order } = await c.req.json() // order: [{id, sort_order}]
-  if (!Array.isArray(order)) return c.json({ error: 'invalid' }, 400)
-  const stmts = order.map((item: any) =>
-    c.env.DB.prepare(`UPDATE vendors SET sort_order=? WHERE id=? AND hospital_id=?`)
-      .bind(item.sort_order, item.id, hospitalId)
-  )
-  await c.env.DB.batch(stmts)
   return c.json({ success: true })
 })
 
