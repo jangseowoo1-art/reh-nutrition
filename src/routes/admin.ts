@@ -476,6 +476,23 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         FROM food_waste_records WHERE hospital_id=? AND year=? AND month=?
       `).bind(h.id, hYear, hMonth).first<any>()
 
+      // 법인카드 월별 사용 현황 (구분별 합계)
+      const cardExpensesRaw = await c.env.DB.prepare(`
+        SELECT v.card_subtype, COALESCE(SUM(ce.amount),0) as total, COUNT(ce.id) as cnt
+        FROM card_expenses ce
+        JOIN vendors v ON ce.vendor_id = v.id
+        WHERE ce.hospital_id = ? AND ce.expense_date LIKE ?
+        GROUP BY v.card_subtype
+      `).bind(h.id, `${hYear}-${hMonth.padStart(2,'0')}%`).all<any>()
+      const subtypeLabels: Record<string,string> = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
+      const cardBySubtype = (cardExpensesRaw.results || []).map((r: any) => ({
+        subtype: r.card_subtype || 'other',
+        label: subtypeLabels[r.card_subtype] || '기타',
+        total: r.total || 0,
+        count: r.cnt || 0
+      }))
+      const cardMonthTotal = cardBySubtype.reduce((s: number, r: any) => s + r.total, 0)
+
       const totalBudget = settings?.total_budget || 0
       const workingDays = settings?.working_days || 30
       const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
@@ -704,6 +721,10 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         activeYear: parseInt(hYear),
         activeMonth: parseInt(hMonth),
         catDietPrices,
+        cardExpenses: {
+          monthTotal: cardMonthTotal,
+          bySubtype: cardBySubtype
+        },
         prevMonth: {
           month: prevMonthNum, year: parseInt(prevYearStr),
           mealPriceTotal: prevMealPriceTotal,

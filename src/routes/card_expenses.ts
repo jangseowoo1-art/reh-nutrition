@@ -44,6 +44,7 @@ cardExpenses.get('/monthly/:year/:month', async (c) => {
   `).bind(hospitalId, `${prefix}%`).all<any>()
 
   return c.json({
+    vendors: cardVendors.results || [],       // 호환성 별칭
     cardVendors: cardVendors.results || [],
     expenses: expenses.results || [],
     vendorTotals: vendorTotals.results || [],

@@ -275,7 +275,8 @@ function getHospitalMenus() {
     { id: 'meals', icon: 'fa-utensils', label: '식수 입력', section: null },
     { id: 'schedule', icon: 'fa-calendar-alt', label: '스케줄 관리', section: null },
     { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
-    { id: 'settings', icon: 'fa-flag-checkered', label: '마감 요청', section: '관리' }
+    { id: 'settings', icon: 'fa-flag-checkered', label: '마감 요청', section: '관리' },
+    { id: 'expense-doc', icon: 'fa-file-invoice-dollar', label: '지출결의서', section: null }
   ]
 }
 
@@ -353,7 +354,8 @@ function navigateTo(page, forceReload = false) {
     admin: { title: '전체 병원 현황', sub: '관리자 - 실시간 모니터링' },
     'hospital-manage': { title: '병원 관리', sub: '병원 정보 및 예산 설정' },
     'holiday-manage': { title: '공휴일 관리', sub: '공휴일 조회 및 수동 추가' },
-    report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' }
+    report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' },
+    'expense-doc': { title: '지출결의서', sub: '법인카드 사용 내역 결의서' }
   }
   const t = titles[page] || { title: page, sub: '' }
   const titleEl = document.getElementById('pageTitle')
@@ -389,7 +391,8 @@ function navigateTo(page, forceReload = false) {
     settings: renderSettings,  admin: renderAdminDashboard,
     'hospital-manage': renderHospitalManage,
     'holiday-manage':  renderHolidayManage,
-    report: renderReport
+    report: renderReport,
+    'expense-doc': renderExpenseDoc
   }
 
   if (pages[page]) {
@@ -508,11 +511,28 @@ async function renderDashboard() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [data, catData] = await Promise.all([
+  const [data, catData, dashCardData] = await Promise.all([
     api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}`)
   ])
   if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+
+  // 법인카드 집계
+  const dashCardExpenses = dashCardData?.expenses ? dashCardData.expenses : []
+  const dashCardMonthTotal = (dashCardData?.vendorTotals || []).reduce((s, r) => s + (r.month_total || 0), 0)
+  const dashCardBySubtype = {}
+  ;(dashCardData?.cardVendors || []).filter(v => v.is_card_type).forEach(v => {
+    const k = v.card_subtype || 'other'
+    if (!dashCardBySubtype[k]) dashCardBySubtype[k] = { label: {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[k]||'기타', total: 0, count: 0 }
+  })
+  ;(dashCardData?.vendorTotals || []).forEach(r => {
+    const vn = (dashCardData?.cardVendors || []).find(v => v.id === r.vendor_id)
+    const k = vn?.card_subtype || 'other'
+    if (!dashCardBySubtype[k]) dashCardBySubtype[k] = { label: {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[k]||'기타', total: 0, count: 0 }
+    dashCardBySubtype[k].total += r.month_total || 0
+    dashCardBySubtype[k].count += r.item_count || 0
+  })
 
   const patientCats = catData?.categories || []
   const catMonthly = catData?.monthly || []
@@ -1076,6 +1096,33 @@ async function renderDashboard() {
             </div>
           </div>
 
+        </div>
+      </div>` : ''}
+
+      <!-- 법인카드 현황 (데이터 있을 때만) -->
+      ${dashCardMonthTotal > 0 ? `
+      <div class="mt-3 border-t border-gray-100 pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold text-gray-700"><i class="fas fa-credit-card text-purple-500 mr-1"></i>법인카드 사용 현황</span>
+          <span class="text-sm font-bold text-purple-700">${fmtMan(dashCardMonthTotal)}원</span>
+        </div>
+        <div class="grid grid-cols-3 gap-1.5 mb-2">
+          ${Object.values(dashCardBySubtype).map(st => `
+          <div class="p-2 bg-purple-50 rounded-lg border border-purple-100 text-center">
+            <div class="text-xs text-purple-500 mb-0.5">${st.label}</div>
+            <div class="text-xs font-bold text-purple-700">${fmtMan(st.total)}원</div>
+            <div class="text-xs text-gray-400">${st.count}건</div>
+          </div>`).join('')}
+        </div>
+        <div class="max-h-32 overflow-y-auto space-y-1">
+          ${(dashCardData?.vendorTotals||[]).map(r => {
+            const vn = (dashCardData?.cardVendors||[]).find(v => v.id === r.vendor_id)
+            return `<div class="flex items-center justify-between text-xs bg-purple-50/50 rounded-lg px-2 py-1 border border-purple-100/50">
+              <span class="text-gray-600 font-medium">${vn?.name || '업체'}</span>
+              <span class="font-bold text-purple-700">${fmtMan(r.month_total)}원</span>
+              <span class="text-gray-400">${r.item_count}건</span>
+            </div>`
+          }).join('')}
         </div>
       </div>` : ''}
 
@@ -2147,10 +2194,16 @@ async function renderOrders() {
 
             // 업체 월 누적 (이 카테고리)
             let vCatMonthAccum = 0
-            Object.keys(catDailyMap).forEach(dk => {
-              const r2 = (catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
-              vCatMonthAccum += r2.total || 0
-            })
+            if (v.is_card_type) {
+              // 법인카드형 업체: _cardDailyMap 에서 해당 업체의 월 합계
+              const vendorCardMap = window._cardDailyMap?.[v.id] || {}
+              Object.values(vendorCardMap).forEach(amt => { vCatMonthAccum += amt || 0 })
+            } else {
+              Object.keys(catDailyMap).forEach(dk => {
+                const r2 = (catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
+                vCatMonthAccum += r2.total || 0
+              })
+            }
             const vRemain = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) - vCatMonthAccum : null
             const taxLabel = v.is_card_type ? '법인카드' : (v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세')
             const taxBg = v.is_card_type ? '#f3e8ff' : (v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':v.tax_type==='mixed_total'?'#f3e8ff':'#fef9c3')
@@ -3985,7 +4038,12 @@ function updateDayTotal(date) {
       if (field === 'taxable') catTotals[catId] += val + Math.round(val * 0.1)
       else catTotals[catId] += val
     })
-    const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0)
+    // 법인카드형 업체 금액도 grandTotal에 포함
+    let cardTotalForDay = 0
+    ;(window._ordersVendors || []).filter(v => v.is_card_type).forEach(v => {
+      cardTotalForDay += (window._cardDailyMap?.[v.id]?.[date]) || 0
+    })
+    const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0) + cardTotalForDay
 
     const budget = window._ordersBudget
     const row = document.querySelector(`tr[data-date="${date}"]`)
@@ -4116,12 +4174,18 @@ function updateDayTotal(date) {
         if (!accumEl) return
         // 이 업체×카테고리의 전체 월 누적 합산 (현재 입력값 포함)
         let vCatLiveTotal = 0
-        document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"]`).forEach(inp2 => {
-          const fld = inp2.dataset.field
-          const val2 = parseOrderVal(inp2.value)
-          if (fld === 'taxable') vCatLiveTotal += val2 + Math.round(val2 * 0.1)
-          else vCatLiveTotal += val2
-        })
+        if (v.is_card_type) {
+          // 법인카드형: _cardDailyMap 에서 월 합계
+          const vendorCardMap = window._cardDailyMap?.[v.id] || {}
+          Object.values(vendorCardMap).forEach(amt => { vCatLiveTotal += amt || 0 })
+        } else {
+          document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"]`).forEach(inp2 => {
+            const fld = inp2.dataset.field
+            const val2 = parseOrderVal(inp2.value)
+            if (fld === 'taxable') vCatLiveTotal += val2 + Math.round(val2 * 0.1)
+            else vCatLiveTotal += val2
+          })
+        }
 
         // 업체 자체 monthly_budget 우선, 없으면 카테고리 예산 균등 배분
         const vMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
@@ -6605,6 +6669,23 @@ async function renderAdminDashboard() {
             <div class="mt-1 text-xs text-gray-400 text-right">비급여 ${fmt(monthNonCovMeals)}식 (합계 제외)</div>` : ''}
           </div>
 
+          <!-- ④ 법인카드 사용 현황 -->
+          ${h.cardExpenses && h.cardExpenses.monthTotal > 0 ? `
+          <div class="mb-3 p-2.5 bg-gradient-to-r from-purple-50 to-violet-50 rounded-xl border border-purple-100">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-purple-700"><i class="fas fa-credit-card mr-1"></i>법인카드 사용 현황</span>
+              <span class="text-xs font-bold text-purple-800">${fmtMan(h.cardExpenses.monthTotal)}원</span>
+            </div>
+            <div class="grid grid-cols-3 gap-1 text-center">
+              ${(h.cardExpenses.bySubtype||[]).map(st => `
+              <div class="p-1.5 bg-white rounded-lg border border-purple-100">
+                <div class="text-xs text-purple-500">${st.label}</div>
+                <div class="text-xs font-bold text-purple-700">${fmtMan(st.total)}원</div>
+                <div class="text-xs text-gray-400">${st.count}건</div>
+              </div>`).join('')}
+            </div>
+          </div>` : ''}
+
           <!-- ④ 발주 현황 & 잔반 -->
           <div class="flex gap-2 text-xs text-gray-500 mb-2">
             <span>오늘발주: <strong class="text-gray-700">${fmtMan(h.todayUsed)}원</strong></span>
@@ -8879,10 +8960,13 @@ async function renderReport(selectedHospitalId = null) {
   const nextMonth = reportMonth === 12 ? 1 : reportMonth + 1
   const nextYear = reportMonth === 12 ? reportYear + 1 : reportYear
 
-  const [summaryData, annualData, nextSettingsData] = await Promise.all([
+  const [summaryData, annualData, nextSettingsData, cardReportData] = await Promise.all([
     api('GET', `/api/dashboard/summary/${reportYear}/${reportMonth}?hospitalId=${targetHospitalId}`),
     api('GET', `/api/dashboard/annual/${reportYear}?hospitalId=${targetHospitalId}`),
-    api('GET', `/api/settings/${nextYear}/${nextMonth}?hospitalId=${targetHospitalId}`)
+    api('GET', `/api/settings/${nextYear}/${nextMonth}?hospitalId=${targetHospitalId}`),
+    targetHospitalId
+      ? api('GET', `/api/card-expenses/admin/${targetHospitalId}/${reportYear}/${reportMonth}`)
+      : api('GET', `/api/card-expenses/monthly/${reportYear}/${reportMonth}`)
   ])
 
   const s = summaryData?.summary || {}
@@ -8890,6 +8974,19 @@ async function renderReport(selectedHospitalId = null) {
   const ms = summaryData?.mealStats || {}
   const dailyOrders = summaryData?.dailyOrders || []
   const vendorOrders = summaryData?.vendorOrders || vendors
+
+  // 법인카드 데이터 정리
+  const rptCardExpenses = (cardReportData?.expenses || []).sort((a, b) => a.expense_date.localeCompare(b.expense_date))
+  const rptCardTotal = rptCardExpenses.reduce((s, e) => s + (e.amount || 0), 0)
+  const subtypeLabels = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
+  const rptCardBySubtypeMap = {}
+  rptCardExpenses.forEach(e => {
+    const k = e.card_subtype || 'other'
+    if (!rptCardBySubtypeMap[k]) rptCardBySubtypeMap[k] = { subtype: k, label: subtypeLabels[k]||'기타', total: 0, count: 0 }
+    rptCardBySubtypeMap[k].total += e.amount || 0
+    rptCardBySubtypeMap[k].count++
+  })
+  const rptCardBySubtype = Object.values(rptCardBySubtypeMap)
 
   const monthlyUsed = (annualData?.monthly||[])
   const monthlyMeals = (annualData?.mealMonthly||[])
@@ -9133,6 +9230,60 @@ async function renderReport(selectedHospitalId = null) {
         </div>
       </div>
     </div>
+
+    <!-- 슬라이드 10: 법인카드 사용 내역 (데이터 있을 때만) -->
+    ${rptCardExpenses.length > 0 ? `
+    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h2 class="report-slide-title"><i class="fas fa-credit-card text-purple-600 mr-2"></i>법인카드 사용 내역</h2>
+      <div class="grid grid-cols-4 gap-3 mb-4">
+        <div class="bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
+          <div class="text-xs text-purple-500 mb-1">전체 합계</div>
+          <div class="text-lg font-bold text-purple-700">${fmtMan(rptCardTotal)}원</div>
+        </div>
+        ${rptCardBySubtype.map(st => `
+        <div class="bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
+          <div class="text-xs text-purple-500 mb-1">${st.label}</div>
+          <div class="text-sm font-bold text-purple-700">${fmtMan(st.total)}원</div>
+          <div class="text-xs text-gray-400">${st.count}건</div>
+        </div>`).join('')}
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs border-collapse">
+          <thead>
+            <tr class="bg-purple-50">
+              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">날짜</th>
+              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">구분</th>
+              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">업체명</th>
+              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">사용품목</th>
+              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">구매용도</th>
+              <th class="border border-purple-100 px-2 py-1.5 text-right text-purple-700">금액</th>
+              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">메모</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rptCardExpenses.map((e, i) => `
+            <tr class="${i%2===0?'bg-white':'bg-purple-50/30'}">
+              <td class="border border-purple-100 px-2 py-1">${e.expense_date}</td>
+              <td class="border border-purple-100 px-2 py-1">
+                <span class="inline-block px-1.5 py-0.5 rounded text-purple-700 font-semibold" style="background:#f3e8ff;font-size:10px">${{'food':'식재료','supplies':'소모품','online':'온라인','other':'기타'}[e.card_subtype]||'기타'}</span>
+              </td>
+              <td class="border border-purple-100 px-2 py-1">${e.vendor_name||e.card_vendor_name||''}</td>
+              <td class="border border-purple-100 px-2 py-1">${e.item_name||''}</td>
+              <td class="border border-purple-100 px-2 py-1">${e.purpose||''}</td>
+              <td class="border border-purple-100 px-2 py-1 text-right font-bold text-purple-700">${(e.amount||0).toLocaleString()}원</td>
+              <td class="border border-purple-100 px-2 py-1 text-gray-500">${e.memo||''}</td>
+            </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="bg-purple-100">
+              <td colspan="5" class="border border-purple-200 px-2 py-1.5 text-right font-bold text-purple-700">합계</td>
+              <td class="border border-purple-200 px-2 py-1.5 text-right font-bold text-purple-700">${fmtMan(rptCardTotal)}원</td>
+              <td class="border border-purple-200 px-2 py-1.5"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>` : ''}
 
   </div>`
 
@@ -9987,4 +10138,215 @@ window.saveCardExpenseItems = async function() {
 window.closeCardExpenseModal = function() {
   const modal = document.getElementById('cardExpenseModal')
   if (modal) modal.remove()
+}
+
+// ════════════════════════════════════════════════════════════════
+// 지출결의서 페이지
+// ════════════════════════════════════════════════════════════════
+async function renderExpenseDoc() {
+  const content = document.getElementById('pageContent')
+  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+
+  const year = App.currentYear
+  const month = App.currentMonth
+
+  const cardData = await api('GET', `/api/card-expenses/monthly/${year}/${month}`)
+  if (!cardData) {
+    content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'
+    return
+  }
+
+  // monthly 엔드포인트가 expenses 필드 포함
+  const subtypeLabels = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
+
+  // 상세내역은 monthly.expenses 사용 (이미 포함되어 있음)
+  const detailData = cardData
+
+  const allExpenses = (detailData?.expenses || [])
+    .sort((a, b) => a.expense_date.localeCompare(b.expense_date) || (a.id - b.id))
+
+  // 월 합계
+  const monthTotal = allExpenses.reduce((s, e) => s + (e.amount || 0), 0)
+  // 구분별 합계
+  const bySubtype = {}
+  allExpenses.forEach(e => {
+    const k = e.card_subtype || 'other'
+    if (!bySubtype[k]) bySubtype[k] = { label: subtypeLabels[k]||'기타', total: 0, count: 0 }
+    bySubtype[k].total += e.amount || 0
+    bySubtype[k].count++
+  })
+
+  const mm = String(month).padStart(2, '0')
+
+  content.innerHTML = `
+  <div class="space-y-4">
+    <!-- 컨트롤 바 -->
+    <div class="flex items-center gap-3 flex-wrap no-print">
+      <div class="flex items-center gap-2 text-sm text-gray-600">
+        <i class="fas fa-file-invoice-dollar text-purple-500"></i>
+        <span class="font-semibold">${year}년 ${month}월 법인카드 지출결의서</span>
+      </div>
+      <div class="ml-auto flex gap-2">
+        <button onclick="window.print()" class="btn btn-secondary btn-sm">
+          <i class="fas fa-print mr-1"></i>인쇄/PDF
+        </button>
+        <button onclick="exportExpenseDocExcel()" class="btn btn-primary btn-sm">
+          <i class="fas fa-file-excel mr-1"></i>엑셀 다운로드
+        </button>
+      </div>
+    </div>
+
+    <!-- 지출결의서 본문 -->
+    <div id="expenseDocBody" style="print-color-adjust:exact">
+      <!-- 제목 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-4">
+        <div class="text-center mb-6">
+          <h1 class="text-2xl font-bold text-gray-800 mb-1">지  출  결  의  서</h1>
+          <div class="text-sm text-gray-500">${App.hospitalName} · ${year}년 ${mm}월</div>
+        </div>
+
+        <!-- 요약 그리드 -->
+        <div class="grid grid-cols-4 gap-3 mb-6">
+          <div class="col-span-1 bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
+            <div class="text-xs text-purple-500 mb-1">결제수단</div>
+            <div class="text-sm font-bold text-purple-700">법인카드</div>
+          </div>
+          <div class="col-span-1 bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
+            <div class="text-xs text-purple-500 mb-1">사용 기간</div>
+            <div class="text-sm font-bold text-purple-700">${year}-${mm}-01 ~ ${year}-${mm}-${new Date(year, month, 0).getDate()}</div>
+          </div>
+          <div class="col-span-1 bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
+            <div class="text-xs text-purple-500 mb-1">총 건수</div>
+            <div class="text-sm font-bold text-purple-700">${allExpenses.length}건</div>
+          </div>
+          <div class="col-span-1 bg-purple-100 rounded-xl p-3 text-center border border-purple-200">
+            <div class="text-xs text-purple-600 mb-1 font-semibold">총 금액</div>
+            <div class="text-lg font-bold text-purple-800">${monthTotal.toLocaleString()}원</div>
+          </div>
+        </div>
+
+        <!-- 구분별 소계 -->
+        ${Object.values(bySubtype).length > 0 ? `
+        <div class="mb-4">
+          <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-layer-group text-purple-400 mr-1"></i>구분별 소계</h3>
+          <div class="grid grid-cols-${Math.min(Object.values(bySubtype).length, 4)} gap-2">
+            ${Object.values(bySubtype).map(st => `
+            <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 border border-gray-100">
+              <div>
+                <span class="inline-block px-2 py-0.5 rounded text-purple-700 text-xs font-bold mr-1" style="background:#f3e8ff">${st.label}</span>
+                <span class="text-xs text-gray-400">${st.count}건</span>
+              </div>
+              <span class="text-sm font-bold text-purple-700">${st.total.toLocaleString()}원</span>
+            </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- 상세 내역 테이블 -->
+        <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-list-alt text-purple-400 mr-1"></i>상세 사용 내역</h3>
+        ${allExpenses.length > 0 ? `
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs border-collapse" id="expenseDocTable">
+            <thead>
+              <tr style="background:#f3e8ff">
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">No.</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">사용일자</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">결제수단</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">구분</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">업체명</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">사용품목</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">용도</th>
+                <th class="border border-purple-200 px-2 py-2 text-right text-purple-800 font-bold">금액</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">메모</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${allExpenses.map((e, i) => `
+              <tr style="background:${i%2===0?'white':'#faf5ff'}">
+                <td class="border border-purple-100 px-2 py-1.5 text-gray-400">${i+1}</td>
+                <td class="border border-purple-100 px-2 py-1.5">${e.expense_date}</td>
+                <td class="border border-purple-100 px-2 py-1.5">
+                  <span class="inline-flex items-center gap-1 text-purple-700 font-medium"><i class="fas fa-credit-card text-purple-400" style="font-size:9px"></i>법인카드</span>
+                </td>
+                <td class="border border-purple-100 px-2 py-1.5">
+                  <span class="inline-block px-1.5 py-0.5 rounded font-semibold text-purple-700" style="background:#f3e8ff;font-size:10px">${{food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[e.card_subtype]||'기타'}</span>
+                </td>
+                <td class="border border-purple-100 px-2 py-1.5 font-medium">${e.vendor_name||e.card_vendor_name||''}</td>
+                <td class="border border-purple-100 px-2 py-1.5">${e.item_name||''}</td>
+                <td class="border border-purple-100 px-2 py-1.5">${e.purpose||''}</td>
+                <td class="border border-purple-100 px-2 py-1.5 text-right font-bold text-purple-700">${(e.amount||0).toLocaleString()}</td>
+                <td class="border border-purple-100 px-2 py-1.5 text-gray-400">${e.memo||''}</td>
+              </tr>`).join('')}
+            </tbody>
+            <tfoot>
+              <tr style="background:#ede9fe">
+                <td colspan="7" class="border border-purple-200 px-2 py-2 text-right font-bold text-purple-800">합  계</td>
+                <td class="border border-purple-200 px-2 py-2 text-right font-bold text-purple-800 text-sm">${monthTotal.toLocaleString()}</td>
+                <td class="border border-purple-200 px-2 py-2"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>` : `
+        <div class="text-center py-8 text-gray-400">
+          <i class="fas fa-credit-card text-3xl mb-3 text-gray-200"></i>
+          <div class="font-semibold">이번 달 법인카드 사용 내역이 없습니다</div>
+          <div class="text-sm mt-1">발주 입력 화면에서 법인카드 업체 셀을 클릭하여 입력하세요</div>
+        </div>`}
+
+        <!-- 결재란 -->
+        <div class="mt-8 flex justify-end gap-4">
+          ${['작성자', '검토자', '승인자'].map(role => `
+          <div class="border-2 border-gray-300 rounded-lg w-28 text-center p-2">
+            <div class="text-xs text-gray-500 mb-6 font-semibold">${role}</div>
+            <div class="text-xs text-gray-300 mt-2">(서명)</div>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`
+}
+
+window.exportExpenseDocExcel = async function() {
+  const year = App.currentYear
+  const month = App.currentMonth
+  const detailData = await api('GET', `/api/card-expenses/monthly/${year}/${month}`)
+  const allExpenses = (detailData?.expenses || []).sort((a, b) => a.expense_date.localeCompare(b.expense_date))
+
+  if (allExpenses.length === 0) {
+    showToast('다운로드할 데이터가 없습니다', 'error')
+    return
+  }
+
+  const mm = String(month).padStart(2, '0')
+  const subtypeMap = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}
+
+  let csv = '\uFEFF' // BOM for Excel UTF-8
+  csv += `${App.hospitalName} ${year}년 ${mm}월 법인카드 지출결의서\n\n`
+  csv += '번호,사용일자,결제수단,구분,업체명,사용품목,구매용도,금액,메모\n'
+  allExpenses.forEach((e, i) => {
+    const row = [
+      i+1,
+      e.expense_date,
+      '법인카드',
+      subtypeMap[e.card_subtype] || '기타',
+      `"${(e.vendor_name||e.card_vendor_name||'').replace(/"/g,'""')}"`,
+      `"${(e.item_name||'').replace(/"/g,'""')}"`,
+      `"${(e.purpose||'').replace(/"/g,'""')}"`,
+      e.amount||0,
+      `"${(e.memo||'').replace(/"/g,'""')}"`
+    ]
+    csv += row.join(',') + '\n'
+  })
+  const total = allExpenses.reduce((s, e) => s + (e.amount||0), 0)
+  csv += `합계,,,,,,, ${total},\n`
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `법인카드지출결의서_${year}년${mm}월.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  showToast('엑셀 파일이 다운로드되었습니다', 'success')
 }
