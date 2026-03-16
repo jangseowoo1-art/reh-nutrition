@@ -463,14 +463,24 @@ function getTaxTypeLabel(t) {
   return { mixed:'과세+면세', taxable:'과세', exempt:'면세' }[t] || t
 }
 
-// 환자군 카테고리 색상 (hex)
+// 환자군 카테고리 색상 (hex) - 소프트 톤으로 조정
 function getCategoryColorHex(key) {
   const colors = {
-    general: '#6b7280', cancer: '#dc2626', rehab: '#2563eb',
-    nursing: '#16a34a', traffic: '#d97706', mental: '#7c3aed',
-    pediatric: '#db2777', spine: '#0891b2', joint: '#059669',
-    cardiac: '#e11d48', dialysis: '#0284c7', stroke: '#9333ea',
-    elderly: '#65a30d', maternity: '#ec4899', other: '#6b7280'
+    general: '#6b7280',
+    cancer:  '#e05252',  // 진한 빨강 → 부드러운 로즈레드
+    rehab:   '#3b82f6',  // 파랑 유지
+    nursing: '#22c55e',  // 진한 초록 → 부드러운 그린
+    traffic: '#f59e0b',  // 주황 유지
+    mental:  '#8b5cf6',  // 보라 유지
+    pediatric: '#ec4899',
+    spine:   '#0ea5e9',
+    joint:   '#10b981',
+    cardiac: '#f43f5e',
+    dialysis:'#0284c7',
+    stroke:  '#a855f7',
+    elderly: '#84cc16',
+    maternity:'#f472b6',
+    other:   '#6b7280'
   }
   return colors[key] || '#6b7280'
 }
@@ -1715,7 +1725,7 @@ async function renderOrders() {
             ${patientCats.map((cat, ci) => {
               const catColor = getCategoryColorHex(cat.category_key)
               const bl = ci === 0 ? 'border-left:3px solid #334155;' : 'border-left:2px solid #475569;'
-              return `<th style="${bl}min-width:82px;background:${catColor}ee;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.35);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.15);padding:1px 5px;border-radius:8px">합계</span></th>`
+              return `<th style="${bl}min-width:${catColW}px;background:${catColor}cc;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.25);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.12);padding:1px 5px;border-radius:8px">합계</span></th>`
             }).join('')}
             ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155;font-size:12px;font-weight:700">일합계</th>` : ''}
             <th class="sticky z-30" style="min-width:84px;background:#1e3a5f;left:110px;padding:5px 4px;font-size:12px;font-weight:700;line-height:1.4">합계<br><span style="font-size:10px;opacity:0.85;font-weight:500">/ 진행률</span></th>
@@ -1873,6 +1883,13 @@ async function renderOrders() {
             vendorDailyBudgets, catDailyMap, catSettingsMap,
             dailyBudget, weekBudget, weekStart, weekEnd, todayStr, orderMap } = p
 
+    // ── 카테고리 수에 따른 컬럼 폭 동적 계산 ──
+    // 카테고리 1개: 컬럼 폭 축소 (합계·업체별 버튼이 기본 화면에 보이도록)
+    // 카테고리 2개+: 기존 폭 유지
+    const numCats = patientCats.length
+    const catColW = numCats <= 1 ? 72 : 82   // 1개: 72px, 2개+: 82px
+    const catMinW = numCats <= 1 ? 68 : 76   // td min-width (요약행/주차행)
+
     const rows = []
     const renderedWeeks = new Set()
     let weekNumber = 0
@@ -1942,7 +1959,7 @@ async function renderOrders() {
           const catColor = getCategoryColorHex(cat.category_key)
           const catAmt = weekCatTotals[ci] || 0
           const bl = ci === 0 ? `border-left:3px solid ${catColor}60;` : `border-left:2px solid ${catColor}30;`
-          return `<td style="${bl}background:${isCurrentWeek?'#ede9fe20':'#f5f3ff15'};padding:3px 4px;text-align:center;vertical-align:middle;min-width:76px">
+          return `<td style="${bl}background:${isCurrentWeek?'#ede9fe20':'#f5f3ff15'};padding:3px 4px;text-align:center;vertical-align:middle;min-width:${catMinW}px">
             <div style="font-size:10px;font-weight:700;color:${catAmt>0?catColor:'#d1d5db'}">${catAmt>0?fmtMan(catAmt):'-'}</div>
           </td>`
         }).join('')
@@ -2015,7 +2032,7 @@ async function renderOrders() {
         const catOver = catPct!==null&&catPct>=100; const catWarn = catPct!==null&&catPct>=80&&!catOver
         const catAmtColor = catOver?'#dc2626':catWarn?'#d97706':(catAmt>0?catColor:'#9ca3af')
         const bl = ci === 0 ? `border-left:3px solid ${catColor}80;` : `border-left:2px solid ${catColor}40;`
-        return `<td id="summCatAmt-${cat.id}-${dateStr}" style="${bl}${summaryBorderTop}padding:3px 4px;background:${catAmt>0?catColor+'12':summaryRowBg};text-align:center;vertical-align:middle;min-width:76px;${pastOpacity}">
+        return `<td id="summCatAmt-${cat.id}-${dateStr}" style="${bl}${summaryBorderTop}padding:3px 4px;background:${catAmt>0?catColor+'12':summaryRowBg};text-align:center;vertical-align:middle;min-width:${catMinW}px;${pastOpacity}">
           <div style="font-size:8px;color:${catColor}99;margin-bottom:1px;font-weight:600">${cat.category_name}</div>
           <div style="font-size:11px;font-weight:700;color:${catAmtColor}">${catAmt>0?fmtMan(catAmt):'<span style="color:#e5e7eb">-</span>'}</div>
           ${catPct!==null?`<div style="font-size:9px;color:${catAmtColor};font-weight:600">${catPct}%${catOver?' 🚨':catWarn?' ⚠️':''}</div>`:(catAmt>0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}
@@ -2156,7 +2173,7 @@ async function renderOrders() {
             const vMonthColor = vMonthOver?'#dc2626':vMonthWarn?'#d97706':catColor
             const vRemainAmt = vMonthBudget > 0 ? vMonthBudget - vCatMonthAccum : null
 
-            return `<div id="vendor-card-${v.id}-${cat.id}-${dateStr}" style="background:white;border-radius:8px;border:1.5px solid ${total>0?catColor+'80':'#e5e7eb'};padding:8px 10px;min-width:140px;flex:1">
+            return `<div id="vendor-card-${v.id}-${cat.id}-${dateStr}" style="background:white;border-radius:8px;border:1.5px solid ${total>0?catColor+'80':'#e5e7eb'};padding:8px 10px;min-width:${numCats<=1?120:140}px;flex:1">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
                 <span style="font-size:11px;font-weight:700;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90px">${v.name}</span>
                 <span style="font-size:8px;padding:1px 4px;border-radius:4px;background:${taxBg};color:${taxColor};font-weight:700">${taxLabel}</span>
@@ -2251,6 +2268,9 @@ async function renderOrders() {
     if (!tfoot) return
     const { vendors, patientCats, orderData, catOrderData, catSettingsMap, monthPct, totalBudget } = p
     const hasCats = patientCats.length > 0
+    // 카테고리 수에 따른 컬럼 폭 (tbody와 동일 기준)
+    const numCatsFoot = patientCats.length
+    const catMinWFoot = numCatsFoot <= 1 ? 68 : 76
 
     // 카테고리 모드: catOrderData 집계, 아니면 orderData 사용
     let monthTotal = 0
@@ -2305,7 +2325,7 @@ async function renderOrders() {
         const catColor = getCategoryColorHex(cat.category_key)
         const catAmt = catMonthTotals[ci] || 0
         const bl = ci===0 ? `border-left:3px solid ${catColor}80;` : `border-left:2px solid ${catColor}40;`
-        return `<td style="${bl}text-align:center;padding:3px 4px;min-width:76px;background:${catAmt>0?catColor+'10':''}"><div style="font-size:10px;font-weight:700;color:${catAmt>0?catColor:'#9ca3af'}">${catAmt>0?fmtMan(catAmt):'-'}</div></td>`
+        return `<td style="${bl}text-align:center;padding:3px 4px;min-width:${catMinWFoot}px;background:${catAmt>0?catColor+'10':''}"><div style="font-size:10px;font-weight:700;color:${catAmt>0?catColor:'#9ca3af'}">${catAmt>0?fmtMan(catAmt):'-'}</div></td>`
       }).join('') : `<td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>`}
       <td class="text-center sticky bg-gray-100" id="vfoot-month-total" style="left:110px;font-size:11px;min-width:80px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}">${fmtMan(monthTotal)}<div style="font-size:9px;font-weight:600">${monthPct}%</div></td>
       <td class="sticky-right-btn" style="background:#f3f4f6;text-align:center;padding:3px 2px;font-size:9px;color:#6b7280;font-weight:600">월간<br>상세</td>
