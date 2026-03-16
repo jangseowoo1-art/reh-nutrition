@@ -2152,13 +2152,33 @@ async function renderOrders() {
               vCatMonthAccum += r2.total || 0
             })
             const vRemain = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) - vCatMonthAccum : null
-            const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세'
-            const taxBg = v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':v.tax_type==='mixed_total'?'#f3e8ff':'#fef9c3'
-            const taxColor = v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':v.tax_type==='mixed_total'?'#7c3aed':'#92400e'
+            const taxLabel = v.is_card_type ? '법인카드' : (v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세')
+            const taxBg = v.is_card_type ? '#f3e8ff' : (v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':v.tax_type==='mixed_total'?'#f3e8ff':'#fef9c3')
+            const taxColor = v.is_card_type ? '#7c3aed' : (v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':v.tax_type==='mixed_total'?'#7c3aed':'#92400e')
 
             // 입력 필드
             let inputFields = ''
-            if (vCols === 3) {
+            if (v.is_card_type) {
+              // 법인카드형 업체: 클릭 시 상세입력 모달
+              const cardTotal = (window._cardDailyMap?.[v.id]?.[dateStr]) || total
+              const cardCount = (window._cardDailyCountMap?.[v.id]?.[dateStr]) || 0
+              const hasCardData = cardTotal > 0
+              const subtypeLabel = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[v.card_subtype||'food']||''
+              inputFields = `
+                <div style="margin-top:4px">
+                  <button class="card-expense-btn w-full text-left rounded-lg border transition-all"
+                    data-vendor="${v.id}" data-date="${dateStr}"
+                    style="width:100%;padding:5px 7px;font-size:11px;cursor:pointer;text-align:left;${hasCardData
+                      ? 'background:#f5f3ff;border:1.5px solid #8b5cf6;color:#6d28d9;'
+                      : 'background:#faf5ff;border:1.5px dashed #c4b5fd;color:#a78bfa;'}"
+                    onclick="openCardExpenseModal(${v.id},'${dateStr}')">
+                    <div style="font-size:8px;color:#8b5cf6;font-weight:600;margin-bottom:2px">${subtypeLabel}</div>
+                    ${hasCardData
+                      ? `<div style="font-weight:700;font-size:12px">${cardTotal.toLocaleString()}</div><div style="font-size:9px;color:#7c3aed">${cardCount}건 입력됨</div>`
+                      : `<div style="font-size:11px"><i class="fas fa-plus-circle" style="font-size:9px"></i> 상세입력</div>`}
+                  </button>
+                </div>`
+            } else if (vCols === 3) {
               inputFields = `
                 <div style="display:flex;gap:3px;align-items:center;margin-top:4px">
                   <div style="flex:1">
@@ -3657,6 +3677,7 @@ function updateInsightPanel() {
 
   // ── 1. 월 발주 합계 계산 ──
   let monthOrdered = 0
+  const processedCardVendors = new Set()
   if (hasCats) {
     document.querySelectorAll('.cat-order-input').forEach(inp => {
       const field = inp.dataset.field
@@ -3674,6 +3695,14 @@ function updateInsightPanel() {
       } else {
         monthOrdered += parseOrderVal(inp.value)
       }
+    })
+  }
+  // 법인카드형 업체 월 합계 추가
+  if (window._cardDailyMap) {
+    Object.entries(window._cardDailyMap).forEach(([vendorId, dateMap]) => {
+      if (processedCardVendors.has(vendorId)) return
+      processedCardVendors.add(vendorId)
+      Object.values(dateMap).forEach(amt => { monthOrdered += amt })
     })
   }
 
@@ -9920,21 +9949,33 @@ window.saveCardExpenseItems = async function() {
     window._cardDailyMap[vendorId][date] = res.dayTotal || 0
     window._cardDailyCountMap[vendorId][date] = items.length
 
-    // 발주 테이블에서 해당 버튼 UI 업데이트
-    const btn = document.querySelector(`.card-expense-btn[data-vendor="${vendorId}"][data-date="${date}"]`)
-    if (btn) {
+    // 발주 테이블에서 해당 버튼 UI 업데이트 (일반 모드 + 카테고리 모드 모두)
+    const allBtns = document.querySelectorAll(`.card-expense-btn[data-vendor="${vendorId}"][data-date="${date}"]`)
+    allBtns.forEach(btn => {
       const vendors = window._vendorsCache || []
       const v = vendors.find(v => v.id == vendorId) || {}
       const subtypeLabel = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[v.card_subtype||'food']||''
       const hasData = res.dayTotal > 0
-      btn.style.background = hasData ? '#f5f3ff' : '#faf5ff'
-      btn.style.borderColor = hasData ? '#8b5cf6' : '#e9d5ff'
-      btn.style.color = hasData ? '#6d28d9' : '#a78bfa'
-      btn.innerHTML = `<div style="font-size:9px;color:#8b5cf6;font-weight:600;">${subtypeLabel}</div>` +
-        (hasData
-          ? `<div style="font-weight:700">${res.dayTotal.toLocaleString()}</div><div style="font-size:9px;color:#7c3aed;">${items.length}건</div>`
-          : `<div style="color:#c4b5fd">+ 상세입력</div>`)
-    }
+      // 일반 모드 버튼 (td 안에 직접)
+      if (btn.closest('td') && !btn.closest('.card-expense-btn-wrap')) {
+        btn.style.background = hasData ? '#f5f3ff' : '#faf5ff'
+        btn.style.borderColor = hasData ? '#8b5cf6' : '#e9d5ff'
+        btn.style.color = hasData ? '#6d28d9' : '#a78bfa'
+        btn.innerHTML = `<div style="font-size:9px;color:#8b5cf6;font-weight:600;">${subtypeLabel}</div>` +
+          (hasData
+            ? `<div style="font-weight:700">${res.dayTotal.toLocaleString()}</div><div style="font-size:9px;color:#7c3aed;">${items.length}건</div>`
+            : `<div style="color:#c4b5fd">+ 상세입력</div>`)
+      } else {
+        // 카테고리 모드 버튼
+        btn.style.background = hasData ? '#f5f3ff' : '#faf5ff'
+        btn.style.borderColor = hasData ? '#8b5cf6' : '#c4b5fd'
+        btn.style.color = hasData ? '#6d28d9' : '#a78bfa'
+        btn.innerHTML = `<div style="font-size:8px;color:#8b5cf6;font-weight:600;margin-bottom:2px">${subtypeLabel}</div>` +
+          (hasData
+            ? `<div style="font-weight:700;font-size:12px">${res.dayTotal.toLocaleString()}</div><div style="font-size:9px;color:#7c3aed">${items.length}건 입력됨</div>`
+            : `<div style="font-size:11px">+ 상세입력</div>`)
+      }
+    })
     // 하단 일계 업데이트
     updateDayTotal(date)
     closeCardExpenseModal()
