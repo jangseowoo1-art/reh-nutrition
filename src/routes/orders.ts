@@ -2,24 +2,9 @@ import { Hono } from 'hono'
 
 const orders = new Hono<{ Bindings: { DB: D1Database } }>()
 
-// 월별 발주 목록 조회
-orders.get('/:year/:month', async (c) => {
-  const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
-  const { year, month } = c.req.param()
-
-  const data = await c.env.DB.prepare(
-    `SELECT d.*, v.name as vendor_name, v.category, v.tax_type
-     FROM daily_orders d
-     JOIN vendors v ON d.vendor_id = v.id
-     WHERE d.hospital_id = ?
-       AND strftime('%Y', d.order_date) = ?
-       AND strftime('%m', d.order_date) = printf('%02d', ?)
-     ORDER BY d.order_date, v.sort_order`
-  ).bind(hospitalId, year, month).all<any>()
-
-  return c.json(data.results)
-})
+// ── 고정 경로 라우트를 동적 경로(/:year/:month)보다 먼저 등록해야 충돌을 방지할 수 있습니다 ──
+// Hono는 등록 순서대로 매칭하므로 /patient-categories, /category-monthly/:y/:m 등은
+// /:year/:month 보다 반드시 먼저 등록되어야 합니다.
 
 // 특정 날짜의 발주 조회 (업체 목록 포함)
 orders.get('/date/:date', async (c) => {
@@ -514,6 +499,27 @@ orders.get('/category-annual/:year', async (c) => {
     annualSettings: annualSettings.results || [],
     catDietPriceAnnual
   })
+})
+
+// ── 월별 발주 목록 조회 (동적 경로 - 반드시 모든 고정 경로 라우트 이후에 위치해야 함) ──
+// 주의: /:year/:month 는 /patient-categories, /category-monthly/... 등과 충돌하므로
+// 반드시 파일의 마지막 GET 라우트여야 합니다.
+orders.get('/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const { year, month } = c.req.param()
+
+  const data = await c.env.DB.prepare(
+    `SELECT d.*, v.name as vendor_name, v.category, v.tax_type
+     FROM daily_orders d
+     JOIN vendors v ON d.vendor_id = v.id
+     WHERE d.hospital_id = ?
+       AND strftime('%Y', d.order_date) = ?
+       AND strftime('%m', d.order_date) = printf('%02d', ?)
+     ORDER BY d.order_date, v.sort_order`
+  ).bind(hospitalId, year, month).all<any>()
+
+  return c.json(data.results)
 })
 
 export default orders

@@ -1725,7 +1725,8 @@ async function renderOrders() {
             ${patientCats.map((cat, ci) => {
               const catColor = getCategoryColorHex(cat.category_key)
               const bl = ci === 0 ? 'border-left:3px solid #334155;' : 'border-left:2px solid #475569;'
-              return `<th style="${bl}min-width:${catColW}px;background:${catColor}cc;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.25);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.12);padding:1px 5px;border-radius:8px">합계</span></th>`
+              const thMinW = patientCats.length <= 1 ? 72 : 82
+              return `<th style="${bl}min-width:${thMinW}px;background:${catColor}cc;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.25);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.12);padding:1px 5px;border-radius:8px">합계</span></th>`
             }).join('')}
             ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155;font-size:12px;font-weight:700">일합계</th>` : ''}
             <th class="sticky z-30" style="min-width:84px;background:#1e3a5f;left:110px;padding:5px 4px;font-size:12px;font-weight:700;line-height:1.4">합계<br><span style="font-size:10px;opacity:0.85;font-weight:500">/ 진행률</span></th>
