@@ -262,12 +262,29 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     ORDER BY order_date, vendor_id, patient_category_id
   `).bind(hospitalId, year, mm).all<any>()
 
-  const catSettings = await c.env.DB.prepare(`
+  // ── 해당 월 카테고리 설정 조회 (없으면 최근 설정 fallback) ──
+  let catSettingsRows = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
     JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, year, month).all<any>()
+
+  // fallback: 해당 월 설정이 없으면 카테고리별 최근 설정 사용
+  if (!catSettingsRows.results || catSettingsRows.results.length === 0) {
+    catSettingsRows = await c.env.DB.prepare(`
+      SELECT cos.*, hpc.category_key, hpc.category_name
+      FROM category_order_settings cos
+      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+      WHERE cos.hospital_id = ?
+        AND cos.id IN (
+          SELECT MAX(id) FROM category_order_settings
+          WHERE hospital_id = ?
+          GROUP BY patient_category_id
+        )
+      ORDER BY hpc.sort_order
+    `).bind(hospitalId, hospitalId).all<any>()
+  }
 
   // ── 오늘자 식수 조회 (카테고리별 식단가 계산용) ──
   const today = new Date()
@@ -281,23 +298,28 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     WHERE hospital_id = ? AND meal_date = ?
   `).bind(hospitalId, todayStr).first<any>()
 
-  // ── 전월 카테고리 설정 조회 (전월 목표 식단가 비교용) ──
+  // ── 전월 카테고리 설정 조회 (전월 목표 식단가 비교용 - 동일하게 fallback 적용) ──
   const prevMonthNum = parseInt(month) === 1 ? 12 : parseInt(month) - 1
   const prevYearNum  = parseInt(month) === 1 ? parseInt(year) - 1 : parseInt(year)
-  const prevCatSettings = await c.env.DB.prepare(`
+  let prevCatSettingsRows = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
     JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, prevYearNum, prevMonthNum).all<any>()
 
+  // 전월도 없으면 현재 설정과 동일 (기본값)
+  if (!prevCatSettingsRows.results || prevCatSettingsRows.results.length === 0) {
+    prevCatSettingsRows = catSettingsRows
+  }
+
   return c.json({
     categories: cats.results || [],
     monthly: monthly.results || [],
     dailyByVendorCat: dailyByVendorCat.results || [],
-    settings: catSettings.results || [],
+    settings: catSettingsRows.results || [],
     todayMeals: todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 },
-    prevSettings: prevCatSettings.results || []
+    prevSettings: prevCatSettingsRows.results || []
   })
 })
 

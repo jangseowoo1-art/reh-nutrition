@@ -7457,6 +7457,8 @@ async function openHospitalDetail(hospitalId) {
   if (!hosp) return
 
   const s = budget?.settings || {}
+  const isFallback = budget?.isFallback || false
+  const fallbackYearMonth = budget?.fallbackYearMonth || ''
   const vendors = vendorList || []
 
   // 현재 관리 중인 hospitalId를 전역에 저장
@@ -7616,7 +7618,27 @@ async function openHospitalDetail(hospitalId) {
 
       <!-- 예산설정 탭 -->
       <div id="hospTab-budget" class="hidden">
-        <div class="text-sm font-semibold text-gray-600 mb-3">${App.currentYear}년 ${App.currentMonth}월 예산 설정</div>
+        <!-- 기본 설정 안내 배너 -->
+        <div class="mb-3 p-3 rounded-lg border ${isFallback ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}">
+          <div class="flex items-start gap-2">
+            <i class="fas ${isFallback ? 'fa-exclamation-triangle text-amber-500' : 'fa-info-circle text-blue-500'} mt-0.5 text-sm"></i>
+            <div>
+              <div class="text-sm font-semibold ${isFallback ? 'text-amber-700' : 'text-blue-700'}">
+                ${isFallback ? `기본 설정 적용 중 (${fallbackYearMonth} 기준값 사용)` : '기본 예산 설정'}
+              </div>
+              <div class="text-xs ${isFallback ? 'text-amber-600' : 'text-blue-600'} mt-0.5">
+                ${isFallback
+                  ? `${App.currentYear}년 ${App.currentMonth}월 설정이 없어 ${fallbackYearMonth} 설정을 기본값으로 표시합니다. 저장하면 현재 월에 새로 저장됩니다.`
+                  : `여기서 저장한 값이 설정 없는 모든 달(전월·이후달)에도 기본값으로 자동 적용됩니다.`
+                }
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="text-sm font-semibold text-gray-600 mb-3">
+          <i class="fas fa-cog text-indigo-500 mr-1"></i>기본 예산 설정
+          <span class="text-xs font-normal text-gray-400 ml-2">(전월 · 당월 · 이후 모든 달 공통 적용)</span>
+        </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">월 총 목표금액 (원)</label>
@@ -7745,7 +7767,8 @@ async function openHospitalDetail(hospitalId) {
         <div class="mt-5 border-t border-gray-100 pt-4">
           <h4 class="font-semibold text-gray-700 text-sm mb-3">
             <i class="fas fa-target text-green-600 mr-1"></i>
-            ${App.currentYear}년 ${App.currentMonth}월 카테고리별 목표 설정
+            카테고리별 기본 목표 설정
+            <span class="text-xs font-normal text-gray-400 ml-1">(모든 달 공통 적용)</span>
           </h4>
           <div id="categoryBudgetList" class="space-y-2">
             <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
@@ -8433,14 +8456,20 @@ window.toggleConsignField = function(val) {
 window._patientCategories = []
 
 async function loadPatientCategories(hospitalId) {
-  const [cats, catSettings] = await Promise.all([
+  const [cats, catSettingsResp] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}/patient-categories`),
     api('GET', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`)
   ])
   window._patientCategories = cats || []
   window._adminCatList = cats || []
+
+  // fallback 안내: API 응답에 isFallback 포함
+  const catSettings = Array.isArray(catSettingsResp) ? catSettingsResp : (catSettingsResp?.settings || [])
+  const isCatFallback = catSettingsResp?.isFallback || false
+  const catFallbackYearMonth = catSettingsResp?.fallbackYearMonth || ''
+
   renderPatientCategoryList(window._patientCategories)
-  renderCategoryBudgetList(window._patientCategories, catSettings || [])
+  renderCategoryBudgetList(window._patientCategories, catSettings, isCatFallback, catFallbackYearMonth)
 }
 
 function renderPatientCategoryList(cats) {
@@ -8482,7 +8511,7 @@ function renderPatientCategoryList(cats) {
   `).join('')
 }
 
-function renderCategoryBudgetList(cats, settings) {
+function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYearMonth = '') {
   const el = document.getElementById('categoryBudgetList')
   if (!el) return
 
@@ -8491,10 +8520,21 @@ function renderCategoryBudgetList(cats, settings) {
     return
   }
 
+  // fallback 안내 배너
+  const fallbackBanner = isFallback ? `
+    <div class="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-1.5">
+      <i class="fas fa-exclamation-triangle text-amber-500 text-xs mt-0.5"></i>
+      <span class="text-xs text-amber-700">${App.currentYear}년 ${App.currentMonth}월 환자군 목표 설정이 없어 <strong>${fallbackYearMonth}</strong> 기준값을 표시합니다. 저장하면 현재 월에 새로 저장됩니다.</span>
+    </div>` : `
+    <div class="mb-2 p-2 bg-blue-50 border border-blue-100 rounded-lg flex items-start gap-1.5">
+      <i class="fas fa-info-circle text-blue-400 text-xs mt-0.5"></i>
+      <span class="text-xs text-blue-600">저장한 목표값이 설정 없는 모든 달에 <strong>기본값</strong>으로 자동 적용됩니다.</span>
+    </div>`
+
   const settingsMap = {}
   ;(settings || []).forEach(s => { settingsMap[s.patient_category_id] = s })
 
-  el.innerHTML = cats.map(cat => {
+  el.innerHTML = fallbackBanner + cats.map(cat => {
     const s = settingsMap[cat.id] || {}
     // 식단가 계산 기준 파싱
     let budgetKeys = []
@@ -8843,8 +8883,10 @@ async function saveCategoryBudgets(hospitalId) {
   }))
 
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`, { settings })
-  if (res?.success) showToast('카테고리별 목표 저장 완료', 'success')
-  else showToast('저장 실패', 'error')
+  if (res?.success) {
+    showToast(`카테고리별 기본 목표가 저장되었습니다 (모든 달 적용)`, 'success')
+    loadPatientCategories(hospitalId)
+  } else showToast('저장 실패', 'error')
 }
 
 async function saveHospitalBudget(hospitalId) {
@@ -8866,8 +8908,11 @@ async function saveHospitalBudget(hospitalId) {
     vendorBudgets
   }
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`, body)
-  if (res?.success) showToast('예산설정이 저장되었습니다', 'success')
-  else showToast('저장 실패', 'error')
+  if (res?.success) {
+    showToast(`기본 예산 설정이 저장되었습니다 (${App.currentYear}년 ${App.currentMonth}월 기준 - 모든 달 적용)`, 'success')
+    // 예산 설정 탭 안내 배너 업데이트
+    openHospitalDetail(hospitalId)
+  } else showToast('저장 실패', 'error')
 }
 
 // ══════════════════════════════════════════════════════════════

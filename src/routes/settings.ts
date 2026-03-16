@@ -2,16 +2,34 @@ import { Hono } from 'hono'
 
 const settings = new Hono<{ Bindings: { DB: D1Database } }>()
 
-// 월별 설정 조회
+// 월별 설정 조회 (해당 월 없으면 가장 최근 설정을 기본값으로 반환)
 settings.get('/:year/:month', async (c) => {
   const user = c.get('user')
   const { year, month } = c.req.param()
   // 관리자는 hospitalId 쿼리 파라미터 허용
   const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
-  const data = await c.env.DB.prepare(
+
+  // 1) 해당 월 설정 조회
+  let data = await c.env.DB.prepare(
     `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
   ).bind(hospitalId, year, month).first<any>()
-  return c.json({ settings: data || {} })
+
+  let isFallback = false
+  let fallbackYearMonth: string | null = null
+
+  // 2) 없으면 가장 최근 저장된 설정을 fallback으로 사용
+  if (!data) {
+    data = await c.env.DB.prepare(
+      `SELECT * FROM monthly_settings WHERE hospital_id = ?
+       ORDER BY year DESC, month DESC LIMIT 1`
+    ).bind(hospitalId).first<any>()
+    if (data) {
+      isFallback = true
+      fallbackYearMonth = `${data.year}년 ${data.month}월`
+    }
+  }
+
+  return c.json({ settings: data || {}, isFallback, fallbackYearMonth })
 })
 
 // 월별 설정 저장

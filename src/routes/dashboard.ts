@@ -10,10 +10,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
   if (!hospitalId) return c.json({ error: 'hospitalId required' }, 400)
   const { year, month } = c.req.param()
 
-  // 월 설정 조회
-  const settings = await c.env.DB.prepare(
+  // 월 설정 조회 (해당 월 없으면 가장 최근 설정 fallback)
+  let settings = await c.env.DB.prepare(
     `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
   ).bind(hospitalId, year, month).first<any>()
+  if (!settings) {
+    settings = await c.env.DB.prepare(
+      `SELECT * FROM monthly_settings WHERE hospital_id = ? ORDER BY year DESC, month DESC LIMIT 1`
+    ).bind(hospitalId).first<any>()
+  }
 
   // 업체별 발주 합계
   const vendors = await c.env.DB.prepare(
@@ -201,19 +206,37 @@ dashboard.get('/summary/:year/:month', async (c) => {
     GROUP BY patient_category_id
   `).bind(hospitalId, today).all<any>()
 
-  const catSettingsDash = await c.env.DB.prepare(`
+  // 카테고리 설정 조회 (fallback: 없으면 최근 설정 사용)
+  let catSettingsDash = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
     JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, year, month).all<any>()
+  if (!catSettingsDash.results || catSettingsDash.results.length === 0) {
+    catSettingsDash = await c.env.DB.prepare(`
+      SELECT cos.*, hpc.category_key, hpc.category_name
+      FROM category_order_settings cos
+      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+      WHERE cos.hospital_id = ?
+        AND cos.id IN (
+          SELECT MAX(id) FROM category_order_settings
+          WHERE hospital_id = ? GROUP BY patient_category_id
+        )
+      ORDER BY hpc.sort_order
+    `).bind(hospitalId, hospitalId).all<any>()
+  }
 
-  const prevCatSettingsDash = await c.env.DB.prepare(`
+  let prevCatSettingsDash = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
     JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, prevYear2, prevMonth).all<any>()
+  // 전월도 없으면 현재 설정 사용
+  if (!prevCatSettingsDash.results || prevCatSettingsDash.results.length === 0) {
+    prevCatSettingsDash = catSettingsDash
+  }
 
   // 오늘 식수: 커스텀 필드(환자군)의 식수 합산
   const todayMealRow = await c.env.DB.prepare(`
