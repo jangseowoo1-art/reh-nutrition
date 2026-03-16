@@ -1309,11 +1309,16 @@ async function renderOrders() {
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
   const todayDay = (today.getFullYear() === App.currentYear && today.getMonth()+1 === App.currentMonth) ? today.getDate() : days
 
-  // 이번 주 시작/끝 (월요일 기준)
-  const weekStart = new Date(today)
-  weekStart.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1))
-  const weekEnd = new Date(weekStart)
-  weekEnd.setDate(weekStart.getDate() + 6)
+  // 이번 주 시작/끝 (월요일 기준) - 날짜 문자열로 저장하여 UTC 파싱 문제 방지
+  const _ws = new Date(today)
+  _ws.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1))
+  const _we = new Date(_ws)
+  _we.setDate(_ws.getDate() + 6)
+  const weekStartStr2 = `${_ws.getFullYear()}-${String(_ws.getMonth()+1).padStart(2,'0')}-${String(_ws.getDate()).padStart(2,'0')}`
+  const weekEndStr2   = `${_we.getFullYear()}-${String(_we.getMonth()+1).padStart(2,'0')}-${String(_we.getDate()).padStart(2,'0')}`
+  // 하위 호환용 Date 객체 (weeklyData 계산에서 사용)
+  const weekStart = _ws
+  const weekEnd   = _we
 
   // ── 카테고리별 금액 계산 (A안+B안용) ──
   const catSettings2 = catOrderData?.settings || []
@@ -1327,12 +1332,11 @@ async function renderOrders() {
   ;(catOrderData?.monthly || []).forEach(r => {
     catMonthTotals[r.patient_category_id] = (catMonthTotals[r.patient_category_id]||0) + (r.total||0)
   })
-  // dailyByVendorCat(flat 배열) 순회로 오늘/주간 카테고리 합계
+  // dailyByVendorCat 순회 - 날짜 문자열 직접 비교로 UTC 시간대 버그 방지
   ;(catDailyData).forEach(r => {
     const dateStr2 = r.order_date
-    const od2 = new Date(dateStr2)
-    const isToday2 = dateStr2 === todayStr
-    const isThisWeek2 = od2 >= weekStart && od2 <= weekEnd
+    const isToday2    = dateStr2 === todayStr
+    const isThisWeek2 = dateStr2 >= weekStartStr2 && dateStr2 <= weekEndStr2
     const catId = r.patient_category_id
     const amt = r.total || 0
     if (isToday2)    catTodayTotals[catId] = (catTodayTotals[catId]||0) + amt
@@ -1347,14 +1351,13 @@ async function renderOrders() {
   let catTodayTotal = 0, catWeekTotal = 0
   catDailyData.forEach(r => {
     if (r.order_date === todayStr) catTodayTotal += r.total || 0
-    const od = new Date(r.order_date)
-    if (od >= weekStart && od <= weekEnd) catWeekTotal += r.total || 0
+    // 날짜 문자열 직접 비교 (UTC 파싱 버그 방지)
+    if (r.order_date >= weekStartStr2 && r.order_date <= weekEndStr2) catWeekTotal += r.total || 0
   })
   let normalTodayTotal = 0, normalWeekTotal = 0
   ;(orderData||[]).forEach(o => {
     if (o.order_date === todayStr) normalTodayTotal += o.total_amount||0
-    const od = new Date(o.order_date)
-    if (od >= weekStart && od <= weekEnd) normalWeekTotal += o.total_amount||0
+    if (o.order_date >= weekStartStr2 && o.order_date <= weekEndStr2) normalWeekTotal += o.total_amount||0
   })
   const todayTotal = hasCatsData ? catTodayTotal : normalTodayTotal
   const weekTotal  = hasCatsData ? catWeekTotal  : normalWeekTotal
@@ -1363,17 +1366,26 @@ async function renderOrders() {
   const weekBudget = dailyBudget * 5
 
   // ── 이번 달 주차별 계산 (1주~5주) ──
+  // 날짜 문자열에서 로컬 Date 생성 헬퍼 (UTC 파싱 버그 방지)
+  function localDate(dateStr) {
+    const [y, m, d2] = dateStr.split('-').map(Number)
+    return new Date(y, m-1, d2)
+  }
+  // Date → YYYY-MM-DD 문자열 (로컬 기준)
+  function toDateStr(dt) {
+    return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`
+  }
   const weeklyData = []
   const seenWeeks = new Set()
   for (let d = 1; d <= days; d++) {
     const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-    const dObj = new Date(ds)
+    const dObj = localDate(ds)
     const mon = new Date(dObj); mon.setDate(dObj.getDate() - (dObj.getDay()===0?6:dObj.getDay()-1))
     const sun = new Date(mon); sun.setDate(mon.getDate()+6)
-    const wk = mon.toISOString().split('T')[0]
+    const wk = toDateStr(mon)
     if (seenWeeks.has(wk)) continue
     seenWeeks.add(wk)
-    const wkEnd = sun.toISOString().split('T')[0]
+    const wkEnd = toDateStr(sun)
     // 카테고리 모드이면 catDailyData에서 주합계 계산, 아니면 orderData 사용
     let wTotal = 0
     if (hasCatsData) {
@@ -1634,10 +1646,17 @@ async function renderOrders() {
       return base.replace(/(<\/div>)\s*$/, catSection + '$1')
     }
 
-    // 주차 카드들
+    // 주차 카드들 - 각 주차별 catTotals 계산
     const weekCards = weeklyData.map((w,i) => {
       const lbl = `${i+1}주 (${w.wk.slice(5).replace('-','/')}~${w.wkEnd.slice(5).replace('-','/')})`
-      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, weekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, catWeekTotals, catWeekBudgets, `w${i+1}`)
+      // 각 주차별 카테고리 합계 계산
+      const wCatTotals = {}
+      ;(catDailyData).forEach(r => {
+        if (r.order_date >= w.wk && r.order_date <= w.wkEnd) {
+          wCatTotals[r.patient_category_id] = (wCatTotals[r.patient_category_id]||0) + (r.total||0)
+        }
+      })
+      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, weekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, wCatTotals, catWeekBudgets, `w${i+1}`)
     }).join('')
 
     return `
@@ -1893,8 +1912,8 @@ async function renderOrders() {
   ;(vendors||[]).forEach(v => {
     vendorDailyBudgets2[v.id] = workingDays>0 ? Math.round((v.monthly_budget||0)/workingDays) : 0
   })
-  const weekStartStr = weekStart.toISOString().split('T')[0]
-  const weekEndStr = weekEnd.toISOString().split('T')[0]
+  const weekStartStr = weekStartStr2
+  const weekEndStr = weekEndStr2
   window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*5])), workingDays, weeklyData }
   window._ordersData = orderData || []
   window._ordersVendors = vendors || []
