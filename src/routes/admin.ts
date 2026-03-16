@@ -845,7 +845,34 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           mealPriceNoSupply: prevMealPriceNoSupply,
           totalMeals: prevTotalMeals,
           totalUsed: prevTotalUsed
-        }
+        },
+        // ── 2.3 예산 소진 예상일 (관리자 카드용 간략 버전) ──
+        budgetDepletionDate: (() => {
+          if (totalBudget <= 0 || totalUsed <= 0) return null
+          const todayD = new Date(); const elapsed = todayD.getDate()
+          const avgDaily = elapsed > 0 ? totalUsed / elapsed : 0
+          const rem = totalBudget - totalUsed
+          if (rem <= 0) return '이미 초과'
+          const daysLeft = Math.ceil(rem / avgDaily)
+          const depDate = new Date(todayD); depDate.setDate(todayD.getDate() + daysLeft)
+          const dim = new Date(todayD.getFullYear(), todayD.getMonth()+1, 0).getDate()
+          const isWarning = depDate.getDate() <= dim && depDate.getMonth() === todayD.getMonth()
+          return isWarning ? `${depDate.getMonth()+1}월 ${depDate.getDate()}일 ⚠️` : null
+        })(),
+        // ── 2.2 월말 예상 식단가 (관리자 카드용) ──
+        projectedMonthEndMealPrice: (() => {
+          if (totalUsed <= 0) return 0
+          const todayD = new Date(); const elapsed = todayD.getDate()
+          const dim = new Date(todayD.getFullYear(), todayD.getMonth()+1, 0).getDate()
+          const avgDaily = elapsed > 0 ? totalUsed / elapsed : 0
+          const projUsed = totalUsed + avgDaily * (dim - elapsed)
+          if (totalMeals > 0) {
+            const avgMeals = mealStats?.days_entered > 0 ? totalMeals / mealStats.days_entered : totalMeals / elapsed
+            const projMeals = totalMeals + avgMeals * (dim - elapsed)
+            return projMeals > 0 ? Math.round(projUsed / projMeals) : 0
+          }
+          return mealPriceTotal > 0 ? mealPriceTotal : 0
+        })()
       }
     })
   )

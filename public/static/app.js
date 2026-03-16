@@ -6677,6 +6677,20 @@ async function renderAdminDashboard() {
                 </div>
               </div>`
             })() : ''}
+            <!-- 2.2 월말 예상 식단가 + 2.3 예산 소진 예상일 (관리자 카드) -->
+            ${(h.projectedMonthEndMealPrice > 0 || h.budgetDepletionDate) ? `
+            <div class="mt-1.5 pt-1.5 border-t border-blue-100 grid grid-cols-2 gap-1">
+              ${h.projectedMonthEndMealPrice > 0 ? `
+              <div class="bg-white rounded-lg px-2 py-1 border ${h.projectedMonthEndMealPrice > (h.targetMealPrice||0) && h.targetMealPrice > 0 ? 'border-red-200' : 'border-green-100'}">
+                <div class="text-xs text-gray-400">월말 예상</div>
+                <div class="text-xs font-bold ${h.projectedMonthEndMealPrice > (h.targetMealPrice||0) && h.targetMealPrice > 0 ? 'text-red-600' : 'text-gray-700'}">${h.projectedMonthEndMealPrice.toLocaleString()}원</div>
+              </div>` : '<div></div>'}
+              ${h.budgetDepletionDate ? `
+              <div class="bg-yellow-50 rounded-lg px-2 py-1 border border-yellow-200">
+                <div class="text-xs text-yellow-600">소진 예상</div>
+                <div class="text-xs font-bold text-yellow-700">${h.budgetDepletionDate}</div>
+              </div>` : '<div></div>'}
+            </div>` : ''}
             <!-- 환자군별 식단가 (1개: 총액÷식수, 2개+: 가중평균) -->
             ${(h.catDietPrices||[]).length > 0 ? (() => {
               const cats = h.catDietPrices || []
