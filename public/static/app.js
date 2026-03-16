@@ -1570,6 +1570,9 @@ async function renderOrders() {
       if (!hasCats2) return ''
       const cats = patientCats || []
       const grandAmt = cats.reduce((s,c) => s+(catTotalsMap[c.id]||0), 0)
+      const grandBudget = cats.reduce((s,c) => s+(catBudgetsMap[c.id]||0), 0)
+      // 발주 데이터도 없고 예산도 없으면 숨김
+      if (grandAmt === 0 && grandBudget === 0) return ''
       const rows = cats.map(cat => {
         const color = getCategoryColorHex(cat.category_key)
         const amt = catTotalsMap[cat.id] || 0
@@ -1582,13 +1585,13 @@ async function renderOrders() {
         return `<div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">
           <span style="display:inline-block;background:${color};color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:28px;text-align:center;white-space:nowrap">${cat.category_name}</span>
           <div style="flex:1;display:flex;flex-direction:column;gap:2px">
-            <div style="display:flex;align-items:center;gap:3px">
+            ${grandAmt > 0 ? `<div style="display:flex;align-items:center;gap:3px">
               <div style="flex:1;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden">
                 <div id="catABar-${periodLabel}-${cat.id}" style="height:100%;width:${aPct}%;background:${color};border-radius:3px;transition:width 0.4s"></div>
               </div>
               <span id="catAPct-${periodLabel}-${cat.id}" style="font-size:9px;color:${color};font-weight:700;min-width:26px;text-align:right">${aPct}%</span>
               <span style="font-size:8px;color:#9ca3af">점유</span>
-            </div>
+            </div>` : ''}
             ${bPct!==null?`<div style="display:flex;align-items:center;gap:3px">
               <div style="flex:1;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
                 <div id="catBBar-${periodLabel}-${cat.id}" style="height:100%;width:${Math.min(bPct,100)}%;background:${bColor};border-radius:2px;transition:width 0.4s"></div>
@@ -1599,7 +1602,7 @@ async function renderOrders() {
             `<div style="font-size:8px;color:#d1d5db;padding-top:1px">예산 미설정</div>`}
           </div>
           <div style="text-align:right;min-width:46px">
-            <div id="catAmt-${periodLabel}-${cat.id}" style="font-size:9px;font-weight:700;color:${color}">${fmtMan(amt)}</div>
+            <div id="catAmt-${periodLabel}-${cat.id}" style="font-size:9px;font-weight:700;color:${color}">${amt>0?fmtMan(amt):'-'}</div>
             ${budget>0?`<div style="font-size:8px;color:#9ca3af">${fmtMan(budget)}</div>`:''}
           </div>
         </div>`
@@ -1689,10 +1692,12 @@ async function renderOrders() {
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span style="font-size:10px;font-weight:700;color:#6b7280;white-space:nowrap"><i class="fas fa-store" style="color:#3b82f6;margin-right:3px"></i>등록 업체</span>
         ${vendors.map(v => {
-          const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
-          const taxBg = v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
-          const taxColor = v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
-          return `<span style="display:inline-flex;align-items:center;gap:3px;background:white;border:1px solid #e5e7eb;border-radius:20px;padding:2px 8px;font-size:10px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap" onclick="openTodayDetailForVendor(${v.id})" title="클릭하면 오늘 발주 입력 열기">
+          const isMixedTotal = v.tax_type==='mixed_total'
+          const taxLabel = isMixedTotal?'합산':v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          const taxBg = isMixedTotal?'#f3e8ff':v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
+          const taxColor = isMixedTotal?'#7c3aed':v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
+          const chipBorder = isMixedTotal?'1px solid #d8b4fe':'1px solid #e5e7eb'
+          return `<span style="display:inline-flex;align-items:center;gap:3px;background:white;border:${chipBorder};border-radius:20px;padding:2px 8px;font-size:10px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap" onclick="openTodayDetailForVendor(${v.id})" title="클릭하면 오늘 발주 입력 열기">
             ${v.name}
             <span style="background:${taxBg};color:${taxColor};font-size:8px;padding:0 3px;border-radius:4px;font-weight:700">${taxLabel}</span>
           </span>`
@@ -1710,11 +1715,14 @@ async function renderOrders() {
           const remain = v.monthly_budget > 0 ? v.monthly_budget - vTotal : null
           const barColor = over ? '#dc2626' : warn ? '#d97706' : '#16a34a'
           const borderColor = over ? '#fca5a5' : warn ? '#fcd34d' : '#d1fae5'
-          const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          const isMixedTotal2 = v.tax_type==='mixed_total'
+          const taxLabel = isMixedTotal2?'합산':v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          const taxTagBg = isMixedTotal2?'#f3e8ff':v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
+          const taxTagColor = isMixedTotal2?'#7c3aed':v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
           return `<div id="vsum-${v.id}" style="min-width:100px;background:white;border-radius:10px;border:1px solid ${borderColor};padding:8px 10px;cursor:pointer;transition:box-shadow 0.15s" onclick="openTodayDetailForVendor(${v.id})" title="클릭 → 오늘 발주 입력">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
               <span style="font-size:10px;font-weight:700;color:#1f2937;white-space:nowrap;max-width:72px;overflow:hidden;text-overflow:ellipsis">${v.name}</span>
-              <span style="font-size:8px;padding:0 3px;border-radius:4px;background:${v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'};color:${v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'};font-weight:700">${taxLabel}</span>
+              <span style="font-size:8px;padding:0 3px;border-radius:4px;background:${taxTagBg};color:${taxTagColor};font-weight:700">${taxLabel}</span>
             </div>
             <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">
               <span class="vsum-amt" style="font-size:12px;font-weight:800;color:${barColor}">${fmtMan(vTotal)}</span>
@@ -7489,11 +7497,11 @@ async function openHospitalDetail(hospitalId) {
         <button class="tab-btn flex-shrink-0" id="tab-categories" onclick="switchHospTab('categories')">
           <i class="fas fa-layer-group mr-1"></i>환자군설정
         </button>
-        <button class="tab-btn flex-shrink-0" id="tab-budget" onclick="switchHospTab('budget')">
-          <i class="fas fa-won-sign mr-1"></i>예산설정
-        </button>
         <button class="tab-btn flex-shrink-0" id="tab-vendors" onclick="switchHospTab('vendors')">
           <i class="fas fa-store mr-1"></i>업체관리
+        </button>
+        <button class="tab-btn flex-shrink-0" id="tab-budget" onclick="switchHospTab('budget')">
+          <i class="fas fa-won-sign mr-1"></i>예산설정
         </button>
         <button class="tab-btn flex-shrink-0" id="tab-accounts" onclick="switchHospTab('accounts')">
           <i class="fas fa-user-circle mr-1"></i>계정관리
@@ -7637,7 +7645,7 @@ async function openHospitalDetail(hospitalId) {
         </div>
         <div class="text-sm font-semibold text-gray-600 mb-3">
           <i class="fas fa-cog text-indigo-500 mr-1"></i>기본 예산 설정
-          <span class="text-xs font-normal text-gray-400 ml-2">(전월 · 당월 · 이후 모든 달 공통 적용)</span>
+          <span class="text-xs font-normal text-gray-400 ml-2">(저장한 월 이후 달에 자동 상속)</span>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
           <div>
@@ -7690,7 +7698,7 @@ async function openHospitalDetail(hospitalId) {
       <!-- 업체관리 탭 -->
       <div id="hospTab-vendors" class="hidden">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="font-semibold text-gray-700"><i class="fas fa-store text-green-600 mr-1"></i>등록 업체 목록</h3>
+          <h3 class="font-semibold text-gray-700"><i class="fas fa-store text-green-600 mr-1"></i>업체 정보 등록</h3>
           <button onclick="showAdminAddVendorModal()" class="btn btn-success btn-sm">
             <i class="fas fa-plus mr-1"></i>업체 추가
           </button>
@@ -8173,6 +8181,12 @@ async function saveAdminVendor() {
     window._adminHospVendors = updated || []
     document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
     document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [])
+    // 업체별 목표금액 → 예산탭 자동 반영 (업체 저장 직후 각 input에 monthly_budget 반영)
+    ;(updated || []).forEach(v => {
+      const inp = document.getElementById(`hvb-${v.id}`)
+      if (inp) inp.value = v.monthly_budget || 0
+    })
+    syncVendorBudgetTotal()
   } else {
     showToast('저장 실패', 'error')
   }
@@ -8511,6 +8525,11 @@ function renderPatientCategoryList(cats) {
   `).join('')
 }
 
+// ── 체크박스 전체선택/전체해제 헬퍼 ──────────────────────────
+window.checkAllFormulaCbs = function(className, catId, check) {
+  document.querySelectorAll(`.${className}[data-cat="${catId}"]`).forEach(cb => { cb.checked = check })
+}
+
 function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYearMonth = '') {
   const el = document.getElementById('categoryBudgetList')
   if (!el) return
@@ -8598,7 +8617,13 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           </div>
           <!-- 예산 포함 항목 -->
           <div>
-            <div class="text-xs font-semibold text-gray-600 mb-1">📊 예산 포함 항목</div>
+            <div class="flex items-center justify-between mb-1">
+              <div class="text-xs font-semibold text-gray-600">📊 예산 포함 항목</div>
+              <div class="flex gap-1">
+                <button type="button" onclick="checkAllFormulaCbs('budget-include-cb','${cat.id}',true)" class="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 font-medium">전체선택</button>
+                <button type="button" onclick="checkAllFormulaCbs('budget-include-cb','${cat.id}',false)" class="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 font-medium">전체해제</button>
+              </div>
+            </div>
             <div class="grid grid-cols-2 gap-1">
               ${budgetOptions.map(opt => `
                 <label class="flex items-center gap-1.5 text-xs cursor-pointer">
@@ -8610,7 +8635,13 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           </div>
           <!-- 식수 포함 항목 -->
           <div>
-            <div class="text-xs font-semibold text-gray-600 mb-1">🍽 식수 포함 항목</div>
+            <div class="flex items-center justify-between mb-1">
+              <div class="text-xs font-semibold text-gray-600">🍽 식수 포함 항목</div>
+              <div class="flex gap-1">
+                <button type="button" onclick="checkAllFormulaCbs('meals-include-cb','${cat.id}',true)" class="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 font-medium">전체선택</button>
+                <button type="button" onclick="checkAllFormulaCbs('meals-include-cb','${cat.id}',false)" class="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 font-medium">전체해제</button>
+              </div>
+            </div>
             <div class="grid grid-cols-2 gap-1">
               ${mealsOptions.map(opt => `
                 <label class="flex items-center gap-1.5 text-xs cursor-pointer">
