@@ -253,25 +253,44 @@
 ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 6px; }
 ::-webkit-scrollbar-thumb { background: #6ee7b7; border-radius: 6px; border: 2px solid #f1f5f9; }
 ::-webkit-scrollbar-thumb:hover { background: #34d399; }
-/* 발주입력 가로 스크롤바 (ordersTableScroller 기반) */
-.orders-scroll-wrap { position: relative; width: 100%; min-width: 0; }
-/* 테이블 스크롤 컨테이너 - 가로 스크롤은 여기서만 */
+/* ══════════════════════════════════════════
+   발주 테이블 스크롤 & 반응형
+   - zoom(Ctrl+휠) 시 상단 패널과 동일하게 화면에 맞게 축소됨
+   - 테이블은 내부적으로 가로 스크롤 처리
+══════════════════════════════════════════ */
+
+/* 발주 영역 전체 래퍼: zoom 대응을 위해 max-width 100%로 화면을 넘어가지 않도록 */
+.orders-scroll-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden; /* 컨테이너 자체는 넘치지 않음 */
+}
+
+/* 테이블 스크롤 컨테이너: 가로 스크롤은 여기서만 */
 #ordersTableScroller {
   overflow-x: auto;
   overflow-y: visible;
   width: 100%;
+  max-width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
 }
+
 /* 스크롤바 숨기고 하단 미러바 사용 (데스크탑) */
-#ordersTableScroller::-webkit-scrollbar { height: 0px; }
-/* 하단 가로 스크롤바 */
+#ordersTableScroller::-webkit-scrollbar { height: 0; }
+
+/* 하단 가로 스크롤바 (항상 표시 - 데스크탑) */
 #orders-hscroll-bar {
+  display: block;          /* JS에서 show/hide 하지 않고 항상 표시 */
   overflow-x: auto;
   overflow-y: hidden;
-  height: 14px;
-  border-top: 1px solid #e5e7eb;
+  height: 16px;
+  border-top: 1px solid #d1fae5;
   background: #f0fdf4;
   border-radius: 0 0 8px 8px;
   cursor: pointer;
@@ -280,8 +299,33 @@
 #orders-hscroll-bar::-webkit-scrollbar-track { background: #dcfce7; border-radius: 6px; }
 #orders-hscroll-bar::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 6px; border: 2px solid #dcfce7; min-width: 40px; }
 #orders-hscroll-bar::-webkit-scrollbar-thumb:hover { background: #166534; }
+
+/* ── 발주 테이블 sticky 헤더 ── */
+.order-table thead th { position: sticky; top: 0; z-index: 20; }
+
+/* ── 우측 합계/진행률 컬럼 sticky 고정 ── */
+/* thead th 중 합계/진행률: left 값은 JS에서 data-sticky-right 없이 CSS로 처리 */
+.order-table th.sticky-right,
+.order-table td.sticky-right {
+  position: sticky;
+  right: 0;
+  z-index: 11;
+}
+.order-table td.sticky-right { background: inherit; }
+
+/* 업체별입력 버튼 컬럼 (맨 우측) */
+.order-table th.sticky-right-btn,
+.order-table td.sticky-right-btn {
+  position: sticky;
+  right: 0;
+  z-index: 11;
+  box-shadow: -2px 0 6px rgba(0,0,0,0.08);
+}
+.order-table td.sticky-right-btn { background: inherit; }
+
 /* 모바일 */
 @media (max-width: 768px) {
+  .orders-scroll-wrap { overflow: hidden; }
   #ordersTableScroller {
     overflow-x: scroll;
     -webkit-overflow-scrolling: touch;
@@ -291,10 +335,15 @@
   #ordersTableScroller::-webkit-scrollbar { height: 5px; }
   #ordersTableScroller::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 4px; }
   #orders-hscroll-bar { display: none !important; }
-  .orders-scroll-wrap { min-width: 0; }
+  /* 모바일에서 sticky-right 해제 (성능) */
+  .order-table th.sticky-right,
+  .order-table td.sticky-right,
+  .order-table th.sticky-right-btn,
+  .order-table td.sticky-right-btn {
+    position: static;
+    box-shadow: none;
+  }
 }
-/* 발주 테이블 sticky 헤더 */
-.order-table thead th { position: sticky; top: 0; z-index: 20; }
 
 /* ══════════════════════════════════════════
    헤더 악센트

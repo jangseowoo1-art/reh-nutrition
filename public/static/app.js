@@ -1570,7 +1570,7 @@ async function renderOrders() {
     </div>`
   })()}
 
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100" style="overflow:visible;min-width:0">
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100" style="overflow:hidden;min-width:0;max-width:100%;box-sizing:border-box">
     <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
       <div>
         <h2 class="font-bold text-gray-800 text-sm md:text-base">${App.currentYear}년 ${App.currentMonth}월 발주 입력</h2>
@@ -1714,7 +1714,7 @@ async function renderOrders() {
             }).join('')}
             ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155">일합계</th>` : ''}
             <th class="sticky z-30" style="min-width:80px;background:#1e3a5f;left:110px;padding:4px 3px">합계<br><span style="font-size:9px;opacity:0.8;font-weight:400">/ 진행률</span></th>
-            <th style="min-width:64px;background:#374151;font-size:11px;padding:4px 2px">업체별<br><span style="font-size:9px;opacity:0.75;font-weight:400">입력</span></th>
+            <th class="sticky-right-btn" style="min-width:64px;background:#374151;font-size:11px;padding:4px 2px;box-shadow:-2px 0 6px rgba(0,0,0,0.18)">업체별<br><span style="font-size:9px;opacity:0.75;font-weight:400">입력</span></th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
@@ -1959,7 +1959,7 @@ async function renderOrders() {
           ${weekCatCells}
           ${weekNoCatCell}
           <td style="background:${wBg};padding:3px 4px;text-align:center;min-width:80px"><div style="font-size:11px;font-weight:700;color:${wColor}">${wTotal>0?fmtMan(wTotal):'-'}</div><div style="font-size:9px;color:${wColor};font-weight:600">${wPct!==null?wPct+'%':''}</div></td>
-          <td style="background:${wBg}"></td>
+          <td class="sticky-right-btn" style="background:${wBg}"></td>
         </tr>`)
       }
 
@@ -2049,7 +2049,7 @@ async function renderOrders() {
         <td id="dayRatioCell-${dateStr}" class="sticky z-10" style="min-width:80px;left:110px;text-align:center;vertical-align:middle;${summaryBorderTop}background:${dOver?'#fee2e2':dWarn?'#fef3c7':(isToday?'#eff6ff':'#f8fafc')};border-left:2px solid ${dOver?'#fca5a5':dWarn?'#fcd34d':'#d1d5db'};padding:3px 4px">
           ${totalCellHtml}
         </td>
-        <td style="text-align:center;vertical-align:middle;${summaryBorderTop}background:white;padding:3px 2px;border-left:1px solid #e5e7eb;min-width:52px">
+        <td class="sticky-right-btn" style="text-align:center;vertical-align:middle;${summaryBorderTop}background:white;padding:3px 2px;border-left:1px solid #e5e7eb;min-width:52px">
           ${hasCats ? detailToggleBtn : ''}
           ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600"><span class="detail-arrow" data-date="${dateStr}">▼</span> 업체별 입력</button>` : ''}
         </td>
@@ -2421,9 +2421,9 @@ window.switchOrderDetailTab = function(dateStr, tabIndex) {
 function setupOrdersScrollSync() {
   requestAnimationFrame(() => {
     const scroller = document.getElementById('ordersTableScroller')
-    const table = document.getElementById('ordersTable')
-    const hBar = document.getElementById('orders-hscroll-bar')
-    const hInner = document.getElementById('orders-hscroll-inner')
+    const table    = document.getElementById('ordersTable')
+    const hBar     = document.getElementById('orders-hscroll-bar')
+    const hInner   = document.getElementById('orders-hscroll-inner')
     if (!scroller || !table) return
 
     const isMobile = window.innerWidth <= 768
@@ -2435,40 +2435,47 @@ function setupOrdersScrollSync() {
     syncWidth()
 
     if (isMobile) {
-      // 모바일: 스크롤바 숨기고 터치 스크롤만 사용
-      if (hBar) hBar.style.display = 'none'
+      // 모바일: CSS로 display:none 처리되므로 JS에서 별도 제어 안 함
     } else {
-      // 데스크탑: 하단 미러 스크롤바 표시
-      if (hBar) hBar.style.display = 'block'
+      // 데스크탑: 하단 미러 스크롤바 동기화 (CSS에서 항상 표시)
       if (hBar && hInner) {
-        // 미러 → 테이블 스크롤 동기화
+        // 이미 등록된 이벤트 중복 방지를 위해 새 엘리먼트로 교체
+        const newBar = hBar.cloneNode(true)
+        hBar.parentNode.replaceChild(newBar, hBar)
+        const bar = newBar
+        const innerEl = bar.querySelector('#orders-hscroll-inner') || bar.firstElementChild
+
+        // hInner 참조 갱신
+        if (innerEl) innerEl.style.width = table.scrollWidth + 'px'
+
         let lockBar = false, lockScroller = false
-        hBar.addEventListener('scroll', () => {
+        bar.addEventListener('scroll', () => {
           if (lockBar) return
           lockScroller = true
-          scroller.scrollLeft = hBar.scrollLeft
+          scroller.scrollLeft = bar.scrollLeft
           requestAnimationFrame(() => { lockScroller = false })
         })
         scroller.addEventListener('scroll', () => {
           if (lockScroller) return
           lockBar = true
-          hBar.scrollLeft = scroller.scrollLeft
-          syncWidth()
+          bar.scrollLeft = scroller.scrollLeft
+          if (innerEl) innerEl.style.width = table.scrollWidth + 'px'
           requestAnimationFrame(() => { lockBar = false })
         })
       }
     }
 
-    // ResizeObserver: 테이블 크기 변할 때 너비 동기화
+    // ResizeObserver: 테이블 크기 변할 때 너비 동기화 + zoom 대응
     if (window.ResizeObserver) {
       const ro = new ResizeObserver(() => {
-        syncWidth()
-        // 모바일에서 스크롤 영역이 화면 넘치지 않도록 강제
-        if (scroller) {
-          scroller.style.maxWidth = '100vw'
-        }
+        // 테이블 scrollWidth 갱신
+        const inner = document.getElementById('orders-hscroll-inner')
+        if (inner) inner.style.width = table.scrollWidth + 'px'
+        // zoom 시 컨테이너가 뷰포트를 넘지 않도록 강제
+        if (scroller) scroller.style.maxWidth = '100%'
       })
       ro.observe(table)
+      ro.observe(scroller)
     }
   })
 }
