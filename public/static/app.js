@@ -1651,8 +1651,8 @@ async function renderOrders() {
     </div>
 
     <!-- ── 인사이트 패널: 월 예산 예측 + 업체 비중 + 식단가 경고 ── -->
-    <div id="ordersInsightPanel" style="background:white;border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e5e7eb;padding:14px 16px;margin-bottom:14px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;cursor:pointer" onclick="toggleInsightPanel()">
+    <div id="ordersInsightPanel" style="background:white;border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e5e7eb;padding:12px 16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;cursor:pointer" onclick="toggleInsightPanel()">
         <div style="display:flex;align-items:center;gap:6px">
           <i class="fas fa-chart-pie" style="color:#8b5cf6;font-size:14px"></i>
           <span style="font-size:13px;font-weight:700;color:#1f2937">발주 현황 인사이트</span>
@@ -1660,10 +1660,11 @@ async function renderOrders() {
         <span id="insightPanelArrow" style="font-size:12px;color:#9ca3af">▼</span>
       </div>
       <div id="insightPanelBody">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <!-- 3열 그리드: 월 예산 예측 + 식단가 현황 + 업체별 발주 비중 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;align-items:start">
           <!-- 월 예산 초과 예측 -->
-          <div id="budgetForecastCard" style="background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;padding:10px">
-            <div style="font-size:10px;font-weight:700;color:#6b7280;margin-bottom:6px;display:flex;align-items:center;gap:4px">
+          <div id="budgetForecastCard" style="background:#fffbeb;border-radius:10px;border:1px solid #fde68a;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:6px;display:flex;align-items:center;gap:4px">
               <i class="fas fa-calculator" style="color:#f59e0b"></i> 월 예산 예측
             </div>
             <div id="budgetForecastContent">
@@ -1672,24 +1673,24 @@ async function renderOrders() {
             <div id="budgetForecastWarn" style="display:none"></div>
           </div>
           <!-- 식단가 경고 -->
-          <div id="dietPriceAlertCard" style="background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;padding:10px">
-            <div style="font-size:10px;font-weight:700;color:#6b7280;margin-bottom:6px;display:flex;align-items:center;gap:4px">
+          <div id="dietPriceAlertCard" style="background:#f0fdf4;border-radius:10px;border:1px solid #bbf7d0;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:6px;display:flex;align-items:center;gap:4px">
               <i class="fas fa-utensils" style="color:#10b981"></i> 식단가 현황
             </div>
             <div id="dietPriceAlertContent">
               <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
             </div>
           </div>
-        </div>
-        <!-- 업체 발주 비중 -->
-        <div id="vendorShareCard" style="margin-top:10px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;padding:10px">
-          <div style="font-size:10px;font-weight:700;color:#6b7280;margin-bottom:6px;display:flex;align-items:center;gap:4px">
-            <i class="fas fa-store" style="color:#3b82f6"></i> 업체별 발주 비중
+          <!-- 업체 발주 비중 -->
+          <div id="vendorShareCard" style="background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;display:flex;align-items:center;gap:4px">
+              <i class="fas fa-store" style="color:#3b82f6"></i> 업체별 발주 비중
+            </div>
+            <div id="vendorShareContent">
+              <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
+            </div>
+            <div id="vendorBiasAlert" style="display:none"></div>
           </div>
-          <div id="vendorShareContent">
-            <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
-          </div>
-          <div id="vendorBiasAlert" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -1708,17 +1709,17 @@ async function renderOrders() {
       <table class="order-table" id="ordersTable" style="table-layout:auto;border-collapse:collapse;width:100%;min-width:max-content">
         <thead style="position:sticky;top:0;z-index:20">
           <tr>
-            <th class="sticky left-0 z-30 bg-gray-800" style="width:30px;min-width:30px;padding:4px 2px">일</th>
-            <th class="sticky z-30 bg-gray-800" style="width:24px;min-width:24px;left:30px;padding:4px 2px">요</th>
-            <th class="sticky z-30 bg-gray-800" style="width:56px;min-width:56px;left:54px;font-size:9px;padding:4px 2px" title="몇 일분 발주인지 선택합니다. 예: 2일 선택 시 일 목표금액×2 기준으로 진행률 계산">몇일분<br><span style="font-size:8px;opacity:0.8">발주</span></th>
+            <th class="sticky left-0 z-30 bg-gray-800" style="width:30px;min-width:30px;padding:5px 3px;font-size:12px;font-weight:700">일</th>
+            <th class="sticky z-30 bg-gray-800" style="width:24px;min-width:24px;left:30px;padding:5px 3px;font-size:12px;font-weight:700">요</th>
+            <th class="sticky z-30 bg-gray-800" style="width:56px;min-width:56px;left:54px;font-size:10px;font-weight:600;padding:5px 3px" title="몇 일분 발주인지 선택합니다. 예: 2일 선택 시 일 목표금액×2 기준으로 진행률 계산">몇일분<br><span style="font-size:9px;opacity:0.85;font-weight:500">발주</span></th>
             ${patientCats.map((cat, ci) => {
               const catColor = getCategoryColorHex(cat.category_key)
               const bl = ci === 0 ? 'border-left:3px solid #334155;' : 'border-left:2px solid #475569;'
-              return `<th style="${bl}min-width:76px;background:${catColor}dd;font-size:11px;padding:5px 4px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.3)">${cat.category_name}<br><span style="font-size:9px;opacity:0.9;font-weight:500">합계</span></th>`
+              return `<th style="${bl}min-width:82px;background:${catColor}ee;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.35);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.15);padding:1px 5px;border-radius:8px">합계</span></th>`
             }).join('')}
-            ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155">일합계</th>` : ''}
-            <th class="sticky z-30" style="min-width:80px;background:#1e3a5f;left:110px;padding:4px 3px">합계<br><span style="font-size:9px;opacity:0.8;font-weight:400">/ 진행률</span></th>
-            <th class="sticky-right-btn" style="min-width:64px;background:#374151;font-size:11px;padding:4px 2px;box-shadow:-2px 0 6px rgba(0,0,0,0.18)">업체별<br><span style="font-size:9px;opacity:0.75;font-weight:400">입력</span></th>
+            ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155;font-size:12px;font-weight:700">일합계</th>` : ''}
+            <th class="sticky z-30" style="min-width:84px;background:#1e3a5f;left:110px;padding:5px 4px;font-size:12px;font-weight:700;line-height:1.4">합계<br><span style="font-size:10px;opacity:0.85;font-weight:500">/ 진행률</span></th>
+            <th class="sticky-right-btn" style="min-width:68px;background:#374151;font-size:11px;font-weight:600;padding:5px 3px;box-shadow:-2px 0 6px rgba(0,0,0,0.18);line-height:1.5">업체별<br><span style="font-size:9px;opacity:0.8;font-weight:500">입력</span></th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
@@ -1963,7 +1964,7 @@ async function renderOrders() {
           ${weekCatCells}
           ${weekNoCatCell}
           <td style="background:${wBg};padding:3px 4px;text-align:center;min-width:80px"><div style="font-size:11px;font-weight:700;color:${wColor}">${wTotal>0?fmtMan(wTotal):'-'}</div><div style="font-size:9px;color:${wColor};font-weight:600">${wPct!==null?wPct+'%':''}</div></td>
-          <td class="sticky-right-btn" style="background:${wBg}"></td>
+          <td class="sticky-right-btn" style="background:${wBg};text-align:center;vertical-align:middle;padding:2px"><div style="font-size:9px;font-weight:700;color:${wBadgeBg};opacity:0.8;white-space:nowrap">${weekNumber}\uc8fc</div></td>
         </tr>`)
       }
 
@@ -2040,8 +2041,8 @@ async function renderOrders() {
       const initArrow = isToday ? '▲' : '▼'
       const initBtnBg = isToday ? (displayTotal>0?'#2563eb':'#16a34a') : (displayTotal>0?'#2563eb':'#e5e7eb')
       const initBtnColor = (isToday || displayTotal>0) ? 'white' : '#6b7280'
-      const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${initBtnBg};color:${initBtnColor};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600" title="업체별 상세 발주 입력">
-        <span class="detail-arrow" data-date="${dateStr}">${initArrow}</span> 업체별 입력
+      const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${initBtnBg};color:${initBtnColor};border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:3px;line-height:1.3" title="업체별 상세 발주 입력">
+        <span class="detail-arrow" data-date="${dateStr}" style="font-size:10px">${initArrow}</span><span style="font-size:10px">업체별</span>
       </button>` : ''
 
       rows.push(`<tr class="order-summary-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="background:${summaryRowBg};${summaryBorderTop}${isToday?'outline:2px solid #3b82f6;outline-offset:-1px;':''}${pastOpacity}">
@@ -2055,7 +2056,7 @@ async function renderOrders() {
         </td>
         <td class="sticky-right-btn" style="text-align:center;vertical-align:middle;${summaryBorderTop}background:white;padding:3px 2px;border-left:1px solid #e5e7eb;min-width:52px">
           ${hasCats ? detailToggleBtn : ''}
-          ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600"><span class="detail-arrow" data-date="${dateStr}">▼</span> 업체별 입력</button>` : ''}
+          ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:3px;line-height:1.3"><span class="detail-arrow" data-date="${dateStr}" style="font-size:10px">▼</span><span style="font-size:10px">업체별</span></button>` : ''}
         </td>
       </tr>`)
 
@@ -2307,7 +2308,7 @@ async function renderOrders() {
         return `<td style="${bl}text-align:center;padding:3px 4px;min-width:76px;background:${catAmt>0?catColor+'10':''}"><div style="font-size:10px;font-weight:700;color:${catAmt>0?catColor:'#9ca3af'}">${catAmt>0?fmtMan(catAmt):'-'}</div></td>`
       }).join('') : `<td class="text-center bg-gray-100 py-1" id="vfoot-month-pct" style="color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};font-weight:700;font-size:10px">${monthPct}%<div style="font-size:8px;color:#6b7280;font-weight:400">${fmtMan(totalBudget)}</div></td>`}
       <td class="text-center sticky bg-gray-100" id="vfoot-month-total" style="left:110px;font-size:11px;min-width:80px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}">${fmtMan(monthTotal)}<div style="font-size:9px;font-weight:600">${monthPct}%</div></td>
-      <td style="background:#f3f4f6;text-align:center;padding:2px;font-size:9px;color:#9ca3af">업체별</td>
+      <td class="sticky-right-btn" style="background:#f3f4f6;text-align:center;padding:3px 2px;font-size:9px;color:#6b7280;font-weight:600">월간<br>상세</td>
     </tr>`
   }
 
