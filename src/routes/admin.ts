@@ -450,6 +450,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         .filter((f: any) => f.unit_type !== 'ea')
         .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
+      // ── 카테고리 목록 먼저 조회 (오늘 식수 custom_data 파싱에 필요) ──
+      const patientCatsListEarly = await c.env.DB.prepare(`
+        SELECT * FROM hospital_patient_categories
+        WHERE hospital_id = ? AND is_active = 1
+        ORDER BY sort_order, id
+      `).bind(h.id).all<any>()
+
       // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자) + custom_data
       const todayMeals = await c.env.DB.prepare(`
         SELECT
@@ -476,7 +483,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       if (todayMeals?.custom_data) {
         try {
           const cd = JSON.parse(todayMeals.custom_data || '{}')
-          ;(patientCatsList.results||[]).forEach((cat:any) => {
+          ;(patientCatsListEarly.results||[]).forEach((cat:any) => {
             const fk = `cat_${cat.category_key}`
             const fv = cd[fk] || {}
             const cnt = (fv.bf||0) + (fv.l||0) + (fv.d||0)
@@ -585,12 +592,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         ? Math.round((prevTotalUsed-prevSupplyUsed)/prevTotalMeals) : 0
 
       // ── 카테고리별 식단가 계산 ──────────────────────────────────
-      // 카테고리 목록
-      const patientCatsList = await c.env.DB.prepare(`
-        SELECT * FROM hospital_patient_categories
-        WHERE hospital_id = ? AND is_active = 1
-        ORDER BY sort_order, id
-      `).bind(h.id).all<any>()
+      // 카테고리 목록 (위에서 미리 조회한 patientCatsListEarly 재사용)
+      const patientCatsList = patientCatsListEarly
 
       // 카테고리별 월 발주금액
       const catMonthlyOrders = await c.env.DB.prepare(`
