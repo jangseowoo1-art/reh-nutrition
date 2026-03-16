@@ -293,18 +293,34 @@
   scroll-behavior: smooth;
 }
 
-/* 스크롤바 숨기고 하단 미러바 사용 (데스크탑) */
+/* 스크롤바 숨기고 상단/하단 미러바 사용 (데스크탑) */
 #ordersTableScroller::-webkit-scrollbar { height: 0; }
 
-/* 하단 가로 스크롤바 (항상 표시 - 데스크탑) */
-#orders-hscroll-bar {
-  display: block;          /* JS에서 show/hide 하지 않고 항상 표시 */
+/* ── 상단 가로 스크롤바 (테이블 위, 항상 표시 - 데스크탑) ── */
+#orders-hscroll-top {
+  display: block;
   overflow-x: auto;
   overflow-y: hidden;
-  height: 16px;
+  height: 14px;
+  border-bottom: 2px solid #d1fae5;
+  background: #f0fdf4;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+}
+#orders-hscroll-top::-webkit-scrollbar { height: 10px; }
+#orders-hscroll-top::-webkit-scrollbar-track { background: #dcfce7; border-radius: 6px; }
+#orders-hscroll-top::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 6px; border: 2px solid #dcfce7; min-width: 40px; }
+#orders-hscroll-top::-webkit-scrollbar-thumb:hover { background: #166534; }
+
+/* ── 하단 가로 스크롤바 (항상 표시 - 데스크탑) ── */
+#orders-hscroll-bar {
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 14px;
   border-top: 1px solid #d1fae5;
   background: #f0fdf4;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 4px 4px;
   cursor: pointer;
 }
 #orders-hscroll-bar::-webkit-scrollbar { height: 10px; }
@@ -316,7 +332,6 @@
 .order-table thead th { position: sticky; top: 0; z-index: 20; }
 
 /* ── 우측 합계/진행률 컬럼 sticky 고정 ── */
-/* thead th 중 합계/진행률: left 값은 JS에서 data-sticky-right 없이 CSS로 처리 */
 .order-table th.sticky-right,
 .order-table td.sticky-right {
   position: sticky;
@@ -346,6 +361,8 @@
   }
   #ordersTableScroller::-webkit-scrollbar { height: 5px; }
   #ordersTableScroller::-webkit-scrollbar-thumb { background: #16a34a; border-radius: 4px; }
+  /* 모바일: 상단/하단 미러 스크롤바 숨김 */
+  #orders-hscroll-top { display: none !important; }
   #orders-hscroll-bar { display: none !important; }
   /* 모바일에서 sticky-right 해제 (성능) */
   .order-table th.sticky-right,

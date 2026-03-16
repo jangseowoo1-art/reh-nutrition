@@ -1699,6 +1699,10 @@ async function renderOrders() {
       <div class="scroll-hint">
         <i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 발주 입력
       </div>
+      <!-- 상단 가로 스크롤바 (데스크탑용 미러 - 테이블 위에 위치) -->
+      <div id="orders-hscroll-top" style="overflow-x:auto;overflow-y:hidden;height:14px;border-bottom:1px solid #d1fae5;background:#f0fdf4;border-radius:4px 4px 0 0">
+        <div id="orders-hscroll-top-inner" style="height:1px"></div>
+      </div>
       <!-- 가로 스크롤 컨테이너 -->
       <div id="ordersTableScroller" style="overflow-x:auto;overflow-y:visible;width:100%;max-width:100%;-webkit-overflow-scrolling:touch;scroll-behavior:smooth">
       <table class="order-table" id="ordersTable" style="table-layout:auto;border-collapse:collapse;width:100%;min-width:max-content">
@@ -1724,7 +1728,7 @@ async function renderOrders() {
       </table>
       </div>
       <!-- 하단 가로 스크롤바 (데스크탑용 미러) -->
-      <div id="orders-hscroll-bar" style="overflow-x:auto;overflow-y:hidden;height:14px;border-top:1px solid #e5e7eb;background:#f9fafb">
+      <div id="orders-hscroll-bar" style="overflow-x:auto;overflow-y:hidden;height:14px;border-top:1px solid #e5e7eb;background:#f9fafb;border-radius:0 0 4px 4px">
         <div id="orders-hscroll-inner" style="height:1px"></div>
       </div>
     </div>
@@ -2417,61 +2421,86 @@ window.switchOrderDetailTab = function(dateStr, tabIndex) {
   setTimeout(() => setupOrdersScrollSync(), 50)
 }
 
-// ── 발주 테이블 하단 스크롤 미러 동기화 ──────────────────────────
+// ── 발주 테이블 스크롤 3방향 동기화 ─────────────────────────────
+// 상단 스크롤바 ↔ 테이블 스크롤러 ↔ 하단 스크롤바 모두 연동
 function setupOrdersScrollSync() {
   requestAnimationFrame(() => {
     const scroller = document.getElementById('ordersTableScroller')
     const table    = document.getElementById('ordersTable')
-    const hBar     = document.getElementById('orders-hscroll-bar')
-    const hInner   = document.getElementById('orders-hscroll-inner')
+    const topBar   = document.getElementById('orders-hscroll-top')
+    const topInner = document.getElementById('orders-hscroll-top-inner')
+    const botBar   = document.getElementById('orders-hscroll-bar')
+    const botInner = document.getElementById('orders-hscroll-inner')
     if (!scroller || !table) return
 
     const isMobile = window.innerWidth <= 768
 
-    // 테이블 실제 너비를 inner에 적용하여 스크롤바 트랙 크기 맞춤
+    // inner 너비를 테이블 실제 너비로 맞춤
     const syncWidth = () => {
-      if (hInner) hInner.style.width = table.scrollWidth + 'px'
+      const w = table.scrollWidth + 'px'
+      if (topInner) topInner.style.width = w
+      if (botInner) botInner.style.width = w
     }
     syncWidth()
 
     if (isMobile) {
-      // 모바일: CSS media query로 display:none 처리
-    } else {
-      // 데스크탑: 하단 미러 스크롤바 동기화
-      // 이미 등록된 이벤트 중복 방지: 새 스크롤러 엘리먼트로 교체 후 리스너 등록
-      if (hBar) {
-        const newBar = hBar.cloneNode(true)
-        hBar.parentNode.replaceChild(newBar, hBar)
-        const bar     = newBar
-        const innerEl = bar.firstElementChild   // #orders-hscroll-inner
-
-        // inner 너비 초기화
-        if (innerEl) innerEl.style.width = table.scrollWidth + 'px'
-
-        let lockBar = false, lockScroller = false
-        bar.addEventListener('scroll', () => {
-          if (lockBar) return
-          lockScroller = true
-          scroller.scrollLeft = bar.scrollLeft
-          requestAnimationFrame(() => { lockScroller = false })
-        })
-        scroller.addEventListener('scroll', () => {
-          if (lockScroller) return
-          lockBar = true
-          bar.scrollLeft = scroller.scrollLeft
-          if (innerEl) innerEl.style.width = table.scrollWidth + 'px'
-          requestAnimationFrame(() => { lockBar = false })
-        })
-      }
+      // 모바일: CSS media query로 두 스크롤바 모두 숨김
+      return
     }
 
-    // ResizeObserver: 테이블 크기 변할 때 너비 동기화 + zoom 대응
+    // ── 3방향 동기화 (이벤트 중복 방지: cloneNode로 기존 리스너 제거) ──
+    const newTop = topBar ? topBar.cloneNode(true) : null
+    const newBot = botBar ? botBar.cloneNode(true) : null
+    if (newTop) topBar.parentNode.replaceChild(newTop, topBar)
+    if (newBot) botBar.parentNode.replaceChild(newBot, botBar)
+
+    const tBar   = newTop || document.getElementById('orders-hscroll-top')
+    const bBar   = newBot || document.getElementById('orders-hscroll-bar')
+    const tInner = tBar?.firstElementChild
+    const bInner = bBar?.firstElementChild
+
+    // inner 너비 재초기화 (cloneNode 후)
+    const w = table.scrollWidth + 'px'
+    if (tInner) tInner.style.width = w
+    if (bInner) bInner.style.width = w
+
+    let lock = null  // 현재 scroll 이벤트 주체: 'top' | 'bot' | 'scroller'
+
+    const onTopScroll = () => {
+      if (lock && lock !== 'top') return
+      lock = 'top'
+      scroller.scrollLeft = tBar.scrollLeft
+      if (bBar) bBar.scrollLeft = tBar.scrollLeft
+      requestAnimationFrame(() => { lock = null })
+    }
+    const onBotScroll = () => {
+      if (lock && lock !== 'bot') return
+      lock = 'bot'
+      scroller.scrollLeft = bBar.scrollLeft
+      if (tBar) tBar.scrollLeft = bBar.scrollLeft
+      requestAnimationFrame(() => { lock = null })
+    }
+    const onTableScroll = () => {
+      if (lock && lock !== 'scroller') return
+      lock = 'scroller'
+      if (tBar) tBar.scrollLeft = scroller.scrollLeft
+      if (bBar) bBar.scrollLeft = scroller.scrollLeft
+      const ww = table.scrollWidth + 'px'
+      if (tInner) tInner.style.width = ww
+      if (bInner) bInner.style.width = ww
+      requestAnimationFrame(() => { lock = null })
+    }
+
+    if (tBar) tBar.addEventListener('scroll', onTopScroll)
+    if (bBar) bBar.addEventListener('scroll', onBotScroll)
+    scroller.addEventListener('scroll', onTableScroll)
+
+    // ResizeObserver: 테이블 너비 변경(열 추가/접기 등) + zoom 대응
     if (window.ResizeObserver) {
       const ro = new ResizeObserver(() => {
-        // 테이블 scrollWidth 갱신
-        const inner = document.getElementById('orders-hscroll-inner')
-        if (inner) inner.style.width = table.scrollWidth + 'px'
-        // zoom 시 컨테이너가 뷰포트를 넘지 않도록 강제
+        const ww = table.scrollWidth + 'px'
+        if (tInner) tInner.style.width = ww
+        if (bInner) bInner.style.width = ww
         if (scroller) scroller.style.maxWidth = '100%'
       })
       ro.observe(table)
