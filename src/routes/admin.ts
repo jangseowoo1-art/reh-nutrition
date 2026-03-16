@@ -176,23 +176,35 @@ adminRouter.post('/hospitals/:id/budget/:year/:month', async (c) => {
   const body = await c.req.json()
   const {
     totalBudget, eventBudget, mealPrice, foodWasteBudget,
-    workingDays, supplyBudget, cardBudget, vendorBudgets, categoryBudgets
+    workingDays, supplyBudget, cardBudget, vendorBudgets, categoryBudgets,
+    waste_unit_price, _partial
   } = body
+
+  if (_partial) {
+    // 부분 업데이트: waste_unit_price만 저장
+    await c.env.DB.prepare(`
+      INSERT INTO monthly_settings (hospital_id, year, month, waste_unit_price, created_at, updated_at)
+      VALUES (?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+      ON CONFLICT(hospital_id,year,month) DO UPDATE SET
+        waste_unit_price=excluded.waste_unit_price, updated_at=CURRENT_TIMESTAMP
+    `).bind(id, year, month, waste_unit_price||0).run()
+    return c.json({ success: true })
+  }
 
   // monthly_settings upsert
   await c.env.DB.prepare(`
     INSERT INTO monthly_settings (
       hospital_id, year, month, total_budget, event_budget,
       meal_price, food_waste_budget, working_days, supply_budget, card_budget,
-      created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+      waste_unit_price, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
     ON CONFLICT(hospital_id,year,month) DO UPDATE SET
       total_budget=excluded.total_budget, event_budget=excluded.event_budget,
       meal_price=excluded.meal_price, food_waste_budget=excluded.food_waste_budget,
       working_days=excluded.working_days, supply_budget=excluded.supply_budget,
       card_budget=excluded.card_budget, updated_at=CURRENT_TIMESTAMP
   `).bind(id, year, month, totalBudget||0, eventBudget||0, mealPrice||0,
-    foodWasteBudget||0, workingDays||0, supplyBudget||0, cardBudget||0).run()
+    foodWasteBudget||0, workingDays||0, supplyBudget||0, cardBudget||0, waste_unit_price||0).run()
 
   // 업체별 목표금액 저장 (vendors 테이블의 monthly_budget 업데이트)
   if (vendorBudgets && Array.isArray(vendorBudgets)) {

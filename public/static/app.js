@@ -1300,27 +1300,48 @@ async function renderDashboard() {
         </div>` : ''}
       </div>` : ''}
 
-      <!-- 잔반 현황 -->
+      <!-- 2.8 잔반 비용 분석 -->
       <div class="mt-3 border-t border-gray-100 pt-3">
         <div class="flex items-center justify-between mb-2">
-          <span class="text-sm font-bold text-gray-700"><i class="fas fa-recycle text-amber-500 mr-1"></i>잔반 월별 현황</span>
-          <button onclick="showFoodWasteModal(${App.currentYear},${App.currentMonth})" class="text-xs text-blue-500 hover:underline">입력/수정 →</button>
-        </div>
-        ${foodWasteData.length > 0 ? `
-        <div class="space-y-1.5">
-          ${foodWasteData.map(w=>`
-          <div class="flex items-center justify-between text-xs bg-amber-50 rounded-lg px-3 py-1.5">
-            <span class="text-gray-600">${w.week}주차</span>
-            <span class="font-semibold text-amber-700">${w.waste_amount}kg</span>
-            ${w.waste_cost>0?`<span class="text-gray-500">${fmtMan(w.waste_cost)}원</span>`:''}
-            ${w.memo?`<span class="text-gray-400 truncate max-w-20">${w.memo}</span>`:''}
-          </div>`).join('')}
-          <div class="flex items-center justify-between text-xs font-bold bg-amber-100 rounded-lg px-3 py-1.5">
-            <span class="text-amber-800">합계</span>
-            <span class="text-amber-800">${foodWasteData.reduce((s,w)=>s+w.waste_amount,0).toFixed(1)}kg</span>
-            <span class="text-amber-700">${fmtMan(foodWasteData.reduce((s,w)=>s+w.waste_cost,0))}원</span>
+          <span class="text-sm font-bold text-gray-700"><i class="fas fa-recycle text-amber-500 mr-1"></i>잔반 비용 분석</span>
+          <div class="flex gap-2">
+            <button onclick="showIngredientPricesModal(${App.currentYear},${App.currentMonth})" class="text-xs text-green-600 hover:underline font-medium"><i class="fas fa-leaf mr-1"></i>식재료 단가</button>
+            <button onclick="showFoodWasteModal(${App.currentYear},${App.currentMonth})" class="text-xs text-blue-500 hover:underline">잔반 입력 →</button>
           </div>
-        </div>` : `<div class="text-xs text-gray-400 py-2 text-center">잔반 기록 없음 · <button onclick="showFoodWasteModal(${App.currentYear},${App.currentMonth})" class="text-blue-500 hover:underline">입력하기</button></div>`}
+        </div>
+        ${foodWasteData.length > 0 ? (() => {
+          const totalKg = foodWasteData.reduce((s,w)=>s+(w.waste_amount||0),0)
+          const totalCost = foodWasteData.reduce((s,w)=>s+(w.waste_cost||0),0)
+          const wasteBudget = data?.settings?.food_waste_budget || 0
+          const budgetPct = wasteBudget > 0 ? Math.round(totalCost/wasteBudget*100) : 0
+          const costOverBudget = wasteBudget > 0 && totalCost > wasteBudget
+          return `
+          <div class="space-y-1.5">
+            ${foodWasteData.map(w=>`
+            <div class="flex items-center justify-between text-xs bg-amber-50 rounded-lg px-3 py-1.5">
+              <span class="text-gray-600">${w.week}주차</span>
+              <span class="font-semibold text-amber-700">${(w.waste_amount||0).toFixed(1)}kg</span>
+              ${w.waste_cost>0?`<span class="text-gray-500">${fmtMan(w.waste_cost)}원</span>`:'<span class="text-gray-300">-</span>'}
+              ${w.memo?`<span class="text-gray-400 truncate max-w-20">${w.memo}</span>`:''}
+            </div>`).join('')}
+            <div class="flex items-center justify-between text-xs font-bold bg-amber-100 rounded-lg px-3 py-1.5">
+              <span class="text-amber-800">합계</span>
+              <span class="text-amber-800">${totalKg.toFixed(1)}kg</span>
+              <span class="${costOverBudget?'text-red-600':'text-amber-700'}">${fmtMan(totalCost)}원 ${costOverBudget?'🚨':''}</span>
+            </div>
+            ${wasteBudget > 0 ? `
+            <div class="mt-1">
+              <div class="flex justify-between text-xs text-gray-500 mb-0.5">
+                <span>목표 대비 사용률</span>
+                <span class="${costOverBudget?'text-red-500 font-bold':'text-gray-600'}">${budgetPct}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-1.5">
+                <div class="h-1.5 rounded-full ${costOverBudget?'bg-red-500':'bg-amber-400'}" style="width:${Math.min(budgetPct,100)}%"></div>
+              </div>
+              <div class="text-xs text-gray-400 mt-0.5">목표: ${fmtMan(wasteBudget)}원</div>
+            </div>` : ''}
+          </div>`
+        })() : `<div class="text-xs text-gray-400 py-2 text-center">잔반 기록 없음 · <button onclick="showFoodWasteModal(${App.currentYear},${App.currentMonth})" class="text-blue-500 hover:underline">입력하기</button></div>`}
       </div>
     </div>
 
@@ -5867,7 +5888,73 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
         </div>
       </div>
     </div>
-  </div>`
+  </div>
+  <!-- 2.7 식재료 단가 분석 섹션 (동적 로드) -->
+  <div id="ingredientAnalysisSection"></div>`
+  const ingredientSectionEl = document.getElementById('ingredientAnalysisSection')
+  if (ingredientSectionEl) {
+    const ingData = await api('GET', `/api/settings/ingredient-prices/${curYear}/${App.currentMonth}${hospId ? `?hospitalId=${hospId}` : ''}`).catch(()=>[]) || []
+    if (ingData.length > 0) {
+      const ingRows = ingData.map(r => {
+        const momDiff = r.mom_diff
+        const yoyDiff = r.yoy_diff
+        const momColor = momDiff > 0 ? 'text-red-600' : momDiff < 0 ? 'text-green-600' : 'text-gray-500'
+        const yoyColor = yoyDiff > 0 ? 'text-red-600' : yoyDiff < 0 ? 'text-green-600' : 'text-gray-500'
+        const momArrow = momDiff > 0 ? '▲' : momDiff < 0 ? '▼' : '—'
+        const yoyArrow = yoyDiff > 0 ? '▲' : yoyDiff < 0 ? '▼' : '—'
+        return `<tr class="border-b border-gray-100 hover:bg-gray-50">
+          <td class="py-2 px-3 font-medium text-gray-800">${r.ingredient_name}</td>
+          <td class="py-2 px-3 text-center text-gray-500 text-xs">${r.unit||'kg'}</td>
+          <td class="py-2 px-3 text-right font-bold text-gray-900">${fmt(r.unit_price)}원</td>
+          <td class="py-2 px-3 text-right text-xs">
+            ${r.prev_price > 0 ? `<span class="text-gray-500">${fmt(r.prev_price)}원</span><br><span class="${momColor} font-semibold">${momArrow}${momDiff !== null ? Math.abs(momDiff).toLocaleString()+'원' : ''}</span>` : '<span class="text-gray-300">-</span>'}
+          </td>
+          <td class="py-2 px-3 text-right text-xs">
+            ${r.prev_year_price > 0 ? `<span class="text-gray-500">${fmt(r.prev_year_price)}원</span><br><span class="${yoyColor} font-semibold">${yoyArrow}${yoyDiff !== null ? Math.abs(yoyDiff).toLocaleString()+'원' : ''}</span>` : '<span class="text-gray-300">-</span>'}
+          </td>
+          <td class="py-2 px-3 text-xs text-gray-400">${r.memo||''}</td>
+        </tr>`
+      }).join('')
+
+      ingredientSectionEl.innerHTML = `
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mt-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-gray-700 text-sm">
+            <i class="fas fa-leaf text-green-500 mr-1"></i>주요 식재료 단가 분석 (${curYear}년 ${App.currentMonth}월)
+          </h3>
+          <button onclick="showIngredientPricesModal(${curYear},${App.currentMonth})" class="text-xs text-green-600 hover:underline font-medium">
+            <i class="fas fa-edit mr-1"></i>단가 입력
+          </button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-green-50 text-xs text-gray-600">
+                <th class="text-left py-2 px-3">식재료명</th>
+                <th class="text-center py-2 px-3">단위</th>
+                <th class="text-right py-2 px-3">당월 단가</th>
+                <th class="text-right py-2 px-3">전월 대비</th>
+                <th class="text-right py-2 px-3">전년 동월 대비</th>
+                <th class="text-left py-2 px-3">메모</th>
+              </tr>
+            </thead>
+            <tbody>${ingRows}</tbody>
+          </table>
+        </div>
+      </div>`
+    } else {
+      ingredientSectionEl.innerHTML = `
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mt-4">
+        <div class="flex items-center justify-between">
+          <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-leaf text-green-500 mr-1"></i>주요 식재료 단가 분석</h3>
+          <button onclick="showIngredientPricesModal(${curYear},${App.currentMonth})" class="btn btn-success btn-sm">
+            <i class="fas fa-plus mr-1"></i>단가 입력
+          </button>
+        </div>
+        <p class="text-xs text-gray-400 mt-2 text-center py-3">이번 달 식재료 단가 데이터가 없습니다. 단가를 입력해주세요.</p>
+      </div>`
+    }
+  }
 
   // ── 공통 차트 색상
   // 차트 초기화 전: 모든 탭 content를 잠시 visible로 설정 (hidden 상태에서 chart 초기화 시 0px 크기 방지)
@@ -6548,27 +6635,49 @@ async function renderSettings() {
   }
 }
 
-// ── 잔반 입력 모달 ─────────────────────────────────────────────
+// ── 2.8 잔반 입력 모달 (업그레이드: 병원별 단가 설정 + 자동계산) ──
 window.showFoodWasteModal = async function(year, month) {
-  const existing = await api('GET', `/api/settings/food-waste/${year}/${month}`) || []
+  const [existing, summary] = await Promise.all([
+    api('GET', `/api/settings/food-waste/${year}/${month}`) || [],
+    api('GET', `/api/settings/food-waste-summary/${year}/${month}`).catch(()=>null)
+  ])
   const weeks = [1,2,3,4,5]
   const wMap = {}
-  existing.forEach(w => { wMap[w.week] = w })
+  ;(existing||[]).forEach(w => { wMap[w.week] = w })
+  const unitPrice = summary?.unitPrice || 0
 
   let modal = document.getElementById('foodWasteModal')
   if (!modal) {
     modal = document.createElement('div')
     modal.id = 'foodWasteModal'
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;display:flex;align-items:center;justify-content:center;'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;display:flex;align-items:center;justify-content:center;overflow-y:auto;'
     document.body.appendChild(modal)
   }
   modal.innerHTML = `
-  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
+  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg mx-4 my-4">
     <div class="flex items-center justify-between mb-4">
       <h3 class="font-bold text-gray-800"><i class="fas fa-recycle text-amber-500 mr-2"></i>잔반 기록 - ${year}년 ${month}월</h3>
       <button onclick="document.getElementById('foodWasteModal').remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
     </div>
-    <div class="space-y-3">
+
+    <!-- 단가 설정 -->
+    <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl mb-4">
+      <div class="flex items-center gap-3">
+        <div class="flex-1">
+          <label class="text-xs font-semibold text-amber-700 mb-1 block"><i class="fas fa-tag mr-1"></i>잔반 처리 단가 (kg당, 원)</label>
+          <input type="number" id="fw-unit-price" class="form-input text-sm w-full" min="0" step="100"
+            value="${unitPrice||''}" placeholder="예: 500 (0이면 비용 직접 입력)">
+        </div>
+        <button onclick="saveFoodWasteUnitPrice(${year},${month})"
+          class="mt-4 px-3 py-2 bg-amber-500 text-white text-xs rounded-lg hover:bg-amber-600 font-semibold whitespace-nowrap">
+          단가 저장
+        </button>
+      </div>
+      <p class="text-xs text-amber-600 mt-1">단가 입력 시 kg × 단가로 비용 자동 계산. 개별 비용 직접 입력도 가능합니다.</p>
+    </div>
+
+    <!-- 주차별 입력 -->
+    <div class="space-y-2">
       ${weeks.map(w => {
         const d = wMap[w] || {}
         return `
@@ -6577,11 +6686,14 @@ window.showFoodWasteModal = async function(year, month) {
           <div class="grid grid-cols-3 gap-2">
             <div>
               <label class="text-xs text-gray-500">잔반량(kg)</label>
-              <input type="number" id="fw-amount-${w}" class="form-input text-sm" step="0.1" min="0" value="${d.waste_amount||''}" placeholder="0.0">
+              <input type="number" id="fw-amount-${w}" class="form-input text-sm" step="0.1" min="0"
+                value="${d.waste_amount||''}" placeholder="0.0"
+                oninput="autoCalcWasteCost(${w})">
             </div>
             <div>
-              <label class="text-xs text-gray-500">비용(원)</label>
-              <input type="number" id="fw-cost-${w}" class="form-input text-sm" min="0" value="${d.waste_cost||''}" placeholder="0">
+              <label class="text-xs text-gray-500">비용(원) <span class="text-amber-500 text-xs">(자동/직접)</span></label>
+              <input type="number" id="fw-cost-${w}" class="form-input text-sm" min="0"
+                value="${d.waste_cost||''}" placeholder="자동계산">
             </div>
             <div>
               <label class="text-xs text-gray-500">메모</label>
@@ -6591,12 +6703,47 @@ window.showFoodWasteModal = async function(year, month) {
         </div>`
       }).join('')}
     </div>
-    <div class="flex gap-3 mt-5">
+
+    <!-- 합계 -->
+    <div class="mt-3 p-3 bg-gray-100 rounded-xl flex justify-between text-sm font-semibold text-gray-700">
+      <span><i class="fas fa-weight text-amber-500 mr-1"></i>총 잔반량: <span id="fw-total-kg">${summary?.totalKg?.toFixed(1)||'0.0'}</span> kg</span>
+      <span><i class="fas fa-won-sign text-red-500 mr-1"></i>총 비용: <span id="fw-total-cost">${fmt(summary?.totalCost||0)}</span> 원</span>
+    </div>
+
+    <div class="flex gap-3 mt-4">
       <button onclick="saveFoodWaste(${year},${month})" class="btn btn-primary flex-1"><i class="fas fa-save mr-1"></i>저장</button>
       <button onclick="document.getElementById('foodWasteModal').remove()" class="btn btn-secondary">취소</button>
     </div>
   </div>`
   modal.style.display = 'flex'
+}
+
+// 잔반 kg 입력 시 단가 기준 비용 자동계산
+window.autoCalcWasteCost = function(week) {
+  const unitPrice = parseFloat(document.getElementById('fw-unit-price')?.value || 0) || 0
+  if (unitPrice <= 0) return
+  const kg = parseFloat(document.getElementById(`fw-amount-${week}`)?.value || 0) || 0
+  const costEl = document.getElementById(`fw-cost-${week}`)
+  if (costEl) costEl.value = Math.round(kg * unitPrice)
+  // 합계 업데이트
+  let totalKg = 0, totalCost = 0
+  for (let w = 1; w <= 5; w++) {
+    totalKg += parseFloat(document.getElementById(`fw-amount-${w}`)?.value || 0) || 0
+    totalCost += parseInt(document.getElementById(`fw-cost-${w}`)?.value || 0) || 0
+  }
+  const tkEl = document.getElementById('fw-total-kg')
+  const tcEl = document.getElementById('fw-total-cost')
+  if (tkEl) tkEl.textContent = totalKg.toFixed(1)
+  if (tcEl) tcEl.textContent = fmt(totalCost)
+}
+
+// 잔반 단가 저장
+window.saveFoodWasteUnitPrice = async function(year, month) {
+  const unitPrice = parseInt(document.getElementById('fw-unit-price')?.value || 0) || 0
+  await api('POST', '/api/settings/waste-unit-price', { year, month, waste_unit_price: unitPrice })
+  showToast('잔반 단가가 저장되었습니다.', 'success')
+  // 자동계산 다시 실행
+  for (let w = 1; w <= 5; w++) autoCalcWasteCost(w)
 }
 
 window.saveFoodWaste = async function(year, month) {
@@ -6614,6 +6761,139 @@ window.saveFoodWaste = async function(year, month) {
   document.getElementById('foodWasteModal')?.remove()
   showToast(`잔반 기록 ${saved}건 저장됨`, 'success')
   renderDashboard()
+}
+
+// ── 2.7 식재료 단가 입력 모달 ─────────────────────────────────────
+window.showIngredientPricesModal = async function(year, month) {
+  const DEFAULT_INGREDIENTS = [
+    { name: '쌀', unit: 'kg' },
+    { name: '닭고기', unit: 'kg' },
+    { name: '돼지고기', unit: 'kg' },
+    { name: '두부', unit: 'kg' },
+    { name: '계란', unit: '개' },
+    { name: '채소류', unit: 'kg' },
+    { name: '생선류', unit: 'kg' },
+    { name: '쇠고기', unit: 'kg' },
+  ]
+  const existing = await api('GET', `/api/settings/ingredient-prices/${year}/${month}`) || []
+  const eMap = {}
+  existing.forEach(r => { eMap[r.ingredient_name] = r })
+
+  // 기존에 없는 기본 식재료 추가
+  const allNames = [...new Set([...DEFAULT_INGREDIENTS.map(d=>d.name), ...existing.map(r=>r.ingredient_name)])]
+  const rows = allNames.map(name => {
+    const def = DEFAULT_INGREDIENTS.find(d=>d.name===name) || { name, unit:'kg' }
+    const ex = eMap[name] || {}
+    return { name, unit: ex.unit||def.unit, price: ex.unit_price||'', prevPrice: ex.prev_price||0, prevYearPrice: ex.prev_year_price||0, memo: ex.memo||'' }
+  })
+
+  let modal = document.getElementById('ingredientModal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'ingredientModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;display:flex;align-items:center;justify-content:center;overflow-y:auto;'
+    document.body.appendChild(modal)
+  }
+
+  const prevM = month===1 ? 12 : month-1
+  const prevMLabel = `${month===1?year-1:year}년 ${prevM}월`
+  const prevYLabel = `${year-1}년 ${month}월`
+
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-2xl mx-4 my-4">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-gray-800"><i class="fas fa-leaf text-green-500 mr-2"></i>주요 식재료 단가 - ${year}년 ${month}월</h3>
+      <button onclick="document.getElementById('ingredientModal').remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+    </div>
+    <p class="text-xs text-gray-500 mb-3">식재료별 당월 단가를 입력하세요. 전월·전년 대비 변동이 자동으로 표시됩니다.</p>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-gray-100 text-xs text-gray-600">
+            <th class="py-2 px-2 text-left">식재료</th>
+            <th class="py-2 px-2 text-center">단위</th>
+            <th class="py-2 px-2 text-right">당월 단가(원)</th>
+            <th class="py-2 px-2 text-right">${prevMLabel}</th>
+            <th class="py-2 px-2 text-right">${prevYLabel}</th>
+            <th class="py-2 px-2 text-left">메모</th>
+          </tr>
+        </thead>
+        <tbody id="ingredient-tbody">
+          ${rows.map((r,i) => `
+          <tr class="border-b border-gray-100" data-idx="${i}">
+            <td class="py-2 px-2">
+              <input type="text" class="form-input text-xs py-1" id="ing-name-${i}" value="${r.name}" style="width:90px">
+            </td>
+            <td class="py-2 px-2 text-center">
+              <select class="form-input text-xs py-1" id="ing-unit-${i}" style="width:60px">
+                <option value="kg" ${r.unit==='kg'?'selected':''}>kg</option>
+                <option value="개" ${r.unit==='개'?'selected':''}>개</option>
+                <option value="박스" ${r.unit==='박스'?'selected':''}>박스</option>
+                <option value="묶음" ${r.unit==='묶음'?'selected':''}>묶음</option>
+              </select>
+            </td>
+            <td class="py-2 px-2">
+              <input type="number" class="form-input text-xs py-1 text-right" id="ing-price-${i}"
+                value="${r.price||''}" placeholder="0" min="0" style="width:90px"
+                oninput="updateIngredientDiff(${i},${r.prevPrice},${r.prevYearPrice})">
+            </td>
+            <td class="py-2 px-2 text-right text-gray-500 text-xs" id="ing-prev-${i}">
+              ${r.prevPrice>0 ? fmt(r.prevPrice)+'원' : '-'}
+            </td>
+            <td class="py-2 px-2 text-right text-gray-500 text-xs" id="ing-prevy-${i}">
+              ${r.prevYearPrice>0 ? fmt(r.prevYearPrice)+'원' : '-'}
+            </td>
+            <td class="py-2 px-2">
+              <input type="text" class="form-input text-xs py-1" id="ing-memo-${i}" value="${r.memo||''}" placeholder="" style="width:80px">
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="flex gap-3 mt-4">
+      <button onclick="saveIngredientPrices(${year},${month},${rows.length})" class="btn btn-primary flex-1">
+        <i class="fas fa-save mr-1"></i>저장
+      </button>
+      <button onclick="document.getElementById('ingredientModal').remove()" class="btn btn-secondary">취소</button>
+    </div>
+  </div>`
+  modal.style.display = 'flex'
+}
+
+window.updateIngredientDiff = function(idx, prevPrice, prevYearPrice) {
+  const cur = parseInt(document.getElementById(`ing-price-${idx}`)?.value||0)||0
+  // 시각적 피드백 (전월 대비)
+  const prevEl = document.getElementById(`ing-prev-${idx}`)
+  if (prevEl && prevPrice > 0 && cur > 0) {
+    const diff = cur - prevPrice
+    const pct = ((diff/prevPrice)*100).toFixed(1)
+    const color = diff > 0 ? 'text-red-500' : diff < 0 ? 'text-green-600' : 'text-gray-500'
+    const arrow = diff > 0 ? '▲' : diff < 0 ? '▼' : '—'
+    prevEl.innerHTML = `${fmt(prevPrice)}원<br><span class="${color} font-semibold">${arrow}${Math.abs(diff).toLocaleString()}(${pct>0?'+':''}${pct}%)</span>`
+  }
+}
+
+window.saveIngredientPrices = async function(year, month, count) {
+  const items = []
+  for (let i = 0; i < count; i++) {
+    const name = document.getElementById(`ing-name-${i}`)?.value?.trim()
+    const unit = document.getElementById(`ing-unit-${i}`)?.value || 'kg'
+    const price = parseInt(document.getElementById(`ing-price-${i}`)?.value||0)||0
+    const memo = document.getElementById(`ing-memo-${i}`)?.value||''
+    if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price, memo })
+  }
+  if (!items.length) { showToast('입력된 단가가 없습니다.', 'warning'); return }
+  const res = await api('POST', '/api/settings/ingredient-prices', { year, month, items })
+  if (res?.success) {
+    document.getElementById('ingredientModal')?.remove()
+    showToast(`식재료 단가 ${res.saved}건 저장됨`, 'success')
+    // 분석 화면 갱신
+    if (window._currentPage === 'comparison' || window._currentPage === 'analysis') renderAnalysis?.()
+  } else {
+    showToast('저장 실패', 'error')
+  }
 }
 
 async function submitClosingRequest(year, month) {
@@ -8035,6 +8315,18 @@ async function openHospitalDetail(hospitalId) {
             <input id="hb-waste" type="number" class="form-input" value="${s.food_waste_budget||0}">
           </div>
           <div>
+            <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 처리 단가 (원/kg)
+              <span class="text-amber-500 font-normal ml-1">병원별 설정</span>
+            </label>
+            <div class="flex gap-2">
+              <input id="hb-waste-unit-price" type="number" class="form-input flex-1" value="${s.waste_unit_price||0}" placeholder="예: 500">
+              <button onclick="saveWasteUnitPriceAdmin(${hospitalId})" class="btn btn-secondary btn-sm whitespace-nowrap">
+                <i class="fas fa-save mr-1"></i>저장
+              </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">* 잔반량(kg) × 단가로 비용 자동계산. 0이면 직접 입력.</p>
+          </div>
+          <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">해당월 영업일수 (일)</label>
             <input id="hb-workdays" type="number" class="form-input" value="${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}">
             <p class="text-xs text-gray-400 mt-1">* 자동계산: ${getDefaultWorkingDays(App.currentYear, App.currentMonth)}일 (해당월 전체일수)</p>
@@ -9306,6 +9598,21 @@ async function saveHospitalBudget(hospitalId) {
   } else showToast('저장 실패', 'error')
 }
 
+// 2.8 관리자 - 병원별 잔반 단가 즉시 저장
+window.saveWasteUnitPriceAdmin = async function(hospitalId) {
+  const unitPrice = parseInt(document.getElementById('hb-waste-unit-price')?.value||0)||0
+  // admin API를 통해 해당 병원의 waste_unit_price 저장
+  const res = await api('POST', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`, {
+    waste_unit_price: unitPrice,
+    _partial: true  // 부분 업데이트 플래그
+  })
+  if (res?.success) {
+    showToast('잔반 단가가 저장되었습니다.', 'success')
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 //  공휴일 관리 페이지 (관리자)
 // ══════════════════════════════════════════════════════════════
@@ -9473,13 +9780,10 @@ async function renderReport(selectedHospitalId = null) {
       <span>${reportYear}년 ${reportMonth}월 월간 보고서</span>
     </div>
     <div class="ml-auto flex gap-2">
-      <button onclick="showPrintPreview()" class="btn btn-secondary btn-sm">
-        <i class="fas fa-search mr-1"></i>인쇄 미리보기
+      <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-primary btn-sm">
+        <i class="fas fa-file-pdf mr-1"></i>A4 PDF 다운로드
       </button>
-      <button onclick="window.print()" class="btn btn-secondary btn-sm">
-        <i class="fas fa-print mr-1"></i>인쇄/PDF저장
-      </button>
-      <button onclick="exportReportPPT('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-primary btn-sm">
+      <button onclick="exportReportPPT('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-secondary btn-sm">
         <i class="fas fa-file-powerpoint mr-1"></i>PPT 다운로드
       </button>
     </div>
@@ -10293,6 +10597,800 @@ async function exportReportPPT(hospitalName, year, month) {
 
   pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
   showToast('PPT 다운로드 완료! (고화질)', 'success')
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  A4 PDF 보고서 생성 (html2canvas + jsPDF)
+//  10페이지 구조: 표지 / 운영요약 / 식단가분석 / 식수분석 /
+//                발주분석 / 예산&잔반 / 비교분석 / 자동해석 / 지출결의 / 부록(식재료단가)
+// ══════════════════════════════════════════════════════════════════
+async function exportReportPDF(hospitalName, year, month) {
+  showToast('A4 PDF 보고서 생성 중... (잠시 기다려 주세요)', 'info')
+
+  // CDN 라이브러리 동적 로드
+  async function loadScript(src) {
+    if (document.querySelector(`script[src="${src}"]`)) return
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = src; s.onload = resolve; s.onerror = reject
+      document.head.appendChild(s)
+    })
+  }
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js')
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+  await new Promise(r => setTimeout(r, 500))
+
+  const { jsPDF } = window.jspdf
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const A4_W = 210, A4_H = 297
+
+  // 데이터 수집
+  const summaryData = await api('GET', `/api/dashboard/summary/${year}/${month}?hospitalId=${window._adminHospitalId||''}`)
+  const annualData  = await api('GET', `/api/dashboard/annual/${year}?hospitalId=${window._adminHospitalId||''}`)
+  const wasteData   = await api('GET', `/api/settings/food-waste-summary/${year}/${month}?hospitalId=${window._adminHospitalId||''}`).catch(()=>null)
+  const ingData     = await api('GET', `/api/settings/ingredient-prices/${year}/${month}?hospitalId=${window._adminHospitalId||''}`).catch(()=>[])
+
+  const s      = summaryData?.summary || {}
+  const ms     = summaryData?.mealStats || {}
+  const proj   = summaryData
+  const vendors = summaryData?.vendors || []
+  const pm     = summaryData?.prevMonth || {}
+  const anomalies = summaryData?.anomalies || []
+  const autoAnalysis = summaryData?.autoAnalysis || []
+
+  const monthlyUsed = annualData?.monthly || []
+  const monthlyMeals = annualData?.mealMonthly || []
+  const monthlySettings = annualData?.settings || []
+
+  // 월별 데이터 배열 구성
+  const mUsed = Array(12).fill(0); monthlyUsed.forEach(m=>{ mUsed[parseInt(m.month)-1]=m.total_used||0 })
+  const mMeals = Array(12).fill(0); monthlyMeals.forEach(m=>{ mMeals[parseInt(m.month)-1]=(m.total_patient||0)+(m.total_staff||0)+(m.total_guardian||0) })
+  const mBudget = Array(12).fill(0); monthlySettings.forEach(m=>{ mBudget[parseInt(m.month)-1]=m.total_budget||0 })
+  const mMp = mMeals.map((v,i)=>v>0?Math.round(mUsed[i]/v):0)
+  const mTarget = Array(12).fill(0); monthlySettings.forEach(m=>{ mTarget[parseInt(m.month)-1]=m.meal_price||0 })
+
+  // 숫자 포맷
+  const fmtK = v => v>=100000000 ? (v/100000000).toFixed(1)+'억' : v>=10000 ? (v/10000).toFixed(0)+'만' : v.toLocaleString()
+  const fmtW = v => (v||0).toLocaleString()+'원'
+  const fmtPct = v => (v||0).toFixed(1)+'%'
+
+  // 한글 지원 폰트 (Nanum Gothic base64 - 약식, 기본 한글 지원)
+  // 실제로 jsPDF 한글은 별도 font 필요하므로 영문 대체 처리 후 canvas 방식 혼용
+
+  // ── 페이지 생성 헬퍼 ──────────────────────────────────
+  let pageNum = 0
+
+  function addPage() {
+    if (pageNum > 0) doc.addPage()
+    pageNum++
+    // 페이지 하단 페이지 번호
+    doc.setFontSize(9); doc.setTextColor(150)
+    doc.text(`${pageNum}`, A4_W/2, A4_H - 6, { align:'center' })
+    doc.setTextColor(30)
+  }
+
+  // HTML 섹션을 캔버스로 캡처해서 PDF에 삽입하는 함수
+  async function captureSection(elementId, doc, x, y, maxW, maxH) {
+    const el = document.getElementById(elementId)
+    if (!el) return 0
+    const canvas = await html2canvas(el, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' })
+    const imgData = canvas.toDataURL('image/jpeg', 0.92)
+    const ratio = canvas.width / canvas.height
+    let w = maxW, h = maxW / ratio
+    if (h > maxH) { h = maxH; w = maxH * ratio }
+    doc.addImage(imgData, 'JPEG', x, y, w, h)
+    return h
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 1: 표지
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  addPage()
+  // 배경
+  doc.setFillColor(22, 101, 52)  // green-800
+  doc.rect(0, 0, A4_W, A4_H, 'F')
+  // 흰색 박스
+  doc.setFillColor(255,255,255)
+  doc.roundedRect(20, 60, 170, 160, 8, 8, 'F')
+  // 텍스트
+  doc.setFontSize(28); doc.setTextColor(22,101,52); doc.setFont('helvetica','bold')
+  doc.text('Hospital Meal Report', A4_W/2, 100, { align:'center' })
+  doc.setFontSize(14); doc.setTextColor(100)
+  doc.text(hospitalName, A4_W/2, 116, { align:'center' })
+  doc.setFontSize(36); doc.setTextColor(22,101,52)
+  doc.text(`${year}.${String(month).padStart(2,'0')}`, A4_W/2, 150, { align:'center' })
+  doc.setFontSize(12); doc.setTextColor(100)
+  doc.text('Monthly Meal Management Report', A4_W/2, 168, { align:'center' })
+  doc.setFontSize(10); doc.setTextColor(150)
+  doc.text(`Generated: ${new Date().toLocaleDateString('ko-KR')}`, A4_W/2, 200, { align:'center' })
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 2: 운영 요약 (캔버스 캡처)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // 임시 A4 렌더링 컨테이너 생성
+  const pdfContainer = document.createElement('div')
+  pdfContainer.id = 'pdfTempContainer'
+  pdfContainer.style.cssText = 'position:fixed;left:-9999px;top:0;width:794px;background:white;font-family:sans-serif;z-index:-1'
+  document.body.appendChild(pdfContainer)
+
+  // 운영요약 페이지 HTML
+  const totalBudget = s.totalBudget || 0
+  const totalUsed = s.totalUsed || 0
+  const remaining = s.remainingAmount || (totalBudget - totalUsed)
+  const progress = totalBudget > 0 ? Math.round(totalUsed/totalBudget*100) : 0
+  const mealPriceTotal = proj?.mealPriceTotal || 0
+  const targetMealPrice = proj?.settings?.meal_price || 0
+  const projectedMp = proj?.projectedMonthEndMealPrice || 0
+  const depletionDate = proj?.budgetDepletionDate || null
+  const totalMeals = proj?.totalMeals || 0
+
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-summary" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #16a34a;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#16a34a;font-weight:600;letter-spacing:2px">MONTHLY REPORT</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">${year}년 ${month}월 운영 요약</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName}</div>
+    </div>
+    <!-- KPI 카드 4개 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#16a34a;font-weight:600">총 예산</div>
+        <div style="font-size:18px;font-weight:bold;color:#15803d">${fmtK(totalBudget)}원</div>
+      </div>
+      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#ea580c;font-weight:600">사용금액</div>
+        <div style="font-size:18px;font-weight:bold;color:#c2410c">${fmtK(totalUsed)}원</div>
+        <div style="font-size:10px;color:#9a3412">${progress}%</div>
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#2563eb;font-weight:600">잔여예산</div>
+        <div style="font-size:18px;font-weight:bold;color:#1d4ed8">${fmtK(remaining)}원</div>
+      </div>
+      <div style="background:#fdf4ff;border:1px solid #e9d5ff;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#9333ea;font-weight:600">총 식수</div>
+        <div style="font-size:18px;font-weight:bold;color:#7e22ce">${totalMeals.toLocaleString()}식</div>
+      </div>
+    </div>
+    <!-- 예산 진행바 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:#374151;margin-bottom:6px">
+        <span style="font-weight:600">예산 달성률</span>
+        <span style="font-weight:700;color:${progress>100?'#dc2626':'#16a34a'}">${progress}%</span>
+      </div>
+      <div style="background:#e5e7eb;border-radius:4px;height:10px">
+        <div style="background:${progress>100?'#dc2626':'#16a34a'};height:10px;border-radius:4px;width:${Math.min(progress,100)}%"></div>
+      </div>
+    </div>
+    <!-- 식단가 / 예산소진예상일 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="background:#f9fafb;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">식단가 현황</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <tr><td style="color:#6b7280;padding:3px 0">현재 식단가</td><td style="text-align:right;font-weight:700;color:${mealPriceTotal>targetMealPrice&&targetMealPrice>0?'#dc2626':'#1f2937'}">${fmtW(mealPriceTotal)}</td></tr>
+          <tr><td style="color:#6b7280;padding:3px 0">목표 식단가</td><td style="text-align:right;color:#6b7280">${fmtW(targetMealPrice)}</td></tr>
+          <tr><td style="color:#6b7280;padding:3px 0">월말 예상 식단가</td><td style="text-align:right;font-weight:700;color:${projectedMp>targetMealPrice&&targetMealPrice>0?'#ea580c':'#2563eb'}">${fmtW(projectedMp)}</td></tr>
+        </table>
+      </div>
+      <div style="background:#f9fafb;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">예산 소진 예상</div>
+        ${depletionDate ? `
+        <div style="font-size:20px;font-weight:bold;color:${proj?.budgetDepletionStatus==='critical'?'#dc2626':proj?.budgetDepletionStatus==='warning'?'#ea580c':'#16a34a'};text-align:center;margin:8px 0">${depletionDate}</div>
+        <div style="font-size:10px;color:#6b7280;text-align:center">예상 소진일</div>
+        ` : `<div style="font-size:12px;color:#9ca3af;text-align:center;padding:12px">데이터 부족</div>`}
+      </div>
+    </div>
+    <!-- 식수 현황 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">식수 현황</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center">
+        <div><div style="font-size:10px;color:#6b7280">환자식</div><div style="font-size:14px;font-weight:700">${(ms.total_patient||0).toLocaleString()}</div></div>
+        <div><div style="font-size:10px;color:#6b7280">직원식</div><div style="font-size:14px;font-weight:700">${(ms.total_staff||0).toLocaleString()}</div></div>
+        <div><div style="font-size:10px;color:#6b7280">보호자</div><div style="font-size:14px;font-weight:700">${(ms.total_guardian||0).toLocaleString()}</div></div>
+        <div><div style="font-size:10px;color:#16a34a">합계</div><div style="font-size:14px;font-weight:700;color:#16a34a">${totalMeals.toLocaleString()}</div></div>
+      </div>
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-summary', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 3: 식단가 분석 (그래프 + 표)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const monthLabels = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
+
+  // 차트를 임시 캔버스로 그리기
+  function createChartCanvas(width, height, chartConfig) {
+    return new Promise(resolve => {
+      const canvas = document.createElement('canvas')
+      canvas.width = width; canvas.height = height
+      pdfContainer.appendChild(canvas)
+      const chart = new Chart(canvas, chartConfig)
+      setTimeout(() => {
+        const imgData = canvas.toDataURL('image/jpeg', 0.92)
+        chart.destroy(); canvas.remove()
+        resolve(imgData)
+      }, 600)
+    })
+  }
+
+  // 식단가 추이 차트
+  const mpChartImg = await createChartCanvas(700, 300, {
+    type: 'line',
+    data: {
+      labels: monthLabels,
+      datasets: [
+        { label: '실제 식단가', data: mMp, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', borderWidth: 2, fill: true, pointRadius: 4 },
+        { label: '목표 식단가', data: mTarget, borderColor: '#dc2626', borderDash: [5,5], borderWidth: 2, pointRadius: 0, fill: false }
+      ]
+    },
+    options: { responsive: false, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: false } } }
+  })
+
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-mealprice" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #2563eb;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#2563eb;font-weight:600;letter-spacing:2px">ANALYSIS</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">식단가 분석</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <!-- 차트 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px;text-align:center">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px;text-align:left">식단가 월별 추이</div>
+      <img src="${mpChartImg}" style="width:100%;max-height:200px;object-fit:contain">
+    </div>
+    <!-- 전월/전년 비교표 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:10px">식단가 비교 분석</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead>
+          <tr style="background:#dbeafe">
+            <th style="padding:6px 8px;text-align:left;border:1px solid #bfdbfe">구분</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #bfdbfe">당월</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #bfdbfe">전월</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #bfdbfe">전월대비</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #bfdbfe">목표</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #bfdbfe">목표대비</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${[
+            ['전체 식단가', proj?.mealPriceTotal||0, pm?.mealPriceTotal||0, targetMealPrice],
+            ['직원제외 식단가', proj?.mealPriceTotalNoStaff||0, pm?.mealPriceTotalNoStaff||0, targetMealPrice],
+            ['공급비제외', proj?.mealPriceTotalNoSupply||0, pm?.mealPriceTotalNoSupply||0, targetMealPrice],
+          ].map(([label, cur, prev, target]) => {
+            const diff = prev > 0 ? cur - prev : null
+            const diffPct = prev > 0 ? ((cur-prev)/prev*100).toFixed(1) : null
+            const targetDiff = target > 0 ? cur - target : null
+            const targetPct = target > 0 ? ((cur-target)/target*100).toFixed(1) : null
+            return `<tr style="border-bottom:1px solid #e5e7eb">
+              <td style="padding:5px 8px;font-weight:600">${label}</td>
+              <td style="padding:5px 8px;text-align:right;font-weight:700">${fmtW(cur)}</td>
+              <td style="padding:5px 8px;text-align:right;color:#6b7280">${prev>0?fmtW(prev):'-'}</td>
+              <td style="padding:5px 8px;text-align:right;color:${diff>0?'#dc2626':diff<0?'#16a34a':'#374151'};font-weight:${diff!==null?'600':'400'}">${diff!==null?(diff>0?'▲':'▼')+Math.abs(diff).toLocaleString()+'원 ('+diffPct+'%)':'-'}</td>
+              <td style="padding:5px 8px;text-align:right;color:#6b7280">${target>0?fmtW(target):'-'}</td>
+              <td style="padding:5px 8px;text-align:right;color:${targetDiff>0?'#dc2626':'#16a34a'};font-weight:${targetDiff!==null?'600':'400'}">${targetDiff!==null?(targetDiff>0?'▲':'▼')+Math.abs(targetDiff).toLocaleString()+'원':'-'}</td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    <!-- 자동해석 -->
+    <div style="background:#eff6ff;border-radius:8px;padding:14px">
+      <div style="font-size:11px;font-weight:600;color:#1d4ed8;margin-bottom:6px">자동 분석</div>
+      ${autoAnalysis.filter(a=>a.type?.includes('meal_price')||a.type?.includes('spend')).length > 0
+        ? autoAnalysis.filter(a=>a.type?.includes('meal_price')||a.type?.includes('spend')).map(a=>`<div style="font-size:11px;color:#374151;padding:3px 0;border-bottom:1px solid #bfdbfe">• ${a.message}</div>`).join('')
+        : '<div style="font-size:11px;color:#6b7280">분석 데이터가 충분하지 않습니다.</div>'
+      }
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-mealprice', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 4: 식수 분석
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const mealChartImg = await createChartCanvas(700, 300, {
+    type: 'bar',
+    data: {
+      labels: monthLabels,
+      datasets: [
+        { label: '환자식', data: monthlyMeals.map(m=>m.total_patient||0), backgroundColor: 'rgba(22,163,74,0.75)', borderRadius: 3 },
+        { label: '직원식', data: monthlyMeals.map(m=>m.total_staff||0), backgroundColor: 'rgba(37,99,235,0.7)', borderRadius: 3 },
+        { label: '보호자', data: monthlyMeals.map(m=>m.total_guardian||0), backgroundColor: 'rgba(147,51,234,0.6)', borderRadius: 3 }
+      ]
+    },
+    options: { responsive: false, plugins: { legend: { position: 'top' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } }
+  })
+
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-meals" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #9333ea;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#9333ea;font-weight:600;letter-spacing:2px">MEAL COUNT</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">식수 분석</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <div style="background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px;text-align:center">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px;text-align:left">월별 식수 추이 (누적)</div>
+      <img src="${mealChartImg}" style="width:100%;max-height:200px;object-fit:contain">
+    </div>
+    <!-- 당월 식수 상세 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="background:#f9fafb;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">당월 식수 구성</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          ${[['환자식',ms.total_patient||0,'#16a34a'],['직원식',ms.total_staff||0,'#2563eb'],['보호자식',ms.total_guardian||0,'#9333ea'],['비급여',ms.total_noncovered||0,'#6b7280']].map(([label,val,color])=>`
+          <tr style="border-bottom:1px solid #e5e7eb">
+            <td style="padding:4px 0;color:#374151">${label}</td>
+            <td style="text-align:right;font-weight:700;color:${color}">${val.toLocaleString()}식</td>
+            <td style="text-align:right;color:#9ca3af;font-size:10px">${totalMeals>0?(val/totalMeals*100).toFixed(1)+'%':'-'}</td>
+          </tr>`).join('')}
+          <tr style="background:#f0fdf4;font-weight:700">
+            <td style="padding:5px 0">합계</td>
+            <td style="text-align:right;color:#15803d">${totalMeals.toLocaleString()}식</td>
+            <td style="text-align:right;color:#6b7280">100%</td>
+          </tr>
+        </table>
+      </div>
+      <div style="background:#f9fafb;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">전월 대비 변동</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          ${[['전체 식수',totalMeals,(pm?.totalMeals||0)],['환자식',ms.total_patient||0,(pm?.totalPatient||0)],['직원식',ms.total_staff||0,(pm?.totalStaff||0)]].map(([label,cur,prev])=>{
+            const diff = prev>0 ? cur-prev : null
+            const pct = prev>0 ? ((cur-prev)/prev*100).toFixed(1) : null
+            return `<tr style="border-bottom:1px solid #e5e7eb">
+              <td style="padding:4px 0">${label}</td>
+              <td style="text-align:right;font-weight:700">${cur.toLocaleString()}</td>
+              <td style="text-align:right;color:${diff>0?'#16a34a':diff<0?'#dc2626':'#6b7280'};font-size:10px">${diff!==null?(diff>0?'▲':'▼')+Math.abs(diff).toLocaleString()+'('+pct+'%)':'-'}</td>
+            </tr>`
+          }).join('')}
+        </table>
+      </div>
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-meals', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 5: 발주 분석
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const vendorSorted = [...vendors].sort((a,b)=>(b.total_amount||0)-(a.total_amount||0))
+  const vendorTotal = vendorSorted.reduce((s,v)=>s+(v.total_amount||0),0)
+
+  const vendorChartImg = await createChartCanvas(600, 300, {
+    type: 'doughnut',
+    data: {
+      labels: vendorSorted.slice(0,6).map(v=>v.name),
+      datasets: [{ data: vendorSorted.slice(0,6).map(v=>v.total_amount||0),
+        backgroundColor: ['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4'] }]
+    },
+    options: { responsive: false, plugins: { legend: { position: 'right' } } }
+  })
+
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-orders" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #f59e0b;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#f59e0b;font-weight:600;letter-spacing:2px">ORDER ANALYSIS</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">발주 분석</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <!-- 업체별 파이차트 -->
+      <div style="background:#f9fafb;border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px;text-align:left">업체별 발주 비중</div>
+        <img src="${vendorChartImg}" style="width:100%;max-height:180px;object-fit:contain">
+      </div>
+      <!-- 발주 이상 탐지 -->
+      <div style="background:#f9fafb;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">발주 이상 탐지</div>
+        ${anomalies.length > 0
+          ? anomalies.map(a=>`<div style="background:${a.severity==='high'?'#fef2f2':a.severity==='medium'?'#fff7ed':'#fffbeb'};border-left:3px solid ${a.severity==='high'?'#dc2626':a.severity==='medium'?'#ea580c':'#ca8a04'};padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:10px">
+              <span style="font-weight:700;color:${a.severity==='high'?'#dc2626':a.severity==='medium'?'#ea580c':'#ca8a04'}">[${a.severity==='high'?'HIGH':a.severity==='medium'?'WARN':'INFO'}]</span>
+              ${a.message}
+            </div>`).join('')
+          : '<div style="font-size:11px;color:#6b7280">이상 탐지 없음</div>'
+        }
+      </div>
+    </div>
+    <!-- 업체별 상세 표 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">업체별 발주 상세</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        <thead>
+          <tr style="background:#fef3c7">
+            <th style="padding:5px 8px;text-align:left;border:1px solid #fde68a">업체명</th>
+            <th style="padding:5px 8px;text-align:center;border:1px solid #fde68a">카테고리</th>
+            <th style="padding:5px 8px;text-align:right;border:1px solid #fde68a">발주금액</th>
+            <th style="padding:5px 8px;text-align:right;border:1px solid #fde68a">비중</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${vendorSorted.slice(0,10).map((v,i)=>{
+            const pct = vendorTotal > 0 ? (v.total_amount/vendorTotal*100).toFixed(1) : 0
+            return `<tr style="border-bottom:1px solid #fde68a;background:${i%2===0?'white':'#fffbeb'}">
+              <td style="padding:4px 8px;font-weight:600">${v.name}</td>
+              <td style="padding:4px 8px;text-align:center;color:#6b7280">${v.category||'-'}</td>
+              <td style="padding:4px 8px;text-align:right;font-weight:700">${fmtK(v.total_amount||0)}원</td>
+              <td style="padding:4px 8px;text-align:right;color:#92400e">${pct}%</td>
+            </tr>`
+          }).join('')}
+          <tr style="background:#fef3c7;font-weight:700">
+            <td style="padding:5px 8px" colspan="2">합계</td>
+            <td style="padding:5px 8px;text-align:right">${fmtK(vendorTotal)}원</td>
+            <td style="padding:5px 8px;text-align:right">100%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-orders', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 6: 예산 & 잔반 분석
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const budgetChartImg = await createChartCanvas(700, 280, {
+    type: 'bar',
+    data: {
+      labels: monthLabels,
+      datasets: [
+        { label: '사용금액', data: mUsed, backgroundColor: 'rgba(22,163,74,0.7)', borderRadius: 3, order: 2 },
+        { label: '목표예산', data: mBudget, type: 'line', borderColor: '#dc2626', borderWidth: 2, pointRadius: 3, fill: false, order: 1 }
+      ]
+    },
+    options: { responsive: false, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: true } } }
+  })
+
+  const totalWasteKg = wasteData?.totalKg || 0
+  const totalWasteCost = wasteData?.totalCost || 0
+  const wasteWeeks = wasteData?.weeks || []
+
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-budget-waste" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #16a34a;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#16a34a;font-weight:600;letter-spacing:2px">BUDGET & WASTE</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">예산 달성률 & 잔반 분석</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <!-- 예산 차트 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px;text-align:center">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px;text-align:left">월별 예산 달성률 추이</div>
+      <img src="${budgetChartImg}" style="width:100%;max-height:180px;object-fit:contain">
+    </div>
+    <!-- 잔반 분석 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#92400e;margin-bottom:8px">잔반 비용 분석 (${year}년 ${month}월)</div>
+        ${totalWasteKg > 0 ? `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+          <div style="text-align:center;background:white;border-radius:6px;padding:8px">
+            <div style="font-size:10px;color:#92400e">총 잔반량</div>
+            <div style="font-size:18px;font-weight:bold;color:#b45309">${totalWasteKg.toFixed(1)}kg</div>
+          </div>
+          <div style="text-align:center;background:white;border-radius:6px;padding:8px">
+            <div style="font-size:10px;color:#92400e">총 비용</div>
+            <div style="font-size:18px;font-weight:bold;color:#b45309">${fmtK(totalWasteCost)}원</div>
+          </div>
+        </div>
+        <table style="width:100%;font-size:10px;border-collapse:collapse">
+          <thead><tr style="background:#fef3c7"><th style="padding:4px 6px;text-align:left">주차</th><th style="text-align:right;padding:4px 6px">잔반량</th><th style="text-align:right;padding:4px 6px">비용</th></tr></thead>
+          <tbody>${wasteWeeks.map(w=>`<tr style="border-bottom:1px solid #fde68a"><td style="padding:3px 6px">${w.week}주차</td><td style="text-align:right">${w.kg.toFixed(1)}kg</td><td style="text-align:right">${fmtK(w.cost)}원</td></tr>`).join('')}</tbody>
+        </table>` : '<div style="font-size:11px;color:#6b7280;text-align:center;padding:20px">잔반 기록 없음</div>'}
+      </div>
+      <div style="background:#f9fafb;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">예산 사용 현황</div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <tr style="border-bottom:1px solid #e5e7eb"><td style="padding:4px 0;color:#374151">총 예산</td><td style="text-align:right;font-weight:700">${fmtK(totalBudget)}원</td></tr>
+          <tr style="border-bottom:1px solid #e5e7eb"><td style="padding:4px 0">사용금액</td><td style="text-align:right;font-weight:700;color:${progress>100?'#dc2626':'#16a34a'}">${fmtK(totalUsed)}원</td></tr>
+          <tr style="border-bottom:1px solid #e5e7eb"><td style="padding:4px 0">잔여예산</td><td style="text-align:right;font-weight:700">${fmtK(remaining)}원</td></tr>
+          <tr style="background:#f0fdf4"><td style="padding:4px 0;font-weight:700">달성률</td><td style="text-align:right;font-weight:700;color:${progress>100?'#dc2626':'#16a34a'}">${progress}%</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-budget-waste', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 7: 비교 분석 (전월/전년 동월)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-compare" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #6366f1;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#6366f1;font-weight:600;letter-spacing:2px">COMPARISON</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">비교 분석</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <!-- 전월 vs 당월 vs 목표 비교표 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:10px">주요 지표 전월 대비</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead>
+          <tr style="background:#e0e7ff">
+            <th style="padding:6px 8px;text-align:left;border:1px solid #c7d2fe">지표</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #c7d2fe">당월 (${month}월)</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #c7d2fe">전월 (${month===1?12:month-1}월)</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #c7d2fe">변동</th>
+            <th style="padding:6px 8px;text-align:right;border:1px solid #c7d2fe">변동률</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${[
+            ['사용금액', totalUsed, pm?.totalUsed||0],
+            ['식단가', proj?.mealPriceTotal||0, pm?.mealPriceTotal||0],
+            ['직원제외 식단가', proj?.mealPriceTotalNoStaff||0, pm?.mealPriceTotalNoStaff||0],
+            ['총 식수', totalMeals, pm?.totalMeals||0],
+          ].map(([label, cur, prev]) => {
+            const diff = prev > 0 ? cur - prev : null
+            const pct = prev > 0 ? ((cur-prev)/prev*100).toFixed(1) : null
+            const isPrice = label.includes('금액') || label.includes('식단가')
+            return `<tr style="border-bottom:1px solid #e0e7ff">
+              <td style="padding:5px 8px;font-weight:600">${label}</td>
+              <td style="padding:5px 8px;text-align:right;font-weight:700">${isPrice?fmtK(cur)+'원':cur.toLocaleString()+(label.includes('식수')?'식':'')}</td>
+              <td style="padding:5px 8px;text-align:right;color:#6b7280">${prev>0?(isPrice?fmtK(prev)+'원':prev.toLocaleString()):'-'}</td>
+              <td style="padding:5px 8px;text-align:right;color:${diff>0?'#dc2626':diff<0?'#16a34a':'#374151'};font-weight:${diff!==null?'600':'400'}">${diff!==null?(diff>0?'▲':'▼')+(isPrice?fmtK(Math.abs(diff))+'원':Math.abs(diff).toLocaleString()):'-'}</td>
+              <td style="padding:5px 8px;text-align:right;color:${pct!==null&&parseFloat(pct)>0?'#dc2626':pct!==null?'#16a34a':'#374151'}">${pct!==null?(parseFloat(pct)>0?'+':'')+pct+'%':'-'}</td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    <!-- 업체 발주 비교 -->
+    <div style="background:#f9fafb;border-radius:8px;padding:14px">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">업체별 발주 현황 (당월 기준)</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        <thead>
+          <tr style="background:#e0e7ff">
+            <th style="padding:5px 8px;text-align:left;border:1px solid #c7d2fe">업체명</th>
+            <th style="padding:5px 8px;text-align:right;border:1px solid #c7d2fe">발주금액</th>
+            <th style="padding:5px 8px;text-align:right;border:1px solid #c7d2fe">비중</th>
+            <th style="padding:5px 8px;text-align:right;border:1px solid #c7d2fe">전월금액</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${vendorSorted.slice(0,8).map((v,i) => {
+            const pct = vendorTotal>0?(v.total_amount/vendorTotal*100).toFixed(1):0
+            const prevAmt = v.prev_amount || 0
+            return `<tr style="border-bottom:1px solid #e0e7ff;background:${i%2===0?'white':'#eef2ff'}">
+              <td style="padding:4px 8px;font-weight:600">${v.name}</td>
+              <td style="padding:4px 8px;text-align:right;font-weight:700">${fmtK(v.total_amount||0)}원</td>
+              <td style="padding:4px 8px;text-align:right;color:#4338ca">${pct}%</td>
+              <td style="padding:4px 8px;text-align:right;color:#6b7280">${prevAmt>0?fmtK(prevAmt)+'원':'-'}</td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-compare', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 8: 전체 운영 자동 해석
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // 자동 분석 문장 생성
+  function generateAutoInterpretation(data) {
+    const lines = []
+    const s = data?.summary || {}
+    const proj = data
+    const pm = data?.prevMonth || {}
+    const totalUsed = s.totalUsed || 0
+    const totalBudget = s.totalBudget || 0
+    const progress = totalBudget > 0 ? (totalUsed/totalBudget*100) : 0
+    const mp = data?.mealPriceTotal || 0
+    const target = data?.settings?.meal_price || 0
+    const pmUsed = pm?.totalUsed || 0
+    const pmMp = pm?.mealPriceTotal || 0
+
+    // 예산
+    if (progress > 100) lines.push({ icon:'🚨', cat:'예산', text: `예산 초과 상태입니다. 현재 달성률 ${progress.toFixed(1)}%로 즉각적인 지출 조정이 필요합니다.`, color:'#dc2626' })
+    else if (progress > 85) lines.push({ icon:'⚠️', cat:'예산', text: `예산의 ${progress.toFixed(1)}%를 사용했습니다. 잔여 예산 관리에 주의가 필요합니다.`, color:'#ea580c' })
+    else lines.push({ icon:'✅', cat:'예산', text: `예산 사용률 ${progress.toFixed(1)}%로 안정적으로 운영 중입니다.`, color:'#16a34a' })
+
+    // 식단가
+    if (mp > 0 && target > 0) {
+      const diff = ((mp-target)/target*100)
+      if (diff > 10) lines.push({ icon:'🚨', cat:'식단가', text: `현재 식단가(${fmtW(mp)})가 목표(${fmtW(target)}) 대비 ${diff.toFixed(1)}% 초과 상태입니다. 식재료비 절감 방안 검토가 필요합니다.`, color:'#dc2626' })
+      else if (diff > 0) lines.push({ icon:'⚠️', cat:'식단가', text: `식단가(${fmtW(mp)})가 목표 대비 ${diff.toFixed(1)}% 초과입니다. 지속 모니터링이 필요합니다.`, color:'#ea580c' })
+      else lines.push({ icon:'✅', cat:'식단가', text: `식단가(${fmtW(mp)})가 목표(${fmtW(target)}) 이내로 관리되고 있습니다.`, color:'#16a34a' })
+    }
+
+    // 전월 대비 식단가
+    if (pmMp > 0 && mp > 0) {
+      const chg = ((mp-pmMp)/pmMp*100)
+      if (chg > 10) lines.push({ icon:'📈', cat:'전월비교', text: `식단가가 전월 대비 ${chg.toFixed(1)}% 상승했습니다. 원인 파악 및 대응이 필요합니다.`, color:'#dc2626' })
+      else if (chg < -10) lines.push({ icon:'📉', cat:'전월비교', text: `식단가가 전월 대비 ${Math.abs(chg).toFixed(1)}% 감소했습니다. 효율적 운영이 이루어지고 있습니다.`, color:'#16a34a' })
+      else lines.push({ icon:'➡️', cat:'전월비교', text: `식단가가 전월 대비 ${Math.abs(chg).toFixed(1)}% ${chg>0?'소폭 증가':'소폭 감소'}하여 안정적입니다.`, color:'#6366f1' })
+    }
+
+    // 발주 이상
+    const anomalies = data?.anomalies || []
+    anomalies.forEach(a => {
+      if (a.severity === 'high') lines.push({ icon:'🚨', cat:'발주이상', text: a.message, color:'#dc2626' })
+      else if (a.severity === 'medium') lines.push({ icon:'⚠️', cat:'발주이상', text: a.message, color:'#ea580c' })
+    })
+
+    // 잔반
+    if (totalWasteKg > 0) {
+      const wastePer = totalMeals > 0 ? (totalWasteKg/totalMeals*1000).toFixed(0) : 0
+      lines.push({ icon:'♻️', cat:'잔반', text: `이번 달 잔반 발생량은 ${totalWasteKg.toFixed(1)}kg, 비용 ${fmtK(totalWasteCost)}원입니다. 식수 1인당 ${wastePer}g 수준입니다.`, color:'#f59e0b' })
+    }
+
+    return lines
+  }
+
+  const interp = generateAutoInterpretation(summaryData)
+
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-autoanalysis" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #059669;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#059669;font-weight:600;letter-spacing:2px">AUTO ANALYSIS</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">전체 운영 자동 해석</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:16px;font-size:11px;color:#374151">
+      본 자동 분석은 당월 데이터를 기반으로 생성된 운영 해석입니다. 실제 운영 상황에 따라 전문가 판단이 필요할 수 있습니다.
+    </div>
+    <div style="space-y:8px">
+      ${interp.map(item => `
+      <div style="background:#f9fafb;border-left:4px solid ${item.color};border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <span style="font-size:16px;flex-shrink:0">${item.icon}</span>
+          <div>
+            <span style="font-size:10px;font-weight:700;color:${item.color};background:${item.color}20;padding:2px 6px;border-radius:4px;margin-right:6px">${item.cat}</span>
+            <span style="font-size:12px;color:#1f2937;line-height:1.6">${item.text}</span>
+          </div>
+        </div>
+      </div>`).join('')}
+    </div>
+    <!-- 권고사항 요약 -->
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;margin-top:16px">
+      <div style="font-size:11px;font-weight:600;color:#dc2626;margin-bottom:8px">권고 사항 요약</div>
+      ${interp.filter(i=>i.color==='#dc2626'||i.color==='#ea580c').length > 0
+        ? interp.filter(i=>i.color==='#dc2626'||i.color==='#ea580c').map(i=>`<div style="font-size:11px;color:#374151;padding:3px 0;border-bottom:1px solid #fecaca">• ${i.text}</div>`).join('')
+        : '<div style="font-size:11px;color:#16a34a">특이사항 없음 — 정상 운영 중입니다.</div>'
+      }
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-autoanalysis', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 9: 지출 결의 (업체별 상세)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  pdfContainer.innerHTML = `
+  <div id="pdf-page-expense" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+    <div style="border-bottom:3px solid #374151;padding-bottom:12px;margin-bottom:20px">
+      <div style="font-size:11px;color:#374151;font-weight:600;letter-spacing:2px">EXPENSE APPROVAL</div>
+      <div style="font-size:22px;font-weight:bold;color:#1f2937">지출 결의서</div>
+      <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+    </div>
+    <!-- 합계 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="background:#f9fafb;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#6b7280">총 지출금액</div>
+        <div style="font-size:20px;font-weight:bold;color:#1f2937">${fmtK(totalUsed)}원</div>
+      </div>
+      <div style="background:#f9fafb;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#6b7280">업체 수</div>
+        <div style="font-size:20px;font-weight:bold;color:#1f2937">${vendors.length}개사</div>
+      </div>
+      <div style="background:#f9fafb;border-radius:8px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:#6b7280">예산 달성률</div>
+        <div style="font-size:20px;font-weight:bold;color:${progress>100?'#dc2626':'#16a34a'}">${progress}%</div>
+      </div>
+    </div>
+    <!-- 업체별 지출 상세 -->
+    <table style="width:100%;font-size:10px;border-collapse:collapse;border:1px solid #d1d5db">
+      <thead>
+        <tr style="background:#374151;color:white">
+          <th style="padding:7px 10px;text-align:left;border-right:1px solid #4b5563">NO</th>
+          <th style="padding:7px 10px;text-align:left;border-right:1px solid #4b5563">업체명</th>
+          <th style="padding:7px 10px;text-align:center;border-right:1px solid #4b5563">카테고리</th>
+          <th style="padding:7px 10px;text-align:right;border-right:1px solid #4b5563">과세금액</th>
+          <th style="padding:7px 10px;text-align:right;border-right:1px solid #4b5563">면세금액</th>
+          <th style="padding:7px 10px;text-align:right;border-right:1px solid #4b5563">부가세</th>
+          <th style="padding:7px 10px;text-align:right">합계</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${vendorSorted.map((v,i) => `
+        <tr style="border-bottom:1px solid #e5e7eb;background:${i%2===0?'white':'#f9fafb'}">
+          <td style="padding:5px 10px;color:#6b7280">${i+1}</td>
+          <td style="padding:5px 10px;font-weight:600">${v.name}</td>
+          <td style="padding:5px 10px;text-align:center;color:#6b7280">${v.category||'-'}</td>
+          <td style="padding:5px 10px;text-align:right">${v.taxable_total>0?fmtK(v.taxable_total)+'원':'-'}</td>
+          <td style="padding:5px 10px;text-align:right">${v.exempt_total>0?fmtK(v.exempt_total)+'원':'-'}</td>
+          <td style="padding:5px 10px;text-align:right">${v.vat_total>0?fmtK(v.vat_total)+'원':'-'}</td>
+          <td style="padding:5px 10px;text-align:right;font-weight:700">${fmtK(v.total_amount||0)}원</td>
+        </tr>`).join('')}
+      </tbody>
+      <tfoot>
+        <tr style="background:#374151;color:white;font-weight:700">
+          <td colspan="3" style="padding:7px 10px">합  계</td>
+          <td style="padding:7px 10px;text-align:right">${fmtK(vendorSorted.reduce((s,v)=>s+(v.taxable_total||0),0))}원</td>
+          <td style="padding:7px 10px;text-align:right">${fmtK(vendorSorted.reduce((s,v)=>s+(v.exempt_total||0),0))}원</td>
+          <td style="padding:7px 10px;text-align:right">${fmtK(vendorSorted.reduce((s,v)=>s+(v.vat_total||0),0))}원</td>
+          <td style="padding:7px 10px;text-align:right">${fmtK(totalUsed)}원</td>
+        </tr>
+      </tfoot>
+    </table>
+    <!-- 결재란 -->
+    <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+      ${['담당','팀장','원장','이사장'].map(r=>`
+      <div style="border:1px solid #d1d5db;border-radius:6px;padding:8px;text-align:center">
+        <div style="font-size:10px;color:#6b7280;margin-bottom:4px">${r}</div>
+        <div style="height:50px;border-bottom:1px solid #e5e7eb"></div>
+        <div style="font-size:9px;color:#9ca3af;margin-top:4px">서명/날인</div>
+      </div>`).join('')}
+    </div>
+  </div>`
+
+  addPage()
+  await captureSection('pdf-page-expense', doc, 10, 10, 190, 270)
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // PAGE 10: 부록 - 식재료 단가 분석
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  if (ingData && ingData.length > 0) {
+    pdfContainer.innerHTML = `
+    <div id="pdf-page-appendix" style="width:794px;padding:40px;background:white;box-sizing:border-box">
+      <div style="border-bottom:3px solid #059669;padding-bottom:12px;margin-bottom:20px">
+        <div style="font-size:11px;color:#059669;font-weight:600;letter-spacing:2px">APPENDIX</div>
+        <div style="font-size:22px;font-weight:bold;color:#1f2937">부록: 주요 식재료 단가 분석</div>
+        <div style="font-size:13px;color:#6b7280">${hospitalName} · ${year}년 ${month}월</div>
+      </div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse;border:1px solid #d1fae5">
+        <thead>
+          <tr style="background:#059669;color:white">
+            <th style="padding:8px 10px;text-align:left;border-right:1px solid #10b981">식재료명</th>
+            <th style="padding:8px 10px;text-align:center;border-right:1px solid #10b981">단위</th>
+            <th style="padding:8px 10px;text-align:right;border-right:1px solid #10b981">당월 단가</th>
+            <th style="padding:8px 10px;text-align:right;border-right:1px solid #10b981">전월 단가</th>
+            <th style="padding:8px 10px;text-align:right;border-right:1px solid #10b981">전월대비</th>
+            <th style="padding:8px 10px;text-align:right;border-right:1px solid #10b981">전년동월</th>
+            <th style="padding:8px 10px;text-align:right">전년대비</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ingData.map((r,i) => {
+            const momDiff = r.mom_diff
+            const yoyDiff = r.yoy_diff
+            const momPct = r.prev_price>0 && momDiff!==null ? ((momDiff/r.prev_price)*100).toFixed(1) : null
+            const yoyPct = r.prev_year_price>0 && yoyDiff!==null ? ((yoyDiff/r.prev_year_price)*100).toFixed(1) : null
+            return `<tr style="border-bottom:1px solid #d1fae5;background:${i%2===0?'white':'#f0fdf4'}">
+              <td style="padding:6px 10px;font-weight:600">${r.ingredient_name}</td>
+              <td style="padding:6px 10px;text-align:center;color:#6b7280">${r.unit||'kg'}</td>
+              <td style="padding:6px 10px;text-align:right;font-weight:700">${fmtW(r.unit_price)}</td>
+              <td style="padding:6px 10px;text-align:right;color:#6b7280">${r.prev_price>0?fmtW(r.prev_price):'-'}</td>
+              <td style="padding:6px 10px;text-align:right;color:${momDiff>0?'#dc2626':momDiff<0?'#16a34a':'#374151'};font-weight:600">${momDiff!==null?(momDiff>0?'▲':'▼')+Math.abs(momDiff).toLocaleString()+'원'+(momPct?'('+momPct+'%)':''):'-'}</td>
+              <td style="padding:6px 10px;text-align:right;color:#6b7280">${r.prev_year_price>0?fmtW(r.prev_year_price):'-'}</td>
+              <td style="padding:6px 10px;text-align:right;color:${yoyDiff>0?'#dc2626':yoyDiff<0?'#16a34a':'#374151'};font-weight:600">${yoyDiff!==null?(yoyDiff>0?'▲':'▼')+Math.abs(yoyDiff).toLocaleString()+'원'+(yoyPct?'('+yoyPct+'%)':''):'-'}</td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+      <div style="margin-top:16px;background:#f0fdf4;border-radius:8px;padding:12px;font-size:10px;color:#374151">
+        <strong>참고:</strong> 단가는 ${year}년 ${month}월 기준 수동 입력 데이터입니다. 전월/전년 대비 변동률은 해당 기간 데이터 존재 시에만 표시됩니다.
+      </div>
+    </div>`
+
+    addPage()
+    await captureSection('pdf-page-appendix', doc, 10, 10, 190, 270)
+  }
+
+  // 정리
+  pdfContainer.remove()
+
+  // PDF 저장
+  doc.save(`${hospitalName}_${year}년${String(month).padStart(2,'0')}월_운영보고서.pdf`)
+  showToast(`A4 PDF 보고서 생성 완료! (${pageNum}페이지)`, 'success')
 }
 
 // ══════════════════════════════════════════════════════════════════

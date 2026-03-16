@@ -245,4 +245,151 @@ settings.post('/food-waste', async (c) => {
   return c.json({ success: true })
 })
 
+// ── 2.8 잔반 단가 설정 조회 (병원별) ──────────────────────────────
+settings.get('/waste-unit-price/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
+  // monthly_settings 의 waste_unit_price 조회 (없으면 최근 설정에서 상속)
+  const row = await c.env.DB.prepare(
+    `SELECT waste_unit_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+  ).bind(hospitalId, year, month).first<any>()
+  if (row) return c.json({ waste_unit_price: row.waste_unit_price || 0 })
+  // 최근 설정 상속
+  const fallback = await c.env.DB.prepare(
+    `SELECT waste_unit_price FROM monthly_settings WHERE hospital_id=? 
+     AND (year < ? OR (year=? AND month < ?))
+     ORDER BY year DESC, month DESC LIMIT 1`
+  ).bind(hospitalId, year, year, month).first<any>()
+  return c.json({ waste_unit_price: fallback?.waste_unit_price || 0 })
+})
+
+// ── 2.8 잔반 단가 설정 저장 (병원별, monthly_settings에 upsert) ──
+settings.post('/waste-unit-price', async (c) => {
+  const user = c.get('user')
+  const { year, month, waste_unit_price, hospitalId: bodyHospId } = await c.req.json()
+  const hospitalId = Number(user.role === 'admin' ? (bodyHospId || user.hospitalId) : user.hospitalId)
+  await c.env.DB.prepare(`
+    INSERT INTO monthly_settings (hospital_id, year, month, waste_unit_price)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(hospital_id, year, month) DO UPDATE SET
+      waste_unit_price=excluded.waste_unit_price,
+      updated_at=CURRENT_TIMESTAMP
+  `).bind(hospitalId, year, month, waste_unit_price || 0).run()
+  return c.json({ success: true })
+})
+
+// ── 2.8 잔반 비용 월별 집계 (kg × unit_price 자동 계산) ───────────
+settings.get('/food-waste-summary/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
+
+  const records = await c.env.DB.prepare(`
+    SELECT * FROM food_waste_records WHERE hospital_id=? AND year=? AND month=? ORDER BY week
+  `).bind(hospitalId, year, month).all<any>()
+
+  const priceRow = await c.env.DB.prepare(
+    `SELECT waste_unit_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+  ).bind(hospitalId, year, month).first<any>()
+
+  const unitPrice = priceRow?.waste_unit_price || 0
+  const rows = records.results || []
+
+  let totalKg = 0, totalCost = 0
+  const weeks = rows.map((r: any) => {
+    const kg = r.waste_amount || 0
+    // waste_cost가 수동 입력된 경우 우선, 없으면 kg × unit_price
+    const cost = r.waste_cost > 0 ? r.waste_cost : (unitPrice > 0 ? Math.round(kg * unitPrice) : 0)
+    totalKg += kg
+    totalCost += cost
+    return { week: r.week, kg, cost, memo: r.memo || '' }
+  })
+
+  return c.json({ unitPrice, totalKg, totalCost, weeks })
+})
+
+// ── 2.7 식재료 단가 조회 ──────────────────────────────────────────
+settings.get('/ingredient-prices/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
+
+  const rows = await c.env.DB.prepare(`
+    SELECT * FROM ingredient_prices WHERE hospital_id=? AND year=? AND month=? ORDER BY ingredient_name
+  `).bind(hospitalId, year, month).all<any>()
+
+  // 전월 데이터 (비교용)
+  const prevMonth = parseInt(month) === 1 ? 12 : parseInt(month) - 1
+  const prevYear = parseInt(month) === 1 ? parseInt(year) - 1 : parseInt(year)
+  const prevRows = await c.env.DB.prepare(`
+    SELECT ingredient_name, unit_price FROM ingredient_prices WHERE hospital_id=? AND year=? AND month=? ORDER BY ingredient_name
+  `).bind(hospitalId, prevYear, prevMonth).all<any>()
+
+  // 전년 동월 (비교용)
+  const prevYearRows = await c.env.DB.prepare(`
+    SELECT ingredient_name, unit_price FROM ingredient_prices WHERE hospital_id=? AND year=? AND month=? ORDER BY ingredient_name
+  `).bind(hospitalId, parseInt(year) - 1, month).all<any>()
+
+  const prevMap: Record<string, number> = {}
+  const prevYearMap: Record<string, number> = {}
+  for (const r of (prevRows.results || [])) prevMap[r.ingredient_name] = r.unit_price
+  for (const r of (prevYearRows.results || [])) prevYearMap[r.ingredient_name] = r.unit_price
+
+  const data = (rows.results || []).map((r: any) => ({
+    ...r,
+    prev_price: prevMap[r.ingredient_name] || 0,
+    prev_year_price: prevYearMap[r.ingredient_name] || 0,
+    mom_diff: prevMap[r.ingredient_name] ? r.unit_price - prevMap[r.ingredient_name] : null,
+    yoy_diff: prevYearMap[r.ingredient_name] ? r.unit_price - prevYearMap[r.ingredient_name] : null,
+  }))
+
+  return c.json(data)
+})
+
+// ── 2.7 식재료 단가 저장 (수동 입력) ──────────────────────────────
+settings.post('/ingredient-prices', async (c) => {
+  const user = c.get('user')
+  const body = await c.req.json()
+  // body: { year, month, items: [{ingredient_name, unit, unit_price, memo}], hospitalId }
+  const { year, month, items, hospitalId: bodyHospId } = body
+  const hospitalId = Number(user.role === 'admin' ? (bodyHospId || user.hospitalId) : user.hospitalId)
+
+  if (!Array.isArray(items) || items.length === 0) return c.json({ success: false, error: 'no items' })
+
+  for (const item of items) {
+    await c.env.DB.prepare(`
+      INSERT INTO ingredient_prices (hospital_id, year, month, ingredient_name, unit, unit_price, memo, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(hospital_id, year, month, ingredient_name) DO UPDATE SET
+        unit=excluded.unit, unit_price=excluded.unit_price, memo=excluded.memo,
+        updated_at=CURRENT_TIMESTAMP
+    `).bind(hospitalId, year, month,
+      item.ingredient_name, item.unit || 'kg', item.unit_price || 0, item.memo || ''
+    ).run()
+  }
+  return c.json({ success: true, saved: items.length })
+})
+
+// ── 2.7 식재료 단가 연간 추이 조회 (그래프용) ────────────────────
+settings.get('/ingredient-prices-annual/:year', async (c) => {
+  const user = c.get('user')
+  const { year } = c.req.param()
+  const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
+
+  const rows = await c.env.DB.prepare(`
+    SELECT ingredient_name, month, unit_price FROM ingredient_prices
+    WHERE hospital_id=? AND year=? ORDER BY ingredient_name, month
+  `).bind(hospitalId, year).all<any>()
+
+  // ingredient_name별로 월별 데이터 묶기
+  const grouped: Record<string, number[]> = {}
+  for (const r of (rows.results || [])) {
+    if (!grouped[r.ingredient_name]) grouped[r.ingredient_name] = Array(12).fill(0)
+    grouped[r.ingredient_name][r.month - 1] = r.unit_price
+  }
+
+  return c.json(grouped)
+})
+
 export default settings
