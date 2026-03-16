@@ -1185,16 +1185,29 @@ async function renderOrders() {
   const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [vendors, orderData, settingsData, dashData, patientCats, catOrderData] = await Promise.all([
+  const [vendors, orderData, settingsData, dashData, patientCats, catOrderData, cardData] = await Promise.all([
     api('GET', '/api/vendors'),
     api('GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/settings/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
     api('GET', '/api/orders/patient-categories'),
-    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}`)
   ])
+  // 법인카드 일별 합계 맵 구성 { vendorId: { dateStr: total } }
+  window._cardDailyMap = {}
+  window._cardDailyCountMap = {}
+  ;(cardData?.dailyTotals || []).forEach(r => {
+    if (!window._cardDailyMap[r.vendor_id]) window._cardDailyMap[r.vendor_id] = {}
+    if (!window._cardDailyCountMap[r.vendor_id]) window._cardDailyCountMap[r.vendor_id] = {}
+    window._cardDailyMap[r.vendor_id][r.expense_date] = r.daily_total || 0
+    window._cardDailyCountMap[r.vendor_id][r.expense_date] = r.item_count || 0
+  })
 
   if (!vendors) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+
+  // 업체 목록 캐시 (법인카드 모달에서 업체 정보 조회에 사용)
+  window._vendorsCache = vendors || []
 
   // 환자군 카테고리 전역 저장
   window._patientCats = patientCats || []
@@ -2130,7 +2143,7 @@ async function renderOrders() {
             const taxable = catRow.taxable || 0
             const exempt = catRow.exempt || 0
             const total = catRow.total || 0
-            const vCols = getVendorCols(v.tax_type)
+            const vCols = getVendorCols(v.tax_type, v.is_card_type)
 
             // 업체 월 누적 (이 카테고리)
             let vCatMonthAccum = 0
@@ -2722,9 +2735,13 @@ window.refreshOrders = () => {
 }
 
 // mixed: 과세+면세 2칸+소계(3열), mixed_total: 합산총액 1칸, taxable/exempt: 1칸
-function getVendorCols(taxType) { return taxType === 'mixed' ? 3 : 1 }
+function getVendorCols(taxType, isCardType) {
+  if (isCardType) return 1
+  return taxType === 'mixed' ? 3 : 1
+}
 
-function getVendorSubHeaders(taxType) {
+function getVendorSubHeaders(taxType, isCardType) {
+  if (isCardType) return `<th style="min-width:80px;font-size:10px;color:#7c3aed">합계</th>`
   if (taxType === 'mixed') return `<th style="min-width:60px;font-size:10px">과세</th><th style="min-width:60px;font-size:10px">면세</th><th style="min-width:60px;font-size:10px;background:#1a2f4a">소계</th>`
   if (taxType === 'taxable') return `<th style="min-width:60px;font-size:10px">과세</th>`
   if (taxType === 'mixed_total') return `<th style="min-width:68px;font-size:10px">합산총액</th>`
@@ -2738,6 +2755,26 @@ function getVendorInputCells(v, order, dateStr, addBorder = false) {
   const multiDay = order.is_multi_day ? `title="${order.multi_day_start}~${order.multi_day_end} 다일치"` : ''
   const borderStyle = addBorder ? 'border-left:3px solid #cbd5e1;' : ''
   const fmtV = (v) => v > 0 ? v.toLocaleString() : ''
+  // ── 법인카드형 업체: 클릭 시 상세입력 모달 열기 ──
+  if (v.is_card_type) {
+    const cardTotal = window._cardDailyMap?.[v.id]?.[dateStr] || total
+    const cardCount = window._cardDailyCountMap?.[v.id]?.[dateStr] || 0
+    const hasData = cardTotal > 0
+    const subtypeLabel = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[v.card_subtype||'food']||''
+    return `<td style="${borderStyle}min-width:80px;padding:2px 2px">
+      <button class="card-expense-btn w-full text-left px-1.5 py-1 rounded-lg border transition-all"
+        data-vendor="${v.id}" data-date="${dateStr}"
+        style="min-width:76px;font-size:11px;${hasData
+          ? 'background:#f5f3ff;border-color:#8b5cf6;color:#6d28d9;'
+          : 'background:#faf5ff;border-color:#e9d5ff;color:#a78bfa;'}"
+        onclick="openCardExpenseModal(${v.id},'${dateStr}')">
+        <div style="font-size:9px;color:#8b5cf6;font-weight:600;">${subtypeLabel}</div>
+        ${hasData
+          ? `<div style="font-weight:700">${cardTotal.toLocaleString()}</div><div style="font-size:9px;color:#7c3aed;">${cardCount}건</div>`
+          : `<div style="color:#c4b5fd">+ 상세입력</div>`}
+      </button>
+    </td>`
+  }
   if (v.tax_type === 'mixed') {
     return `<td style="${borderStyle}min-width:64px;padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${fmtV(taxable)}" placeholder="0" style="width:60px;min-width:60px"></td>
             <td style="min-width:64px;padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="exempt" data-date="${dateStr}" value="${fmtV(exempt)}" placeholder="0" style="width:60px;min-width:60px"></td>
@@ -2754,6 +2791,11 @@ function getVendorInputCells(v, order, dateStr, addBorder = false) {
 }
 
 function getVendorTotalCells(v, orderData) {
+  // 법인카드형 업체: total_amount 합산
+  if (v.is_card_type) {
+    const total = orderData.filter(o => o.vendor_id === v.id).reduce((s, o) => s + (o.total_amount||0), 0)
+    return `<td class="text-right pr-2 text-purple-700 font-bold text-xs total-col">${total>0?fmt(total):''}</td>`
+  }
   const filtered = orderData.filter(o => o.vendor_id === v.id)
   const totalTaxable = filtered.reduce((s, o) => s + (o.taxable_amount||0), 0)
   const totalExempt = filtered.reduce((s, o) => s + (o.exempt_amount||0), 0)
@@ -2768,6 +2810,12 @@ function getVendorTotalCells(v, orderData) {
 
 // 업체 서브헤더 (주 진행률 열 없음)
 function getVendorSubHeadersWithPct(v, borderLeft = '', hasCats = false, vBgStyle = '') {
+  // 법인카드형 업체
+  if (v.is_card_type) {
+    const firstBorder = borderLeft ? `style="${borderLeft}${vBgStyle}min-width:80px;font-size:10px"` : `style="${vBgStyle}min-width:80px;font-size:10px"`
+    const sumBg = `style="${vBgStyle}min-width:56px;font-size:9px;border-left:1px dashed rgba(255,255,255,0.3)"`
+    return `<th ${firstBorder}>합계</th>${hasCats ? `<th ${sumBg}>업체합산</th>` : ''}`
+  }
   const colW = v.tax_type === 'mixed' ? 68 : 76
   const firstBorder = borderLeft ? `style="${borderLeft}${vBgStyle}min-width:${colW}px;font-size:10px"` : `style="${vBgStyle}min-width:${colW}px;font-size:10px"`
   const subBg = vBgStyle ? `style="${vBgStyle}min-width:${colW}px;font-size:10px"` : `style="min-width:${colW}px;font-size:10px"`
@@ -2786,6 +2834,11 @@ function getVendorSubHeadersWithPct(v, borderLeft = '', hasCats = false, vBgStyl
 
 // 업체 합계 셀 (주 진행률 열 없음 — 합계행에 월 달성률만 id로 남김)
 function getVendorTotalCellsWithPct(v, orderData) {
+  // 법인카드형 업체
+  if (v.is_card_type) {
+    const total = orderData.filter(o => o.vendor_id === v.id).reduce((s, o) => s + (o.total_amount||0), 0)
+    return `<td class="text-center text-purple-700 font-bold text-xs total-col py-1" id="vfoot-amt-${v.id}">${total>0?fmt(total):''}</td>`
+  }
   const filtered = orderData.filter(o => o.vendor_id === v.id)
   const totalTaxable = filtered.reduce((s, o) => s + (o.taxable_amount||0), 0)
   const totalExempt = filtered.reduce((s, o) => s + (o.exempt_amount||0), 0)
@@ -3875,6 +3928,16 @@ function updateDayTotal(date) {
     const vTotal = t + Math.round(t*0.1) + e
     total += vTotal
     vendorTotals[vendorId] = vTotal
+  })
+
+  // 법인카드형 업체: card-expense-btn에서 합계 포함
+  document.querySelectorAll(`.card-expense-btn[data-date="${date}"]`).forEach(btn => {
+    const vendorId = String(btn.dataset.vendor)
+    if (processedVendors.has(vendorId)) return
+    processedVendors.add(vendorId)
+    const cardTotal = (window._cardDailyMap?.[vendorId]?.[date]) || 0
+    total += cardTotal
+    vendorTotals[vendorId] = cardTotal
   })
 
   // 카테고리 모드: dayRatioCell 업데이트
@@ -7608,6 +7671,23 @@ async function openHospitalDetail(hospitalId) {
             </select>
           </div>
         </div>
+        <!-- 법인카드형 업체 설정 -->
+        <div class="p-3 bg-purple-50 rounded-xl border border-purple-100">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="adminVendorIsCard" class="w-4 h-4 accent-purple-600" onchange="toggleAdminCardSubtype()">
+            <span class="text-sm font-semibold text-purple-800"><i class="fas fa-credit-card mr-1"></i>법인카드형 업체</span>
+          </label>
+          <p class="text-xs text-purple-600 mt-1 ml-6">발주 입력 시 상세내역(품목·용도·금액) 다건 입력 방식으로 동작합니다</p>
+          <div id="adminCardSubtypeWrap" class="hidden mt-2 ml-6">
+            <label class="text-xs font-medium text-gray-600">카드 구분</label>
+            <select id="adminVendorCardSubtype" class="form-input mt-1 text-sm">
+              <option value="food">식재료</option>
+              <option value="supplies">소모품</option>
+              <option value="online">온라인</option>
+              <option value="other">기타</option>
+            </select>
+          </div>
+        </div>
         <div>
           <label class="text-sm font-medium text-gray-600">월 목표금액 (원)</label>
           <input type="number" id="adminVendorBudget" class="form-input mt-1" placeholder="0 (없으면 0)">
@@ -7811,13 +7891,13 @@ function renderAdminVendorRows(vendors) {
         <span class="text-gray-400 text-xs w-5 text-center">${idx+1}</span>
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
         <div class="flex-1 min-w-0">
-          <div class="font-medium text-sm">${v.name}</div>
+          <div class="font-medium text-sm">${v.name}${v.is_card_type?'<span class="ml-1 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium"><i class="fas fa-credit-card mr-0.5"></i>법인카드</span>':''}</div>
           <div class="text-xs text-gray-400">${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)}</div>
         </div>
         <div class="text-sm text-gray-600 font-medium">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'목표없음'}</div>
         <div class="flex gap-1">
           <button onclick="editAdminVendor(${v.id})"
-            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}"
+            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}"
             class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
           <button onclick="deleteAdminVendor(${v.id})"
             class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
@@ -7876,6 +7956,12 @@ window.vendorDrop = async function(e, targetId) {
   showToast('순서가 저장되었습니다', 'success')
 }
 
+function toggleAdminCardSubtype() {
+  const isCard = document.getElementById('adminVendorIsCard').checked
+  const wrap = document.getElementById('adminCardSubtypeWrap')
+  if (wrap) wrap.classList.toggle('hidden', !isCard)
+}
+
 function showAdminAddVendorModal() {
   document.getElementById('adminVendorModalTitle').textContent = '업체 추가'
   document.getElementById('adminVendorId').value = ''
@@ -7883,22 +7969,29 @@ function showAdminAddVendorModal() {
   document.getElementById('adminVendorCategory').value = 'general'
   document.getElementById('adminVendorTaxType').value = 'mixed'
   document.getElementById('adminVendorBudget').value = ''
+  document.getElementById('adminVendorIsCard').checked = false
+  document.getElementById('adminVendorCardSubtype').value = 'food'
+  document.getElementById('adminCardSubtypeWrap').classList.add('hidden')
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
 function editAdminVendor(id) {
-  // 클릭된 버튼의 data 속성에서 값 읽기
   const btn = document.querySelector(`[onclick="editAdminVendor(${id})"]`)
   const name = btn?.dataset.name || ''
   const category = btn?.dataset.cat || 'general'
   const taxType = btn?.dataset.tax || 'mixed'
   const budget = parseInt(btn?.dataset.budget || 0)
+  const isCard = btn?.dataset.iscard === '1'
+  const cardSubtype = btn?.dataset.cardsubtype || 'food'
   document.getElementById('adminVendorModalTitle').textContent = '업체 수정'
   document.getElementById('adminVendorId').value = id
   document.getElementById('adminVendorName').value = name
   document.getElementById('adminVendorCategory').value = category
   document.getElementById('adminVendorTaxType').value = taxType
   document.getElementById('adminVendorBudget').value = budget
+  document.getElementById('adminVendorIsCard').checked = isCard
+  document.getElementById('adminVendorCardSubtype').value = cardSubtype
+  document.getElementById('adminCardSubtypeWrap').classList.toggle('hidden', !isCard)
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
@@ -7906,11 +7999,14 @@ async function saveAdminVendor() {
   const hospitalId = window._adminHospitalId
   if (!hospitalId) return
   const vid = document.getElementById('adminVendorId').value
+  const isCard = document.getElementById('adminVendorIsCard').checked
   const data = {
     name: document.getElementById('adminVendorName').value.trim(),
     category: document.getElementById('adminVendorCategory').value,
     taxType: document.getElementById('adminVendorTaxType').value,
-    monthlyBudget: parseInt(document.getElementById('adminVendorBudget').value||0)||0
+    monthlyBudget: parseInt(document.getElementById('adminVendorBudget').value||0)||0,
+    isCardType: isCard,
+    cardSubtype: isCard ? document.getElementById('adminVendorCardSubtype').value : null
   }
   if (!data.name) { showToast('업체명을 입력하세요', 'error'); return }
   const res = vid
@@ -9561,4 +9657,293 @@ async function exportReportPPT(hospitalName, year, month) {
 
   pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
   showToast('PPT 다운로드 완료! (고화질)', 'success')
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  법인카드 상세입력 모달
+// ══════════════════════════════════════════════════════════════════
+window._cardExpenseVendorId = null
+window._cardExpenseDate = null
+window._cardExpenseItems = []   // [{id?, vendorName, itemName, purpose, amount, memo}]
+window._cardExpenseDeletedIds = []
+
+function getCardSubtypeDefaultName(card_subtype) {
+  const map = { food:'법인카드(식재료)', supplies:'법인카드(소모품)', online:'법인카드(온라인)', other:'법인카드(기타)' }
+  return map[card_subtype] || '법인카드'
+}
+
+window.openCardExpenseModal = async function(vendorId, dateStr) {
+  window._cardExpenseVendorId = vendorId
+  window._cardExpenseDate = dateStr
+  window._cardExpenseDeletedIds = []
+
+  // 현재 업체 정보 가져오기
+  const vendors = window._vendorsCache || []
+  const vendor = vendors.find(v => v.id == vendorId) || {}
+  const defaultVendorName = getCardSubtypeDefaultName(vendor.card_subtype)
+
+  // 서버에서 기존 입력 내역 조회
+  let items = []
+  const resp = await api('GET', `/api/card-expenses/daily/${vendorId}/${dateStr}`)
+  if (resp && resp.items && resp.items.length > 0) {
+    items = resp.items.map(item => ({
+      id: item.id,
+      vendorName: item.vendor_name,
+      itemName: item.item_name,
+      purpose: item.purpose,
+      amount: item.amount,
+      memo: item.memo || ''
+    }))
+  } else {
+    // 새 입력 행 1개 추가
+    items = [{ id: null, vendorName: defaultVendorName, itemName: '', purpose: '', amount: '', memo: '' }]
+  }
+  window._cardExpenseItems = items
+
+  let modal = document.getElementById('cardExpenseModal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'cardExpenseModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9500;display:flex;align-items:center;justify-content:center;padding:16px;'
+    document.body.appendChild(modal)
+  }
+  renderCardExpenseModal(modal, vendor, dateStr, items)
+}
+
+function renderCardExpenseModal(modal, vendor, dateStr, items) {
+  const subtypeLabel = getCardSubtypeDefaultName(vendor.card_subtype)
+  const [year, month, day] = dateStr.split('-')
+  const totalAmt = items.reduce((s, it) => s + (parseInt(it.amount) || 0), 0)
+
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-2xl w-full mx-auto flex flex-col" style="max-width:720px;max-height:90vh;">
+    <!-- 헤더 -->
+    <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+      <div>
+        <h3 class="font-bold text-gray-800 text-base flex items-center gap-2">
+          <span class="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-credit-card text-purple-600 text-sm"></i>
+          </span>
+          <span>${vendor.name || subtypeLabel} 상세입력</span>
+        </h3>
+        <p class="text-xs text-gray-400 mt-0.5 ml-10">${year}년 ${month}월 ${day}일 사용내역</p>
+      </div>
+      <button onclick="closeCardExpenseModal()" class="text-gray-400 hover:text-gray-600 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+
+    <!-- 입력 테이블 -->
+    <div class="flex-1 overflow-y-auto px-4 py-3">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm border-collapse" style="min-width:580px;">
+          <thead>
+            <tr class="bg-purple-50">
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700 rounded-tl-lg" style="min-width:110px">업체명</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:110px">사용품목</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:120px">구매/진행용도</th>
+              <th class="px-2 py-2 text-right text-xs font-semibold text-purple-700" style="min-width:90px">금액(원)</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:100px">메모</th>
+              <th class="px-2 py-2 rounded-tr-lg" style="width:36px"></th>
+            </tr>
+          </thead>
+          <tbody id="cardExpenseRows">
+            ${items.map((it, idx) => renderCardExpenseRow(it, idx)).join('')}
+          </tbody>
+        </table>
+      </div>
+      <!-- 행 추가 버튼 -->
+      <button onclick="addCardExpenseRow()" class="mt-3 flex items-center gap-2 text-purple-600 hover:text-purple-800 text-sm font-medium px-3 py-2 rounded-xl hover:bg-purple-50 transition-colors border-2 border-dashed border-purple-200 w-full justify-center">
+        <i class="fas fa-plus-circle"></i>행 추가
+      </button>
+    </div>
+
+    <!-- 하단 합계 + 버튼 -->
+    <div class="px-5 py-4 border-t border-gray-100 flex-shrink-0">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="text-sm text-gray-500">합계</span>
+          <span class="text-lg font-bold text-purple-700" id="cardExpenseTotal">${totalAmt > 0 ? totalAmt.toLocaleString() + '원' : '0원'}</span>
+          <span class="text-xs text-gray-400" id="cardExpenseCount">${items.length}건</span>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="closeCardExpenseModal()" class="btn btn-secondary px-4 py-2 text-sm">취소</button>
+          <button onclick="saveCardExpenseItems()" class="btn btn-primary px-5 py-2 text-sm">
+            <i class="fas fa-save mr-1"></i>저장
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>`
+}
+
+function renderCardExpenseRow(item, idx) {
+  return `<tr class="card-expense-row border-b border-gray-100 hover:bg-gray-50" data-idx="${idx}" ${item.id ? `data-id="${item.id}"` : ''}>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="vendorName" data-idx="${idx}" value="${escHtml(item.vendorName||'')}" placeholder="예: 이마트" style="width:100%;min-width:100px;"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="itemName" data-idx="${idx}" value="${escHtml(item.itemName||'')}" placeholder="예: 식재료" style="width:100%;min-width:100px;"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="purpose" data-idx="${idx}" value="${escHtml(item.purpose||'')}" placeholder="예: 환자식 재료" style="width:100%;min-width:110px;"></td>
+    <td class="px-1 py-1.5"><input type="text" inputmode="numeric" class="card-exp-input form-input text-xs py-1 px-2 text-right" data-field="amount" data-idx="${idx}" value="${item.amount > 0 ? parseInt(item.amount).toLocaleString() : ''}" placeholder="0" style="width:100%;min-width:82px;" oninput="this.value=this.value.replace(/[^0-9,]/g,'');updateCardExpenseTotal()"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="memo" data-idx="${idx}" value="${escHtml(item.memo||'')}" placeholder="선택" style="width:100%;min-width:90px;"></td>
+    <td class="px-1 py-1.5 text-center">
+      <button onclick="removeCardExpenseRow(${idx})" class="text-red-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 transition-colors mx-auto">
+        <i class="fas fa-trash text-xs"></i>
+      </button>
+    </td>
+  </tr>`
+}
+
+function escHtml(str) {
+  if (!str) return ''
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+window.addCardExpenseRow = function() {
+  const vendors = window._vendorsCache || []
+  const vendor = vendors.find(v => v.id == window._cardExpenseVendorId) || {}
+  const defaultVendorName = getCardSubtypeDefaultName(vendor.card_subtype)
+  const newItem = { id: null, vendorName: defaultVendorName, itemName: '', purpose: '', amount: '', memo: '' }
+  window._cardExpenseItems.push(newItem)
+  const idx = window._cardExpenseItems.length - 1
+  const tbody = document.getElementById('cardExpenseRows')
+  if (tbody) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = renderCardExpenseRow(newItem, idx)
+    const inner = tr.querySelector('tr')
+    if (inner) {
+      tbody.appendChild(inner)
+    } else {
+      // renderCardExpenseRow returns a tr string
+      tbody.insertAdjacentHTML('beforeend', renderCardExpenseRow(newItem, idx))
+    }
+    // 첫 번째 입력칸으로 포커스
+    const firstInput = tbody.querySelectorAll(`[data-idx="${idx}"]`)[0]
+    if (firstInput) firstInput.focus()
+  }
+  updateCardExpenseTotal()
+}
+
+window.removeCardExpenseRow = function(idx) {
+  const rows = document.querySelectorAll('#cardExpenseRows .card-expense-row')
+  if (rows.length <= 1) {
+    showToast('최소 1개 항목이 필요합니다', 'info')
+    return
+  }
+  // id 있으면 삭제 목록에 추가
+  const row = rows[idx]
+  if (row && row.dataset.id) {
+    window._cardExpenseDeletedIds.push(parseInt(row.dataset.id))
+  }
+  if (row) row.remove()
+  // idx 재정렬
+  document.querySelectorAll('#cardExpenseRows .card-expense-row').forEach((r, i) => {
+    r.dataset.idx = i
+    r.querySelectorAll('[data-idx]').forEach(el => { el.dataset.idx = i })
+  })
+  updateCardExpenseTotal()
+}
+
+window.updateCardExpenseTotal = function() {
+  let total = 0, count = 0
+  document.querySelectorAll('#cardExpenseRows .card-expense-row').forEach(row => {
+    const amtInput = row.querySelector('[data-field="amount"]')
+    if (amtInput) {
+      const v = parseInt(amtInput.value.replace(/,/g, '')) || 0
+      if (v > 0) { total += v; count++ }
+    }
+  })
+  const totalEl = document.getElementById('cardExpenseTotal')
+  const countEl = document.getElementById('cardExpenseCount')
+  if (totalEl) totalEl.textContent = total > 0 ? total.toLocaleString() + '원' : '0원'
+  if (countEl) countEl.textContent = count + '건'
+}
+
+window.saveCardExpenseItems = async function() {
+  const vendorId = window._cardExpenseVendorId
+  const date = window._cardExpenseDate
+  if (!vendorId || !date) return
+
+  // 행 데이터 수집
+  const rows = document.querySelectorAll('#cardExpenseRows .card-expense-row')
+  const items = []
+  let hasError = false
+  rows.forEach((row, i) => {
+    const get = (field) => {
+      const el = row.querySelector(`[data-field="${field}"]`)
+      return el ? el.value.trim() : ''
+    }
+    const vendorName = get('vendorName')
+    const itemName = get('itemName')
+    const purpose = get('purpose')
+    const amountStr = get('amount').replace(/,/g, '')
+    const amount = parseInt(amountStr) || 0
+    const memo = get('memo')
+    const id = row.dataset.id ? parseInt(row.dataset.id) : null
+
+    if (!vendorName || !itemName || !purpose || !amount) {
+      // 빈 행은 건너뜀 (모두 비어있을 경우)
+      if (!vendorName && !itemName && !purpose && !amount) return
+      hasError = true
+      row.style.background = '#fef2f2'
+      setTimeout(() => { row.style.background = '' }, 2000)
+      return
+    }
+    row.style.background = ''
+    items.push({ id, vendorName, itemName, purpose, amount, memo })
+  })
+
+  if (hasError) {
+    showToast('빈 항목을 모두 입력해주세요 (업체명, 품목, 용도, 금액 필수)', 'error')
+    return
+  }
+  if (items.length === 0) {
+    showToast('저장할 항목이 없습니다', 'error')
+    return
+  }
+
+  const saveBtn = document.querySelector('#cardExpenseModal button[onclick="saveCardExpenseItems()"]')
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
+
+  const res = await api('POST', '/api/card-expenses/save', {
+    vendorId, date, items,
+    deletedIds: window._cardExpenseDeletedIds || []
+  })
+
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save mr-1"></i>저장' }
+
+  if (res?.success) {
+    showToast('저장되었습니다', 'success')
+    // 화면 맵 업데이트
+    if (!window._cardDailyMap) window._cardDailyMap = {}
+    if (!window._cardDailyCountMap) window._cardDailyCountMap = {}
+    if (!window._cardDailyMap[vendorId]) window._cardDailyMap[vendorId] = {}
+    if (!window._cardDailyCountMap[vendorId]) window._cardDailyCountMap[vendorId] = {}
+    window._cardDailyMap[vendorId][date] = res.dayTotal || 0
+    window._cardDailyCountMap[vendorId][date] = items.length
+
+    // 발주 테이블에서 해당 버튼 UI 업데이트
+    const btn = document.querySelector(`.card-expense-btn[data-vendor="${vendorId}"][data-date="${date}"]`)
+    if (btn) {
+      const vendors = window._vendorsCache || []
+      const v = vendors.find(v => v.id == vendorId) || {}
+      const subtypeLabel = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[v.card_subtype||'food']||''
+      const hasData = res.dayTotal > 0
+      btn.style.background = hasData ? '#f5f3ff' : '#faf5ff'
+      btn.style.borderColor = hasData ? '#8b5cf6' : '#e9d5ff'
+      btn.style.color = hasData ? '#6d28d9' : '#a78bfa'
+      btn.innerHTML = `<div style="font-size:9px;color:#8b5cf6;font-weight:600;">${subtypeLabel}</div>` +
+        (hasData
+          ? `<div style="font-weight:700">${res.dayTotal.toLocaleString()}</div><div style="font-size:9px;color:#7c3aed;">${items.length}건</div>`
+          : `<div style="color:#c4b5fd">+ 상세입력</div>`)
+    }
+    // 하단 일계 업데이트
+    updateDayTotal(date)
+    closeCardExpenseModal()
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
+window.closeCardExpenseModal = function() {
+  const modal = document.getElementById('cardExpenseModal')
+  if (modal) modal.remove()
 }

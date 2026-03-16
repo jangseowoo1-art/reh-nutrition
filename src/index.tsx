@@ -11,6 +11,7 @@ import vendorsRoute from './routes/vendors'
 import settingsRoute from './routes/settings'
 import scheduleRoute from './routes/schedule'
 import adminRoute from './routes/admin'
+import cardExpensesRoute from './routes/card_expenses'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -45,6 +46,7 @@ app.route('/api/meals', mealsRoute)
 app.route('/api/vendors', vendorsRoute)
 app.route('/api/settings', settingsRoute)
 app.route('/api/schedule', scheduleRoute)
+app.route('/api/card-expenses', cardExpensesRoute)
 
 // ── 관리자 전용 API ───────────────────────────────────────────────
 app.use('/api/admin/*', async (c, next) => {

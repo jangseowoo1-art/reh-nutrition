@@ -723,7 +723,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 adminRouter.get('/hospitals/:id/vendors', async (c) => {
   const id = c.req.param('id')
   const vendors = await c.env.DB.prepare(`
-    SELECT id, name, category, tax_type, monthly_budget, sort_order
+    SELECT id, name, category, tax_type, monthly_budget, sort_order,
+           COALESCE(is_card_type, 0) as is_card_type, card_subtype
     FROM vendors
     WHERE hospital_id=? AND is_active=1
     ORDER BY sort_order, id
@@ -734,14 +735,15 @@ adminRouter.get('/hospitals/:id/vendors', async (c) => {
 // ── 병원별 업체 추가 (관리자용) ───────────────────────────────
 adminRouter.post('/hospitals/:id/vendors', async (c) => {
   const hospitalId = c.req.param('id')
-  const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype } = await c.req.json()
   if (!name?.trim()) return c.json({ error: '업체명을 입력하세요' }, 400)
   await c.env.DB.prepare(`
-    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active)
-    VALUES (?,?,?,?,?,?,1)
+    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active, is_card_type, card_subtype)
+    VALUES (?,?,?,?,?,?,1,?,?)
   `).bind(
     hospitalId, name.trim(), category||'general',
-    taxType||'mixed', monthlyBudget||0, sortOrder||99
+    taxType||'mixed', monthlyBudget||0, sortOrder||99,
+    isCardType ? 1 : 0, cardSubtype || null
   ).run()
   return c.json({ success: true })
 })
@@ -762,13 +764,16 @@ adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
 // ── 병원별 업체 수정 (관리자용) ───────────────────────────────
 adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
-  const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype } = await c.req.json()
   await c.env.DB.prepare(`
-    UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?
+    UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?,
+                       is_card_type=?, card_subtype=?
     WHERE id=? AND hospital_id=?
   `).bind(
     name, category||'general', taxType||'mixed',
-    monthlyBudget||0, sortOrder||99, vid, hospitalId
+    monthlyBudget||0, sortOrder||99,
+    isCardType ? 1 : 0, cardSubtype || null,
+    vid, hospitalId
   ).run()
   return c.json({ success: true })
 })

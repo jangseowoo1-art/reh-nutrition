@@ -16,13 +16,17 @@ vendors.get('/', async (c) => {
 vendors.post('/', async (c) => {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
-  const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
-  
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype } = await c.req.json()
+
   await c.env.DB.prepare(
-    `INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(hospitalId, name, category || 'general', taxType || 'mixed', monthlyBudget || 0, sortOrder || 99).run()
-  
+    `INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_card_type, card_subtype)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    hospitalId, name, category || 'general', taxType || 'mixed',
+    monthlyBudget || 0, sortOrder || 99,
+    isCardType ? 1 : 0, cardSubtype || null
+  ).run()
+
   return c.json({ success: true })
 })
 
@@ -30,13 +34,18 @@ vendors.post('/', async (c) => {
 vendors.put('/:id', async (c) => {
   const user = c.get('user')
   const { id } = c.req.param()
-  const { name, category, taxType, monthlyBudget, sortOrder } = await c.req.json()
-  
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype } = await c.req.json()
+
   await c.env.DB.prepare(
-    `UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?
+    `UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?,
+     is_card_type=?, card_subtype=?
      WHERE id = ? AND hospital_id = ?`
-  ).bind(name, category, taxType, monthlyBudget || 0, sortOrder || 99, id, user.hospitalId).run()
-  
+  ).bind(
+    name, category, taxType, monthlyBudget || 0, sortOrder || 99,
+    isCardType ? 1 : 0, cardSubtype || null,
+    id, user.hospitalId
+  ).run()
+
   return c.json({ success: true })
 })
 
