@@ -1853,6 +1853,9 @@ async function renderOrders() {
         <button onclick="showQuickMultiDay()" class="btn btn-primary btn-sm">
           <i class="fas fa-calendar-plus"></i> <span class="hidden sm:inline">다수일 </span>발주
         </button>
+        <button onclick="openInspectionModal()" class="btn btn-sm" style="background:#ecfdf5;color:#059669;border:1px solid #6ee7b7" title="발주 검수 관리">
+          <i class="fas fa-clipboard-check"></i> <span class="hidden sm:inline">검수</span>
+        </button>
         <button onclick="refreshOrders()" class="btn btn-secondary btn-sm">
           <i class="fas fa-sync"></i>
         </button>
@@ -3006,6 +3009,176 @@ window.refreshOrders = () => {
     delete App._panelReady[`orders-${App.currentYear}-${App.currentMonth}`]
   }
   renderOrders()
+}
+
+// ══════════════════════════════════════════════════════════════
+// 2.1 발주 검수 관리 모달
+// ══════════════════════════════════════════════════════════════
+window.openInspectionModal = async () => {
+  const year = App.currentYear, month = App.currentMonth
+  let inspData = null
+  try {
+    inspData = await api('GET', `/api/orders/inspection/pending/${year}/${month}`)
+  } catch(e) { showToast('검수 데이터 로드 실패', 'error'); return }
+
+  const s = inspData.summary || {}
+  const all = inspData.all || []
+
+  const modal = document.createElement('div')
+  modal.id = 'inspection-modal'
+  modal.className = 'fixed inset-0 z-50 flex items-start justify-center bg-black bg-opacity-40 pt-8 px-2 pb-4 overflow-y-auto'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl">
+      <div class="flex items-center justify-between px-5 py-4 border-b">
+        <div>
+          <h2 class="font-bold text-gray-800 text-base"><i class="fas fa-clipboard-check text-green-600 mr-2"></i>발주 검수 관리</h2>
+          <p class="text-xs text-gray-400 mt-0.5">${year}년 ${month}월 · 총 ${s.total}건</p>
+        </div>
+        <button onclick="document.getElementById('inspection-modal').remove()" class="text-gray-400 hover:text-gray-600 p-1">
+          <i class="fas fa-times text-lg"></i>
+        </button>
+      </div>
+
+      <!-- 검수 요약 -->
+      <div class="grid grid-cols-3 gap-3 px-5 py-3 bg-gray-50 border-b">
+        <div class="text-center">
+          <div class="text-xs text-gray-500">미검수</div>
+          <div class="text-lg font-bold ${s.pendingCount > 0 ? 'text-orange-600' : 'text-gray-400'}">${s.pendingCount}건</div>
+          <div class="text-xs text-gray-400">${fmtMan(s.pendingAmount)}원</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-gray-500">검수완료</div>
+          <div class="text-lg font-bold text-green-600">${s.completedCount}건</div>
+          <div class="text-xs text-gray-400">${fmtMan(s.completedAmount)}원</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-gray-500">실제 입고금액</div>
+          <div class="text-lg font-bold text-blue-600">${fmtMan(s.actualAmount)}원</div>
+          ${s.actualAmount !== s.completedAmount ? `<div class="text-xs text-red-500">차이: ${fmtMan(s.actualAmount - s.completedAmount)}원</div>` : '<div class="text-xs text-green-500">발주액과 일치</div>'}
+        </div>
+      </div>
+
+      <!-- 일괄 검수 버튼 -->
+      ${s.pendingCount > 0 ? `
+      <div class="px-5 py-2 border-b bg-orange-50 flex items-center gap-2">
+        <i class="fas fa-exclamation-circle text-orange-500 text-sm"></i>
+        <span class="text-xs text-orange-700">미검수 ${s.pendingCount}건 일괄 처리:</span>
+        <button onclick="batchInspectAll()" class="btn btn-sm text-xs" style="background:#059669;color:white;border:none;padding:4px 10px">
+          <i class="fas fa-check-double mr-1"></i>전체 검수완료
+        </button>
+      </div>` : ''}
+
+      <!-- 발주 목록 -->
+      <div class="px-4 py-2 overflow-x-auto" style="max-height:60vh;overflow-y:auto">
+        ${all.length === 0 ? '<div class="text-center py-8 text-gray-400">이 달 발주 데이터가 없습니다.</div>' : `
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead style="position:sticky;top:0;background:white;z-index:1">
+            <tr style="border-bottom:2px solid #e5e7eb">
+              <th style="padding:6px 8px;text-align:left;font-weight:600;color:#6b7280">날짜</th>
+              <th style="padding:6px 8px;text-align:left;font-weight:600;color:#6b7280">업체</th>
+              <th style="padding:6px 8px;text-align:right;font-weight:600;color:#6b7280">발주금액</th>
+              <th style="padding:6px 8px;text-align:right;font-weight:600;color:#6b7280">실제금액</th>
+              <th style="padding:6px 8px;text-align:center;font-weight:600;color:#6b7280">상태</th>
+              <th style="padding:6px 8px;text-align:center;font-weight:600;color:#6b7280">처리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${all.map(r => `
+            <tr id="insp-row-${r.id}" style="border-bottom:1px solid #f3f4f6;${r.is_inspected?'background:#f0fdf4':''}">
+              <td style="padding:6px 8px;color:#6b7280">${r.order_date}</td>
+              <td style="padding:6px 8px;font-weight:600;color:#374151">${r.vendor_name}</td>
+              <td style="padding:6px 8px;text-align:right;color:#1d4ed8">${fmt(r.total_amount)}원</td>
+              <td style="padding:6px 8px;text-align:right">
+                ${r.is_inspected ? `
+                  <span class="font-bold ${(r.actual_amount||r.total_amount)!==r.total_amount?'text-orange-600':'text-green-600'}">${fmt(r.actual_amount||r.total_amount)}원</span>
+                ` : `
+                  <input type="number" id="actual-${r.id}" value="${r.total_amount}"
+                    style="width:90px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;text-align:right;font-size:11px">
+                `}
+              </td>
+              <td style="padding:6px 8px;text-align:center">
+                ${r.is_inspected
+                  ? `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">✓ 검수완료</span>`
+                  : `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">⏳ 미검수</span>`
+                }
+              </td>
+              <td style="padding:6px 8px;text-align:center">
+                ${r.is_inspected ? `
+                  <button onclick="undoInspection(${r.id})" class="text-xs text-gray-400 hover:text-red-500" title="검수 취소">
+                    <i class="fas fa-undo"></i>
+                  </button>
+                ` : `
+                  <button onclick="completeInspection(${r.id})" style="background:#059669;color:white;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">
+                    검수완료
+                  </button>
+                `}
+              </td>
+            </tr>
+            ${r.is_inspected && r.inspection_memo ? `
+            <tr style="border-bottom:1px solid #f3f4f6;background:#f0fdf4">
+              <td colspan="6" style="padding:2px 8px 6px 24px;font-size:10px;color:#6b7280">
+                📝 ${r.inspection_memo}
+              </td>
+            </tr>` : ''}
+            `).join('')}
+          </tbody>
+        </table>`}
+      </div>
+
+      <div class="px-5 py-3 border-t flex justify-end">
+        <button onclick="document.getElementById('inspection-modal').remove()" class="btn btn-secondary btn-sm">닫기</button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+}
+
+window.completeInspection = async (orderId) => {
+  const actualEl = document.getElementById(`actual-${orderId}`)
+  const actualAmount = actualEl ? parseInt(actualEl.value.replace(/,/g,'')) || 0 : null
+  const memo = null // 메모는 간략화 (확장 가능)
+
+  try {
+    await api('PUT', `/api/orders/inspection/${orderId}`, {
+      is_inspected: true, actual_amount: actualAmount, inspection_memo: memo
+    })
+    const row = document.getElementById(`insp-row-${orderId}`)
+    if (row) {
+      row.style.background = '#f0fdf4'
+      row.querySelector('td:nth-child(5)').innerHTML = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">✓ 검수완료</span>`
+      row.querySelector('td:nth-child(6)').innerHTML = `<button onclick="undoInspection(${orderId})" class="text-xs text-gray-400 hover:text-red-500" title="검수 취소"><i class="fas fa-undo"></i></button>`
+      if (actualEl) {
+        const td = actualEl.parentElement
+        td.innerHTML = `<span class="font-bold text-green-600">${fmt(actualAmount)}원</span>`
+      }
+    }
+    showToast('검수 완료 처리됨', 'success')
+  } catch(e) { showToast('처리 실패', 'error') }
+}
+
+window.undoInspection = async (orderId) => {
+  try {
+    await api('PUT', `/api/orders/inspection/${orderId}`, { is_inspected: false })
+    showToast('검수 취소됨', 'info')
+    openInspectionModal()
+  } catch(e) { showToast('처리 실패', 'error') }
+}
+
+window.batchInspectAll = async () => {
+  const year = App.currentYear, month = App.currentMonth
+  let inspData = null
+  try {
+    inspData = await api('GET', `/api/orders/inspection/pending/${year}/${month}`)
+  } catch(e) { return }
+  const pendingIds = (inspData.pending || []).map(r => r.id)
+  if (pendingIds.length === 0) { showToast('미검수 항목 없음', 'info'); return }
+  try {
+    const res = await api('PUT', '/api/orders/inspection/batch', { orderIds: pendingIds })
+    showToast(`${res.updated}건 일괄 검수 완료`, 'success')
+    document.getElementById('inspection-modal')?.remove()
+    openInspectionModal()
+  } catch(e) { showToast('일괄 처리 실패', 'error') }
 }
 
 // mixed: 과세+면세 2칸+소계(3열), mixed_total: 합산총액 1칸, taxable/exempt: 1칸
