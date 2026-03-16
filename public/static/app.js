@@ -10602,7 +10602,7 @@ window.exportExpenseDocExcel = async function() {
 
   // 결재자 라벨행
   ;[0,2,4].forEach(c => {
-    ws['!merges'].push({ s:{r:row,c}, e:{r:row,c+1} })
+    ws['!merges'].push({ s:{r:row,c:c}, e:{r:row,c:c+1} })
     sc(ws, row, c, ['작성자','검토자','승인자'][[0,2,4].indexOf(c)], 's', signLabelStyle)
     sc(ws, row, c+1, '', 's', signLabelStyle)
   })
@@ -10615,7 +10615,7 @@ window.exportExpenseDocExcel = async function() {
   // 서명 칸 (2행)
   for (let signRow = 0; signRow < 2; signRow++) {
     ;[0,2,4].forEach(c => {
-      ws['!merges'].push({ s:{r:row,c}, e:{r:row,c+1} })
+      ws['!merges'].push({ s:{r:row,c:c}, e:{r:row,c:c+1} })
       sc(ws, row, c, signRow === 0 ? '(서명)' : '', 's', signBoxStyle)
       sc(ws, row, c+1, '', 's', signBoxStyle)
     })
