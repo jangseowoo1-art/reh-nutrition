@@ -2041,7 +2041,7 @@ async function renderOrders() {
       const initArrow = isToday ? '▲' : '▼'
       const initBtnBg = isToday ? (displayTotal>0?'#2563eb':'#16a34a') : (displayTotal>0?'#2563eb':'#e5e7eb')
       const initBtnColor = (isToday || displayTotal>0) ? 'white' : '#6b7280'
-      const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${initBtnBg};color:${initBtnColor};border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:3px;line-height:1.3" title="업체별 상세 발주 입력">
+      const detailToggleBtn = hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" data-hasamt="${displayTotal>0?'1':'0'}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${initBtnBg};color:${initBtnColor};border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:3px;line-height:1.3" title="업체별 상세 발주 입력">
         <span class="detail-arrow" data-date="${dateStr}" style="font-size:10px">${initArrow}</span><span style="font-size:10px">업체별</span>
       </button>` : ''
 
@@ -2056,7 +2056,7 @@ async function renderOrders() {
         </td>
         <td class="sticky-right-btn" style="text-align:center;vertical-align:middle;${summaryBorderTop}background:white;padding:3px 2px;border-left:1px solid #e5e7eb;min-width:52px">
           ${hasCats ? detailToggleBtn : ''}
-          ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:3px;line-height:1.3"><span class="detail-arrow" data-date="${dateStr}" style="font-size:10px">▼</span><span style="font-size:10px">업체별</span></button>` : ''}
+          ${!hasCats ? `<button class="detail-toggle-btn" data-date="${dateStr}" data-hasamt="${displayTotal>0?'1':'0'}" onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:${displayTotal>0?'#2563eb':'#e5e7eb'};color:${displayTotal>0?'white':'#6b7280'};border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:3px;line-height:1.3"><span class="detail-arrow" data-date="${dateStr}" style="font-size:10px">▼</span><span style="font-size:10px">업체별</span></button>` : ''}}
         </td>
       </tr>`)
 
@@ -3424,6 +3424,65 @@ function updateBudgetProgressPanel() {
   }
   // 인사이트 패널도 함께 업데이트
   updateInsightPanel()
+
+  // ── 업체별 버튼 색상 실시간 갱신 ──
+  // 날짜별 입력값 합산 후 저장 여부와 무관하게 실제 입력된 값으로 파란/회색 결정
+  ;(() => {
+    const hasCatsBtn = (window._patientCats || []).length > 0
+    // 날짜별 입력합계 집계
+    const dateTotalsLive = {}
+    if (hasCatsBtn) {
+      const seen = new Set()
+      document.querySelectorAll('.cat-order-input').forEach(inp => {
+        const date = inp.dataset.date
+        const vendor = inp.dataset.vendor
+        const field = inp.dataset.field
+        const key = `${date}-${vendor}-${field}`
+        if (seen.has(key)) return; seen.add(key)
+        const val = parseOrderVal(inp.value)
+        if (val === 0) return
+        const amt = field === 'taxable' ? val + Math.round(val * 0.1) : val
+        dateTotalsLive[date] = (dateTotalsLive[date] || 0) + amt
+      })
+    } else {
+      const seen = new Set()
+      document.querySelectorAll('.order-input').forEach(inp => {
+        const date = inp.dataset.date
+        const vendor = inp.dataset.vendor
+        const key = `${date}-${vendor}`
+        if (seen.has(key)) return; seen.add(key)
+        const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
+        const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
+        const t = parseOrderVal(tx?.value)
+        const e = parseOrderVal(ex?.value)
+        const tot = t + Math.round(t * 0.1) + e
+        if (tot === 0) return
+        dateTotalsLive[date] = (dateTotalsLive[date] || 0) + tot
+      })
+    }
+    // 버튼 DOM 갱신
+    document.querySelectorAll('.detail-toggle-btn[data-date]').forEach(btn => {
+      const date = btn.dataset.date
+      const hasAmt = (dateTotalsLive[date] || 0) > 0
+      const isOpenNow = btn.textContent.trim().startsWith('▲') || btn.querySelector('.detail-arrow')?.textContent === '▲'
+      btn.dataset.hasamt = hasAmt ? '1' : '0'
+      if (!isOpenNow) {
+        // 닫힌 상태에서만 색상 반영 (열린 상태는 #64748b 유지)
+        const todayStr2 = window._ordersBudget?.todayStr || ''
+        const isToday2 = date === todayStr2
+        if (hasAmt) {
+          btn.style.background = '#2563eb'
+          btn.style.color = 'white'
+        } else if (isToday2) {
+          btn.style.background = '#16a34a'
+          btn.style.color = 'white'
+        } else {
+          btn.style.background = '#e5e7eb'
+          btn.style.color = '#6b7280'
+        }
+      }
+    })
+  })()
 }
 
 // ── 인사이트 패널: 월 예산 예측 + 업체 비중 + 식단가 경고 ──────
