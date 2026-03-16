@@ -566,6 +566,12 @@ async function renderDashboard() {
   const pm = data.prevMonth || {}  // 전월 데이터
   // 백엔드에서 계산된 카테고리별 식단가 데이터 (있으면 우선 사용)
   const catDietPricesData = data.catDietPrices || []
+  // ── 2.2 월말 예상 식단가 / 2.3 예산 소진 예상일 / 2.4 적정성 / 2.5 이상탐지 ──
+  const proj = data.projection || {}
+  const budgetDepl = data.budgetDepletion || {}
+  const orderAppr = data.orderAppropriateness || {}
+  const anomalies = data.anomalies || []
+  const autoAnalysis = data.autoAnalysis || []
   window._catDietPricesData = catDietPricesData  // 실시간 패널에서 참조
   const todayPatientMealsDash = data.todayPatientMeals || 0
   const mealCustomFields = data.mealCustomFields || []
@@ -622,6 +628,98 @@ async function renderDashboard() {
           (+${fmt(v.total_used - v.monthly_budget)}원 초과)
         </div>
       `).join('')}
+    </div>
+  </div>` : ''}
+
+  <!-- ────────────────────────────────────────────────────────
+       2.2 월말 예상 식단가 / 2.3 예산 소진 예상일 / 2.4 적정성 / 2.5 이상탐지
+       ──────────────────────────────────────────────────────── -->
+  ${(proj.projectedMonthEndMealPrice > 0 || budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined) ? `
+  <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+
+    <!-- 2.2 월말 예상 식단가 -->
+    <div class="bg-white rounded-2xl shadow-sm border ${proj.projectedMealPriceDiff > 0 ? 'border-red-200' : 'border-green-200'} p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <div class="w-8 h-8 rounded-lg ${proj.projectedMealPriceDiff > 0 ? 'bg-red-50' : 'bg-green-50'} flex items-center justify-center">
+          <i class="fas fa-chart-line ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-500'} text-sm"></i>
+        </div>
+        <span class="text-xs text-gray-500 font-semibold">월말 예상 식단가</span>
+      </div>
+      <div class="text-lg font-bold ${proj.projectedMealPriceDiff > 0 ? 'text-red-600' : 'text-gray-800'}">
+        ${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}
+      </div>
+      <div class="text-xs text-gray-400 mt-1">현재: ${fmt(data.mealPriceTotal||0)}원 · 목표: ${fmt(proj.targetMealPrice||0)}원</div>
+      ${proj.projectedMealPriceDiff !== 0 && proj.projectedMonthEndMealPrice > 0 ? `
+      <div class="text-xs font-semibold mt-1 ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-600'}">
+        ${proj.projectedMealPriceDiff > 0 ? '▲' : '▼'} ${fmt(Math.abs(proj.projectedMealPriceDiff))}원
+        (${proj.projectedMealPriceDiff > 0 ? '+' : ''}${proj.projectedMealPriceDiffPct}%)
+        ${proj.projectedMealPriceDiff > 0 ? '초과 예상' : '여유'}
+      </div>` : (proj.projectedMonthEndMealPrice > 0 ? '<div class="text-xs text-green-600 font-semibold mt-1">✓ 목표 범위 내</div>' : '')}
+      <div class="text-xs text-gray-300 mt-1">${proj.elapsedDays||0}일 경과 기준 추세</div>
+    </div>
+
+    <!-- 2.3 예산 소진 예상일 -->
+    <div class="bg-white rounded-2xl shadow-sm border ${budgetDepl.budgetDepletionStatus==='exceeded'?'border-red-300':budgetDepl.budgetDepletionStatus==='warning'?'border-yellow-300':'border-gray-100'} p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <div class="w-8 h-8 rounded-lg ${budgetDepl.budgetDepletionStatus==='exceeded'?'bg-red-50':budgetDepl.budgetDepletionStatus==='warning'?'bg-yellow-50':'bg-purple-50'} flex items-center justify-center">
+          <i class="fas fa-hourglass-half ${budgetDepl.budgetDepletionStatus==='exceeded'?'text-red-500':budgetDepl.budgetDepletionStatus==='warning'?'text-yellow-500':'text-purple-500'} text-sm"></i>
+        </div>
+        <span class="text-xs text-gray-500 font-semibold">예산 소진 예상일</span>
+      </div>
+      <div class="text-lg font-bold ${budgetDepl.budgetDepletionStatus==='exceeded'?'text-red-600':budgetDepl.budgetDepletionStatus==='warning'?'text-yellow-600':'text-gray-800'}">
+        ${budgetDepl.budgetDepletionDate || (s.totalBudget > 0 ? '발주 없음' : '예산 미설정')}
+      </div>
+      <div class="text-xs text-gray-400 mt-1">잔여: ${fmtMan(budgetDepl.remaining||0)}원</div>
+      ${budgetDepl.budgetDepletionStatus === 'warning' ? '<div class="text-xs text-yellow-600 font-semibold mt-1">⚠️ 월말 이전 소진 예상</div>' : ''}
+      ${budgetDepl.budgetDepletionStatus === 'exceeded' ? '<div class="text-xs text-red-600 font-semibold mt-1">🚨 예산 초과</div>' : ''}
+      ${budgetDepl.budgetDepletionStatus === 'normal' && budgetDepl.budgetDepletionDate ? '<div class="text-xs text-green-600 font-semibold mt-1">✓ 월말 초과 예상 없음</div>' : ''}
+      <div class="text-xs text-gray-300 mt-1">일평균 ${fmtMan(budgetDepl.dailyAvgUsed||0)}원 기준</div>
+    </div>
+
+    <!-- 2.4 식수 대비 발주 적정성 -->
+    <div class="bg-white rounded-2xl shadow-sm border ${orderAppr.label==='over'?'border-orange-200':orderAppr.label==='under'?'border-blue-200':'border-green-200'} p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <div class="w-8 h-8 rounded-lg ${orderAppr.label==='over'?'bg-orange-50':orderAppr.label==='under'?'bg-blue-50':'bg-green-50'} flex items-center justify-center">
+          <i class="fas fa-balance-scale ${orderAppr.label==='over'?'text-orange-500':orderAppr.label==='under'?'text-blue-500':'text-green-500'} text-sm"></i>
+        </div>
+        <span class="text-xs text-gray-500 font-semibold">발주 적정성</span>
+      </div>
+      <div class="text-lg font-bold ${orderAppr.label==='over'?'text-orange-600':orderAppr.label==='under'?'text-blue-600':'text-green-700'}">
+        ${orderAppr.label==='over' ? '과다 발주' : orderAppr.label==='under' ? '과소 발주' : (orderAppr.targetMealPrice > 0 ? '적정 수준' : '목표 미설정')}
+      </div>
+      <div class="text-xs text-gray-400 mt-1">
+        실제: ${fmtMan(orderAppr.actualOrderAmt||0)}원 · 적정: ${fmtMan(orderAppr.appropriateOrderAmt||0)}원
+      </div>
+      ${orderAppr.diffRatio !== undefined && orderAppr.appropriateOrderAmt > 0 ? `
+      <div class="text-xs font-semibold mt-1 ${orderAppr.label==='over'?'text-orange-600':orderAppr.label==='under'?'text-blue-600':'text-green-600'}">
+        ${orderAppr.diffRatio > 0 ? '+' : ''}${orderAppr.diffRatio}%
+        (${fmtMan(Math.abs(orderAppr.diffAmt||0))}원 ${orderAppr.label==='over'?'초과':orderAppr.label==='under'?'부족':'차이'})
+      </div>` : ''}
+      <div class="text-xs text-gray-300 mt-1">식수 ${fmt(orderAppr.totalMeals||0)}식 기준</div>
+    </div>
+
+    <!-- 2.5 발주 이상 탐지 -->
+    <div class="bg-white rounded-2xl shadow-sm border ${anomalies.some(a=>a.severity==='high')?'border-red-200':anomalies.some(a=>a.severity==='medium')?'border-yellow-200':'border-gray-100'} p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <div class="w-8 h-8 rounded-lg ${anomalies.some(a=>a.severity==='high')?'bg-red-50':anomalies.some(a=>a.severity==='medium')?'bg-yellow-50':'bg-gray-50'} flex items-center justify-center">
+          <i class="fas fa-radar ${anomalies.some(a=>a.severity==='high')?'text-red-500':anomalies.some(a=>a.severity==='medium')?'text-yellow-500':'text-gray-400'} text-sm"></i>
+        </div>
+        <span class="text-xs text-gray-500 font-semibold">이상 탐지</span>
+        ${anomalies.length > 0 ? `<span class="ml-auto text-xs font-bold px-2 py-0.5 rounded-full ${anomalies.some(a=>a.severity==='high')?'bg-red-100 text-red-700':anomalies.some(a=>a.severity==='medium')?'bg-yellow-100 text-yellow-700':'bg-gray-100 text-gray-600'}">${anomalies.length}</span>` : ''}
+      </div>
+      ${anomalies.length === 0 ? `
+        <div class="text-lg font-bold text-green-700">정상</div>
+        <div class="text-xs text-gray-400 mt-1">이상 패턴 감지 없음</div>
+      ` : `
+        <div class="space-y-1.5 max-h-20 overflow-y-auto">
+          ${anomalies.slice(0,3).map(a => `
+            <div class="text-xs ${a.severity==='high'?'text-red-600':a.severity==='medium'?'text-yellow-600':'text-gray-500'} leading-tight">
+              ${a.severity==='high'?'🚨':a.severity==='medium'?'⚠️':'ℹ️'} ${a.message}
+            </div>
+          `).join('')}
+          ${anomalies.length > 3 ? `<div class="text-xs text-gray-400">+${anomalies.length-3}개 더...</div>` : ''}
+        </div>
+      `}
     </div>
   </div>` : ''}
 
@@ -1062,6 +1160,23 @@ async function renderDashboard() {
           ${dbBarHtml}
         </div>`
       })() : ''}
+
+      <!-- 자동 분석 문장 (AI 해석) -->
+      ${autoAnalysis.length > 0 ? `
+      <div class="mt-3 p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+        <div class="flex items-center gap-2 mb-2">
+          <i class="fas fa-lightbulb text-indigo-500 text-xs"></i>
+          <span class="text-xs font-bold text-indigo-700">운영 자동 분석</span>
+        </div>
+        <ul class="space-y-1.5">
+          ${autoAnalysis.map(msg => `
+            <li class="text-xs text-indigo-800 flex items-start gap-1.5">
+              <span class="text-indigo-400 mt-0.5 flex-shrink-0">•</span>
+              <span>${msg}</span>
+            </li>
+          `).join('')}
+        </ul>
+      </div>` : ''}
 
       <!-- 전월 대비 식단가 비교 -->
       ${pm.mealPriceTotal !== undefined ? `

@@ -479,6 +479,273 @@ dashboard.get('/summary/:year/:month', async (c) => {
     }
   }
 
+  // ══════════════════════════════════════════════════════════════
+  // 2.2 월말 예상 식단가 자동 계산
+  // ══════════════════════════════════════════════════════════════
+  // 로직:
+  //   경과일 = 현재 발주 데이터가 있는 일수 (daily_orders distinct dates)
+  //   현재 일평균 발주액 = 총 사용금액 ÷ 경과일
+  //   현재 일평균 식수 = 총 식수 ÷ 식수 입력 일수
+  //   월말 예상 총 발주액 = 일평균 발주액 × 해당 월 전체 근무일수
+  //   월말 예상 총 식수 = 일평균 식수 × 해당 월 전체 근무일수
+  //   월말 예상 식단가 = 월말 예상 총 발주액 ÷ 월말 예상 총 식수
+
+  // 해당 월의 총 일수
+  const reqYearInt = parseInt(year)
+  const reqMonthInt = parseInt(month)
+  const daysInMonth = new Date(reqYearInt, reqMonthInt, 0).getDate()
+  // 오늘 날짜와 비교해 현재 경과일 계산
+  const todayDate = new Date()
+  const isCurrentMonth = (todayDate.getFullYear() === reqYearInt && todayDate.getMonth() + 1 === reqMonthInt)
+  const elapsedDays = isCurrentMonth ? todayDate.getDate() : daysInMonth
+
+  // 발주 경과일 (실제 발주가 있는 날 수)
+  const orderDayCountRow = await c.env.DB.prepare(
+    `SELECT COUNT(DISTINCT order_date) as cnt FROM daily_orders
+     WHERE hospital_id = ? AND strftime('%Y', order_date) = ? AND strftime('%m', order_date) = printf('%02d', ?)`
+  ).bind(hospitalId, year, month).first<any>()
+  const orderDayCnt = orderDayCountRow?.cnt || 0
+
+  // 식수 입력 일수
+  const mealDayCnt = mealStats?.days_entered || 0
+
+  // 일평균 발주액
+  const dailyAvgUsed = orderDayCnt > 0 ? totalUsed / orderDayCnt : (elapsedDays > 0 ? totalUsed / elapsedDays : 0)
+
+  // 월말 예상 총 발주액 (현재 추세 × 남은 일수 반영)
+  const projectedTotalUsed = isCurrentMonth && elapsedDays < daysInMonth
+    ? totalUsed + dailyAvgUsed * (daysInMonth - elapsedDays)
+    : totalUsed
+
+  // 일평균 식수
+  const dailyAvgMeals = mealDayCnt > 0 ? totalMeals / mealDayCnt : 0
+
+  // 월말 예상 총 식수
+  // 식수 데이터 없을 때는 목표 식단가 기준으로 식수 역산 (발주액 ÷ 목표 식단가)
+  const projectedTotalMeals = isCurrentMonth && mealDayCnt > 0 && elapsedDays < daysInMonth
+    ? totalMeals + dailyAvgMeals * (daysInMonth - elapsedDays)
+    : totalMeals
+
+  // 월말 예상 식단가
+  // ① 식수 데이터 있으면: 예상 발주액 ÷ 예상 식수
+  // ② 식수 데이터 없지만 목표 식단가 있으면: 현재 식단가(formulaMealPriceTotal) 기준 추세 사용
+  let projectedMonthEndMealPrice = 0
+  if (projectedTotalMeals > 0) {
+    projectedMonthEndMealPrice = Math.round(projectedTotalUsed / projectedTotalMeals)
+  } else if (formulaMealPriceTotal > 0 && totalUsed > 0) {
+    // 식수 없는 경우: 현재 식단가를 월말 예상값으로 사용
+    projectedMonthEndMealPrice = formulaMealPriceTotal
+  }
+
+  // 목표 식단가 (settings에서)
+  const targetMealPrice = settings?.meal_price || 0
+
+  // 예상 식단가 vs 목표 차이
+  const projectedMealPriceDiff = targetMealPrice > 0
+    ? Math.round(projectedMonthEndMealPrice - targetMealPrice) : 0
+  const projectedMealPriceDiffPct = targetMealPrice > 0
+    ? parseFloat(((projectedMonthEndMealPrice - targetMealPrice) / targetMealPrice * 100).toFixed(1)) : 0
+
+  // ══════════════════════════════════════════════════════════════
+  // 2.3 예산 소진 예상일
+  // ══════════════════════════════════════════════════════════════
+  // 로직:
+  //   일평균 사용금액 = 총 사용금액 ÷ 경과일
+  //   잔여 예산 = 총 예산 - 총 사용금액
+  //   소진까지 남은 일수 = 잔여 예산 ÷ 일평균 사용금액
+  //   예산 소진 예상일 = 오늘 + 남은 일수
+  let budgetDepletionDate: string | null = null
+  let budgetDepletionDaysLeft: number | null = null
+  let budgetDepletionStatus: 'normal' | 'warning' | 'exceeded' | 'no_data' = 'no_data'
+
+  if (totalBudget > 0 && totalUsed > 0 && dailyAvgUsed > 0) {
+    const remaining = totalBudget - totalUsed
+    if (remaining <= 0) {
+      budgetDepletionStatus = 'exceeded'
+      budgetDepletionDaysLeft = 0
+      budgetDepletionDate = `${reqYearInt}년 ${reqMonthInt}월 이미 초과`
+    } else {
+      const daysLeft = Math.ceil(remaining / dailyAvgUsed)
+      budgetDepletionDaysLeft = daysLeft
+      const depletionDate = new Date(todayDate)
+      depletionDate.setDate(todayDate.getDate() + daysLeft)
+      const depMonth = depletionDate.getMonth() + 1
+      const depDay = depletionDate.getDate()
+      budgetDepletionDate = `${depMonth}월 ${depDay}일`
+      // 월말 이전 소진 예상이면 warning
+      const monthEndDate = new Date(reqYearInt, reqMonthInt - 1, daysInMonth)
+      budgetDepletionStatus = depletionDate <= monthEndDate ? 'warning' : 'normal'
+    }
+  } else if (totalBudget === 0) {
+    budgetDepletionStatus = 'no_data'
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // 2.5 발주 이상 탐지
+  // ══════════════════════════════════════════════════════════════
+  // 3개월 이동 평균 대비 이번 달 발주 급증 탐지
+  // 업체별 발주 비중 편중 탐지
+  // 식수 감소 + 발주 증가 패턴 탐지
+
+  // 최근 3개월 평균 발주액 계산 (이번 달 제외)
+  const prev3MonthsData = await c.env.DB.prepare(
+    `SELECT strftime('%Y', order_date) as y, strftime('%m', order_date) as m,
+            SUM(total_amount) as total
+     FROM daily_orders
+     WHERE hospital_id = ?
+       AND order_date < date(? || '-' || printf('%02d', ?) || '-01')
+     GROUP BY y, m
+     ORDER BY y DESC, m DESC
+     LIMIT 3`
+  ).bind(hospitalId, year, month).all<any>()
+
+  const prev3Avg = prev3MonthsData.results && prev3MonthsData.results.length > 0
+    ? prev3MonthsData.results.reduce((s: number, r: any) => s + r.total, 0) / prev3MonthsData.results.length
+    : 0
+
+  const anomalies: Array<{type: string, message: string, severity: 'high'|'medium'|'low'}> = []
+
+  // ① 총 발주 급증 탐지 (전월 평균 대비 +50% 이상, 경과일 기준 월말 예상치로 비교)
+  if (prev3Avg > 0 && projectedTotalUsed > 0) {
+    const increaseRatio = (projectedTotalUsed - prev3Avg) / prev3Avg * 100
+    if (increaseRatio >= 100) {
+      anomalies.push({ type: 'total_surge', message: `이번 달 발주가 최근 3개월 평균 대비 ${Math.round(increaseRatio)}% 증가 예상`, severity: 'high' })
+    } else if (increaseRatio >= 50) {
+      anomalies.push({ type: 'total_surge', message: `이번 달 발주가 최근 3개월 평균 대비 ${Math.round(increaseRatio)}% 증가 예상`, severity: 'medium' })
+    }
+  }
+
+  // ② 특정 업체 발주 비중 편중 탐지
+  if (totalUsed > 0 && vendors.results) {
+    const vendorRatios = vendors.results
+      .filter((v: any) => v.total_used > 0)
+      .map((v: any) => ({ name: v.name, ratio: v.total_used / totalUsed * 100, used: v.total_used }))
+      .sort((a: any, b: any) => b.ratio - a.ratio)
+
+    if (vendorRatios.length > 0 && vendorRatios[0].ratio >= 60) {
+      anomalies.push({ type: 'vendor_concentration', message: `${vendorRatios[0].name} 발주 비중 ${Math.round(vendorRatios[0].ratio)}%로 집중`, severity: 'medium' })
+    }
+    if (vendorRatios.length >= 2) {
+      const top2Ratio = vendorRatios[0].ratio + vendorRatios[1].ratio
+      if (top2Ratio >= 80) {
+        anomalies.push({ type: 'vendor_concentration_top2', message: `상위 2개 업체(${vendorRatios[0].name}, ${vendorRatios[1].name}) 발주 비중 ${Math.round(top2Ratio)}%`, severity: 'low' })
+      }
+    }
+  }
+
+  // ③ 업체별 전월 대비 급증 탐지
+  if (vendors.results) {
+    for (const v of (vendors.results as any[])) {
+      const prevVendorRow = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(total_amount),0) as total FROM daily_orders
+         WHERE hospital_id=? AND vendor_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)`
+      ).bind(hospitalId, v.id, prevYear2, prevMonth).first<any>()
+      const prevUsed = prevVendorRow?.total || 0
+      if (prevUsed > 0 && v.total_used > 0) {
+        const vendorIncRatio = (v.total_used - prevUsed) / prevUsed * 100
+        if (vendorIncRatio >= 150) {
+          anomalies.push({ type: 'vendor_surge', message: `${v.name} 발주 전월 대비 ${Math.round(vendorIncRatio)}% 증가`, severity: 'high' })
+        } else if (vendorIncRatio >= 80) {
+          anomalies.push({ type: 'vendor_surge', message: `${v.name} 발주 전월 대비 ${Math.round(vendorIncRatio)}% 증가`, severity: 'medium' })
+        }
+      }
+    }
+  }
+
+  // ④ 식수 감소 + 발주 증가 탐지
+  if (prevTotalMeals > 0 && totalMeals > 0 && prevTotalUsed > 0 && totalUsed > 0) {
+    const mealChange = (totalMeals - prevTotalMeals) / prevTotalMeals * 100
+    const usedChange = (totalUsed - prevTotalUsed) / prevTotalUsed * 100
+    if (mealChange < -5 && usedChange > 10) {
+      anomalies.push({ type: 'meal_used_mismatch', message: `식수 ${Math.abs(Math.round(mealChange))}% 감소했으나 발주금액 ${Math.round(usedChange)}% 증가 — 원가 관리 필요`, severity: 'high' })
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // 2.4 식수 대비 발주 적정성 분석
+  // ══════════════════════════════════════════════════════════════
+  const appropriateMealPrice = settings?.meal_price || 0  // 목표 식단가 = 적정 단가 기준
+  const appropriateOrderAmt = appropriateMealPrice > 0 && totalMeals > 0
+    ? appropriateMealPrice * totalMeals : 0
+  const orderAppropriatenessRatio = appropriateOrderAmt > 0
+    ? parseFloat(((totalUsed - appropriateOrderAmt) / appropriateOrderAmt * 100).toFixed(1)) : 0
+  // +10 이상 = 과다, -10 이하 = 과소, ±10 이내 = 적정
+  const orderAppropriatenessLabel =
+    orderAppropriatenessRatio >= 10 ? 'over' :
+    orderAppropriatenessRatio <= -10 ? 'under' : 'normal'
+
+  // ══════════════════════════════════════════════════════════════
+  // 자동 분석 문장 생성 (규칙 기반)
+  // ══════════════════════════════════════════════════════════════
+  const autoAnalysis: string[] = []
+
+  // 사용금액 분석 (전월 대비)
+  if (prevTotalUsed > 0 && totalUsed > 0) {
+    const usedChangePct = (totalUsed - prevTotalUsed) / prevTotalUsed * 100
+    if (usedChangePct > 10) {
+      autoAnalysis.push(`전월 대비 사용금액이 ${Math.round(usedChangePct)}% 증가했습니다.`)
+    } else if (usedChangePct < -10) {
+      autoAnalysis.push(`전월 대비 사용금액이 ${Math.abs(Math.round(usedChangePct))}% 감소했습니다.`)
+    } else {
+      autoAnalysis.push(`전월 대비 사용금액이 큰 변화 없이 유지되었습니다. (${usedChangePct > 0 ? '+' : ''}${Math.round(usedChangePct)}%)`)
+    }
+  }
+
+  // 식단가 분석
+  const currentDietPrice = formulaMealPriceTotal
+  if (currentDietPrice > 0 && targetMealPrice > 0) {
+    if (currentDietPrice > targetMealPrice) {
+      const overPct = ((currentDietPrice - targetMealPrice) / targetMealPrice * 100).toFixed(1)
+      autoAnalysis.push(`현재 식단가(${currentDietPrice.toLocaleString()}원)는 목표 대비 ${overPct}% 초과 상태입니다.`)
+    } else {
+      const underPct = ((targetMealPrice - currentDietPrice) / targetMealPrice * 100).toFixed(1)
+      autoAnalysis.push(`현재 식단가(${currentDietPrice.toLocaleString()}원)는 목표 범위 내에서 유지되고 있습니다. (${underPct}% 여유)`)
+    }
+  }
+
+  // 월말 예상 식단가 분석
+  if (projectedMonthEndMealPrice > 0 && targetMealPrice > 0) {
+    if (projectedMonthEndMealPrice > targetMealPrice) {
+      autoAnalysis.push(`현재 추세 기준 월말 식단가(${projectedMonthEndMealPrice.toLocaleString()}원) 상승 가능성이 있습니다.`)
+    } else {
+      autoAnalysis.push(`현재 추세 기준 월말 식단가는 목표 범위 내 유지가 예상됩니다.`)
+    }
+  }
+
+  // 식수 분석 (전월 대비)
+  if (prevTotalMeals > 0 && totalMeals > 0 && prevTotalUsed > 0 && totalUsed > 0) {
+    const mealChgPct = (totalMeals - prevTotalMeals) / prevTotalMeals * 100
+    const usedChgPct2 = (totalUsed - prevTotalUsed) / prevTotalUsed * 100
+    if (mealChgPct > 5 && usedChgPct2 > 5) {
+      autoAnalysis.push(`식수 증가에 따라 사용금액이 함께 증가했습니다.`)
+    } else if (mealChgPct < -5 && usedChgPct2 > 10) {
+      autoAnalysis.push(`식수 감소 대비 비용이 증가하여 원가 관리가 필요합니다.`)
+    }
+  }
+
+  // 업체 편중 분석
+  if (totalUsed > 0 && vendors.results && vendors.results.length > 0) {
+    const vendorRatiosSorted = (vendors.results as any[])
+      .filter((v: any) => v.total_used > 0)
+      .map((v: any) => ({ name: v.name, ratio: v.total_used / totalUsed * 100 }))
+      .sort((a: any, b: any) => b.ratio - a.ratio)
+    if (vendorRatiosSorted.length > 0 && vendorRatiosSorted[0].ratio >= 60) {
+      autoAnalysis.push(`${vendorRatiosSorted[0].name} 발주 비중이 ${Math.round(vendorRatiosSorted[0].ratio)}%로 높습니다. 발주 다양화를 검토하세요.`)
+    } else if (vendorRatiosSorted.length >= 2) {
+      const top2Ratio = vendorRatiosSorted[0].ratio + vendorRatiosSorted[1].ratio
+      if (top2Ratio >= 80) {
+        autoAnalysis.push(`상위 2개 업체 발주 비중이 ${Math.round(top2Ratio)}%로 편중되어 있습니다.`)
+      }
+    }
+  }
+
+  // 예산 소진 예상
+  if (budgetDepletionStatus === 'warning' && budgetDepletionDate) {
+    autoAnalysis.push(`현재 지출 속도 기준 예산 소진 예상일은 ${budgetDepletionDate}입니다. 지출 조정이 필요합니다.`)
+  } else if (budgetDepletionStatus === 'exceeded') {
+    autoAnalysis.push(`이미 예산이 초과된 상태입니다.`)
+  }
+
   return c.json({
     settings,
     vendors: vendors.results,
@@ -503,6 +770,42 @@ dashboard.get('/summary/:year/:month', async (c) => {
       totalBudget: prevSettings?.total_budget || 0,
       targetMealPrice: prevSettings?.meal_price || 0
     },
+    // ── 2.2 월말 예상 식단가 ──
+    projection: {
+      projectedTotalUsed: Math.round(projectedTotalUsed),
+      projectedTotalMeals: Math.round(projectedTotalMeals),
+      projectedMonthEndMealPrice,      // 월말 예상 식단가
+      targetMealPrice,                 // 목표 식단가
+      projectedMealPriceDiff,          // 목표 대비 차이 (원)
+      projectedMealPriceDiffPct,       // 목표 대비 차이 (%)
+      elapsedDays,                     // 경과일
+      daysInMonth,                     // 월 총일수
+      dailyAvgUsed: Math.round(dailyAvgUsed),   // 일평균 발주액
+      dailyAvgMeals: Math.round(dailyAvgMeals), // 일평균 식수
+      isCurrentMonth
+    },
+    // ── 2.3 예산 소진 예상일 ──
+    budgetDepletion: {
+      budgetDepletionDate,       // "3월 26일" 또는 null
+      budgetDepletionDaysLeft,   // 남은 일수 (숫자)
+      budgetDepletionStatus,     // 'normal' | 'warning' | 'exceeded' | 'no_data'
+      remaining: totalBudget - totalUsed,
+      dailyAvgUsed: Math.round(dailyAvgUsed)
+    },
+    // ── 2.4 식수 대비 발주 적정성 ──
+    orderAppropriateness: {
+      totalMeals,
+      targetMealPrice: appropriateMealPrice,
+      appropriateOrderAmt: Math.round(appropriateOrderAmt),
+      actualOrderAmt: totalUsed,
+      diffAmt: Math.round(totalUsed - appropriateOrderAmt),
+      diffRatio: orderAppropriatenessRatio,
+      label: orderAppropriatenessLabel  // 'over' | 'under' | 'normal'
+    },
+    // ── 2.5 발주 이상 탐지 ──
+    anomalies,
+    // ── 자동 분석 문장 ──
+    autoAnalysis,
     summary: {
       totalUsed,
       totalBudget,
