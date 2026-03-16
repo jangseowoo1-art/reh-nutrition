@@ -1158,7 +1158,46 @@ async function renderDashboard() {
             </div>
           </div>
           ${dbBarHtml}
-        </div>`
+        </div>
+        <!-- 2.6 카테고리별 식단가 비교 테이블 -->
+        ${catPriceList.length > 0 ? `
+        <div class="mt-3 overflow-x-auto">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead>
+              <tr style="background:#f3f4f6">
+                <th style="padding:6px 8px;text-align:left;color:#6b7280;font-weight:600;border-bottom:2px solid #e5e7eb">카테고리</th>
+                <th style="padding:6px 8px;text-align:right;color:#7c3aed;font-weight:600;border-bottom:2px solid #e5e7eb">목표 식단가</th>
+                <th style="padding:6px 8px;text-align:right;color:#1d4ed8;font-weight:600;border-bottom:2px solid #e5e7eb">실제 식단가</th>
+                <th style="padding:6px 8px;text-align:right;color:#6b7280;font-weight:600;border-bottom:2px solid #e5e7eb">차이</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${catPriceList.map(cat => {
+                const color = getCategoryColorHex(cat.category_key)
+                const targetP = cat.targetPrice || 0
+                const actualP = cat._dietPrice || 0
+                const diff = targetP > 0 && actualP > 0 ? actualP - targetP : null
+                const diffPct = diff !== null && targetP > 0 ? ((diff / targetP) * 100).toFixed(1) : null
+                const isOver = diff !== null && diff > 0
+                const diffColor = isOver ? '#dc2626' : diff < 0 ? '#16a34a' : '#6b7280'
+                return `<tr style="border-bottom:1px solid #f3f4f6">
+                  <td style="padding:6px 8px">
+                    <span style="display:inline-flex;align-items:center;gap:4px">
+                      <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>
+                      <span style="font-weight:600;color:#374151">${cat.category_name}</span>
+                    </span>
+                  </td>
+                  <td style="padding:6px 8px;text-align:right;color:#7c3aed;font-weight:600">${targetP > 0 ? fmt(targetP)+'원' : '<span style="color:#d1d5db">미설정</span>'}</td>
+                  <td style="padding:6px 8px;text-align:right;font-weight:700;color:${actualP>0?(diff!==null&&diff>0?'#dc2626':'#1d4ed8'):'#d1d5db'}">${actualP > 0 ? fmt(actualP)+'원' : '미입력'}</td>
+                  <td style="padding:6px 8px;text-align:right;font-weight:700;color:${diffColor}">
+                    ${diff !== null ? `${diff > 0 ? '+' : ''}${fmt(diff)}원 (${diff > 0 ? '+' : ''}${diffPct}%)` : '<span style="color:#d1d5db">-</span>'}
+                  </td>
+                </tr>`
+              }).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+        `
       })() : ''}
 
       <!-- 자동 분석 문장 (AI 해석) -->
