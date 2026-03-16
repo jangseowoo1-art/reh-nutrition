@@ -10,14 +10,19 @@ dashboard.get('/summary/:year/:month', async (c) => {
   if (!hospitalId) return c.json({ error: 'hospitalId required' }, 400)
   const { year, month } = c.req.param()
 
-  // 월 설정 조회 (해당 월 없으면 가장 최근 설정 fallback)
+  // 월 설정 조회 (해당 월 없으면 해당 월 이전 중 가장 가까운 설정 fallback)
+  // → 3월 설정이 있어도 1월 데이터 조회 시 1월 이전 설정만 적용 (소급 방지)
   let settings = await c.env.DB.prepare(
     `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
   ).bind(hospitalId, year, month).first<any>()
   if (!settings) {
     settings = await c.env.DB.prepare(
-      `SELECT * FROM monthly_settings WHERE hospital_id = ? ORDER BY year DESC, month DESC LIMIT 1`
-    ).bind(hospitalId).first<any>()
+      `SELECT * FROM monthly_settings
+       WHERE hospital_id = ?
+         AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+              OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+       ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+    ).bind(hospitalId, year, year, month).first<any>()
   }
 
   // 업체별 발주 합계
@@ -206,7 +211,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
     GROUP BY patient_category_id
   `).bind(hospitalId, today).all<any>()
 
-  // 카테고리 설정 조회 (fallback: 없으면 최근 설정 사용)
+  // 카테고리 설정 조회 (fallback: 해당 월 이전 중 카테고리별 가장 가까운 설정 사용)
+  // → 3월 설정이 있어도 1월 조회 시 1월 이전 설정만 적용 (소급 방지)
   let catSettingsDash = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
@@ -221,10 +227,13 @@ dashboard.get('/summary/:year/:month', async (c) => {
       WHERE cos.hospital_id = ?
         AND cos.id IN (
           SELECT MAX(id) FROM category_order_settings
-          WHERE hospital_id = ? GROUP BY patient_category_id
+          WHERE hospital_id = ?
+            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+          GROUP BY patient_category_id
         )
       ORDER BY hpc.sort_order
-    `).bind(hospitalId, hospitalId).all<any>()
+    `).bind(hospitalId, hospitalId, year, year, month).all<any>()
   }
 
   let prevCatSettingsDash = await c.env.DB.prepare(`
@@ -233,9 +242,22 @@ dashboard.get('/summary/:year/:month', async (c) => {
     JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, prevYear2, prevMonth).all<any>()
-  // 전월도 없으면 현재 설정 사용
+  // 전월도 없으면 전월 이전 중 가장 가까운 설정 사용
   if (!prevCatSettingsDash.results || prevCatSettingsDash.results.length === 0) {
-    prevCatSettingsDash = catSettingsDash
+    prevCatSettingsDash = await c.env.DB.prepare(`
+      SELECT cos.*, hpc.category_key, hpc.category_name
+      FROM category_order_settings cos
+      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+      WHERE cos.hospital_id = ?
+        AND cos.id IN (
+          SELECT MAX(id) FROM category_order_settings
+          WHERE hospital_id = ?
+            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+          GROUP BY patient_category_id
+        )
+      ORDER BY hpc.sort_order
+    `).bind(hospitalId, hospitalId, prevYear2, prevYear2, prevMonth).all<any>()
   }
 
   // 오늘 식수: 커스텀 필드(환자군)의 식수 합산

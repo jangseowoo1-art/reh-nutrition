@@ -17,12 +17,16 @@ settings.get('/:year/:month', async (c) => {
   let isFallback = false
   let fallbackYearMonth: string | null = null
 
-  // 2) 없으면 가장 최근 저장된 설정을 fallback으로 사용
+  // 2) 없으면 해당 월 이전(또는 같은) 설정 중 가장 가까운 것을 fallback으로 사용
+  //    → 3월 설정 저장 후 1월 데이터 조회 시 1월 이전 설정을 가져와 3월 설정이 소급 적용되지 않음
   if (!data) {
     data = await c.env.DB.prepare(
-      `SELECT * FROM monthly_settings WHERE hospital_id = ?
-       ORDER BY year DESC, month DESC LIMIT 1`
-    ).bind(hospitalId).first<any>()
+      `SELECT * FROM monthly_settings
+       WHERE hospital_id = ?
+         AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+              OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+       ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+    ).bind(hospitalId, year, year, month).first<any>()
     if (data) {
       isFallback = true
       fallbackYearMonth = `${data.year}년 ${data.month}월`

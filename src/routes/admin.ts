@@ -90,12 +90,15 @@ adminRouter.get('/hospitals/:id/budget/:year/:month', async (c) => {
   let isFallback = false
   let fallbackYearMonth: string | null = null
 
-  // 2) 없으면 가장 최근 저장된 설정을 기본값으로 사용
+  // 2) 없으면 해당 월 이전 중 가장 가까운 설정을 기본값으로 사용 (소급 방지)
   if (!settings) {
     settings = await c.env.DB.prepare(`
-      SELECT * FROM monthly_settings WHERE hospital_id=?
-      ORDER BY year DESC, month DESC LIMIT 1
-    `).bind(id).first<any>()
+      SELECT * FROM monthly_settings
+      WHERE hospital_id=?
+        AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+             OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+      ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1
+    `).bind(id, year, year, month).first<any>()
     if (settings) {
       isFallback = true
       fallbackYearMonth = `${settings.year}년 ${settings.month}월`
@@ -387,14 +390,18 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const hYear  = String(h.current_year  || year)
       const hMonth = String(h.current_month || month)
 
-      // 해당 월 설정 없으면 최근 설정 fallback
+      // 해당 월 설정 없으면 해당 월 이전 중 가장 가까운 설정 fallback (소급 방지)
       let settings = await c.env.DB.prepare(
         `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
       ).bind(h.id, hYear, hMonth).first<any>()
       if (!settings) {
         settings = await c.env.DB.prepare(
-          `SELECT * FROM monthly_settings WHERE hospital_id=? ORDER BY year DESC, month DESC LIMIT 1`
-        ).bind(h.id).first<any>()
+          `SELECT * FROM monthly_settings
+           WHERE hospital_id=?
+             AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                  OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+           ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+        ).bind(h.id, hYear, hYear, hMonth).first<any>()
       }
 
       // 업체별 사용액 (이슈 분석용)
@@ -610,7 +617,7 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         GROUP BY patient_category_id
       `).bind(h.id, today).all<any>()
 
-      // 카테고리별 목표 설정 (fallback: 없으면 최근 설정 사용)
+      // 카테고리별 목표 설정 (fallback: 해당 월 이전 중 가장 가까운 설정, 소급 방지)
       let catSettingsForDash = await c.env.DB.prepare(`
         SELECT cos.*, hpc.category_key, hpc.category_name
         FROM category_order_settings cos
@@ -625,10 +632,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           WHERE cos.hospital_id = ?
             AND cos.id IN (
               SELECT MAX(id) FROM category_order_settings
-              WHERE hospital_id = ? GROUP BY patient_category_id
+              WHERE hospital_id = ?
+                AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                     OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+              GROUP BY patient_category_id
             )
           ORDER BY hpc.sort_order
-        `).bind(h.id, h.id).all<any>()
+        `).bind(h.id, h.id, hYear, hYear, hMonth).all<any>()
       }
 
       // 전월 카테고리별 목표 설정 (fallback 포함)
@@ -639,7 +649,20 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
       `).bind(h.id, prevYearStr, prevMonthNum).all<any>()
       if (!prevCatSettingsForDash.results || prevCatSettingsForDash.results.length === 0) {
-        prevCatSettingsForDash = catSettingsForDash
+        prevCatSettingsForDash = await c.env.DB.prepare(`
+          SELECT cos.*, hpc.category_key, hpc.category_name
+          FROM category_order_settings cos
+          JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+          WHERE cos.hospital_id = ?
+            AND cos.id IN (
+              SELECT MAX(id) FROM category_order_settings
+              WHERE hospital_id = ?
+                AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                     OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+              GROUP BY patient_category_id
+            )
+          ORDER BY hpc.sort_order
+        `).bind(h.id, h.id, prevYearStr, prevYearStr, prevMonthNum).all<any>()
       }
 
       // 카테고리별 오늘 식수: custom_data에서 직접 집계 (이전의 환자 비중 추정 제거)
@@ -892,14 +915,18 @@ adminRouter.get('/overview/:year/:month', async (c) => {
       const hYear  = String(h.current_year  || year)
       const hMonth = String(h.current_month || month)
 
-      // 해당 월 설정 없으면 최근 설정 fallback
+      // 해당 월 설정 없으면 해당 월 이전 중 가장 가까운 설정 fallback (소급 방지)
       let settings = await c.env.DB.prepare(
         `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
       ).bind(h.id, hYear, hMonth).first<any>()
       if (!settings) {
         settings = await c.env.DB.prepare(
-          `SELECT * FROM monthly_settings WHERE hospital_id=? ORDER BY year DESC, month DESC LIMIT 1`
-        ).bind(h.id).first<any>()
+          `SELECT * FROM monthly_settings
+           WHERE hospital_id=?
+             AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                  OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+           ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+        ).bind(h.id, hYear, hYear, hMonth).first<any>()
       }
 
       const totalUsed = await c.env.DB.prepare(`
@@ -1353,7 +1380,7 @@ adminRouter.get('/hospitals/:id/category-settings/:year/:month', async (c) => {
   let isFallback = false
   let fallbackYearMonth: string | null = null
 
-  // 2) 없으면 카테고리별로 가장 최근 설정을 fallback 사용
+  // 2) 없으면 해당 월 이전 중 카테고리별 가장 가까운 설정을 fallback 사용 (소급 방지)
   if (!settingsRows.results || settingsRows.results.length === 0) {
     settingsRows = await c.env.DB.prepare(`
       SELECT cos.*, hpc.category_key, hpc.category_name, hpc.order_code
@@ -1363,10 +1390,12 @@ adminRouter.get('/hospitals/:id/category-settings/:year/:month', async (c) => {
         AND cos.id IN (
           SELECT MAX(id) FROM category_order_settings
           WHERE hospital_id = ?
+            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
           GROUP BY patient_category_id
         )
       ORDER BY hpc.sort_order
-    `).bind(id, id).all<any>()
+    `).bind(id, id, year, year, month).all<any>()
     if (settingsRows.results && settingsRows.results.length > 0) {
       isFallback = true
       const r = settingsRows.results[0] as any

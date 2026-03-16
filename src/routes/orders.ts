@@ -262,7 +262,8 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     ORDER BY order_date, vendor_id, patient_category_id
   `).bind(hospitalId, year, mm).all<any>()
 
-  // ── 해당 월 카테고리 설정 조회 (없으면 최근 설정 fallback) ──
+  // ── 해당 월 카테고리 설정 조회 (없으면 해당 월 이전 중 가장 가까운 설정 fallback) ──
+  // → 3월 설정이 있어도 1월 데이터 조회 시 1월 이전 설정만 적용 (소급 방지)
   let catSettingsRows = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
@@ -270,7 +271,7 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, year, month).all<any>()
 
-  // fallback: 해당 월 설정이 없으면 카테고리별 최근 설정 사용
+  // fallback: 해당 월 설정이 없으면 해당 월 이전 카테고리별 가장 가까운 설정 사용
   if (!catSettingsRows.results || catSettingsRows.results.length === 0) {
     catSettingsRows = await c.env.DB.prepare(`
       SELECT cos.*, hpc.category_key, hpc.category_name
@@ -280,10 +281,12 @@ orders.get('/category-monthly/:year/:month', async (c) => {
         AND cos.id IN (
           SELECT MAX(id) FROM category_order_settings
           WHERE hospital_id = ?
+            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
           GROUP BY patient_category_id
         )
       ORDER BY hpc.sort_order
-    `).bind(hospitalId, hospitalId).all<any>()
+    `).bind(hospitalId, hospitalId, year, year, month).all<any>()
   }
 
   // ── 오늘자 식수 조회 (카테고리별 식단가 계산용) ──
@@ -308,9 +311,22 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, prevYearNum, prevMonthNum).all<any>()
 
-  // 전월도 없으면 현재 설정과 동일 (기본값)
+  // 전월도 없으면 전월 이전 중 가장 가까운 설정 사용
   if (!prevCatSettingsRows.results || prevCatSettingsRows.results.length === 0) {
-    prevCatSettingsRows = catSettingsRows
+    prevCatSettingsRows = await c.env.DB.prepare(`
+      SELECT cos.*, hpc.category_key, hpc.category_name
+      FROM category_order_settings cos
+      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+      WHERE cos.hospital_id = ?
+        AND cos.id IN (
+          SELECT MAX(id) FROM category_order_settings
+          WHERE hospital_id = ?
+            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+          GROUP BY patient_category_id
+        )
+      ORDER BY hpc.sort_order
+    `).bind(hospitalId, hospitalId, prevYearNum, prevYearNum, prevMonthNum).all<any>()
   }
 
   return c.json({
