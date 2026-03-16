@@ -518,21 +518,33 @@ async function renderDashboard() {
   ])
   if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
 
-  // 법인카드 집계
-  const dashCardExpenses = dashCardData?.expenses ? dashCardData.expenses : []
-  const dashCardMonthTotal = (dashCardData?.vendorTotals || []).reduce((s, r) => s + (r.month_total || 0), 0)
+  // 법인카드 집계 (monthly API: vendorTotals.total, expenses 사용)
+  const dashCardExpenses = dashCardData?.expenses || []
+  const _dashVendorTotals = (dashCardData?.vendorTotals || [])
+    .filter(r => (r.total || 0) > 0)
+    .map(r => ({
+      vendor_id: Number(r.vendor_id),
+      total: Number(r.total) || 0,
+      count: dashCardExpenses.filter(e => Number(e.vendor_id) === Number(r.vendor_id)).length
+    }))
+  const dashCardMonthTotal = _dashVendorTotals.reduce((s, r) => s + r.total, 0)
+  const _subtypeMap = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}
   const dashCardBySubtype = {}
+  // subtype 초기화 (is_card_type 업체 기준)
   ;(dashCardData?.cardVendors || []).filter(v => v.is_card_type).forEach(v => {
     const k = v.card_subtype || 'other'
-    if (!dashCardBySubtype[k]) dashCardBySubtype[k] = { label: {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[k]||'기타', total: 0, count: 0 }
+    if (!dashCardBySubtype[k]) dashCardBySubtype[k] = { label: _subtypeMap[k]||'기타', total: 0, count: 0 }
   })
-  ;(dashCardData?.vendorTotals || []).forEach(r => {
-    const vn = (dashCardData?.cardVendors || []).find(v => v.id === r.vendor_id)
+  // 실적 누적
+  _dashVendorTotals.forEach(r => {
+    const vn = (dashCardData?.cardVendors || []).find(v => Number(v.id) === r.vendor_id)
     const k = vn?.card_subtype || 'other'
-    if (!dashCardBySubtype[k]) dashCardBySubtype[k] = { label: {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[k]||'기타', total: 0, count: 0 }
-    dashCardBySubtype[k].total += r.month_total || 0
-    dashCardBySubtype[k].count += r.item_count || 0
+    if (!dashCardBySubtype[k]) dashCardBySubtype[k] = { label: _subtypeMap[k]||'기타', total: 0, count: 0 }
+    dashCardBySubtype[k].total += r.total
+    dashCardBySubtype[k].count += r.count
   })
+  // total > 0인 subtype만 필터링
+  const _dashCardBySubtypeFiltered = Object.values(dashCardBySubtype).filter(st => st.total > 0)
 
   const patientCats = catData?.categories || []
   const catMonthly = catData?.monthly || []
@@ -1106,24 +1118,32 @@ async function renderDashboard() {
           <span class="text-sm font-bold text-gray-700"><i class="fas fa-credit-card text-purple-500 mr-1"></i>법인카드 사용 현황</span>
           <span class="text-sm font-bold text-purple-700">${fmtMan(dashCardMonthTotal)}원</span>
         </div>
-        <div class="grid grid-cols-3 gap-1.5 mb-2">
-          ${Object.values(dashCardBySubtype).map(st => `
+        ${_dashCardBySubtypeFiltered.length > 0 ? `
+        <div class="grid grid-cols-${Math.min(_dashCardBySubtypeFiltered.length, 3)} gap-1.5 mb-2">
+          ${_dashCardBySubtypeFiltered.map(st => `
           <div class="p-2 bg-purple-50 rounded-lg border border-purple-100 text-center">
             <div class="text-xs text-purple-500 mb-0.5">${st.label}</div>
             <div class="text-xs font-bold text-purple-700">${fmtMan(st.total)}원</div>
             <div class="text-xs text-gray-400">${st.count}건</div>
           </div>`).join('')}
-        </div>
+        </div>` : ''}
+        ${_dashVendorTotals.length > 0 ? `
         <div class="max-h-32 overflow-y-auto space-y-1">
-          ${(dashCardData?.vendorTotals||[]).map(r => {
-            const vn = (dashCardData?.cardVendors||[]).find(v => v.id === r.vendor_id)
+          ${_dashVendorTotals.map(r => {
+            const vn = (dashCardData?.cardVendors||[]).find(v => Number(v.id) === r.vendor_id)
+            const subtypeLabel = _subtypeMap[vn?.card_subtype||'other'] || '기타'
             return `<div class="flex items-center justify-between text-xs bg-purple-50/50 rounded-lg px-2 py-1 border border-purple-100/50">
-              <span class="text-gray-600 font-medium">${vn?.name || '업체'}</span>
-              <span class="font-bold text-purple-700">${fmtMan(r.month_total)}원</span>
-              <span class="text-gray-400">${r.item_count}건</span>
+              <div class="flex items-center gap-1.5 min-w-0">
+                <span class="shrink-0 text-purple-400 text-[10px] bg-purple-100 rounded px-1">${subtypeLabel}</span>
+                <span class="text-gray-600 font-medium truncate">${vn?.name || '업체'}</span>
+              </div>
+              <div class="flex items-center gap-2 shrink-0 ml-1">
+                <span class="font-bold text-purple-700">${fmtMan(r.total)}원</span>
+                <span class="text-gray-400">${r.count}건</span>
+              </div>
             </div>`
           }).join('')}
-        </div>
+        </div>` : ''}
       </div>` : ''}
 
       <!-- 잔반 현황 -->
@@ -10316,37 +10336,339 @@ window.exportExpenseDocExcel = async function() {
     return
   }
 
-  const mm = String(month).padStart(2, '0')
-  const subtypeMap = {food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}
+  if (typeof XLSX === 'undefined') {
+    showToast('엑셀 라이브러리 로딩 중입니다. 잠시 후 다시 시도해주세요.', 'error')
+    return
+  }
 
-  let csv = '\uFEFF' // BOM for Excel UTF-8
-  csv += `${App.hospitalName} ${year}년 ${mm}월 법인카드 지출결의서\n\n`
-  csv += '번호,사용일자,결제수단,구분,업체명,사용품목,구매용도,금액,메모\n'
+  const mm = String(month).padStart(2, '0')
+  const subtypeMap = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
+  const hospitalName = App.hospitalName || ''
+  const title = `${hospitalName} ${year}년 ${mm}월 법인카드 지출결의서`
+  const total = allExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+
+  // ── 구분별 집계 ──
+  const subtypeAggr = {}
+  allExpenses.forEach(e => {
+    const k = e.card_subtype || 'other'
+    if (!subtypeAggr[k]) subtypeAggr[k] = { label: subtypeMap[k]||'기타', total: 0, count: 0 }
+    subtypeAggr[k].total += Number(e.amount) || 0
+    subtypeAggr[k].count++
+  })
+
+  // ── 스타일 정의 ──
+  const S = {
+    title: {
+      font: { bold: true, sz: 14, color: { rgb: '1F2937' } },
+      fill: { fgColor: { rgb: 'F3F4F6' } },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      border: { top:{style:'medium',color:{rgb:'6B7280'}}, bottom:{style:'medium',color:{rgb:'6B7280'}}, left:{style:'medium',color:{rgb:'6B7280'}}, right:{style:'medium',color:{rgb:'6B7280'}} }
+    },
+    sectionHdr: {
+      font: { bold: true, sz: 10, color: { rgb: '5B21B6' } },
+      fill: { fgColor: { rgb: 'EDE9FE' } },
+      alignment: { horizontal: 'left', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'C4B5FD'}}, bottom:{style:'thin',color:{rgb:'C4B5FD'}}, left:{style:'thin',color:{rgb:'C4B5FD'}}, right:{style:'thin',color:{rgb:'C4B5FD'}} }
+    },
+    colHdr: {
+      font: { bold: true, sz: 10, color: { rgb: '374151' } },
+      fill: { fgColor: { rgb: 'DDD6FE' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'A78BFA'}}, bottom:{style:'thin',color:{rgb:'A78BFA'}}, left:{style:'thin',color:{rgb:'A78BFA'}}, right:{style:'thin',color:{rgb:'A78BFA'}} }
+    },
+    data: {
+      font: { sz: 10, color: { rgb: '1F2937' } },
+      alignment: { vertical: 'center', wrapText: false },
+      border: { top:{style:'thin',color:{rgb:'E5E7EB'}}, bottom:{style:'thin',color:{rgb:'E5E7EB'}}, left:{style:'thin',color:{rgb:'E5E7EB'}}, right:{style:'thin',color:{rgb:'E5E7EB'}} }
+    },
+    dataCenter: {
+      font: { sz: 10, color: { rgb: '1F2937' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'E5E7EB'}}, bottom:{style:'thin',color:{rgb:'E5E7EB'}}, left:{style:'thin',color:{rgb:'E5E7EB'}}, right:{style:'thin',color:{rgb:'E5E7EB'}} }
+    },
+    dataAmt: {
+      font: { sz: 10, color: { rgb: '5B21B6' } },
+      numFmt: '#,##0',
+      alignment: { horizontal: 'right', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'E5E7EB'}}, bottom:{style:'thin',color:{rgb:'E5E7EB'}}, left:{style:'thin',color:{rgb:'E5E7EB'}}, right:{style:'thin',color:{rgb:'E5E7EB'}} }
+    },
+    totalHdr: {
+      font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } },
+      fill: { fgColor: { rgb: '7C3AED' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { top:{style:'medium',color:{rgb:'5B21B6'}}, bottom:{style:'medium',color:{rgb:'5B21B6'}}, left:{style:'medium',color:{rgb:'5B21B6'}}, right:{style:'medium',color:{rgb:'5B21B6'}} }
+    },
+    totalAmt: {
+      font: { bold: true, sz: 11, color: { rgb: 'FFFFFF' } },
+      fill: { fgColor: { rgb: '7C3AED' } },
+      numFmt: '#,##0',
+      alignment: { horizontal: 'right', vertical: 'center' },
+      border: { top:{style:'medium',color:{rgb:'5B21B6'}}, bottom:{style:'medium',color:{rgb:'5B21B6'}}, left:{style:'medium',color:{rgb:'5B21B6'}}, right:{style:'medium',color:{rgb:'5B21B6'}} }
+    },
+    infoLabel: {
+      font: { bold: true, sz: 9, color: { rgb: '6B7280' } },
+      fill: { fgColor: { rgb: 'F9FAFB' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'D1D5DB'}}, bottom:{style:'thin',color:{rgb:'D1D5DB'}}, left:{style:'thin',color:{rgb:'D1D5DB'}}, right:{style:'thin',color:{rgb:'D1D5DB'}} }
+    },
+    infoVal: {
+      font: { sz: 9, color: { rgb: '1F2937' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'D1D5DB'}}, bottom:{style:'thin',color:{rgb:'D1D5DB'}}, left:{style:'thin',color:{rgb:'D1D5DB'}}, right:{style:'thin',color:{rgb:'D1D5DB'}} }
+    },
+    empty: {
+      border: { top:{style:'thin',color:{rgb:'F3F4F6'}}, bottom:{style:'thin',color:{rgb:'F3F4F6'}}, left:{style:'thin',color:{rgb:'F3F4F6'}}, right:{style:'thin',color:{rgb:'F3F4F6'}} }
+    }
+  }
+
+  // ── helper: 셀에 값+스타일 설정 ──
+  function sc(ws, r, c, v, t, style) {
+    const ref = XLSX.utils.encode_cell({ r, c })
+    const cell = { v: v === undefined || v === null ? '' : v }
+    if (t) cell.t = t
+    else if (typeof v === 'number') cell.t = 'n'
+    else cell.t = 's'
+    if (style) cell.s = style
+    ws[ref] = cell
+    // 범위 업데이트
+    if (!ws['!ref']) {
+      ws['!ref'] = XLSX.utils.encode_range({ s:{r,c}, e:{r,c} })
+    } else {
+      const range = XLSX.utils.decode_range(ws['!ref'])
+      if (r < range.s.r) range.s.r = r
+      if (c < range.s.c) range.s.c = c
+      if (r > range.e.r) range.e.r = r
+      if (c > range.e.c) range.e.c = c
+      ws['!ref'] = XLSX.utils.encode_range(range)
+    }
+    return ws
+  }
+
+  const wb = XLSX.utils.book_new()
+  const ws = {}
+  ws['!merges'] = []
+  ws['!rows'] = []
+  const COLS = 9 // A~I
+
+  // 열 너비 (단위: 문자 수)
+  ws['!cols'] = [
+    { wch: 5 },   // A: No.
+    { wch: 13 },  // B: 사용일자
+    { wch: 9 },   // C: 결제수단
+    { wch: 8 },   // D: 구분
+    { wch: 18 },  // E: 업체명
+    { wch: 20 },  // F: 사용품목
+    { wch: 22 },  // G: 구매용도
+    { wch: 14 },  // H: 금액
+    { wch: 20 }   // I: 메모
+  ]
+
+  let row = 0
+
+  // ─── 행 높이 헬퍼 ─────
+  function setRowHeight(r, hpx) {
+    if (!ws['!rows'][r]) ws['!rows'][r] = {}
+    ws['!rows'][r].hpx = hpx
+  }
+
+  // ─── 1행: 제목 (A1:I1 병합) ───
+  ws['!merges'].push({ s:{r:0,c:0}, e:{r:0,c:8} })
+  sc(ws, 0, 0, title, 's', S.title)
+  for (let c = 1; c < COLS; c++) sc(ws, 0, c, '', 's', S.title)
+  setRowHeight(0, 36)
+  row = 1
+
+  // ─── 2행: 빈행 ───
+  row = 2
+
+  // ─── 3행: 요약 정보 라벨/값 ───
+  // [작성일] [값] [] [기간] [값] [] [총건수] [값] []
+  const today = new Date().toLocaleDateString('ko-KR')
+  const period = `${year}-${mm}-01 ~ ${year}-${mm}-31`
+  sc(ws, row, 0, '작성일', 's', S.infoLabel)
+  sc(ws, row, 1, today, 's', S.infoVal)
+  sc(ws, row, 2, '', 's', S.empty)
+  sc(ws, row, 3, '기간', 's', S.infoLabel)
+  ws['!merges'].push({ s:{r:row,c:4}, e:{r:row,c:5} })
+  sc(ws, row, 4, period, 's', S.infoVal)
+  sc(ws, row, 5, '', 's', S.infoVal)
+  sc(ws, row, 6, '총건수', 's', S.infoLabel)
+  sc(ws, row, 7, allExpenses.length + '건', 's', S.infoVal)
+  sc(ws, row, 8, '', 's', S.empty)
+  setRowHeight(row, 22)
+  row++
+
+  // ─── 4행: 빈행 ───
+  row++
+
+  // ─── 구분별 소계 섹션 ───
+  ws['!merges'].push({ s:{r:row,c:0}, e:{r:row,c:8} })
+  sc(ws, row, 0, '■ 구분별 소계', 's', S.sectionHdr)
+  for (let c = 1; c < COLS; c++) sc(ws, row, c, '', 's', S.sectionHdr)
+  setRowHeight(row, 20)
+  row++
+
+  // 소계 헤더
+  sc(ws, row, 0, '구분', 's', S.colHdr)
+  ws['!merges'].push({ s:{r:row,c:1}, e:{r:row,c:6} })
+  sc(ws, row, 1, '금액 (원)', 's', S.colHdr)
+  for (let c = 2; c <= 6; c++) sc(ws, row, c, '', 's', S.colHdr)
+  sc(ws, row, 7, '금액 (원)', 's', S.colHdr)
+  sc(ws, row, 8, '건수', 's', S.colHdr)
+  setRowHeight(row, 20)
+  row++
+
+  Object.values(subtypeAggr).forEach(st => {
+    sc(ws, row, 0, st.label, 's', S.dataCenter)
+    ws['!merges'].push({ s:{r:row,c:1}, e:{r:row,c:6} })
+    sc(ws, row, 1, '', 's', S.data)
+    for (let c = 2; c <= 6; c++) sc(ws, row, c, '', 's', S.data)
+    sc(ws, row, 7, st.total, 'n', S.dataAmt)
+    sc(ws, row, 8, st.count, 'n', S.dataCenter)
+    setRowHeight(row, 20)
+    row++
+  })
+
+  // 빈행
+  row++
+
+  // ─── 상세 내역 섹션 ───
+  ws['!merges'].push({ s:{r:row,c:0}, e:{r:row,c:8} })
+  sc(ws, row, 0, '■ 상세 사용 내역', 's', S.sectionHdr)
+  for (let c = 1; c < COLS; c++) sc(ws, row, c, '', 's', S.sectionHdr)
+  setRowHeight(row, 20)
+  row++
+
+  // 상세 헤더
+  const detailHeaders = ['No.', '사용일자', '결제수단', '구분', '업체명', '사용품목', '구매용도', '금액 (원)', '메모']
+  detailHeaders.forEach((h, c) => {
+    sc(ws, row, c, h, 's', S.colHdr)
+  })
+  setRowHeight(row, 22)
+  row++
+
+  // 상세 데이터 행
   allExpenses.forEach((e, i) => {
-    const row = [
-      i+1,
+    const rowStyles = [S.dataCenter, S.dataCenter, S.dataCenter, S.dataCenter, S.data, S.data, S.data, S.dataAmt, S.data]
+    const vals = [
+      i + 1,
       e.expense_date,
       '법인카드',
       subtypeMap[e.card_subtype] || '기타',
-      `"${(e.vendor_name||e.card_vendor_name||'').replace(/"/g,'""')}"`,
-      `"${(e.item_name||'').replace(/"/g,'""')}"`,
-      `"${(e.purpose||'').replace(/"/g,'""')}"`,
-      e.amount||0,
-      `"${(e.memo||'').replace(/"/g,'""')}"`
+      e.vendor_name || e.card_vendor_name || e.vendor_display_name || '',
+      e.item_name || '',
+      e.purpose || '',
+      Number(e.amount) || 0,
+      e.memo || ''
     ]
-    csv += row.join(',') + '\n'
+    vals.forEach((v, c) => {
+      sc(ws, row, c, v, c === 7 ? 'n' : typeof v === 'number' ? 'n' : 's', rowStyles[c])
+    })
+    setRowHeight(row, 20)
+    row++
   })
-  const total = allExpenses.reduce((s, e) => s + (e.amount||0), 0)
-  csv += `합계,,,,,,, ${total},\n`
 
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `법인카드지출결의서_${year}년${mm}월.csv`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // ─── 합계 행 ───
+  sc(ws, row, 0, '합계', 's', S.totalHdr)
+  ws['!merges'].push({ s:{r:row,c:1}, e:{r:row,c:6} })
+  for (let c = 1; c <= 6; c++) sc(ws, row, c, '', 's', S.totalHdr)
+  sc(ws, row, 7, total, 'n', S.totalAmt)
+  sc(ws, row, 8, allExpenses.length + '건', 's', S.totalHdr)
+  setRowHeight(row, 26)
+  row++
+
+  // ─── 빈행 ───
+  row++
+
+  // ─── 결재란 ───
+  ws['!merges'].push({ s:{r:row,c:0}, e:{r:row,c:8} })
+  sc(ws, row, 0, '■ 결재', 's', S.sectionHdr)
+  for (let c = 1; c < COLS; c++) sc(ws, row, c, '', 's', S.sectionHdr)
+  setRowHeight(row, 20)
+  row++
+
+  const signRoles = ['작성자', '', '검토자', '', '승인자', '', '']
+  const signLabelStyle = {
+    font: { bold: true, sz: 10, color: { rgb: '374151' } },
+    fill: { fgColor: { rgb: 'F3F4F6' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: { top:{style:'thin',color:{rgb:'D1D5DB'}}, bottom:{style:'thin',color:{rgb:'D1D5DB'}}, left:{style:'thin',color:{rgb:'D1D5DB'}}, right:{style:'thin',color:{rgb:'D1D5DB'}} }
+  }
+  const signBoxStyle = {
+    font: { sz: 9, color: { rgb: '9CA3AF' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: { top:{style:'thin',color:{rgb:'D1D5DB'}}, bottom:{style:'medium',color:{rgb:'9CA3AF'}}, left:{style:'thin',color:{rgb:'D1D5DB'}}, right:{style:'thin',color:{rgb:'D1D5DB'}} }
+  }
+
+  // 결재자 라벨행
+  ;[0,2,4].forEach(c => {
+    ws['!merges'].push({ s:{r:row,c}, e:{r:row,c+1} })
+    sc(ws, row, c, ['작성자','검토자','승인자'][[0,2,4].indexOf(c)], 's', signLabelStyle)
+    sc(ws, row, c+1, '', 's', signLabelStyle)
+  })
+  sc(ws, row, 6, '', 's', S.empty)
+  sc(ws, row, 7, '', 's', S.empty)
+  sc(ws, row, 8, '', 's', S.empty)
+  setRowHeight(row, 22)
+  row++
+
+  // 서명 칸 (2행)
+  for (let signRow = 0; signRow < 2; signRow++) {
+    ;[0,2,4].forEach(c => {
+      ws['!merges'].push({ s:{r:row,c}, e:{r:row,c+1} })
+      sc(ws, row, c, signRow === 0 ? '(서명)' : '', 's', signBoxStyle)
+      sc(ws, row, c+1, '', 's', signBoxStyle)
+    })
+    sc(ws, row, 6, '', 's', S.empty)
+    sc(ws, row, 7, '', 's', S.empty)
+    sc(ws, row, 8, '', 's', S.empty)
+    setRowHeight(row, signRow === 0 ? 30 : 24)
+    row++
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, '지출결의서')
+
+  // ── 시트 2: 구분별 집계 ──
+  const ws2 = {}
+  ws2['!merges'] = []
+  ws2['!rows'] = []
+  ws2['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 8 }]
+  let r2 = 0
+
+  // 제목
+  ws2['!merges'].push({ s:{r:0,c:0}, e:{r:0,c:2} })
+  sc(ws2, 0, 0, title + ' – 구분별 집계', 's', S.title)
+  sc(ws2, 0, 1, '', 's', S.title)
+  sc(ws2, 0, 2, '', 's', S.title)
+  setRowHeight.call({ '!rows': ws2['!rows'] }, 0, 30)
+  ws2['!rows'][0] = { hpx: 30 }
+  r2 = 2
+
+  // 헤더
+  ;['구분', '금액 (원)', '건수'].forEach((h, c) => sc(ws2, r2, c, h, 's', S.colHdr))
+  ws2['!rows'][r2] = { hpx: 22 }
+  r2++
+
+  Object.values(subtypeAggr).forEach(st => {
+    sc(ws2, r2, 0, st.label, 's', S.dataCenter)
+    sc(ws2, r2, 1, st.total, 'n', S.dataAmt)
+    sc(ws2, r2, 2, st.count, 'n', S.dataCenter)
+    ws2['!rows'][r2] = { hpx: 20 }
+    r2++
+  })
+
+  r2++ // 빈행
+  sc(ws2, r2, 0, '합계', 's', S.totalHdr)
+  sc(ws2, r2, 1, total, 'n', S.totalAmt)
+  sc(ws2, r2, 2, allExpenses.length, 'n', S.totalHdr)
+  ws2['!rows'][r2] = { hpx: 24 }
+
+  // ws2 범위 설정
+  ws2['!ref'] = XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:r2,c:2} })
+
+  XLSX.utils.book_append_sheet(wb, ws2, '구분별집계')
+
+  // ── 다운로드 ──
+  XLSX.writeFile(wb, `법인카드지출결의서_${year}년${mm}월.xlsx`)
   showToast('엑셀 파일이 다운로드되었습니다', 'success')
 }
