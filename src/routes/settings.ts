@@ -9,6 +9,12 @@ settings.get('/:year/:month', async (c) => {
   // 관리자는 hospitalId 쿼리 파라미터 허용
   const hospitalId = Number(user.role === 'admin' ? (c.req.query('hospitalId') || user.hospitalId) : user.hospitalId)
 
+  const reqYear = parseInt(year)
+  const reqMonth = parseInt(month)
+
+  // 프로그램 최초 기준: 2026년 3월
+  const BASE_YEAR = 2026, BASE_MONTH = 3
+
   // 1) 해당 월 설정 조회
   let data = await c.env.DB.prepare(
     `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
@@ -17,19 +23,40 @@ settings.get('/:year/:month', async (c) => {
   let isFallback = false
   let fallbackYearMonth: string | null = null
 
-  // 2) 없으면 해당 월 이전(또는 같은) 설정 중 가장 가까운 것을 fallback으로 사용
-  //    → 3월 설정 저장 후 1월 데이터 조회 시 1월 이전 설정을 가져와 3월 설정이 소급 적용되지 않음
   if (!data) {
-    data = await c.env.DB.prepare(
-      `SELECT * FROM monthly_settings
-       WHERE hospital_id = ?
-         AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
-              OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
-       ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
-    ).bind(hospitalId, year, year, month).first<any>()
-    if (data) {
-      isFallback = true
-      fallbackYearMonth = `${data.year}년 ${data.month}월`
+    const isBeforeBase = (reqYear < BASE_YEAR) || (reqYear === BASE_YEAR && reqMonth < BASE_MONTH)
+
+    if (isBeforeBase) {
+      // 2a) 기준월(3월) 이전 → 3월 설정을 기본값으로 사용
+      data = await c.env.DB.prepare(
+        `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
+      ).bind(hospitalId, BASE_YEAR, BASE_MONTH).first<any>()
+
+      // 3월 설정도 없으면 가장 오래된 설정 사용
+      if (!data) {
+        data = await c.env.DB.prepare(
+          `SELECT * FROM monthly_settings
+           WHERE hospital_id = ?
+           ORDER BY CAST(year AS INTEGER) ASC, CAST(month AS INTEGER) ASC LIMIT 1`
+        ).bind(hospitalId).first<any>()
+      }
+      if (data) {
+        isFallback = true
+        fallbackYearMonth = `${BASE_YEAR}년 ${BASE_MONTH}월 기준값`
+      }
+    } else {
+      // 2b) 기준월 이후 → 직전에 설정된 값 상속 (가장 가까운 이전 월)
+      data = await c.env.DB.prepare(
+        `SELECT * FROM monthly_settings
+         WHERE hospital_id = ?
+           AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+         ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+      ).bind(hospitalId, reqYear, reqYear, reqMonth).first<any>()
+      if (data) {
+        isFallback = true
+        fallbackYearMonth = `${data.year}년 ${data.month}월`
+      }
     }
   }
 

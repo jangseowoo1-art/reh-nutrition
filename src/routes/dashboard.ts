@@ -10,19 +10,35 @@ dashboard.get('/summary/:year/:month', async (c) => {
   if (!hospitalId) return c.json({ error: 'hospitalId required' }, 400)
   const { year, month } = c.req.param()
 
-  // 월 설정 조회 (해당 월 없으면 해당 월 이전 중 가장 가까운 설정 fallback)
-  // → 3월 설정이 있어도 1월 데이터 조회 시 1월 이전 설정만 적용 (소급 방지)
+  // 월 설정 조회: 기준월(2026.3) 이전 → 3월 값, 이후 → 직전 설정 상속
+  const DB_BASE_YEAR = 2026, DB_BASE_MONTH = 3
+  const dashReqYear = parseInt(year), dashReqMonth = parseInt(month)
+
   let settings = await c.env.DB.prepare(
     `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
   ).bind(hospitalId, year, month).first<any>()
   if (!settings) {
-    settings = await c.env.DB.prepare(
-      `SELECT * FROM monthly_settings
-       WHERE hospital_id = ?
-         AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
-              OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
-       ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
-    ).bind(hospitalId, year, year, month).first<any>()
+    const isBeforeBaseDash = (dashReqYear < DB_BASE_YEAR) || (dashReqYear === DB_BASE_YEAR && dashReqMonth < DB_BASE_MONTH)
+    if (isBeforeBaseDash) {
+      // 3월 기준값 사용
+      settings = await c.env.DB.prepare(
+        `SELECT * FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
+      ).bind(hospitalId, DB_BASE_YEAR, DB_BASE_MONTH).first<any>()
+      if (!settings) {
+        settings = await c.env.DB.prepare(
+          `SELECT * FROM monthly_settings WHERE hospital_id = ?
+           ORDER BY CAST(year AS INTEGER) ASC, CAST(month AS INTEGER) ASC LIMIT 1`
+        ).bind(hospitalId).first<any>()
+      }
+    } else {
+      settings = await c.env.DB.prepare(
+        `SELECT * FROM monthly_settings
+         WHERE hospital_id = ?
+           AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+         ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+      ).bind(hospitalId, dashReqYear, dashReqYear, dashReqMonth).first<any>()
+    }
   }
 
   // 업체별 발주 합계
@@ -211,8 +227,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
     GROUP BY patient_category_id
   `).bind(hospitalId, today).all<any>()
 
-  // 카테고리 설정 조회 (fallback: 해당 월 이전 중 카테고리별 가장 가까운 설정 사용)
-  // → 3월 설정이 있어도 1월 조회 시 1월 이전 설정만 적용 (소급 방지)
+  // 카테고리 설정 조회: 기준월(2026.3) 이전 → 3월 값, 이후 → 직전 설정 상속
   let catSettingsDash = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
@@ -220,20 +235,41 @@ dashboard.get('/summary/:year/:month', async (c) => {
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, year, month).all<any>()
   if (!catSettingsDash.results || catSettingsDash.results.length === 0) {
-    catSettingsDash = await c.env.DB.prepare(`
-      SELECT cos.*, hpc.category_key, hpc.category_name
-      FROM category_order_settings cos
-      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
-      WHERE cos.hospital_id = ?
-        AND cos.id IN (
-          SELECT MAX(id) FROM category_order_settings
-          WHERE hospital_id = ?
-            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
-                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
-          GROUP BY patient_category_id
-        )
-      ORDER BY hpc.sort_order
-    `).bind(hospitalId, hospitalId, year, year, month).all<any>()
+    const isBeforeBaseCat = (dashReqYear < DB_BASE_YEAR) || (dashReqYear === DB_BASE_YEAR && dashReqMonth < DB_BASE_MONTH)
+    if (isBeforeBaseCat) {
+      catSettingsDash = await c.env.DB.prepare(`
+        SELECT cos.*, hpc.category_key, hpc.category_name
+        FROM category_order_settings cos
+        JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+        WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+        ORDER BY hpc.sort_order
+      `).bind(hospitalId, DB_BASE_YEAR, DB_BASE_MONTH).all<any>()
+      if (!catSettingsDash.results || catSettingsDash.results.length === 0) {
+        catSettingsDash = await c.env.DB.prepare(`
+          SELECT cos.*, hpc.category_key, hpc.category_name
+          FROM category_order_settings cos
+          JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+          WHERE cos.hospital_id = ?
+            AND cos.id IN (SELECT MIN(id) FROM category_order_settings WHERE hospital_id = ? GROUP BY patient_category_id)
+          ORDER BY hpc.sort_order
+        `).bind(hospitalId, hospitalId).all<any>()
+      }
+    } else {
+      catSettingsDash = await c.env.DB.prepare(`
+        SELECT cos.*, hpc.category_key, hpc.category_name
+        FROM category_order_settings cos
+        JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+        WHERE cos.hospital_id = ?
+          AND cos.id IN (
+            SELECT MAX(id) FROM category_order_settings
+            WHERE hospital_id = ?
+              AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                   OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+            GROUP BY patient_category_id
+          )
+        ORDER BY hpc.sort_order
+      `).bind(hospitalId, hospitalId, dashReqYear, dashReqYear, dashReqMonth).all<any>()
+    }
   }
 
   let prevCatSettingsDash = await c.env.DB.prepare(`

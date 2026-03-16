@@ -262,8 +262,11 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     ORDER BY order_date, vendor_id, patient_category_id
   `).bind(hospitalId, year, mm).all<any>()
 
-  // ── 해당 월 카테고리 설정 조회 (없으면 해당 월 이전 중 가장 가까운 설정 fallback) ──
-  // → 3월 설정이 있어도 1월 데이터 조회 시 1월 이전 설정만 적용 (소급 방지)
+  // ── 해당 월 카테고리 설정 조회 ──────────────────────────────
+  // 상속 규칙: 기준월(2026.3) 이전 → 3월 값 사용, 이후 → 직전 설정 상속
+  const BASE_YEAR = 2026, BASE_MONTH = 3
+  const reqYear = parseInt(year), reqMonth = parseInt(month)
+
   let catSettingsRows = await c.env.DB.prepare(`
     SELECT cos.*, hpc.category_key, hpc.category_name
     FROM category_order_settings cos
@@ -271,22 +274,51 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
   `).bind(hospitalId, year, month).all<any>()
 
-  // fallback: 해당 월 설정이 없으면 해당 월 이전 카테고리별 가장 가까운 설정 사용
   if (!catSettingsRows.results || catSettingsRows.results.length === 0) {
-    catSettingsRows = await c.env.DB.prepare(`
-      SELECT cos.*, hpc.category_key, hpc.category_name
-      FROM category_order_settings cos
-      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
-      WHERE cos.hospital_id = ?
-        AND cos.id IN (
-          SELECT MAX(id) FROM category_order_settings
-          WHERE hospital_id = ?
-            AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
-                 OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
-          GROUP BY patient_category_id
-        )
-      ORDER BY hpc.sort_order
-    `).bind(hospitalId, hospitalId, year, year, month).all<any>()
+    const isBeforeBase = (reqYear < BASE_YEAR) || (reqYear === BASE_YEAR && reqMonth < BASE_MONTH)
+
+    if (isBeforeBase) {
+      // 기준월(3월) 설정을 기본값으로
+      catSettingsRows = await c.env.DB.prepare(`
+        SELECT cos.*, hpc.category_key, hpc.category_name
+        FROM category_order_settings cos
+        JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+        WHERE cos.hospital_id = ? AND cos.year = ? AND cos.month = ?
+        ORDER BY hpc.sort_order
+      `).bind(hospitalId, BASE_YEAR, BASE_MONTH).all<any>()
+
+      // 3월 설정도 없으면 가장 오래된 설정
+      if (!catSettingsRows.results || catSettingsRows.results.length === 0) {
+        catSettingsRows = await c.env.DB.prepare(`
+          SELECT cos.*, hpc.category_key, hpc.category_name
+          FROM category_order_settings cos
+          JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+          WHERE cos.hospital_id = ?
+            AND cos.id IN (
+              SELECT MIN(id) FROM category_order_settings
+              WHERE hospital_id = ?
+              GROUP BY patient_category_id
+            )
+          ORDER BY hpc.sort_order
+        `).bind(hospitalId, hospitalId).all<any>()
+      }
+    } else {
+      // 직전 설정 상속
+      catSettingsRows = await c.env.DB.prepare(`
+        SELECT cos.*, hpc.category_key, hpc.category_name
+        FROM category_order_settings cos
+        JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+        WHERE cos.hospital_id = ?
+          AND cos.id IN (
+            SELECT MAX(id) FROM category_order_settings
+            WHERE hospital_id = ?
+              AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                   OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+            GROUP BY patient_category_id
+          )
+        ORDER BY hpc.sort_order
+      `).bind(hospitalId, hospitalId, reqYear, reqYear, reqMonth).all<any>()
+    }
   }
 
   // ── 오늘자 식수 조회 (카테고리별 식단가 계산용) ──
