@@ -116,11 +116,19 @@ orders.post('/save', async (c) => {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
   const body = await c.req.json()
-  const { vendorId, orderDate, taxableAmount, exemptAmount, vatAmount, note, isMultiDay, multiDayStart, multiDayEnd, multiDayCount } = body
+  const { vendorId, orderDate, taxableAmount, exemptAmount, vatAmount, totalAmount: directTotal, note, isMultiDay, multiDayStart, multiDayEnd, multiDayCount } = body
 
-  // VAT 반올림 보정
-  const roundedVat = Math.round((taxableAmount || 0) * 0.1)
-  const totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount !== undefined ? vatAmount : roundedVat)
+  // mixed_total 타입: directTotal이 직접 전달된 경우 그대로 사용
+  // 일반 과세/면세 타입: taxable+exempt+vat 합산
+  let totalAmount: number
+  if (directTotal !== undefined && directTotal !== null && (taxableAmount || 0) === 0 && (exemptAmount || 0) === 0 && (vatAmount || 0) === 0) {
+    // mixed_total: 합산 총액 직접 입력 (과세+면세+vat 모두 0이고 totalAmount만 있는 경우)
+    totalAmount = directTotal
+  } else {
+    // VAT 반올림 보정
+    const roundedVat = Math.round((taxableAmount || 0) * 0.1)
+    totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount !== undefined ? vatAmount : roundedVat)
+  }
 
   const existing = await c.env.DB.prepare(
     `SELECT id FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=? AND patient_category_id IS NULL`
@@ -326,9 +334,15 @@ orders.post('/save-category', async (c) => {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
   const body = await c.req.json()
-  const { vendorId, orderDate, patientCategoryId, taxableAmount, exemptAmount, vatAmount, note } = body
+  const { vendorId, orderDate, patientCategoryId, taxableAmount, exemptAmount, vatAmount, totalAmount: directTotal, note } = body
 
-  const totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount || 0)
+  // mixed_total 타입: directTotal이 직접 전달된 경우 (taxable/exempt/vat 모두 0)
+  let totalAmount: number
+  if (directTotal !== undefined && directTotal !== null && (taxableAmount || 0) === 0 && (exemptAmount || 0) === 0 && (vatAmount || 0) === 0) {
+    totalAmount = directTotal
+  } else {
+    totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount || 0)
+  }
 
   // vendor + date + category 조합으로 upsert
   const existing = await c.env.DB.prepare(`

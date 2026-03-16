@@ -460,7 +460,7 @@ function getCategoryLabel(cat) {
   return map[cat] || '기타'
 }
 function getTaxTypeLabel(t) {
-  return { mixed:'과세+면세', taxable:'과세', exempt:'면세' }[t] || t
+  return { mixed:'과세+면세', taxable:'과세', exempt:'면세', mixed_total:'과+면(합산)' }[t] || t
 }
 
 // 환자군 카테고리 색상 (hex) - 소프트 톤으로 조정
@@ -2139,9 +2139,9 @@ async function renderOrders() {
               vCatMonthAccum += r2.total || 0
             })
             const vRemain = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) - vCatMonthAccum : null
-            const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
-            const taxBg = v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
-            const taxColor = v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
+            const taxLabel = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세'
+            const taxBg = v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':v.tax_type==='mixed_total'?'#f3e8ff':'#fef9c3'
+            const taxColor = v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':v.tax_type==='mixed_total'?'#7c3aed':'#92400e'
 
             // 입력 필드
             let inputFields = ''
@@ -2157,6 +2157,13 @@ async function renderOrders() {
                     <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid ${catColor}60;border-radius:4px;background:${exempt>0?catColor+'15':'white'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="exempt" data-date="${dateStr}" value="${exempt>0?fmt(exempt):''}" placeholder="0">
                   </div>
                   <div id="vcatsubt-${v.id}-${cat.id}-${dateStr}" style="flex:1;text-align:center;font-size:11px;font-weight:700;color:${catColor};padding:3px 2px;background:${catColor}10;border-radius:4px;margin-top:12px">${total>0?fmtMan(total):''}</div>
+                </div>`
+            } else if (v.tax_type === 'mixed_total') {
+              // 합산입력: 총액 1칸
+              inputFields = `
+                <div style="margin-top:4px">
+                  <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">총액 (과+면 합산)</div>
+                  <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid ${catColor}60;border-radius:4px;background:${total>0?catColor+'15':'white'}" data-category="${cat.id}" data-vendor="${v.id}" data-field="total" data-date="${dateStr}" value="${total>0?fmt(total):''}" placeholder="0">
                 </div>`
             } else {
               inputFields = `
@@ -2714,11 +2721,13 @@ window.refreshOrders = () => {
   renderOrders()
 }
 
+// mixed: 과세+면세 2칸+소계(3열), mixed_total: 합산총액 1칸, taxable/exempt: 1칸
 function getVendorCols(taxType) { return taxType === 'mixed' ? 3 : 1 }
 
 function getVendorSubHeaders(taxType) {
   if (taxType === 'mixed') return `<th style="min-width:60px;font-size:10px">과세</th><th style="min-width:60px;font-size:10px">면세</th><th style="min-width:60px;font-size:10px;background:#1a2f4a">소계</th>`
   if (taxType === 'taxable') return `<th style="min-width:60px;font-size:10px">과세</th>`
+  if (taxType === 'mixed_total') return `<th style="min-width:68px;font-size:10px">합산총액</th>`
   return `<th style="min-width:60px;font-size:10px">면세</th>`
 }
 
@@ -2733,6 +2742,10 @@ function getVendorInputCells(v, order, dateStr, addBorder = false) {
     return `<td style="${borderStyle}min-width:64px;padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${fmtV(taxable)}" placeholder="0" style="width:60px;min-width:60px"></td>
             <td style="min-width:64px;padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="exempt" data-date="${dateStr}" value="${fmtV(exempt)}" placeholder="0" style="width:60px;min-width:60px"></td>
             <td class="total-col text-center text-xs ${order.is_multi_day?'multi-day-cell':''}" id="vt-${v.id}-${dateStr}" style="min-width:64px;padding:2px 2px" ${multiDay}>${total>0?fmt(total):''}</td>`
+  }
+  if (v.tax_type === 'mixed_total') {
+    // 합산 입력: 총액 1칸 (과세+면세 영수증이 총액으로만 청구되는 간납 업체)
+    return `<td style="${borderStyle}min-width:72px;padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="total" data-date="${dateStr}" value="${fmtV(total)}" placeholder="0" style="width:68px;min-width:68px"></td>`
   }
   if (v.tax_type === 'taxable') {
     return `<td style="${borderStyle}min-width:72px;padding:2px 2px"><input type="text" inputmode="numeric" pattern="[0-9,]*" class="order-input" data-vendor="${v.id}" data-type="taxable" data-date="${dateStr}" value="${fmtV(taxable)}" placeholder="0" style="width:68px;min-width:68px"></td>`
@@ -2761,6 +2774,9 @@ function getVendorSubHeadersWithPct(v, borderLeft = '', hasCats = false, vBgStyl
   const sumBg = `style="${vBgStyle}min-width:56px;font-size:9px;border-left:1px dashed rgba(255,255,255,0.3)"`
   if (v.tax_type === 'mixed') {
     return `<th ${firstBorder}>과세</th><th ${subBg}>면세</th><th style="${vBgStyle}min-width:${colW}px;font-size:10px;opacity:0.85">소계</th>${hasCats ? `<th ${sumBg}>업체합산</th>` : ''}`
+  }
+  if (v.tax_type === 'mixed_total') {
+    return `<th ${firstBorder}>합산총액</th>${hasCats ? `<th ${sumBg}>업체합산</th>` : ''}`
   }
   if (v.tax_type === 'taxable') {
     return `<th ${firstBorder}>과세</th>${hasCats ? `<th ${sumBg}>업체합산</th>` : ''}`
@@ -2793,19 +2809,30 @@ function bindOrderInputEvents() {
   const doOrderSave = async (vendorId, date) => {
     const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
     const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
-    const taxable = parseOrderVal(taxableEl?.value)
-    const exempt  = parseOrderVal(exemptEl?.value)
-    if (taxableEl) taxableEl.value = taxable > 0 ? taxable.toLocaleString() : ''
-    if (exemptEl)  exemptEl.value  = exempt  > 0 ? exempt.toLocaleString()  : ''
-    const vat = Math.round(taxable * 0.1)
-    const total = taxable + exempt + vat
+    const totalEl   = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="total"][data-date="${date}"]`)
+
+    let taxable = 0, exempt = 0, vat = 0, total = 0
+    if (totalEl) {
+      // mixed_total: 합산 총액 1칸 입력 (과세+면세 영수증 총액)
+      total = parseOrderVal(totalEl.value)
+      totalEl.value = total > 0 ? total.toLocaleString() : ''
+      taxable = 0; exempt = 0; vat = 0
+    } else {
+      taxable = parseOrderVal(taxableEl?.value)
+      exempt  = parseOrderVal(exemptEl?.value)
+      if (taxableEl) taxableEl.value = taxable > 0 ? taxable.toLocaleString() : ''
+      if (exemptEl)  exemptEl.value  = exempt  > 0 ? exempt.toLocaleString()  : ''
+      vat = Math.round(taxable * 0.1)
+      total = taxable + exempt + vat
+    }
     const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
     if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
     updateDayTotal(date)
     showAutoSaveIndicator('saving')
     const res = await api('POST', '/api/orders/save', {
       vendorId: parseInt(vendorId), orderDate: date,
-      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat
+      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat,
+      totalAmount: total
     })
     showAutoSaveIndicator(res?.success ? 'saved' : 'error')
     updateBudgetProgressPanel()
@@ -2817,16 +2844,23 @@ function bindOrderInputEvents() {
       input.value = input.value.replace(/[^0-9]/g, '')
       const vendorId = input.dataset.vendor
       const date = input.dataset.date
-      const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
-      const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
-      const taxable = parseOrderVal(taxableEl?.value)
-      const exempt  = parseOrderVal(exemptEl?.value)
-      const vat = Math.round(taxable * 0.1)
-      const total = taxable + exempt + vat
-      const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
-      if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
-      updateDayTotal(date)
-      updateBudgetProgressPanel()
+      const totalDirectEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="total"][data-date="${date}"]`)
+      if (totalDirectEl) {
+        // mixed_total: 합산 총액 1칸 - 소계셀 없음, 그냥 dayTotal만 업데이트
+        updateDayTotal(date)
+        updateBudgetProgressPanel()
+      } else {
+        const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
+        const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
+        const taxable = parseOrderVal(taxableEl?.value)
+        const exempt  = parseOrderVal(exemptEl?.value)
+        const vat = Math.round(taxable * 0.1)
+        const total = taxable + exempt + vat
+        const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
+        if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
+        updateDayTotal(date)
+        updateBudgetProgressPanel()
+      }
     } else if (input.classList.contains('cat-order-input')) {
       input.value = input.value.replace(/[^0-9]/g, '')
       updateDayTotal(input.dataset.date)
@@ -2899,31 +2933,52 @@ async function saveCatOrderInput(input) {
   const exemptEl  = tbody ? tbody.querySelector(`${selBase}[data-field="exempt"]`)  : null
   const totalEl   = tbody ? tbody.querySelector(`${selBase}[data-field="total"]`)   : null
 
-  let taxable = 0, exempt = 0
+  let taxable = 0, exempt = 0, vat = 0, totalOverride = null
   if (taxableEl) taxable = parseOrderVal(taxableEl.value)
   if (exemptEl)  exempt  = parseOrderVal(exemptEl.value)
   if (totalEl) {
-    // tax_type === 'exempt' 또는 단일 컬럼인 경우
     const val = parseOrderVal(totalEl.value)
-    // vendor tax_type 판별: 부모 행에서 읽기 어려우므로 field로 구분
-    if (field === 'exempt') exempt = val
-    else taxable = val
+    if (field === 'exempt') {
+      // 순수 면세 단일칸
+      exempt = val
+    } else if (field === 'total') {
+      // mixed_total: 과세+면세 합산 총액 1칸 (taxable/exempt 없음)
+      // taxable/exempt 둘 다 없는 경우에만 totalOverride 사용
+      if (!taxableEl && !exemptEl) {
+        totalOverride = val
+      } else {
+        // fallback: taxable로 처리 (기존 동작)
+        taxable = val
+      }
+    } else {
+      // 과세 단일칸
+      taxable = val
+    }
   }
 
-  const vat = Math.round(taxable * 0.1)
+  vat = Math.round(taxable * 0.1)
 
   showAutoSaveIndicator('saving')
-  const res = await api('POST', '/api/orders/save-category', {
+  const savePayload = {
     vendorId: parseInt(vendorId),
     orderDate: date,
     patientCategoryId: parseInt(categoryId),
     taxableAmount: taxable,
     exemptAmount: exempt,
     vatAmount: vat
-  })
+  }
+  // mixed_total: totalOverride가 있으면 totalAmount를 직접 전달
+  if (totalOverride !== null) {
+    savePayload.taxableAmount = 0
+    savePayload.exemptAmount = 0
+    savePayload.vatAmount = 0
+    savePayload.totalAmount = totalOverride
+  }
+  const res = await api('POST', '/api/orders/save-category', savePayload)
   showAutoSaveIndicator(res?.success ? 'saved' : 'error')
   // 서브행 합계 셀 업데이트
-  updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat)
+  const dispTotal = totalOverride !== null ? totalOverride : taxable + exempt + vat
+  updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat, totalOverride)
   updateCatMonthTotal(categoryId)
 }
 
@@ -2952,11 +3007,13 @@ function showAutoSaveIndicator(state) {
   }
 }
 
-// 서브행 합계 셀 실시간 업데이트 (과세+면세+vat)
-function updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat) {
-  const total = taxable + exempt + vat
-  // 합계 td: 3컬럼(mixed) 업체의 3번째 td에 해당 (현재는 동적 생성 기반 - 재렌더링으로 처리)
-  // 간단히 dayTotal 업데이트만 수행
+// 서브행 합계 셀 실시간 업데이트 (과세+면세+vat 또는 mixed_total 합산)
+function updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat, totalOverride) {
+  // totalOverride: mixed_total 타입일 때 직접 합산 총액
+  const total = totalOverride !== undefined && totalOverride !== null
+    ? totalOverride
+    : taxable + exempt + vat
+  // 간단히 dayTotal 업데이트만 수행 (세부 셀은 updateDayTotal 내부에서 처리됨)
   updateDayTotal(date)
   updateBudgetProgressPanel()
 }
@@ -3073,11 +3130,18 @@ function updateBudgetProgressPanel() {
       const key = `${date}-${vendor}`
       if (processed[key]) return
       processed[key] = true
-      const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
-      const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
-      const t = parseOrderVal(taxableEl?.value)
-      const e = parseOrderVal(exemptEl?.value)
-      const total = t + Math.round(t*0.1) + e
+      // mixed_total: data-type="total" 직접 합산 총액
+      const totalDirectEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="total"][data-date="${date}"]`)
+      let total = 0
+      if (totalDirectEl) {
+        total = parseOrderVal(totalDirectEl.value)
+      } else {
+        const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
+        const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
+        const t = parseOrderVal(taxableEl?.value)
+        const e = parseOrderVal(exemptEl?.value)
+        total = t + Math.round(t*0.1) + e
+      }
       monthTotal += total
       if (date === todayStr) todayTotal += total
       if (date >= weekStartStr2 && date <= weekEndStr2) weekTotal += total
@@ -3164,11 +3228,18 @@ function updateBudgetProgressPanel() {
       const wKey   = `${date}-${vendor}`
       if (procWk[wKey]) return
       procWk[wKey] = true
-      const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
-      const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
-      const t2 = parseOrderVal(tx?.value)
-      const e2 = parseOrderVal(ex?.value)
-      const tot2 = t2 + Math.round(t2 * 0.1) + e2
+      // mixed_total: data-type="total" 직접 합산 총액
+      const totDirEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="total"][data-date="${date}"]`)
+      let tot2 = 0
+      if (totDirEl) {
+        tot2 = parseOrderVal(totDirEl.value)
+      } else {
+        const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
+        const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
+        const t2 = parseOrderVal(tx?.value)
+        const e2 = parseOrderVal(ex?.value)
+        tot2 = t2 + Math.round(t2 * 0.1) + e2
+      }
       if (tot2 === 0) return
       const wEntry = savedWeeklyData.find(w => date >= w.wk && date <= w.wkEnd)
       const wkStart = wEntry ? wEntry.wk : null
@@ -3222,11 +3293,17 @@ function updateBudgetProgressPanel() {
       document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`).forEach(inp => {
         const d = inp.dataset.date
         if (seenDates.has(d)) return; seenDates.add(d)
-        const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
-        const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
-        const t = parseOrderVal(tx?.value)
-        const e = parseOrderVal(ex?.value)
-        vMonthTotal += t + Math.round(t*0.1) + e
+        // mixed_total: data-type="total" 직접 합산 총액
+        const totDirEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="total"][data-date="${d}"]`)
+        if (totDirEl) {
+          vMonthTotal += parseOrderVal(totDirEl.value)
+        } else {
+          const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
+          const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
+          const t = parseOrderVal(tx?.value)
+          const e = parseOrderVal(ex?.value)
+          vMonthTotal += t + Math.round(t*0.1) + e
+        }
       })
     }
     const vPct = v.monthly_budget > 0 ? Math.round(vMonthTotal / v.monthly_budget * 100) : null
@@ -3743,7 +3820,18 @@ function updateInsightPanel() {
       const field = inp.dataset.field || inp.dataset.type
       const val = parseOrderVal(inp.value)
       if (field === 'taxable') liveTotal2 += val + Math.round(val * 0.1)
-      else if (field !== 'total') liveTotal2 += val
+      else if (field === 'total') {
+        // mixed_total 합산 총액: taxable/exempt 없을 때만 합산 (중복 방지)
+        const v2 = inp.dataset.vendor
+        const d2 = inp.dataset.date
+        const c2 = inp.dataset.category
+        const hasTaxable = c2
+          ? document.querySelector(`.cat-order-input[data-vendor="${v2}"][data-category="${c2}"][data-field="taxable"][data-date="${d2}"]`)
+          : document.querySelector(`input.order-input[data-vendor="${v2}"][data-type="taxable"][data-date="${d2}"]`)
+        if (!hasTaxable) liveTotal2 += val
+      } else {
+        liveTotal2 += val
+      }
     })
     // 월간 누적 발주액은 monthOrdered 변수 사용 (이미 계산됨)
     if (elapsedRatio > 0.05 && monthOrdered > 0) {
@@ -3772,6 +3860,14 @@ function updateDayTotal(date) {
     const vendorId = inp.dataset.vendor
     if (processedVendors.has(vendorId)) return
     processedVendors.add(vendorId)
+    // mixed_total: data-type="total" 입력 (합산 총액)
+    const totalDirectEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="total"][data-date="${date}"]`)
+    if (totalDirectEl) {
+      const vTotal = parseOrderVal(totalDirectEl.value)
+      total += vTotal
+      vendorTotals[vendorId] = vTotal
+      return
+    }
     const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
     const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
     const t = parseOrderVal(taxableEl?.value)
@@ -7505,7 +7601,8 @@ async function openHospitalDetail(hospitalId) {
           <div>
             <label class="text-sm font-medium text-gray-600">세금 구분</label>
             <select id="adminVendorTaxType" class="form-input mt-1">
-              <option value="mixed">과세+면세</option>
+              <option value="mixed">과세+면세 (2칸 분리입력)</option>
+              <option value="mixed_total">과세+면세 합산입력 (총액 1칸)</option>
               <option value="taxable">과세만</option>
               <option value="exempt">면세만</option>
             </select>
