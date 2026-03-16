@@ -1570,7 +1570,7 @@ async function renderOrders() {
     </div>`
   })()}
 
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100" style="overflow:hidden;min-width:0;max-width:100%;box-sizing:border-box">
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100" style="min-width:0;max-width:100%;box-sizing:border-box;contain:layout style">
     <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
       <div>
         <h2 class="font-bold text-gray-800 text-sm md:text-base">${App.currentYear}년 ${App.currentMonth}월 발주 입력</h2>
@@ -1724,7 +1724,7 @@ async function renderOrders() {
       </table>
       </div>
       <!-- 하단 가로 스크롤바 (데스크탑용 미러) -->
-      <div id="orders-hscroll-bar" style="overflow-x:auto;overflow-y:hidden;height:14px;border-top:1px solid #e5e7eb;background:#f9fafb;display:none">
+      <div id="orders-hscroll-bar" style="overflow-x:auto;overflow-y:hidden;height:14px;border-top:1px solid #e5e7eb;background:#f9fafb">
         <div id="orders-hscroll-inner" style="height:1px"></div>
       </div>
     </div>
@@ -2435,17 +2435,17 @@ function setupOrdersScrollSync() {
     syncWidth()
 
     if (isMobile) {
-      // 모바일: CSS로 display:none 처리되므로 JS에서 별도 제어 안 함
+      // 모바일: CSS media query로 display:none 처리
     } else {
-      // 데스크탑: 하단 미러 스크롤바 동기화 (CSS에서 항상 표시)
-      if (hBar && hInner) {
-        // 이미 등록된 이벤트 중복 방지를 위해 새 엘리먼트로 교체
+      // 데스크탑: 하단 미러 스크롤바 동기화
+      // 이미 등록된 이벤트 중복 방지: 새 스크롤러 엘리먼트로 교체 후 리스너 등록
+      if (hBar) {
         const newBar = hBar.cloneNode(true)
         hBar.parentNode.replaceChild(newBar, hBar)
-        const bar = newBar
-        const innerEl = bar.querySelector('#orders-hscroll-inner') || bar.firstElementChild
+        const bar     = newBar
+        const innerEl = bar.firstElementChild   // #orders-hscroll-inner
 
-        // hInner 참조 갱신
+        // inner 너비 초기화
         if (innerEl) innerEl.style.width = table.scrollWidth + 'px'
 
         let lockBar = false, lockScroller = false

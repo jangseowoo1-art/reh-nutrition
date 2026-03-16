@@ -306,7 +306,7 @@ function getAppShell(): string {
     <!-- 페이지 컨텐츠 -->
     <div id="pageContent" class="flex-1 overflow-y-auto p-3 md:p-6"></div>
     <!-- 발주/식수 입력: DOM 보존용 영구 패널 -->
-    <div id="orders-panel" style="display:none" class="flex-1 overflow-y-auto overflow-x-auto p-2 md:p-6"></div>
+    <div id="orders-panel" style="display:none" class="flex-1 overflow-y-auto p-2 md:p-6" style="overflow-x:hidden;min-width:0;box-sizing:border-box"></div>
     <div id="meals-panel"  style="display:none" class="flex-1 overflow-y-auto p-2 md:p-6"></div>
   </main>
 </div>
