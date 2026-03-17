@@ -1992,6 +1992,11 @@ async function renderOrders() {
         <button onclick="downloadOrdersExcel()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0" title="발주 데이터 엑셀 다운로드">
           <i class="fas fa-file-excel"></i> <span class="hidden sm:inline">엑셀</span>
         </button>
+        <!-- #4 거래내역 엑셀 자동 입력 -->
+        <label style="background:#7c3aed;color:white;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap" title="업체 거래내역 엑셀 업로드 → 발주 자동 입력">
+          <i class="fas fa-file-import"></i><span class="hidden sm:inline">자동입력</span>
+          <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="autoImportOrderFromExcel(this)">
+        </label>
         <button onclick="refreshOrders()" class="btn btn-secondary btn-sm">
           <i class="fas fa-sync"></i>
         </button>
@@ -7649,9 +7654,14 @@ async function renderIngredientPricesPage() {
 
     <!-- 단가 입력 테이블 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
-      <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+      <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
         <h2 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-green-500 mr-1"></i>품목별 단가 입력</h2>
-        <div class="flex gap-2">
+        <div class="flex gap-2 flex-wrap">
+          <!-- #5 엑셀 자동 분석 버튼 -->
+          <label style="background:#7c3aed;color:white;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+            <i class="fas fa-file-excel"></i>엑셀 자동분석
+            <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="autoAnalyzeIngredientFromExcel(this,${year},${month})">
+          </label>
           <button onclick="addIngredientRow()" class="btn btn-secondary btn-sm">
             <i class="fas fa-plus mr-1"></i>품목 추가
           </button>
@@ -7659,6 +7669,13 @@ async function renderIngredientPricesPage() {
             <i class="fas fa-save mr-1"></i>저장
           </button>
         </div>
+      </div>
+      <!-- #5 엑셀 업로드 안내 -->
+      <div id="ingExcelHint" style="background:#f5f3ff;border-bottom:1px solid #e9d5ff;padding:10px 16px;font-size:11px;color:#7c3aed;display:flex;align-items:flex-start;gap:8px">
+        <i class="fas fa-info-circle mt-0.5"></i>
+        <span><strong>엑셀 자동분석:</strong> 삼성웰스토리, 아워홈 등 거래내역 엑셀 파일을 업로드하면 쌀·닭고기·돼지고기 등 주요 식재료 단가를 자동으로 분석합니다.<br>
+        분석된 단가는 표에 자동 입력됩니다. (단가 = 금액 ÷ 수량)</span>
+        <button onclick="document.getElementById('ingExcelHint').style.display='none'" style="background:none;border:none;color:#a78bfa;cursor:pointer;font-size:14px;flex-shrink:0">✕</button>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm" id="ingTable">
@@ -7718,6 +7735,7 @@ function buildIngRow(i, r, prevMLabel, prevYLabel) {
     <td class="py-2 px-3">
       <input type="number" class="form-input text-xs py-1 text-right ing-price" id="ing-pprice-${i}"
         value="${r.price||''}" placeholder="0" min="0" style="width:90px"
+        data-prev-price="${r.prevPrice||0}" data-prev-year-price="${r.prevYearPrice||0}"
         oninput="refreshIngRow(${i},${r.prevPrice},${r.prevYearPrice})">
     </td>
     <td class="py-2 px-3 text-right text-xs text-gray-500" id="ing-pprev-${i}">
@@ -7788,6 +7806,541 @@ window.reloadIngPage = function() {
   App.currentMonth = m
   renderIngredientPricesPage()
 }
+
+// ── #5 엑셀 자동 분석: 거래내역에서 식재료 단가 추출 ────────────
+window.autoAnalyzeIngredientFromExcel = async function(input, year, month) {
+  const file = input.files[0]
+  if (!file) return
+  input.value = ''
+
+  // XLSX 로드 확인
+  if (typeof XLSX === 'undefined') {
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    s.onload = () => window.autoAnalyzeIngredientFromExcel({ files: [file] }, year, month)
+    document.head.appendChild(s)
+    showToast('라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
+    return
+  }
+
+  showToast('엑셀 분석 중...', 'info')
+
+  try {
+    const buf = await file.arrayBuffer()
+    const wb = XLSX.read(buf, { type: 'array' })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+    // 대상 식재료 키워드 목록
+    const TARGETS = [
+      { name:'쌀',       keywords:['쌀','백미','현미'] },
+      { name:'닭고기',   keywords:['닭','치킨','계육'] },
+      { name:'돼지고기', keywords:['돼지','삼겹','앞다리','목살','후지','전지'] },
+      { name:'계란',     keywords:['계란','달걀'] },
+      { name:'두부',     keywords:['두부'] },
+      { name:'양파',     keywords:['양파'] },
+      { name:'감자',     keywords:['감자'] },
+      { name:'당근',     keywords:['당근'] },
+      { name:'배추',     keywords:['배추','절임배추'] },
+      { name:'양배추',   keywords:['양배추'] },
+      { name:'대파',     keywords:['대파','파'] },
+      { name:'마늘',     keywords:['마늘','깐마늘'] },
+      { name:'쇠고기',   keywords:['쇠고기','소고기','한우','수입육','등심','불고기','국거리'] },
+    ]
+
+    // 컬럼 헤더 행 탐지 (품목명, 수량, 단가/금액 컬럼 찾기)
+    let headerRow = -1
+    let colItem = -1, colQty = -1, colPrice = -1, colAmt = -1
+
+    const headerKeywords = {
+      item:  ['품목','품명','상품명','식재료','재료명','item','name','product'],
+      qty:   ['수량','qty','quantity'],
+      price: ['단가','unit price','unit_price','단위가','price'],
+      amt:   ['금액','amount','합계','공급가','공급액','총액']
+    }
+
+    for (let r = 0; r < Math.min(raw.length, 15); r++) {
+      const row = raw[r].map(c => String(c).trim().toLowerCase())
+      let foundItem = row.findIndex(c => headerKeywords.item.some(k => c.includes(k)))
+      if (foundItem >= 0) {
+        headerRow = r
+        colItem = foundItem
+        colQty   = row.findIndex(c => headerKeywords.qty.some(k => c.includes(k)))
+        colPrice = row.findIndex(c => headerKeywords.price.some(k => c.includes(k)))
+        colAmt   = row.findIndex(c => headerKeywords.amt.some(k => c.includes(k)))
+        break
+      }
+    }
+
+    // 헤더를 못 찾으면 첫 번째 행을 헤더로 간주
+    if (headerRow === -1) {
+      headerRow = 0
+      colItem = 0
+      colAmt = raw[0].length - 1
+    }
+
+    // 각 식재료별 단가 계산
+    const results = {}
+    for (let r = headerRow + 1; r < raw.length; r++) {
+      const row = raw[r]
+      if (!row || row.every(c => c === '' || c === null)) continue
+
+      const itemCell = String(row[colItem] || '').trim()
+      if (!itemCell) continue
+
+      const target = TARGETS.find(t => t.keywords.some(k => itemCell.includes(k)))
+      if (!target) continue
+
+      // 단가 직접 추출 (단가 컬럼이 있는 경우)
+      if (colPrice >= 0 && row[colPrice]) {
+        const price = parseFloat(String(row[colPrice]).replace(/[^\d.]/g, ''))
+        if (price > 0 && !results[target.name]) {
+          results[target.name] = Math.round(price)
+        }
+        continue
+      }
+
+      // 금액 ÷ 수량 으로 단가 계산
+      const qty = colQty >= 0 ? parseFloat(String(row[colQty]||'0').replace(/[^\d.]/g,'')) : 0
+      const amt = colAmt >= 0 ? parseFloat(String(row[colAmt]||'0').replace(/[^\d,]/g,'').replace(',','')) : 0
+      if (qty > 0 && amt > 0) {
+        const calcPrice = Math.round(amt / qty)
+        if (!results[target.name] || calcPrice < results[target.name]) {
+          results[target.name] = calcPrice
+        }
+      }
+    }
+
+    // 결과를 테이블에 반영
+    const found = Object.keys(results)
+    if (found.length === 0) {
+      showToast('식재료 단가를 자동 추출하지 못했습니다.\n품목명·수량·단가 컬럼이 포함된 엑셀인지 확인해주세요.', 'error')
+      return
+    }
+
+    // 테이블 행 업데이트
+    const tbody = document.getElementById('ing-page-tbody')
+    if (tbody) {
+      const nameInputs = tbody.querySelectorAll('.ing-name')
+      nameInputs.forEach((nameEl, i) => {
+        const name = nameEl.value.trim()
+        if (results[name] !== undefined) {
+          const priceEl = document.getElementById(`ing-pprice-${i}`)
+          if (priceEl) {
+            const prevPrice = parseInt(priceEl.dataset?.prevPrice || 0) || 0
+            const prevYearPrice = parseInt(priceEl.dataset?.prevYearPrice || 0) || 0
+            priceEl.value = results[name]
+            priceEl.style.background = '#faf5ff'
+            priceEl.style.borderColor = '#7c3aed'
+            refreshIngRow(i, prevPrice, prevYearPrice)
+          }
+        }
+      })
+    }
+
+    // 결과 요약 토스트
+    const summary = found.map(n => `${n}: ${results[n].toLocaleString()}원`).join(', ')
+    showToast(`✅ ${found.length}개 식재료 단가 자동 입력!\n${summary}`, 'success')
+
+    // 저장 안내
+    setTimeout(() => showToast('저장 버튼을 눌러 단가를 저장하세요.', 'info'), 2000)
+
+  } catch (e) {
+    console.error(e)
+    showToast('엑셀 파일 분석 중 오류가 발생했습니다.', 'error')
+  }
+}
+
+// ── #4 업체 거래내역 엑셀 자동 입력 ────────────────────────────────
+window.autoImportOrderFromExcel = async function(input) {
+  const file = input.files[0]
+  if (!file) return
+  input.value = ''
+
+  // XLSX 라이브러리 로드
+  if (typeof XLSX === 'undefined') {
+    showToast('XLSX 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    s.onload = () => {
+      showToast('라이브러리 로드 완료. 파일을 다시 업로드해주세요.', 'info')
+    }
+    document.head.appendChild(s)
+    return
+  }
+
+  showToast('거래내역 분석 중...', 'info')
+
+  try {
+    const buf = await file.arrayBuffer()
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true })
+    const sheetName = wb.SheetNames[0]
+    const ws = wb.Sheets[sheetName]
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+    if (raw.length < 2) {
+      showToast('엑셀 데이터가 없습니다.', 'error')
+      return
+    }
+
+    // ── 컬럼 헤더 탐지 ──
+    const headerKeywords = {
+      date:    ['날짜','일자','거래일','order date','date','주문일','배송일','입고일'],
+      vendor:  ['업체','업체명','거래처','공급자','supplier','vendor','회사명','납품업체'],
+      taxable: ['과세','과세금액','공급가액','taxable','과세액','과표'],
+      exempt:  ['면세','면세금액','면세액','exempt','비과세'],
+      vat:     ['부가세','vat','세액','tax'],
+      total:   ['합계','total','총액','합산','금액','공급대가','결제금액','청구금액','총금액']
+    }
+
+    let headerRow = -1
+    let cols = { date:-1, vendor:-1, taxable:-1, exempt:-1, vat:-1, total:-1 }
+
+    for (let r = 0; r < Math.min(raw.length, 20); r++) {
+      const row = raw[r].map(c => String(c).trim().toLowerCase())
+      // 날짜 컬럼이 있는 행을 헤더로 판단
+      const dateIdx = row.findIndex(c => headerKeywords.date.some(k => c.includes(k)))
+      if (dateIdx >= 0) {
+        headerRow = r
+        cols.date    = dateIdx
+        cols.vendor  = row.findIndex(c => headerKeywords.vendor.some(k => c.includes(k)))
+        cols.taxable = row.findIndex(c => headerKeywords.taxable.some(k => c.includes(k)))
+        cols.exempt  = row.findIndex(c => headerKeywords.exempt.some(k => c.includes(k)))
+        cols.vat     = row.findIndex(c => headerKeywords.vat.some(k => c.includes(k)))
+        cols.total   = row.findIndex(c => headerKeywords.total.some(k => c.includes(k)))
+        break
+      }
+    }
+
+    // 헤더를 못 찾은 경우: 첫 번째 행이 데이터인 경우 처리
+    if (headerRow === -1) {
+      headerRow = 0
+      // 숫자로 보이는 컬럼 찾기
+      const firstDataRow = raw[1] || []
+      for (let i = 0; i < firstDataRow.length; i++) {
+        const cell = String(firstDataRow[i]).trim()
+        if (cell.match(/^\d{4}[-./]\d{1,2}[-./]\d{1,2}/)) cols.date = i
+        else if (cell.match(/^[\d,]+$/) && parseInt(cell.replace(/,/g,'')) > 0) {
+          if (cols.total === -1) cols.total = i
+        }
+      }
+    }
+
+    // ── 등록된 업체 목록 가져오기 ──
+    const vendors = window._vendorsCache || []
+
+    // ── 데이터 행 파싱 ──
+    const orderMap = {} // key: "vendorId_date", value: { taxable, exempt, vat, total }
+
+    // 파일명에서 업체 힌트 추출
+    const fileName = file.name.toLowerCase()
+    let fileVendorHint = null
+    vendors.forEach(v => {
+      const vn = v.name.replace(/\s/g,'').toLowerCase()
+      if (fileName.includes(vn) || fileName.includes(v.name.toLowerCase())) {
+        fileVendorHint = v
+      }
+    })
+    // 잘 알려진 업체명 힌트
+    const knownVendorMap = {
+      '삼성웰스토리': '웰스토리', '웰스토리': '웰스토리',
+      '아워홈': '아워홈', 'ourhome': '아워홈',
+      '현대그린푸드': '현대그린', '그린푸드': '현대그린',
+      'cj프레시웨이': 'cj프레시웨이', 'cjfreshway': 'cj프레시웨이',
+    }
+    let knownVendorKey = null
+    for (const [k, v] of Object.entries(knownVendorMap)) {
+      if (fileName.includes(k)) { knownVendorKey = v; break }
+    }
+
+    // 업체명 매칭 함수
+    function matchVendor(nameStr) {
+      if (!nameStr) return fileVendorHint || null
+      const nm = String(nameStr).trim().replace(/\s/g,'').toLowerCase()
+      if (!nm) return fileVendorHint || null
+      // 정확히 일치
+      let found = vendors.find(v => v.name.replace(/\s/g,'').toLowerCase() === nm)
+      if (found) return found
+      // 포함
+      found = vendors.find(v => nm.includes(v.name.replace(/\s/g,'').toLowerCase()) || v.name.replace(/\s/g,'').toLowerCase().includes(nm))
+      if (found) return found
+      // 파일명 힌트 사용
+      return fileVendorHint || null
+    }
+
+    // 날짜 파싱 함수
+    function parseDate(cell) {
+      if (!cell && cell !== 0) return null
+      // Date 객체
+      if (cell instanceof Date) {
+        const y = cell.getFullYear(), m = String(cell.getMonth()+1).padStart(2,'0'), d = String(cell.getDate()).padStart(2,'0')
+        return `${y}-${m}-${d}`
+      }
+      const s = String(cell).trim()
+      // YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+      let m = s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/)
+      if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`
+      // Excel serial number
+      if (/^\d{5}$/.test(s)) {
+        const epoch = new Date(Date.UTC(1899,11,30))
+        epoch.setDate(epoch.getDate() + parseInt(s))
+        const y2 = epoch.getUTCFullYear(), mo = String(epoch.getUTCMonth()+1).padStart(2,'0'), d2 = String(epoch.getUTCDate()).padStart(2,'0')
+        return `${y2}-${mo}-${d2}`
+      }
+      // YYYYMMDD
+      m = s.match(/^(\d{4})(\d{2})(\d{2})$/)
+      if (m) return `${m[1]}-${m[2]}-${m[3]}`
+      // MM/DD (현재 연도 사용)
+      m = s.match(/^(\d{1,2})[./](\d{1,2})$/)
+      if (m) return `${App.currentYear}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`
+      return null
+    }
+
+    // 금액 파싱
+    function parseAmt(cell) {
+      if (!cell && cell !== 0) return 0
+      const n = parseFloat(String(cell).replace(/[^\d.-]/g,''))
+      return isNaN(n) ? 0 : Math.round(Math.abs(n))
+    }
+
+    const parsed = []
+    for (let r = headerRow + 1; r < raw.length; r++) {
+      const row = raw[r]
+      if (!row || row.every(c => c === '' || c === null || c === undefined)) continue
+
+      const dateStr = parseDate(cols.date >= 0 ? row[cols.date] : null)
+      if (!dateStr) continue
+
+      // 발주 연월 필터 (현재 선택된 연/월로 필터링)
+      const [dy, dm] = dateStr.split('-').map(Number)
+      // 연/월 정보가 선택된 기간과 맞지 않으면 스킵 (단, 연도=0이면 스킵 불필요)
+      // 넓게 허용: 선택 연/월 제한 없이 모두 가져옴
+
+      const vendorCell = cols.vendor >= 0 ? row[cols.vendor] : null
+      const vendor = matchVendor(vendorCell)
+      if (!vendor) continue
+
+      let taxable = 0, exempt = 0, vat = 0, total = 0
+      if (cols.taxable >= 0) taxable = parseAmt(row[cols.taxable])
+      if (cols.exempt  >= 0) exempt  = parseAmt(row[cols.exempt])
+      if (cols.vat     >= 0) vat     = parseAmt(row[cols.vat])
+      if (cols.total   >= 0) total   = parseAmt(row[cols.total])
+
+      // 금액이 없으면 스킵
+      if (taxable === 0 && exempt === 0 && total === 0) continue
+
+      // 과세/면세 미구분이면 total 을 tax_type에 맞게 배분
+      if (taxable === 0 && exempt === 0 && total > 0) {
+        if (vendor.tax_type === 'taxable') {
+          taxable = Math.round(total / 1.1)
+          vat = total - taxable
+          exempt = 0
+        } else if (vendor.tax_type === 'exempt') {
+          exempt = total
+          taxable = 0; vat = 0
+        } else {
+          // mixed or mixed_total: total 그대로
+          taxable = 0; exempt = 0; vat = 0
+        }
+      }
+
+      if (vat === 0 && taxable > 0 && vendor.tax_type !== 'exempt') {
+        vat = Math.round(taxable * 0.1)
+      }
+
+      const finalTotal = vendor.tax_type === 'mixed_total'
+        ? total || (taxable + exempt + vat)
+        : (taxable + exempt + vat) || total
+
+      parsed.push({ date: dateStr, vendor, taxable, exempt, vat, total: finalTotal })
+    }
+
+    if (parsed.length === 0) {
+      // 업체 매칭 실패 시: 업체 수동 선택 후 재시도
+      const unmatched = []
+      for (let r = headerRow + 1; r < raw.length; r++) {
+        const row = raw[r]
+        if (!row || row.every(c => c === '' || c === null || c === undefined)) continue
+        const dateStr = parseDate(cols.date >= 0 ? row[cols.date] : null)
+        if (!dateStr) continue
+        const total2 = cols.total >= 0 ? parseAmt(row[cols.total]) : 0
+        if (total2 > 0) unmatched.push({ date: dateStr, total: total2 })
+      }
+
+      if (unmatched.length === 0) {
+        showToast('발주 데이터를 추출하지 못했습니다.\n날짜·금액 컬럼이 포함된 엑셀인지 확인하세요.', 'error')
+        return
+      }
+
+      // 업체 선택 모달
+      const selModal = document.createElement('div')
+      selModal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
+      selModal.innerHTML = `
+        <div style="background:white;border-radius:16px;max-width:400px;width:100%;padding:24px;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+          <h3 style="font-size:16px;font-weight:700;color:#1f2937;margin:0 0 8px"><i class="fas fa-store" style="color:#7c3aed;margin-right:8px"></i>업체를 선택해주세요</h3>
+          <p style="font-size:12px;color:#6b7280;margin:0 0 16px">엑셀 파일에서 업체 정보를 찾지 못했습니다.<br>${unmatched.length}건의 발주 데이터를 어느 업체로 입력할까요?</p>
+          <select id="manualVendorSel" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:16px">
+            <option value="">-- 업체 선택 --</option>
+            ${vendors.map(v => `<option value="${v.id}">${v.name} (${v.tax_type==='taxable'?'과세':v.tax_type==='exempt'?'면세':v.tax_type==='mixed'?'과+면':'합산'})</option>`).join('')}
+          </select>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="this.closest('div[style]').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">취소</button>
+            <button onclick="(function(){
+              const vid = parseInt(document.getElementById('manualVendorSel').value)
+              if (!vid) { alert('업체를 선택하세요'); return }
+              const vnd = (window._vendorsCache||[]).find(v=>v.id===vid)
+              if (!vnd) return
+              const items = ${JSON.stringify(unmatched)}.map(u => ({
+                date: u.date, vendor: vnd,
+                taxable: vnd.tax_type==='taxable'?Math.round(u.total/1.1):0,
+                exempt: vnd.tax_type==='exempt'?u.total:0,
+                vat: vnd.tax_type==='taxable'?u.total-Math.round(u.total/1.1):0,
+                total: u.total
+              }))
+              window._importOrderItems = items
+              this.closest('div[style]').remove()
+              confirmImportOrders()
+            })()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer">
+              <i class="fas fa-check mr-1"></i>이 업체로 입력 (${unmatched.length}건)
+            </button>
+          </div>
+        </div>`
+      document.body.appendChild(selModal)
+      return
+    }
+
+    // ── 미리보기 모달 표시 ──
+    const grouped = {}
+    parsed.forEach(p => {
+      const key = `${p.date}_${p.vendor.id}`
+      if (!grouped[key]) grouped[key] = { date: p.date, vendor: p.vendor, taxable:0, exempt:0, vat:0, total:0 }
+      grouped[key].taxable += p.taxable
+      grouped[key].exempt  += p.exempt
+      grouped[key].vat     += p.vat
+      grouped[key].total   += p.total
+    })
+    const items = Object.values(grouped).sort((a,b) => a.date.localeCompare(b.date))
+
+    // 연/월 그룹핑
+    const monthGroups = {}
+    items.forEach(it => {
+      const [y,m] = it.date.split('-')
+      const key = `${y}-${m}`
+      if (!monthGroups[key]) monthGroups[key] = []
+      monthGroups[key].push(it)
+    })
+
+    const monthKeys = Object.keys(monthGroups).sort()
+    const grandTotal = items.reduce((s,it)=>s+it.total,0)
+
+    const modal = document.createElement('div')
+    modal.id = 'importOrderModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
+    modal.innerHTML = `
+      <div style="background:white;border-radius:16px;max-width:700px;width:100%;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+        <div style="padding:16px 20px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <h3 style="font-size:16px;font-weight:700;color:#1f2937;margin:0"><i class="fas fa-file-import" style="color:#7c3aed;margin-right:8px"></i>거래내역 자동 입력 미리보기</h3>
+            <p style="font-size:12px;color:#6b7280;margin:2px 0 0">총 ${items.length}건 · 합계 ${grandTotal.toLocaleString()}원 ← <em style="color:#7c3aed">${file.name}</em></p>
+          </div>
+          <button onclick="document.getElementById('importOrderModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#9ca3af">✕</button>
+        </div>
+        <div style="overflow-y:auto;flex:1;padding:12px 16px">
+          ${monthKeys.map(mk => {
+            const [my, mm] = mk.split('-')
+            const monthItems = monthGroups[mk]
+            const monthSum = monthItems.reduce((s,it)=>s+it.total,0)
+            return `
+              <div style="margin-bottom:12px">
+                <div style="font-size:12px;font-weight:700;color:#7c3aed;margin-bottom:6px;padding:4px 8px;background:#f5f3ff;border-radius:6px">
+                  ${my}년 ${parseInt(mm)}월 · ${monthItems.length}건 · ${monthSum.toLocaleString()}원
+                </div>
+                <table style="width:100%;font-size:12px;border-collapse:collapse">
+                  <thead>
+                    <tr style="background:#f9fafb;color:#6b7280">
+                      <th style="padding:5px 8px;text-align:left;font-weight:600">날짜</th>
+                      <th style="padding:5px 8px;text-align:left;font-weight:600">업체</th>
+                      <th style="padding:5px 8px;text-align:right;font-weight:600">과세</th>
+                      <th style="padding:5px 8px;text-align:right;font-weight:600">면세</th>
+                      <th style="padding:5px 8px;text-align:right;font-weight:600">부가세</th>
+                      <th style="padding:5px 8px;text-align:right;font-weight:600">합계</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${monthItems.map(it => `
+                      <tr style="border-bottom:1px solid #f3f4f6">
+                        <td style="padding:5px 8px;color:#374151">${it.date}</td>
+                        <td style="padding:5px 8px;font-weight:600;color:#1f2937">${it.vendor.name}</td>
+                        <td style="padding:5px 8px;text-align:right;color:#16a34a">${it.taxable > 0 ? it.taxable.toLocaleString() : '-'}</td>
+                        <td style="padding:5px 8px;text-align:right;color:#d97706">${it.exempt > 0 ? it.exempt.toLocaleString() : '-'}</td>
+                        <td style="padding:5px 8px;text-align:right;color:#6b7280">${it.vat > 0 ? it.vat.toLocaleString() : '-'}</td>
+                        <td style="padding:5px 8px;text-align:right;font-weight:700;color:#1f2937">${it.total.toLocaleString()}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>`
+          }).join('')}
+        </div>
+        <div style="padding:12px 16px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end;align-items:center">
+          <span style="font-size:11px;color:#9ca3af;flex:1">기존 동일 날짜/업체 데이터는 덮어쓰기됩니다.</span>
+          <button onclick="document.getElementById('importOrderModal').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">취소</button>
+          <button id="importOrderConfirmBtn" onclick="confirmImportOrders()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer">
+            <i class="fas fa-check mr-1"></i>발주 자동 입력 (${items.length}건)
+          </button>
+        </div>
+      </div>`
+
+    document.body.appendChild(modal)
+
+    // 데이터 임시 저장
+    window._importOrderItems = items
+
+  } catch (e) {
+    console.error('[autoImportOrderFromExcel]', e)
+    showToast('엑셀 파일 분석 중 오류가 발생했습니다: ' + e.message, 'error')
+  }
+}
+
+// ── #4 발주 자동입력 확정 ────────────────────────────────────────
+window.confirmImportOrders = async function() {
+  const items = window._importOrderItems
+  if (!items || !items.length) return
+
+  const btn = document.getElementById('importOrderConfirmBtn')
+  if (btn) { btn.disabled = true; btn.textContent = '저장 중...' }
+
+  let success = 0, fail = 0
+  for (const it of items) {
+    try {
+      const isMixedTotal = it.vendor.tax_type === 'mixed_total'
+      const payload = isMixedTotal
+        ? { vendorId: it.vendor.id, orderDate: it.date, totalAmount: it.total, taxableAmount:0, exemptAmount:0, vatAmount:0, note:'엑셀자동입력' }
+        : { vendorId: it.vendor.id, orderDate: it.date, taxableAmount: it.taxable, exemptAmount: it.exempt, vatAmount: it.vat, note:'엑셀자동입력' }
+      const res = await api('POST', '/api/orders/save', payload)
+      if (res?.success) success++
+      else fail++
+    } catch(e) {
+      fail++
+    }
+  }
+
+  document.getElementById('importOrderModal')?.remove()
+  delete window._importOrderItems
+
+  if (success > 0) {
+    showToast(`✅ ${success}건 발주 자동 입력 완료!${fail > 0 ? ` (실패 ${fail}건)` : ''}`, 'success')
+    // 발주 화면 갱신
+    if (App._panelReady) {
+      delete App._panelReady[`orders-${App.currentYear}-${App.currentMonth}`]
+    }
+    renderOrders()
+  } else {
+    showToast(`발주 입력 실패 (${fail}건)`, 'error')
+  }
+}
+
+window.submitClosingRequest = async function(year, month) {
   const memo = document.getElementById('closingMemo')?.value || ''
   if (!confirm(`${year}년 ${month}월 마감 요청을 보내시겠습니까?\n관리자 승인 후 다음 달로 전환됩니다.`)) return
   const res = await api('POST', '/api/settings/closing-request', { year, month, memo })
