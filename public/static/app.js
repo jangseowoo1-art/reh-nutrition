@@ -10198,8 +10198,16 @@ async function renderReport(selectedHospitalId = null) {
     const catBgs    = ['#f0fdf4','#eff6ff','#faf5ff','#fef2f2','#fffbeb','#ecfeff','#ecfdf5','#f5f3ff']
     // 카테고리별 식단가 데이터 준비
     const catPriceData = rptCatDietPrices && rptCatDietPrices.length>0
-      ? rptCatDietPrices.map((c,i)=>({name:c.category_name||c.name||'',price:Math.round(c.mealPrice||c.meal_price||0),target:targetPrice,col:catColors[i%catColors.length],bg:catBgs[i%catBgs.length]}))
-      : rptCatMeals.map((c,i)=>({name:c.name,price:0,target:targetPrice,col:catColors[i%catColors.length],bg:catBgs[i%catBgs.length]}))
+      ? rptCatDietPrices.map((c,i)=>({
+          name:c.category_name||c.name||'',
+          price:Math.round(c.mealPrice||c.monthDietPrice||c.meal_price||0),
+          target:c.targetPrice||targetPrice,
+          monthMeals:c.monthMeals||0,
+          monthAmt:c.monthAmt||0,
+          col:catColors[i%catColors.length],
+          bg:catBgs[i%catBgs.length]
+        }))
+      : rptCatMeals.map((c,i)=>({name:c.name,price:0,target:targetPrice,monthMeals:0,monthAmt:0,col:catColors[i%catColors.length],bg:catBgs[i%catBgs.length]}))
     const hasCatData = catPriceData.length>0
     const catAnalysis = (() => {
       if(!hasCatData) return '카테고리별 식단가 데이터를 분석합니다. 발주 데이터가 쌓이면 자동으로 분석됩니다.'
@@ -10233,8 +10241,11 @@ async function renderReport(selectedHospitalId = null) {
         ${catPriceData.map(c=>`
           <div style="background:${c.bg};border-radius:10px;padding:12px;border-left:4px solid ${c.col};text-align:center">
             <div style="font-size:9px;color:#374151;font-weight:700;margin-bottom:6px">${c.name}</div>
-            <div style="font-size:20px;font-weight:900;color:${c.col}">${c.price>0?fmt(c.price)+'원':'<span style="font-size:12px;color:#6b7280">데이터없음</span>'}</div>
-            ${targetPrice>0&&c.price>0?`<div style="font-size:9px;margin-top:4px;color:${c.price>targetPrice?'#dc2626':'#16a34a'};font-weight:600">${c.price>targetPrice?'▲ 목표 초과':'✓ 목표 이내'}</div>`:''}
+            <div style="font-size:20px;font-weight:900;color:${c.price>0?c.col:'#9ca3af'}">${c.price>0?fmt(c.price)+'원':'<span style="font-size:13px;color:#6b7280;font-weight:600">데이터 없음</span>'}</div>
+            ${c.price>0?`
+              ${c.target>0?`<div style="font-size:9px;margin-top:4px;color:${c.price>c.target?'#dc2626':'#16a34a'};font-weight:600">${c.price>c.target?'▲ 목표 초과':'✓ 목표 이내'}</div>`:''}
+              ${c.monthMeals>0?`<div style="font-size:8px;color:#6b7280;margin-top:2px">${c.monthMeals.toLocaleString()}식</div>`:''}
+            `:`<div style="font-size:8px;color:#9ca3af;margin-top:4px">${c.monthAmt>0?'식수 데이터 없음':'발주 없음'}</div>`}
           </div>`).join('')}
       </div>
       ` : `

@@ -729,6 +729,13 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       // 카테고리별 오늘 식수: custom_data에서 직접 집계 (이전의 환자 비중 추정 제거)
       const totalCatBudget2 = (catSettingsForDash.results||[]).reduce((s:number, c2:any) => s+(c2.monthly_budget||0), 0)
 
+      // ── 카테고리별 월 식수 집계 (custom_data의 cat_ 키 기반) ──
+      const catMonthMealMap: Record<number, number> = {}
+      ;(patientCatsList.results||[]).forEach((cat:any) => {
+        const fk = `cat_${cat.category_key}`
+        catMonthMealMap[cat.id] = customFieldTotals[fk] || 0
+      })
+
       // 카테고리별 발주금액 맵
       const catMonthMap: Record<number, number> = {}
       ;(catMonthlyOrders.results||[]).forEach((r:any) => { catMonthMap[r.patient_category_id] = r.total })
@@ -754,6 +761,17 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         const todayCatMeals = todayCatMealMap[cat.id] || 0
         const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
 
+        // ── 월 식수 (custom_data 집계) 및 월 식단가 계산 ──
+        const monthMeals = catMonthMealMap[cat.id] || 0
+        // 식단가: 월 발주금액 ÷ 월 식수 (식수가 없으면 workDays로 추정)
+        const mealPrice = monthMeals > 0
+          ? Math.round(monthAmt / monthMeals)
+          : (monthBudget > 0 && workDays > 0 && settings2.daily_meal_count > 0)
+            ? Math.round(monthBudget / (workDays * settings2.daily_meal_count))
+            : 0
+        // 월 식단가 (백엔드 직접 계산값, formula 기반)
+        const monthDietPrice = mealPrice
+
         // 전월 데이터
         const prevSet = prevCatSetMap2[cat.id] || {}
         const prevTargetPrice = prevSet.target_meal_price || 0
@@ -772,7 +790,11 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           todayDietPrice,
           catRatio,
           prevTargetPrice,
-          prevMonthBudget
+          prevMonthBudget,
+          // 보고서 PAGE3 식단가 표시에 필요한 필드
+          monthMeals,
+          mealPrice,
+          monthDietPrice
         }
       })
 

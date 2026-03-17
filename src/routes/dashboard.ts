@@ -436,6 +436,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
       id: cat.id, category_key: cat.category_key, category_name: cat.category_name,
       monthAmt, todayAmt, monthBudget, targetPrice, workDays,
       monthMeals, monthDietPrice,
+      mealPrice: monthDietPrice,  // 보고서 PAGE3 호환 필드 (monthDietPrice와 동일)
       todayCatMeals, todayDietPrice, catRatio,
       prevTargetPrice, prevMonthBudget,
       budgetKeys, mealsKeys
