@@ -9880,6 +9880,40 @@ async function renderReport(selectedHospitalId = null) {
   const mealPriceForRpt = rptTotalMeals > 0 && (s.totalUsed||0) > 0
     ? Math.round((s.totalUsed||0) / rptTotalMeals) : (s.mealPrice || 0)
 
+  // ── 새 보고서 섹션용 변수 매핑 ──────────────────────────────────────────
+  const rptSummary = {
+    progress: parseFloat(s.progress) || 0,
+    totalBudget: s.totalBudget || 0,
+    usedAmount: s.totalUsed || 0,
+    remainAmount: s.remaining || ((s.totalBudget||0) - (s.totalUsed||0)),
+    totalPatients: rptTotalMeals,
+    avgPatients: rptTotalMeals,
+    normalCount: ms.total_patient || 0,
+    therapeuticCount: ms.total_noncovered || 0,
+    softCount: 0,
+    staffCount: ms.total_staff || 0,
+    normalMealPrice: s.normalMealPrice || mealPriceForRpt || 0,
+    therapeuticMealPrice: s.therapeuticMealPrice || 0,
+    softMealPrice: s.softMealPrice || 0,
+    targetMealPrice: s.mealPrice || 0,
+    mealPriceTarget: s.mealPrice || 0,
+    nutritionistName: s.nutritionistName || s.nutritionist_name || '',
+  }
+  const rptOrders = (vendorOrders || []).map(v => ({
+    vendor: v.vendor_name || v.vendorName || v.name || v.vendor || '',
+    vendorName: v.vendor_name || v.vendorName || v.name || '',
+    totalAmount: v.total_amount || v.totalAmount || v.amount || 0,
+    amount: v.total_amount || v.totalAmount || v.amount || 0,
+  })).sort((a,b) => b.totalAmount - a.totalAmount)
+  const rptDailyOrders = dailyLabels.map((label, i) => ({
+    day: label,
+    date: label,
+    totalAmount: dailyValues[i] || 0,
+    amount: dailyValues[i] || 0,
+  })).filter(d => d.totalAmount > 0)
+  const rptAnnual = annualData || {}
+  const rptNextMonth = { goals: null }
+
   content.innerHTML = `
   <!-- 보고서 컨트롤 (인쇄 제외) -->
   <div class="mb-4 flex items-center gap-3 flex-wrap no-print">
@@ -10330,6 +10364,7 @@ async function renderReport(selectedHospitalId = null) {
   </div>`
 
   // ── 차트 렌더링 ──
+  try {
   // 보고서용 공통 플러그인
   const rptBarLabelPlugin = {
     id: 'rptBarLabels',
@@ -10424,8 +10459,8 @@ async function renderReport(selectedHospitalId = null) {
   }
 
   // 업체별 도넛차트 (중앙 총합 + 각 조각 금액 표시)
-  const vendorLabels = vendors.map(v=>v.name)
-  const vendorData = vendors.map(v=>v.total_used)
+  const vendorLabels = (rptOrders||[]).slice(0,10).map(v=>v.vendor||v.vendorName||v.name||'')
+  const vendorData = (rptOrders||[]).slice(0,10).map(v=>v.totalAmount||v.amount||0)
   const vendorTotal = vendorData.reduce((s,v)=>s+v,0)
   const rptDoughnutSlicePlugin = {
     id: 'rptDoughnutSlice',
@@ -10452,8 +10487,8 @@ async function renderReport(selectedHospitalId = null) {
       })
     }
   }
-  if (document.getElementById('rpt-vendorChart') && vendorData.some(v=>v>0)) {
-    App.charts.rptVendor = new Chart(document.getElementById('rpt-vendorChart'), {
+  if (document.getElementById('rptVendorChart') && vendorData.some(v=>v>0)) {
+    App.charts.rptVendor = new Chart(document.getElementById('rptVendorChart'), {
       type: 'doughnut',
       data: {
         labels: vendorLabels,
@@ -10469,8 +10504,15 @@ async function renderReport(selectedHospitalId = null) {
     })
   }
 
+  // 안전한 차트 생성 헬퍼 (null 체크 + 에러 캐치)
+  const safeChart = (id, config) => {
+    const el = document.getElementById(id)
+    if (!el) { console.warn('[보고서] canvas 없음:', id); return null }
+    try { return new Chart(el, config) } catch(e) { console.warn('[보고서] 차트 생성 오류', id, e); return null }
+  }
+
   // 일별 바차트 (막대 위 수치)
-  App.charts.rptDaily = new Chart(document.getElementById('rpt-dailyChart'), {
+  App.charts.rptDaily = safeChart('rptDailyChart', {
     type: 'bar',
     data: {
       labels: dailyLabels,
@@ -10517,7 +10559,7 @@ async function renderReport(selectedHospitalId = null) {
   const rVendors = Object.values(rVendorTotals).sort((a,b)=>b.total-a.total)
 
   // 월별 식수 차트 (구성 스택)
-  App.charts.rptMealMonth = new Chart(document.getElementById('rpt-mealMonthChart'), {
+  App.charts.rptMealMonth = safeChart('rptWaterChart', {
     type: 'bar', data:{
       labels: rMonths,
       datasets:[
@@ -10532,7 +10574,7 @@ async function renderReport(selectedHospitalId = null) {
   })
 
   // 식단가 3종 차트 (꼭짓점 수치)
-  App.charts.rptMealPrice = new Chart(document.getElementById('rpt-mealPriceChart'), {
+  App.charts.rptMealPrice = safeChart('rptMealPriceChart', {
     type: 'line', data:{
       labels: rMonths,
       datasets:[
@@ -10548,7 +10590,7 @@ async function renderReport(selectedHospitalId = null) {
   })
 
   // 슬라이드 7: 연간 식단가 3종 추이 (꼭짓점 수치)
-  new Chart(document.getElementById('rpt-annualMpChart'), {
+  safeChart('rptAnnualMealChart', {
     type:'line', data:{
       labels:rMonths,
       datasets:[
@@ -10565,7 +10607,7 @@ async function renderReport(selectedHospitalId = null) {
   })
 
   // 슬라이드 8: 식수구성
-  new Chart(document.getElementById('rpt-annualMealChart'), {
+  safeChart('rptAnnualWaterChart', {
     type:'bar', data:{
       labels:rMonths,
       datasets:[
@@ -10606,7 +10648,7 @@ async function renderReport(selectedHospitalId = null) {
       })
     }
   }
-  new Chart(document.getElementById('rpt-annualVendorPie'), {
+  safeChart('rptAnnualVendorChart', {
     type:'doughnut', data:{
       labels:rVendors.map(v=>v.name),
       datasets:[{ data:rVendors.map(v=>v.total),
@@ -10622,7 +10664,7 @@ async function renderReport(selectedHospitalId = null) {
 
   // 예산 달성률 (막대 위 % 수치)
   const rPct = rBudget.map((b,i)=>b>0?parseFloat((rUsed[i]/b*100).toFixed(1)):null)
-  new Chart(document.getElementById('rpt-annualBudgetPct'), {
+  safeChart('rptAnnualBudgetChart', {
     type:'bar', data:{
       labels:rMonths,
       datasets:[
@@ -10636,7 +10678,7 @@ async function renderReport(selectedHospitalId = null) {
   })
 
   // 잔반 추이 (꼭짓점 수치)
-  new Chart(document.getElementById('rpt-annualWaste'), {
+  safeChart('rptAnnualWasteChart', {
     type:'bar', data:{
       labels:rMonths,
       datasets:[
@@ -10653,6 +10695,10 @@ async function renderReport(selectedHospitalId = null) {
   })
 
   // ── 슬라이드 헤더 개선: 페이지 번호 + 구분선 일괄 적용
+  } catch(chartErr) {
+    console.warn('[보고서] 차트 렌더링 오류 (무시하고 계속):', chartErr)
+  }
+
   requestAnimationFrame(() => {
     const reportBody = document.getElementById('reportBody')
     if (!reportBody) return
