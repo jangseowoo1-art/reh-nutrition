@@ -70,6 +70,13 @@ app.get('/report', (c) => c.html(getAppShell()))
 app.get('/hospital-manage', (c) => c.html(getAppShell()))
 app.get('/holiday-manage', (c) => c.html(getAppShell()))
 
+// ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
+app.notFound((c) => c.json({ error: 'Not Found' }, 404))
+app.onError((err, c) => {
+  console.error('API Error:', err)
+  return c.json({ error: err.message || 'Internal Server Error' }, 500)
+})
+
 export default app
 
 // ── 로그인 페이지 HTML ────────────────────────────────────────────

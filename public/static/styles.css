@@ -637,10 +637,9 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 #printLayer .print-page {
   width: 277mm;
   min-height: 190mm;
-  /* height 고정 제거 - 콘텐츠에 맞게 자동 조정 */
-  padding: 7mm 9mm 8mm 9mm;
+  padding: 5mm 7mm 6mm 7mm;  /* 여백 줄여 차트 공간 확보 */
   box-sizing: border-box;
-  overflow: visible; /* 잘림 방지 */
+  overflow: visible;
   background: white;
   position: relative;
   page-break-after: always;
@@ -664,8 +663,7 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   border-radius: 0 !important;
   box-shadow: none !important;
   margin: 0 !important;
-  /* padding 유지: 헤더 음수 마진(-24px)이 작동하려면 padding이 있어야 함 */
-  padding: 20px 24px 10px 24px !important;
+  padding: 14px 18px 8px 18px !important;  /* 패딩 축소 → 차트 공간 ↑ */
   background: transparent !important;
   display: flex !important;
   flex-direction: column !important;
@@ -693,14 +691,13 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     display: flex !important;
     flex-direction: column !important;
     width: 297mm !important;
-    min-height: 180mm !important;
-    /* height 고정 제거 - 잘림 방지 */
-    padding: 7mm 9mm 8mm 9mm !important;
+    min-height: 185mm !important;
+    padding: 5mm 7mm 5mm 7mm !important;  /* 여백 최소화 → 차트 크게 */
     page-break-after: always !important;
     page-break-inside: avoid !important;
     break-after: page !important;
     break-inside: avoid !important;
-    overflow: visible !important;  /* 잘림 방지 핵심 */
+    overflow: visible !important;
     box-sizing: border-box !important;
     background: white !important;
   }
@@ -723,10 +720,10 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     break-after: avoid !important;
   }
 
-  /* 인쇄 시 rpt-report-page 내부 padding 유지 (헤더 음수마진 작동용) */
+  /* 인쇄 시 rpt-report-page: 패딩 최소화하여 차트 최대 크기 확보 */
   #printLayer .print-page .rpt-report-page,
   #printLayer .print-page .report-slide {
-    padding: 20px 24px 10px 24px !important;
+    padding: 12px 16px 6px 16px !important;
     background: transparent !important;
     border: none !important;
     border-radius: 0 !important;
@@ -748,8 +745,14 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     print-color-adjust: exact !important;
     color-adjust: exact !important;
   }
-  #printLayer canvas {
+  /* 인쇄 시 차트 이미지 크기 최대화 */
+  #printLayer canvas,
+  #printLayer img[src^='data:image'] {
     max-width: 100% !important;
+    width: 100% !important;
+    height: auto !important;
+    display: block !important;
+    min-height: 180px !important;  /* 차트 최소 높이 보장 */
   }
   #printLayer table {
     font-size: 9.5px !important;
