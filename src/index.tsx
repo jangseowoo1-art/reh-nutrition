@@ -135,7 +135,7 @@ function getLoginPage(): string {
   
   <div class="mt-6 p-4 bg-gray-50 rounded-xl text-xs text-gray-500">
     <p class="font-medium mb-1">🔐 테스트 계정</p>
-    <p>관리자: <span class="font-mono bg-white px-1 rounded">admin</span> / <span class="font-mono bg-white px-1 rounded">admin1234</span></p>
+    <p>관리자: <span class="font-mono bg-white px-1 rounded">admin</span> / <span class="font-mono bg-white px-1 rounded">admin123</span></p>
     <p>병원: <span class="font-mono bg-white px-1 rounded">amina</span> / <span class="font-mono bg-white px-1 rounded">hospital1234</span></p>
   </div>
 </div>
