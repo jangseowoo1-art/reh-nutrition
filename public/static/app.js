@@ -5443,6 +5443,16 @@ async function deleteCustomField(id) {
 // ══════════════════════════════════════════════════════════════
 async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   const content = document.getElementById('pageContent')
+  // 분석 페이지 재진입 시 기존 Chart 인스턴스 파괴 (canvas 재사용 충돌 방지)
+  const anaChartIds = [
+    'chart-yrBudget','chart-yrMealPrice','chart-yrMeals','chart-yrVendor','chart-yrWaste',
+    'chart-yrVendorPie','chart-yrMpDetail','chart-mpMonthly','chart-mealStack',
+    'chart-budgetPct','chart-wasteMonthly','chart-vendorMonthly','chart-catMonthly','chart-catBudgetPct'
+  ]
+  anaChartIds.forEach(id => {
+    const el = document.getElementById(id)
+    if (el) { const ch = Chart.getChart ? Chart.getChart(el) : null; if (ch) ch.destroy() }
+  })
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
   let hospitals = []
@@ -10039,15 +10049,18 @@ async function renderReport(selectedHospitalId = null) {
       <h2 class="report-slide-title"><i class="fas fa-utensils text-green-600 mr-2"></i>식수 현황 통계</h2>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         ${[
-          { label:'환자식(치료식)', val:fmt((ms.total_patient||0)), icon:'fa-procedures', color:'bg-blue-50 text-blue-700' },
-          { label:'직원식', val:fmt((ms.total_staff||0)), icon:'fa-user-md', color:'bg-green-50 text-green-700' },
-          { label:'비급여식', val:fmt((ms.total_noncovered||0)), icon:'fa-user', color:'bg-purple-50 text-purple-700' },
-          { label:'보호자식', val:fmt((ms.total_guardian||0)), icon:'fa-users', color:'bg-orange-50 text-orange-700' }
+          { label:'환자식(치료식)', val:fmt((ms.total_patient||0)), icon:'fa-procedures', bg:'#eff6ff', color:'#1d4ed8', border:'#bfdbfe' },
+          { label:'직원식', val:fmt((ms.total_staff||0)), icon:'fa-user-md', bg:'#f0fdf4', color:'#166534', border:'#bbf7d0' },
+          { label:'비급여식', val:fmt((ms.total_noncovered||0)), icon:'fa-user', bg:'#f5f3ff', color:'#6d28d9', border:'#ddd6fe' },
+          { label:'보호자식', val:fmt((ms.total_guardian||0)), icon:'fa-users', bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' }
         ].map(item => `
-          <div class="rounded-xl p-4 text-center ${item.color.split(' ')[0]}">
-            <i class="fas ${item.icon} text-2xl ${item.color.split(' ')[1]} mb-2"></i>
-            <div class="text-xs text-gray-500 mb-1">${item.label}</div>
-            <div class="text-xl font-bold ${item.color.split(' ')[1]}">${item.val}식</div>
+          <div style="background:${item.bg};border:1px solid ${item.border};border-radius:14px;padding:16px;text-align:center">
+            <div style="width:36px;height:36px;background:white;border-radius:9px;display:flex;align-items:center;justify-content:center;margin:0 auto 8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+              <i class="fas ${item.icon}" style="color:${item.color};font-size:16px"></i>
+            </div>
+            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">${item.label}</div>
+            <div style="font-size:22px;font-weight:800;color:${item.color}">${item.val}</div>
+            <div style="font-size:10px;color:#9ca3af;margin-top:2px">식</div>
           </div>`).join('')}
       </div>
       <canvas id="rpt-mealMonthChart" style="max-height:220px"></canvas>
