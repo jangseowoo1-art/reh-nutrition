@@ -637,10 +637,10 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 #printLayer .print-page {
   width: 277mm;
   min-height: 190mm;
-  height: 190mm;
-  padding: 8mm 10mm 10mm 10mm;
+  /* height 고정 제거 - 콘텐츠에 맞게 자동 조정 */
+  padding: 7mm 9mm 8mm 9mm;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow: visible; /* 잘림 방지 */
   background: white;
   position: relative;
   page-break-after: always;
@@ -653,6 +653,7 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   padding: 0;
   height: 210mm;
   min-height: 210mm;
+  overflow: hidden;
 }
 #printLayer .print-page:last-child { page-break-after: avoid; }
 
@@ -663,8 +664,12 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   border-radius: 0 !important;
   box-shadow: none !important;
   margin: 0 !important;
-  padding: 0 !important;
+  /* padding 유지: 헤더 음수 마진(-24px)이 작동하려면 padding이 있어야 함 */
+  padding: 20px 24px 10px 24px !important;
   background: transparent !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 !important;
 }
 
 @media print {
@@ -688,14 +693,14 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     display: flex !important;
     flex-direction: column !important;
     width: 297mm !important;
-    min-height: 210mm !important;
-    height: 210mm !important;
-    padding: 8mm 10mm 10mm 10mm !important;
+    min-height: 180mm !important;
+    /* height 고정 제거 - 잘림 방지 */
+    padding: 7mm 9mm 8mm 9mm !important;
     page-break-after: always !important;
     page-break-inside: avoid !important;
     break-after: page !important;
     break-inside: avoid !important;
-    overflow: hidden !important;
+    overflow: visible !important;  /* 잘림 방지 핵심 */
     box-sizing: border-box !important;
     background: white !important;
   }
@@ -703,6 +708,7 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   #printLayer .print-page:first-child {
     padding: 0 !important;
     height: 210mm !important;
+    overflow: hidden !important;
   }
   #printLayer .print-page:first-child .report-slide {
     width: 100% !important;
@@ -715,6 +721,25 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   #printLayer .print-page:last-child {
     page-break-after: avoid !important;
     break-after: avoid !important;
+  }
+
+  /* 인쇄 시 rpt-report-page 내부 padding 유지 (헤더 음수마진 작동용) */
+  #printLayer .print-page .rpt-report-page,
+  #printLayer .print-page .report-slide {
+    padding: 20px 24px 10px 24px !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    overflow: visible !important;
+  }
+  /* 인쇄 시 print-page 자체는 overflow visible (잘림 방지) */
+  #printLayer .print-page {
+    overflow: visible !important;
   }
 
   /* 인쇄용 공통 스타일 */

@@ -9948,20 +9948,20 @@ async function renderReport(selectedHospitalId = null) {
     const rptDate = `${reportYear}년 ${reportMonth}월`
 
     const rptHeader = (sectionNum, sectionTitle) => `
-      <div style="display:flex;align-items:center;justify-content:space-between;background:#064e3b;color:white;padding:8px 16px;margin:-24px -24px 16px -24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;background:#064e3b;color:white;padding:6px 14px;margin:-24px -24px 12px -24px;flex-shrink:0">
         <span style="font-size:10px;opacity:0.7;letter-spacing:1px">HOSPITAL MEAL REPORT · 월간보고서</span>
         <div style="display:flex;gap:16px;font-size:10px;opacity:0.8">
           <span>${hospitalName} 귀중</span><span>${rptDate}</span><span>${docNo}</span>
         </div>
       </div>
-      ${sectionNum ? `<div style="font-size:11px;font-weight:700;color:#064e3b;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
+      ${sectionNum ? `<div style="font-size:11px;font-weight:700;color:#064e3b;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px;flex-shrink:0">
         <span style="background:#064e3b;color:white;padding:2px 8px;border-radius:3px;font-size:10px">SECTION ${sectionNum}</span>
         <span>${sectionTitle}</span>
       </div>` : ''}
     `
 
     const rptFooter = (pageInfo) => `
-      <div style="position:absolute;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:6px 16px;border-top:1px solid #e5e7eb;font-size:9px;color:#6b7280;background:white">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 14px;border-top:1px solid #e5e7eb;font-size:9px;color:#6b7280;background:white;margin-top:auto;flex-shrink:0">
         <span>Re&H Hospital Meal Management System</span>
         <span style="font-weight:600;color:#064e3b">${pageInfo}</span>
         <span>${hospitalName} | ${rptDate}</span>
@@ -10146,17 +10146,17 @@ async function renderReport(selectedHospitalId = null) {
     const slide3 = `
     <div class="report-slide rpt-report-page">
       ${rptHeader('2','업체별 발주 내역 — Vendor Orders')}
-      <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:14px;flex:1">
+      <div style="display:grid;grid-template-columns:3fr 2fr;gap:10px;margin-bottom:8px;flex:1">
         <div>
           <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #064e3b">업체별 발주 금액 현황</div>
           <table style="width:100%;border-collapse:collapse;font-size:11px">
             <thead>
               <tr style="background:#064e3b;color:white">
-                <th style="padding:8px 10px;text-align:left;border-radius:0">순위</th>
-                <th style="padding:8px 10px;text-align:left">업체명</th>
-                <th style="padding:8px 10px;text-align:right">발주 금액</th>
-                <th style="padding:8px 10px;text-align:right">비중</th>
-                <th style="padding:8px 10px;text-align:left">비율 바</th>
+                <th style="padding:5px 8px;text-align:left;border-radius:0">순위</th>
+                <th style="padding:5px 8px;text-align:left">업체명</th>
+                <th style="padding:5px 8px;text-align:right">발주 금액</th>
+                <th style="padding:5px 8px;text-align:right">비중</th>
+                <th style="padding:5px 8px;text-align:left">비율 바</th>
               </tr>
             </thead>
             <tbody>
@@ -10165,11 +10165,11 @@ async function renderReport(selectedHospitalId = null) {
                 const pct=usedAmount>0?Math.round(amt/usedAmount*100):0
                 const barCols=['#064e3b','#065f46','#047857','#059669','#10b981','#34d399','#6ee7b7','#1d4ed8','#2563eb','#3b82f6','#7c3aed','#8b5cf6']
                 return `<tr style="border-bottom:1px solid #f1f5f9;${i%2?'background:#f8fafc':'background:white'}">
-                  <td style="padding:7px 10px;font-weight:700;color:#9ca3af;font-size:10px">#${i+1}</td>
-                  <td style="padding:7px 10px;font-weight:600;color:#1f2937">${o.vendor||o.vendorName||'-'}</td>
-                  <td style="padding:7px 10px;text-align:right;font-weight:700;color:#064e3b">${amt.toLocaleString()}원</td>
-                  <td style="padding:7px 10px;text-align:right;font-weight:700;color:#374151">${pct}%</td>
-                  <td style="padding:7px 10px;min-width:80px">
+                  <td style="padding:4px 8px;font-weight:700;color:#9ca3af;font-size:10px">#${i+1}</td>
+                  <td style="padding:4px 8px;font-weight:600;color:#1f2937">${o.vendor||o.vendorName||'-'}</td>
+                  <td style="padding:4px 8px;text-align:right;font-weight:700;color:#064e3b">${amt.toLocaleString()}원</td>
+                  <td style="padding:4px 8px;text-align:right;font-weight:700;color:#374151">${pct}%</td>
+                  <td style="padding:4px 8px;min-width:80px">
                     <div style="background:#f3f4f6;border-radius:99px;height:6px;overflow:hidden">
                       <div style="height:100%;width:${pct}%;background:${barCols[i]||'#064e3b'};border-radius:99px"></div>
                     </div>
@@ -10179,9 +10179,9 @@ async function renderReport(selectedHospitalId = null) {
             </tbody>
             <tfoot>
               <tr style="background:#f0fdf4;border-top:2px solid #064e3b;font-weight:800">
-                <td colspan="2" style="padding:8px 10px;color:#064e3b;font-size:11px">합  계</td>
-                <td style="padding:8px 10px;text-align:right;color:#064e3b">${(usedAmount||0).toLocaleString()}원</td>
-                <td style="padding:8px 10px;text-align:right;color:#064e3b">100%</td>
+                <td colspan="2" style="padding:5px 8px;color:#064e3b;font-size:11px">합  계</td>
+                <td style="padding:5px 8px;text-align:right;color:#064e3b">${(usedAmount||0).toLocaleString()}원</td>
+                <td style="padding:5px 8px;text-align:right;color:#064e3b">100%</td>
                 <td></td>
               </tr>
             </tfoot>
@@ -10189,7 +10189,7 @@ async function renderReport(selectedHospitalId = null) {
         </div>
         <div style="display:flex;flex-direction:column;gap:10px">
           <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:0;padding-bottom:6px;border-bottom:2px solid #064e3b">업체 비중 분포</div>
-          <canvas id="rptVendorChart" style="width:100%;flex:1;min-height:220px;max-height:280px"></canvas>
+          <canvas id="rptVendorChart" style="width:100%;flex:1;min-height:160px;max-height:220px"></canvas>
           <div style="background:#f0fdf4;border-radius:10px;padding:12px;border:1px solid #bbf7d0">
             <div style="font-size:10px;color:#166534;font-weight:700;margin-bottom:4px">TOP 3 업체</div>
             ${(rptOrders||[]).slice(0,3).map((o,i)=>{
@@ -10210,19 +10210,19 @@ async function renderReport(selectedHospitalId = null) {
     const slide4 = `
     <div class="report-slide rpt-report-page">
       ${rptHeader('3','일별 매입금액 — Daily Purchase')}
-      <div style="margin-bottom:12px">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #064e3b">일별 매입금액 추이 그래프</div>
-        <canvas id="rptDailyChart" style="width:100%;height:220px;max-height:220px"></canvas>
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:6px;padding-bottom:4px;border-bottom:2px solid #064e3b">일별 매입금액 추이 그래프</div>
+        <canvas id="rptDailyChart" style="width:100%;height:180px;max-height:180px"></canvas>
       </div>
-      <div style="margin-bottom:12px">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #e5e7eb">일별 매입 상세 내역</div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:5px;padding-bottom:4px;border-bottom:2px solid #e5e7eb">일별 매입 상세 내역</div>
         <table style="width:100%;border-collapse:collapse;font-size:10.5px">
           <thead>
             <tr style="background:#064e3b;color:white">
-              <th style="padding:6px 8px">일</th><th style="padding:6px 8px;text-align:right">금액(원)</th>
-              <th style="padding:6px 8px">일</th><th style="padding:6px 8px;text-align:right">금액(원)</th>
-              <th style="padding:6px 8px">일</th><th style="padding:6px 8px;text-align:right">금액(원)</th>
-              <th style="padding:6px 8px">일</th><th style="padding:6px 8px;text-align:right">금액(원)</th>
+              <th style="padding:4px 6px">일</th><th style="padding:4px 6px;text-align:right">금액(원)</th>
+              <th style="padding:4px 6px">일</th><th style="padding:4px 6px;text-align:right">금액(원)</th>
+              <th style="padding:4px 6px">일</th><th style="padding:4px 6px;text-align:right">금액(원)</th>
+              <th style="padding:4px 6px">일</th><th style="padding:4px 6px;text-align:right">금액(원)</th>
             </tr>
           </thead>
           <tbody>
@@ -10234,7 +10234,7 @@ async function renderReport(selectedHospitalId = null) {
                 html+='<tr style="border-bottom:1px solid #f1f5f9">'
                 for(let c=0;c<4;c++){
                   const item=all[r+c*perCol]
-                  if(item){html+=`<td style="padding:5px 8px;color:#374151;font-weight:600">${item.day||item.date||''}일</td><td style="padding:5px 8px;text-align:right;color:#064e3b;font-weight:700">${(item.totalAmount||item.amount||0).toLocaleString()}</td>`}
+                  if(item){html+=`<td style="padding:3px 6px;color:#374151;font-weight:600;font-size:10px">${item.day||item.date||''}일</td><td style="padding:3px 6px;text-align:right;color:#064e3b;font-weight:700;font-size:10px">${(item.totalAmount||item.amount||0).toLocaleString()}</td>`}
                   else{html+='<td style="background:#f9fafb"></td><td style="background:#f9fafb"></td>'}
                 }
                 html+='</tr>'
@@ -10458,9 +10458,9 @@ async function renderReport(selectedHospitalId = null) {
     const slideEnd = `
     <div class="report-slide rpt-report-page">
       ${rptHeader('','종합 의견 및 다음 달 목표')}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
-        <div style="background:#f8fafc;border-radius:12px;padding:18px;border:1px solid #e2e8f0">
-          <div style="font-size:12px;font-weight:800;color:#064e3b;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div style="background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0">
+          <div style="font-size:12px;font-weight:800;color:#064e3b;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
             <span style="background:#064e3b;color:white;padding:3px 10px;border-radius:20px;font-size:10px">종합 평가</span>
             이번 달 운영 성과
           </div>
@@ -10470,8 +10470,8 @@ async function renderReport(selectedHospitalId = null) {
             {label:'발주 효율성',val:75,icon:'📦',desc:'업체 분산 관리'},
             {label:'식수 안정성',val:80,icon:'👥',desc:`${(s.totalPatients||s.avgPatients||0).toLocaleString()}명`},
           ].map(item=>`
-            <div style="margin-bottom:14px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+            <div style="margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <span style="font-size:12px;font-weight:600;color:#374151">${item.icon} ${item.label}</span>
                 <div style="text-align:right">
                   <span style="font-size:14px;font-weight:900;color:${trafficColor(item.val)}">${item.val}%</span>
@@ -10484,8 +10484,8 @@ async function renderReport(selectedHospitalId = null) {
             </div>`).join('')}
         </div>
         <div style="display:flex;flex-direction:column;gap:10px">
-          <div style="background:#ecfdf5;border-radius:12px;padding:18px;border:1px solid #6ee7b7;flex:1">
-            <div style="font-size:12px;font-weight:800;color:#064e3b;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
+          <div style="background:#ecfdf5;border-radius:12px;padding:12px;border:1px solid #6ee7b7;flex:1">
+            <div style="font-size:12px;font-weight:800;color:#064e3b;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
               <span style="background:#064e3b;color:white;padding:3px 10px;border-radius:20px;font-size:10px">다음 달 목표</span>
               ${nextMonth}월 운영 계획
             </div>
@@ -10495,7 +10495,7 @@ async function renderReport(selectedHospitalId = null) {
               {icon:'📦',title:'발주 관리',text:'업체별 단가 재협상 및 비교 검토'},
               {icon:'✅',title:'식단 품질',text:'다양성 및 영양 균형 강화 추진'},
             ].map(g=>`
-              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;padding:10px;background:rgba(255,255,255,0.6);border-radius:8px">
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.6);border-radius:8px">
                 <span style="font-size:20px;flex-shrink:0">${g.icon}</span>
                 <div>
                   <div style="font-size:11px;font-weight:700;color:#064e3b;margin-bottom:2px">${g.title}</div>
@@ -10505,13 +10505,13 @@ async function renderReport(selectedHospitalId = null) {
           </div>
         </div>
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:12px">
         <div style="font-size:10px;color:#9ca3af;line-height:1.6">
           <div>본 보고서는 Re&H 급식 운영 관리 시스템에 의해 자동 생성되었습니다.</div>
           <div>보고 기간: ${reportYear}년 ${reportMonth}월 | 작성일: ${new Date().toLocaleDateString('ko-KR')}</div>
         </div>
-        <div style="text-align:center;padding:16px 36px;border:1px solid #e5e7eb;border-radius:10px;min-width:200px;background:#f8fafc">
-          <div style="font-size:10px;color:#9ca3af;margin-bottom:24px">영양사 서명 확인</div>
+        <div style="text-align:center;padding:12px 28px;border:1px solid #e5e7eb;border-radius:10px;min-width:160px;background:#f8fafc">
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:16px">영양사 서명 확인</div>
           <div style="font-size:12px;font-weight:700;color:#1f2937;margin-bottom:4px">${hospitalName}</div>
           <div style="font-size:11px;color:#6b7280">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
           <div style="font-size:12px;color:#374151;margin-top:10px;letter-spacing:4px">(인)</div>
@@ -10963,12 +10963,13 @@ window.printReportA4 = function() {
         'display:flex', 'flex-direction:column'
       ].join(';')
     } else {
-      // 일반 페이지: 흰 배경, 여백 없이
+      // 일반 페이지: 흰 배경, overflow visible로 잘림 방지
       clone.style.cssText = [
         'width:100%', 'margin:0', 'padding:0',
         'border-radius:0', 'box-shadow:none',
         'border:none', 'background:white',
-        'display:flex', 'flex-direction:column', 'flex:1'
+        'display:flex', 'flex-direction:column',
+        'overflow:visible'  // 잘림 방지
       ].join(';')
     }
 
