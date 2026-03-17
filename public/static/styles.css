@@ -604,63 +604,78 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 .mobile-nav-item:active { background: #f0fdf4; }
 
 /* ══════════════════════════════════════════
-   인쇄 스타일
+   인쇄 스타일 - A4 문서형 레이아웃
 ══════════════════════════════════════════ */
+
+/* 인쇄 전용 레이어 (JS로 동적 생성) */
+#printLayer {
+  display: none;
+}
+#printLayer .print-page {
+  width: 257mm;       /* A4 landscape 가로 (297 - 여백) */
+  height: 182mm;      /* A4 landscape 세로 (210 - 여백) */
+  padding: 10mm 12mm;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: white;
+  position: relative;
+  page-break-after: always;
+  page-break-inside: avoid;
+}
+#printLayer .print-page:last-child { page-break-after: avoid; }
+
 @media print {
   @page {
     size: A4 landscape;
-    margin: 10mm 8mm;
+    margin: 10mm 12mm;
   }
+
+  /* 화면 요소 모두 숨김 */
+  body > *:not(#printLayer) { display: none !important; }
   .no-print { display: none !important; }
-  .sidebar { display: none !important; }
-  .mobile-bottom-nav { display: none !important; }
-  .hamburger-btn { display: none !important; }
-  header { display: none !important; }
-  main { overflow: visible !important; margin-left: 0 !important; padding: 0 !important; }
-  #pageContent { overflow: visible !important; padding: 0 !important; max-height: none !important; }
-  #reportBody { display: block !important; }
-  .report-slide {
-    page-break-before: always !important;
+
+  /* 인쇄 레이어만 표시 */
+  #printLayer {
+    display: block !important;
+    position: fixed !important;
+    top: 0 !important; left: 0 !important;
+    width: 100% !important;
+    background: white !important;
+  }
+  #printLayer .print-page {
+    display: block !important;
+    width: 100% !important;
+    height: 182mm !important;
+    padding: 8mm 10mm !important;
     page-break-after: always !important;
     page-break-inside: avoid !important;
-    break-before: page !important;
     break-after: page !important;
     break-inside: avoid !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    margin: 0 !important;
-    padding: 12px !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    box-sizing: border-box !important;
-    display: block !important;
     overflow: hidden !important;
+    box-sizing: border-box !important;
+    background: white !important;
   }
-  #reportBody > * + * { margin-top: 0 !important; }
-  .report-slide:first-child { page-break-before: avoid !important; break-before: avoid !important; }
-  .report-slide:last-child { page-break-after: auto !important; break-after: auto !important; }
-  body { background: white !important; }
-  canvas {
+  #printLayer .print-page:last-child {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  /* 인쇄용 공통 스타일 */
+  #printLayer * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  #printLayer canvas {
     max-width: 100% !important;
-    width: 100% !important;
     height: auto !important;
-    display: block !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
   }
-  .grid { display: grid !important; }
-  .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-  .grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
-  .chart-container, [id^="rpt-"] { page-break-inside: avoid !important; break-inside: avoid !important; }
-  .report-slide .grid > div { page-break-inside: avoid !important; break-inside: avoid !important; }
-  table { width: 100% !important; font-size: 11px !important; }
-  th, td { padding: 4px 6px !important; }
-  .progress-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .progress-fill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .bg-gradient-to-br { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
-  .report-controls { display: none !important; }
-  body, html { overflow: visible !important; height: auto !important; }
+  #printLayer table {
+    font-size: 10px !important;
+    width: 100% !important;
+  }
+  #printLayer th, #printLayer td {
+    padding: 3px 5px !important;
+  }
 }
+

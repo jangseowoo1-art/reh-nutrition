@@ -7272,17 +7272,22 @@ async function renderAdminDashboard() {
             })() : ''}
             <!-- 2.2 월말 예상 식단가 + 2.3 예산 소진 예상일 (관리자 카드) -->
             ${(h.projectedMonthEndMealPrice > 0 || h.budgetDepletionDate) ? `
-            <div class="mt-1.5 pt-1.5 border-t border-blue-100 grid grid-cols-2 gap-1">
+            <div class="mt-1.5 pt-1.5 border-t border-blue-100">
+              <div class="text-xs text-gray-400 mb-1" style="font-size:9px"><i class="fas fa-chart-line mr-1"></i>현재 추세 기준 예측</div>
+              <div class="grid grid-cols-2 gap-1">
               ${h.projectedMonthEndMealPrice > 0 ? `
-              <div class="bg-white rounded-lg px-2 py-1 border ${h.projectedMonthEndMealPrice > (h.targetMealPrice||0) && h.targetMealPrice > 0 ? 'border-red-200' : 'border-green-100'}">
-                <div class="text-xs text-gray-400">월말 예상</div>
-                <div class="text-xs font-bold ${h.projectedMonthEndMealPrice > (h.targetMealPrice||0) && h.targetMealPrice > 0 ? 'text-red-600' : 'text-gray-700'}">${h.projectedMonthEndMealPrice.toLocaleString()}원</div>
+              <div class="bg-white rounded-lg px-2 py-1.5 border ${h.projectedMonthEndMealPrice > (h.targetMealPrice||0) && h.targetMealPrice > 0 ? 'border-red-200 bg-red-50' : 'border-green-100'}">
+                <div class="text-xs text-gray-400" style="font-size:9px">월말 예상 식단가</div>
+                <div class="text-xs font-bold ${h.projectedMonthEndMealPrice > (h.targetMealPrice||0) && h.targetMealPrice > 0 ? 'text-red-600' : 'text-gray-700'}">${h.projectedMonthEndMealPrice.toLocaleString()}원/식</div>
+                ${h.targetMealPrice > 0 ? `<div class="text-xs" style="font-size:9px;color:${h.projectedMonthEndMealPrice > h.targetMealPrice ? '#dc2626' : '#16a34a'}">${h.projectedMonthEndMealPrice > h.targetMealPrice ? '▲목표초과' : '▼목표이하'}</div>` : ''}
               </div>` : '<div></div>'}
               ${h.budgetDepletionDate ? `
-              <div class="bg-yellow-50 rounded-lg px-2 py-1 border border-yellow-200">
-                <div class="text-xs text-yellow-600">소진 예상</div>
-                <div class="text-xs font-bold text-yellow-700">${h.budgetDepletionDate}</div>
+              <div class="rounded-lg px-2 py-1.5 border ${h.budgetDepletionDate.includes('🚨') ? 'bg-red-50 border-red-200' : 'bg-yellow-50 border-yellow-200'}">
+                <div class="text-xs" style="font-size:9px;color:${h.budgetDepletionDate.includes('🚨') ? '#991b1b' : '#92400e'}">예산 소진 예상일</div>
+                <div class="text-xs font-bold ${h.budgetDepletionDate.includes('🚨') ? 'text-red-700' : 'text-yellow-700'}">${h.budgetDepletionDate}</div>
+                <div class="text-xs" style="font-size:9px;color:#9ca3af">이달 내 소진 예상</div>
               </div>` : '<div></div>'}
+              </div>
             </div>` : ''}
             <!-- 환자군별 식단가 (1개: 총액÷식수, 2개+: 가중평균) -->
             ${(h.catDietPrices||[]).length > 0 ? (() => {
@@ -9889,7 +9894,7 @@ async function renderReport(selectedHospitalId = null) {
       <button onclick="showPrintPreview()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0">
         <i class="fas fa-search mr-1"></i>인쇄 미리보기
       </button>
-      <button onclick="window.print()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
+      <button onclick="printReportA4()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
         <i class="fas fa-print mr-1"></i>인쇄하기
       </button>
       <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-primary btn-sm">
@@ -10585,6 +10590,79 @@ function addChartSlideWithSummary(pptx, title, titleColor, canvasData, summaryLa
   return slide
 }
 
+// ── A4 문서형 인쇄 함수 ────────────────────────────────────────
+// window.print() 대신 이 함수를 사용:
+// 1. reportBody의 각 .report-slide를 독립 print-page div로 복제
+// 2. #printLayer에 담아 body에 추가
+// 3. window.print() 호출 → CSS @media print에서 #printLayer만 표시
+// 4. 인쇄 완료 후 #printLayer 제거
+window.printReportA4 = function() {
+  const reportBody = document.getElementById('reportBody')
+  if (!reportBody) { showToast('보고서를 먼저 불러오세요', 'warning'); return }
+
+  // 기존 printLayer 제거
+  const existing = document.getElementById('printLayer')
+  if (existing) existing.remove()
+
+  const slides = reportBody.querySelectorAll('.report-slide')
+  if (slides.length === 0) { showToast('출력할 슬라이드가 없습니다', 'warning'); return }
+
+  // printLayer 생성
+  const layer = document.createElement('div')
+  layer.id = 'printLayer'
+  layer.setAttribute('aria-hidden', 'true')
+
+  // 각 슬라이드를 print-page로 감싸기
+  slides.forEach((slide, idx) => {
+    const page = document.createElement('div')
+    page.className = 'print-page'
+    // 슬라이드 내용 복제 (canvas 포함)
+    const clone = slide.cloneNode(true)
+    // 표지 슬라이드: 인쇄용 스타일 조정
+    if (idx === 0) {
+      clone.style.cssText = 'width:100%;height:100%;margin:0;padding:0;border-radius:0;box-shadow:none;overflow:hidden'
+    } else {
+      clone.style.cssText = 'width:100%;margin:0;padding:0;border-radius:0;box-shadow:none;border:none'
+    }
+    // canvas는 DataURL 이미지로 교체 (인쇄 시 canvas 렌더링 보장)
+    const origCanvases = slide.querySelectorAll('canvas')
+    const cloneCanvases = clone.querySelectorAll('canvas')
+    origCanvases.forEach((origC, ci) => {
+      try {
+        const imgEl = document.createElement('img')
+        imgEl.src = origC.toDataURL('image/png')
+        imgEl.style.cssText = `width:${origC.offsetWidth}px;max-width:100%;height:auto;display:block`
+        if (cloneCanvases[ci]) {
+          cloneCanvases[ci].replaceWith(imgEl)
+        }
+      } catch(e) {}
+    })
+    // 페이지 하단 번호 배지
+    const footer = document.createElement('div')
+    footer.style.cssText = 'position:absolute;bottom:4mm;right:8mm;font-size:9px;color:#9ca3af;font-family:sans-serif'
+    footer.textContent = `${idx + 1} / ${slides.length}`
+    page.style.position = 'relative'
+    page.appendChild(clone)
+    page.appendChild(footer)
+    layer.appendChild(page)
+  })
+
+  document.body.appendChild(layer)
+
+  // 브라우저 인쇄 다이얼로그 열기
+  requestAnimationFrame(() => {
+    window.print()
+    // 인쇄 후 레이어 제거 (afterprint 이벤트 또는 타임아웃)
+    const cleanup = () => {
+      const l = document.getElementById('printLayer')
+      if (l) l.remove()
+      window.removeEventListener('afterprint', cleanup)
+    }
+    window.addEventListener('afterprint', cleanup)
+    setTimeout(cleanup, 30000)  // 30초 안에 인쇄 안 하면 자동 제거
+  })
+}
+
 // ── 인쇄 미리보기 모달 ─────────────────────────────────────────
 window.showPrintPreview = function() {
   // 기존 미리보기 모달 제거
@@ -10613,7 +10691,7 @@ window.showPrintPreview = function() {
           style="background:#374151;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">
           <i class="fas fa-times mr-1"></i>닫기
         </button>
-        <button onclick="window.print()" 
+        <button onclick="document.getElementById('printPreviewModal').remove(); printReportA4()" 
           style="background:#3b82f6;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
           <i class="fas fa-print mr-1"></i>인쇄/PDF저장
         </button>
@@ -10666,11 +10744,33 @@ function renderPrintPreviewPage(idx) {
   const pageInfo = document.getElementById('ppPageInfo')
   if (!container || !window._ppSlides[idx]) return
 
-  // 슬라이드 복제
-  const clone = window._ppSlides[idx].cloneNode(true)
-  clone.style.cssText = 'margin:0!important;border-radius:0!important;box-shadow:none!important;padding:24px!important;display:block!important;'
+  // 슬라이드 복제 + canvas → img 교체 (실제 인쇄와 동일)
+  const origSlide = window._ppSlides[idx]
+  const clone = origSlide.cloneNode(true)
+  clone.style.cssText = 'margin:0!important;border-radius:0!important;box-shadow:none!important;padding:20px!important;display:block!important;background:white!important;width:100%!important;box-sizing:border-box!important;'
+
+  // canvas → img (실제 인쇄 결과와 동일하게)
+  const origCanvases = origSlide.querySelectorAll('canvas')
+  const cloneCanvases = clone.querySelectorAll('canvas')
+  origCanvases.forEach((origC, ci) => {
+    try {
+      const imgEl = document.createElement('img')
+      imgEl.src = origC.toDataURL('image/png')
+      imgEl.style.cssText = `width:${origC.offsetWidth}px;max-width:100%;height:auto;display:block`
+      if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
+    } catch(e) {}
+  })
+
+  // A4 landscape 비율 컨테이너 (297:210 = 1.414:1)
   container.innerHTML = ''
+  container.style.cssText = 'background:white;box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:8px;overflow:hidden;width:100%;max-width:960px;min-height:400px;position:relative'
   container.appendChild(clone)
+
+  // 페이지 번호 표시
+  const pgBadge = document.createElement('div')
+  pgBadge.style.cssText = 'position:absolute;bottom:8px;right:12px;font-size:10px;color:#9ca3af;pointer-events:none'
+  pgBadge.textContent = `${idx+1} / ${window._ppTotal}`
+  container.appendChild(pgBadge)
 
   // 페이지 정보 업데이트
   if (pageInfo) pageInfo.textContent = `페이지 ${idx+1} / ${window._ppTotal}`

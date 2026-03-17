@@ -858,28 +858,43 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           totalMeals: prevTotalMeals,
           totalUsed: prevTotalUsed
         },
-        // ── 2.3 예산 소진 예상일 (관리자 카드용 간략 버전) ──
+        // ── 2.3 예산 소진 예상일 (관리자 카드용) ──
+        // 계산: (남은 예산) / (일평균 사용액) = 남은 일수 → 오늘 + 남은 일수 = 소진 예상일
+        // 조건: 소진 예상일이 이번 달 말일 이전일 때만 ⚠️ 표시 (연도 일치 필수)
         budgetDepletionDate: (() => {
           if (totalBudget <= 0 || totalUsed <= 0) return null
           const todayD = new Date(); const elapsed = todayD.getDate()
-          const avgDaily = elapsed > 0 ? totalUsed / elapsed : 0
+          if (elapsed <= 0) return null
+          const avgDaily = totalUsed / elapsed
           const rem = totalBudget - totalUsed
           if (rem <= 0) return '이미 초과'
           const daysLeft = Math.ceil(rem / avgDaily)
-          const depDate = new Date(todayD); depDate.setDate(todayD.getDate() + daysLeft)
-          const dim = new Date(todayD.getFullYear(), todayD.getMonth()+1, 0).getDate()
-          const isWarning = depDate.getDate() <= dim && depDate.getMonth() === todayD.getMonth()
-          return isWarning ? `${depDate.getMonth()+1}월 ${depDate.getDate()}일 ⚠️` : null
+          const depDate = new Date(todayD.getFullYear(), todayD.getMonth(), todayD.getDate() + daysLeft)
+          const lastDayOfMonth = new Date(todayD.getFullYear(), todayD.getMonth()+1, 0)
+          // 연도·월 모두 일치해야 이달 내 소진으로 판단
+          const isThisMonth = depDate.getFullYear() === todayD.getFullYear()
+                           && depDate.getMonth() === todayD.getMonth()
+          if (!isThisMonth) return null  // 이달 내 소진 아니면 표시 안 함
+          const daysToEnd = lastDayOfMonth.getDate() - todayD.getDate()
+          // 말일까지 남은 날수보다 소진일이 빠르면 위험 경고
+          const status = daysLeft <= Math.ceil(daysToEnd * 0.5) ? '🚨' : '⚠️'
+          return `${depDate.getMonth()+1}월 ${depDate.getDate()}일 ${status}`
         })(),
         // ── 2.2 월말 예상 식단가 (관리자 카드용) ──
+        // 계산: (현재까지 일평균 사용액) × 월말일 → 월말 예상 총 사용액 / 월말 예상 총 식수 = 월말 예상 식단가
+        // 단, 입력된 식수 데이터(days_entered)가 없으면 현재 식단가 그대로 반환
         projectedMonthEndMealPrice: (() => {
           if (totalUsed <= 0) return 0
           const todayD = new Date(); const elapsed = todayD.getDate()
           const dim = new Date(todayD.getFullYear(), todayD.getMonth()+1, 0).getDate()
-          const avgDaily = elapsed > 0 ? totalUsed / elapsed : 0
-          const projUsed = totalUsed + avgDaily * (dim - elapsed)
+          if (elapsed <= 0 || elapsed >= dim) return mealPriceTotal > 0 ? mealPriceTotal : 0
+          const avgDailyUsed = totalUsed / elapsed
+          const projUsed = totalUsed + avgDailyUsed * (dim - elapsed)
           if (totalMeals > 0) {
-            const avgMeals = mealStats?.days_entered > 0 ? totalMeals / mealStats.days_entered : totalMeals / elapsed
+            const daysWithMeals = mealStats?.days_entered && mealStats.days_entered > 0
+              ? mealStats.days_entered
+              : elapsed  // 입력일 기록 없으면 경과일로 대체
+            const avgMeals = totalMeals / daysWithMeals
             const projMeals = totalMeals + avgMeals * (dim - elapsed)
             return projMeals > 0 ? Math.round(projUsed / projMeals) : 0
           }
