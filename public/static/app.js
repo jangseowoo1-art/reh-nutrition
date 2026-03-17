@@ -10703,64 +10703,63 @@ async function renderReport(selectedHospitalId = null) {
 
   </div>`
 
-  // ── 차트 렌더링 ──
+  // ── 차트 렌더링 (renderReport 스코프 변수 사용) ──
+  requestAnimationFrame(() => {
   try {
-  // 보고서용 공통 플러그인
-  const rptBarLabelPlugin = {
-    id: 'rptBarLabels',
-    afterDatasetsDraw(chart) {
-      if (!chart.config.options?._showBarLabels) return
-      const { ctx } = chart
-      chart.data.datasets.forEach((ds, di) => {
-        if (ds.type && ds.type !== 'bar') return
-        if (chart.config.type !== 'bar' && ds.type !== 'bar') return
-        const meta = chart.getDatasetMeta(di)
-        if (meta.hidden) return
-        meta.data.forEach((bar, i) => {
-          const val = ds.data[i]
-          if (!val || val === 0) return
-          ctx.save()
-          ctx.font = 'bold 9px sans-serif'
-          ctx.fillStyle = '#374151'
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'bottom'
-          const label = val >= 1e6 ? `${(val/1e6).toFixed(1)}백만` : val >= 1e4 ? `${(val/1e4).toFixed(0)}만` : val.toLocaleString()
-          ctx.fillText(label, bar.x, bar.y - 2)
-          ctx.restore()
+
+    const _s    = rptSummary
+    const _prog = _s.progress||0
+    const _tot  = _s.totalBudget||0
+    const _used = _s.usedAmount||0
+    const _tp   = _s.targetMealPrice||0
+    const _mp   = mealPriceForRpt||0
+    const _days = new Date(reportYear, reportMonth, 0).getDate()
+    const _ela  = rptProjection.elapsedDays||0
+    const _davg = rptDepletion.dailyAvgUsed||0
+    const _dep  = rptDepletion
+
+    // ── 공통 포맷 헬퍼
+    const _fmt    = n => (n||0).toLocaleString()
+    const _fmtM   = n => { const v=Math.abs(n||0); return v>=100000000?`${(v/100000000).toFixed(1)}억`:v>=10000?`${(v/10000).toFixed(0)}만`:`${v.toLocaleString()}` }
+    const _hex2r  = (h,a) => { const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16); return `rgba(${r},${g},${b},${a})` }
+
+    // ── 공통 플러그인 ──────────────────────────────────────────
+    const barLabelPlugin = {
+      id: '_barLabels',
+      afterDatasetsDraw(chart) {
+        if (!chart.config.options?._showBarLabels) return
+        const { ctx } = chart
+        chart.data.datasets.forEach((ds, di) => {
+          if (ds.type && ds.type !== 'bar') return
+          if (chart.config.type !== 'bar' && ds.type !== 'bar') return
+          const meta = chart.getDatasetMeta(di)
+          if (meta.hidden) return
+          meta.data.forEach((bar, i) => {
+            const val = ds.data[i]
+            if (!val || val === 0) return
+            ctx.save()
+            ctx.font = 'bold 9px sans-serif'
+            ctx.fillStyle = '#374151'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = chart.config.options?.indexAxis === 'y' ? 'middle' : 'bottom'
+            const label = val >= 1e6 ? `${(val/1e6).toFixed(1)}백만` : val >= 1e4 ? `${(val/1e4).toFixed(0)}만` : val.toLocaleString()
+            if (chart.config.options?.indexAxis === 'y') {
+              ctx.fillText(label, bar.x + 28, bar.y)
+            } else {
+              ctx.fillText(label, bar.x, bar.y - 3)
+            }
+            ctx.restore()
+          })
         })
-      })
+      }
     }
-  }
-  const rptPctLabelPlugin = {
-    id: 'rptPctLabels',
-    afterDatasetsDraw(chart) {
-      if (!chart.config.options?._showPctLabels) return
-      const { ctx } = chart
-      chart.data.datasets.forEach((ds, di) => {
-        if (ds.type && ds.type !== 'bar') return
-        const meta = chart.getDatasetMeta(di)
-        if (meta.hidden) return
-        meta.data.forEach((bar, i) => {
-          const val = ds.data[i]
-          if (!val || val === 0) return
-          ctx.save()
-          ctx.font = 'bold 9px sans-serif'
-          ctx.fillStyle = val >= 100 ? '#dc2626' : val >= 90 ? '#d97706' : '#16a34a'
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'bottom'
-          ctx.fillText(`${val}%`, bar.x, bar.y - 2)
-          ctx.restore()
-        })
-      })
-    }
-  }
-  const rptPointLabelPlugin = {
-    id: 'rptPointLabels',
-    afterDatasetsDraw(chart) {
-      if (!chart.config.options?._showPointLabels) return
-      const { ctx } = chart
-      chart.data.datasets.forEach((ds, di) => {
-        if (ds.type === 'line' || chart.config.type === 'line') {
+    const ptLabelPlugin = {
+      id: '_ptLabels',
+      afterDatasetsDraw(chart) {
+        if (!chart.config.options?._showPointLabels) return
+        const { ctx } = chart
+        chart.data.datasets.forEach((ds, di) => {
+          if (ds.type === 'line' || chart.config.type === 'line' || chart.config.type === 'radar') return
           const meta = chart.getDatasetMeta(di)
           if (meta.hidden) return
           meta.data.forEach((pt, i) => {
@@ -10775,512 +10774,318 @@ async function renderReport(selectedHospitalId = null) {
             ctx.fillText(label, pt.x, pt.y - 5)
             ctx.restore()
           })
-        }
-      })
-    }
-  }
-  const rptDoughnutCenterPlugin = {
-    id: 'rptDoughnutCenter',
-    beforeDraw(chart) {
-      if (chart.config.type !== 'doughnut') return
-      if (!chart.config.options?._centerText) return
-      const { ctx, chartArea } = chart
-      if (!chartArea) return
-      const cx = (chartArea.left + chartArea.right) / 2
-      const cy = (chartArea.top + chartArea.bottom) / 2
-      ctx.save()
-      ctx.font = 'bold 13px sans-serif'
-      ctx.fillStyle = '#374151'
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(chart.config.options._centerText, cx, cy)
-      ctx.restore()
-    }
-  }
-
-  // 업체별 도넛차트 (중앙 총합 + 각 조각 금액 표시)
-  const vendorLabels = (rptOrders||[]).slice(0,10).map(v=>v.vendor||v.vendorName||v.name||'')
-  const vendorData = (rptOrders||[]).slice(0,10).map(v=>v.totalAmount||v.amount||0)
-  const vendorTotal = vendorData.reduce((s,v)=>s+v,0)
-  const rptDoughnutSlicePlugin = {
-    id: 'rptDoughnutSlice',
-    afterDatasetsDraw(chart) {
-      const ctx = chart.ctx
-      const dataset = chart.data.datasets[0]
-      const total = dataset.data.reduce((s,v)=>s+v,0)
-      if (!total) return
-      chart.getDatasetMeta(0).data.forEach((arc, i) => {
-        const val = dataset.data[i]
-        if (!val || val/total < 0.04) return
-        const { startAngle, endAngle, outerRadius, innerRadius, x, y } = arc
-        const midAngle = (startAngle + endAngle) / 2
-        const r = (outerRadius + innerRadius) / 2
-        const cx = x + Math.cos(midAngle) * r
-        const cy = y + Math.sin(midAngle) * r
-        ctx.save()
-        ctx.font = 'bold 10px sans-serif'
-        ctx.fillStyle = 'rgba(255,255,255,0.95)'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText(fmtMan(val), cx, cy)
-        ctx.restore()
-      })
-    }
-  }
-  if (document.getElementById('rptVendorChart') && vendorData.some(v=>v>0)) {
-    App.charts.rptVendor = new Chart(document.getElementById('rptVendorChart'), {
-      type: 'doughnut',
-      data: {
-        labels: vendorLabels,
-        datasets: [{ data: vendorData,
-          backgroundColor: ['#16a34a','#15803d','#22c55e','#86efac','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899','#64748b'] }]
-      },
-      options: {
-        responsive:true,
-        _centerText: fmtMan(vendorTotal),
-        plugins:{ legend:{ position:'right', labels:{ font:{size:11} } } }
-      },
-      plugins: [rptDoughnutCenterPlugin, rptDoughnutSlicePlugin]
-    })
-  }
-
-  // 안전한 차트 생성 헬퍼 (null 체크 + 에러 캐치)
-  const safeChart = (id, config) => {
-    const el = document.getElementById(id)
-    if (!el) { console.warn('[보고서] canvas 없음:', id); return null }
-    try { return new Chart(el, config) } catch(e) { console.warn('[보고서] 차트 생성 오류', id, e); return null }
-  }
-
-  // 일별 바차트 (막대 위 수치)
-  ;(()=>{
-    const avgVal = dailyValues.filter(v=>v>0).length>0
-      ? Math.round(dailyValues.filter(v=>v>0).reduce((a,b)=>a+b,0)/dailyValues.filter(v=>v>0).length)
-      : 0
-    App.charts.rptDaily = safeChart('rptDailyChart', {
-      type: 'bar',
-      data: {
-        labels: dailyLabels,
-        datasets: [
-          { label:'일별 매입금액', data:dailyValues, backgroundColor:dailyValues.map(v=>v>avgVal*2?'rgba(220,38,38,0.75)':'rgba(22,163,74,0.7)'), borderRadius:4, order:2 },
-          { label:`일평균(${avgVal>0?`${(avgVal/10000).toFixed(0)}만원`:'—'})`, data:Array(dailyLabels.length).fill(avgVal||null), type:'line', borderColor:'#d97706', borderDash:[5,3], borderWidth:2, pointRadius:0, fill:false, order:1 }
-        ]
-      },
-      options: { responsive:true, maintainAspectRatio:false,
-        _showBarLabels: false,
-        plugins:{ legend:{labels:{font:{size:9.5},boxWidth:10}} },
-        scales:{ y:{ ticks:{ callback:v=>`${(v/10000).toFixed(0)}만` }, beginAtZero:true } }
-      },
-      plugins: [rptBarLabelPlugin]
-    })
-  })()
-
-  // 연간 데이터 계산
-  const rMonths = Array.from({length:12}, (_,i)=>`${i+1}월`)
-  const rUsed = Array(12).fill(0); (annualData?.monthly||[]).forEach(m=>{ rUsed[parseInt(m.month)-1]=m.total_used||0 })
-  const rBudget = Array(12).fill(0); (annualData?.settings||[]).forEach(m=>{ rBudget[m.month-1]=m.total_budget||0 })
-  const rMeals = Array(12).fill(0), rPatient=Array(12).fill(0), rStaff=Array(12).fill(0), rNoncov=Array(12).fill(0), rGuard=Array(12).fill(0)
-  ;(annualData?.mealMonthly||[]).forEach(m=>{ const i=parseInt(m.month)-1; rMeals[i]=m.total_meals||0; rPatient[i]=m.total_patient||0; rStaff[i]=m.total_staff||0; rNoncov[i]=m.total_noncovered||0; rGuard[i]=m.total_guardian||0 })
-  const rWasteKg = Array(12).fill(0), rWasteCost = Array(12).fill(0)
-  ;(annualData?.wasteAnnual||[]).forEach(m=>{ const i=parseInt(m.month)-1; rWasteKg[i]=parseFloat(m.total_waste||0); rWasteCost[i]=m.total_cost||0 })
-  const rSupplyMap = {}; (annualData?.supplyAnnual||[]).forEach(m=>{ rSupplyMap[parseInt(m.month)-1]=m.total_supply||0 })
-  const rStaffCost = Array(12).fill(0); (annualData?.staffAnnual||[]).forEach(m=>{ const i=parseInt(m.month)-1; if(m.total_meals>0) rStaffCost[i]=Math.round(rUsed[i]*m.total_staff/m.total_meals) })
-  const rMpTotal=Array(12).fill(0), rMpNoStaff=Array(12).fill(0), rMpNoSupply=Array(12).fill(0), rTargetMp=Array(12).fill(0)
-  ;(annualData?.settings||[]).forEach(m=>{ rTargetMp[m.month-1]=m.meal_price||0 })
-  for(let i=0;i<12;i++){
-    if(rMeals[i]>0&&rUsed[i]>0){
-      rMpTotal[i]=Math.round(rUsed[i]/rMeals[i])
-      rMpNoStaff[i]=(rMeals[i]-rStaff[i])>0?Math.round((rUsed[i]-rStaffCost[i])/(rMeals[i]-rStaff[i])):0
-      rMpNoSupply[i]=Math.round((rUsed[i]-(rSupplyMap[i]||0))/rMeals[i])
-    }
-  }
-  const rPrevYearMp = Array(12).fill(0)
-  const rPrevMeals = Array(12).fill(0), rPrevOrders = Array(12).fill(0)
-  ;(annualData?.prevYearMeals||[]).forEach(m=>{ rPrevMeals[parseInt(m.month)-1]=m.total_meals||0 })
-  ;(annualData?.prevYearOrders||[]).forEach(m=>{ rPrevOrders[parseInt(m.month)-1]=m.total_used||0 })
-  for(let i=0;i<12;i++){ if(rPrevMeals[i]>0&&rPrevOrders[i]>0) rPrevYearMp[i]=Math.round(rPrevOrders[i]/rPrevMeals[i]) }
-
-  const rVendorTotals = {}
-  ;(annualData?.vendorAnnual||[]).forEach(v=>{
-    if(!rVendorTotals[v.name]) rVendorTotals[v.name]={name:v.name,total:0}
-    rVendorTotals[v.name].total += v.total_used||0
-  })
-  const rVendors = Object.values(rVendorTotals).sort((a,b)=>b.total-a.total)
-
-  // 월별 식수 차트 (slide6 - 이번 달 식종별 누적 바, 주간별로 구분)
-  // slide6는 이번 달 식수 현황이므로 식종별 카테고리로 도넛 형태로 표시
-  App.charts.rptMealMonth = safeChart('rptWaterChart', {
-    type: 'bar', data:{
-      labels: mealCatList.map(c=>c.name),
-      datasets:[{
-        label:'식수(명)',
-        data: mealCatList.map(c=>c.count),
-        backgroundColor: mealColors.map(c=>{ const r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16); return `rgba(${r},${g},${b},0.75)` }),
-        borderRadius:6,
-        borderWidth:0
-      }]
-    },
-    options:{ responsive:true, maintainAspectRatio:false, indexAxis:'y',
-      _showBarLabels: true,
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:(ctx)=>`${ctx.parsed.x.toLocaleString()}명`}}},
-      scales:{ x:{ticks:{callback:v=>`${v.toLocaleString()}명`}, beginAtZero:true}, y:{ticks:{font:{size:11,weight:'bold'}}} }
-    },
-    plugins:[rptBarLabelPlugin]
-  })
-
-  // 식단가 3종 차트 (꼭짓점 수치)
-  App.charts.rptMealPrice = safeChart('rptMealPriceChart', {
-    type: 'line', data:{
-      labels: rMonths,
-      datasets:[
-        { label:'전체 식단가', data:rMpTotal, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', fill:true, tension:0.4, pointRadius:4 },
-        { label:'직원식 제외', data:rMpNoStaff, borderColor:'#9333ea', borderWidth:2, pointRadius:3, fill:false, tension:0.3 },
-        { label:'소모품 제외', data:rMpNoSupply, borderColor:'#f59e0b', borderWidth:2, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3] },
-        { label:'목표식단가',  data:rTargetMp, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[6,4] }
-      ]
-    },
-    options:{ responsive:true, _showPointLabels: true, plugins:{legend:{labels:{font:{size:10},boxWidth:10}}},
-      scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } },
-    plugins: [rptPointLabelPlugin]
-  })
-
-  // 슬라이드 7: 연간 식단가 3종 추이 (꼭짓점 수치)
-  safeChart('rptAnnualMealChart', {
-    type:'line', data:{
-      labels:rMonths,
-      datasets:[
-        { label:'전체식단가', data:rMpTotal, borderColor:'#2563eb', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
-        { label:'직원제외',   data:rMpNoStaff, borderColor:'#9333ea', borderWidth:2, pointRadius:3, fill:false, tension:0.3 },
-        { label:'소모품제외', data:rMpNoSupply, borderColor:'#f59e0b', borderWidth:2, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3] },
-        { label:`전년도 식단가`, data:rPrevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[6,3] },
-        { label:'목표식단가', data:rTargetMp, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
-      ]
-    },
-    options:{ responsive:true, _showPointLabels: true, plugins:{legend:{labels:{font:{size:11},boxWidth:10}}},
-      scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } },
-    plugins: [rptPointLabelPlugin]
-  })
-
-  // 슬라이드 8: 식수구성
-  safeChart('rptAnnualWaterChart', {
-    type:'bar', data:{
-      labels:rMonths,
-      datasets:[
-        { label:'치료식', data:rPatient, backgroundColor:'rgba(37,99,235,0.75)', borderRadius:3 },
-        { label:'직원식', data:rStaff,   backgroundColor:'rgba(22,163,74,0.7)',  borderRadius:3 },
-        { label:'비급여', data:rNoncov,  backgroundColor:'rgba(147,51,234,0.65)',borderRadius:3 },
-        { label:'보호자', data:rGuard,   backgroundColor:'rgba(249,115,22,0.65)',borderRadius:3 }
-      ]
-    },
-    options:{ responsive:true, plugins:{legend:{labels:{font:{size:10},boxWidth:8}}},
-      scales:{ x:{stacked:true}, y:{stacked:true, ticks:{callback:v=>`${v}식`}} } }
-  })
-
-  // 업체별 연간 파이 (중앙 총합 + 조각 금액)
-  const rVendorTotal = rVendors.reduce((s,v)=>s+v.total,0)
-  const rDoughnutSlicePlugin = {
-    id: 'rDoughnutSlice',
-    afterDatasetsDraw(chart) {
-      const ctx = chart.ctx
-      const dataset = chart.data.datasets[0]
-      const total = dataset.data.reduce((s,v)=>s+v,0)
-      if (!total) return
-      chart.getDatasetMeta(0).data.forEach((arc, i) => {
-        const val = dataset.data[i]
-        if (!val || val/total < 0.04) return
-        const { startAngle, endAngle, outerRadius, innerRadius, x, y } = arc
-        const midAngle = (startAngle + endAngle) / 2
-        const r = (outerRadius + innerRadius) / 2
-        const cx = x + Math.cos(midAngle) * r
-        const cy = y + Math.sin(midAngle) * r
-        ctx.save()
-        ctx.font = 'bold 10px sans-serif'
-        ctx.fillStyle = 'rgba(255,255,255,0.95)'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText(fmtMan(val), cx, cy)
-        ctx.restore()
-      })
-    }
-  }
-  safeChart('rptAnnualVendorChart', {
-    type:'doughnut', data:{
-      labels:rVendors.map(v=>v.name),
-      datasets:[{ data:rVendors.map(v=>v.total),
-        backgroundColor:['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6'].map(c=>c+'cc'), borderWidth:1 }]
-    },
-    options:{
-      responsive:true,
-      _centerText: fmtMan(rVendorTotal),
-      plugins:{legend:{position:'right', labels:{font:{size:10},boxWidth:8}}}
-    },
-    plugins: [rptDoughnutCenterPlugin, rDoughnutSlicePlugin]
-  })
-
-  // 예산 달성률 (막대 위 % 수치)
-  const rPct = rBudget.map((b,i)=>b>0?parseFloat((rUsed[i]/b*100).toFixed(1)):null)
-  safeChart('rptAnnualBudgetChart', {
-    type:'bar', data:{
-      labels:rMonths,
-      datasets:[
-        { label:'달성률(%)', data:rPct, backgroundColor:rPct.map(p=>p===null?'#e5e7eb':p>=100?'rgba(239,68,68,0.75)':p>=90?'rgba(245,158,11,0.75)':'rgba(22,163,74,0.75)'), borderRadius:4 },
-        { label:'100%기준', data:Array(12).fill(100), type:'line', borderColor:'#ef4444', borderDash:[5,5], borderWidth:1.5, pointRadius:0, fill:false }
-      ]
-    },
-    options:{ responsive:true, _showPctLabels: true, plugins:{legend:{labels:{font:{size:10},boxWidth:8}}},
-      scales:{ y:{ ticks:{callback:v=>`${v}%`}, suggestedMax:130 } } },
-    plugins: [rptPctLabelPlugin]
-  })
-
-  // 잔반 추이 (꼭짓점 수치)
-  safeChart('rptAnnualWasteChart', {
-    type:'bar', data:{
-      labels:rMonths,
-      datasets:[
-        { label:'잔반(kg)', data:rWasteKg, backgroundColor:'rgba(245,158,11,0.7)', borderRadius:4, yAxisID:'y' },
-        { label:'비용',     data:rWasteCost, type:'line', borderColor:'#f97316', borderWidth:2, pointRadius:3, fill:false, yAxisID:'y1' }
-      ]
-    },
-    options:{ responsive:true, _showBarLabels: true, plugins:{legend:{labels:{font:{size:10},boxWidth:8}}},
-      scales:{
-        y:{ ticks:{callback:v=>`${v}kg`}, position:'left' },
-        y1:{ ticks:{callback:v=>`${(v/1e4).toFixed(0)}만`}, position:'right', grid:{drawOnChartArea:false} }
-      } },
-    plugins: [rptBarLabelPlugin]
-  })
-
-  // ── PAGE 2: 게이지 차트 (예산 집행률) ──────────────────────────
-  ;(()=>{
-    const el = document.getElementById('rptGaugeChart')
-    if (!el) return
-    try {
-      const pct = progress
-      const color = pct>=90?'#dc2626':pct>=80?'#d97706':'#16a34a'
-      const ctx = el.getContext('2d')
-      // 반원 게이지 직접 그리기
-      const w = el.offsetWidth||280, h = el.offsetHeight||150
-      el.width = w; el.height = h
-      const cx = w/2, cy = h*0.85, r = Math.min(w*0.42, h*0.85)
-      const startA = Math.PI, endA = 2*Math.PI
-      const curA = startA + (pct/100)*(endA-startA)
-      ctx.clearRect(0,0,w,h)
-      // 배경 호
-      ctx.beginPath(); ctx.arc(cx,cy,r,startA,endA)
-      ctx.strokeStyle='#e5e7eb'; ctx.lineWidth=18; ctx.lineCap='round'; ctx.stroke()
-      // 색상 그라디언트 호
-      if(pct>0){
-        const grad = ctx.createLinearGradient(cx-r,cy,cx+r,cy)
-        grad.addColorStop(0,'#16a34a'); grad.addColorStop(0.7,'#d97706'); grad.addColorStop(1,'#dc2626')
-        ctx.beginPath(); ctx.arc(cx,cy,r,startA,curA)
-        ctx.strokeStyle=grad; ctx.lineWidth=18; ctx.lineCap='round'; ctx.stroke()
+        })
       }
-      // 구분선 (80%, 90% 기준)
-      ;[[80,'#d97706'],[90,'#dc2626']].forEach(([p,c])=>{
-        const a = startA + (p/100)*(endA-startA)
-        const ix=cx+r*Math.cos(a), iy=cy+r*Math.sin(a)
-        ctx.beginPath(); ctx.moveTo(ix,iy)
-        ctx.lineTo(cx+(r-25)*Math.cos(a),cy+(r-25)*Math.sin(a))
-        ctx.strokeStyle=c; ctx.lineWidth=2; ctx.stroke()
-      })
-      // 포인터
-      const needleA = startA + (pct/100)*(endA-startA)
-      ctx.beginPath()
-      ctx.moveTo(cx,cy)
-      ctx.lineTo(cx+(r-22)*Math.cos(needleA), cy+(r-22)*Math.sin(needleA))
-      ctx.strokeStyle=color; ctx.lineWidth=3; ctx.lineCap='round'; ctx.stroke()
-      ctx.beginPath(); ctx.arc(cx,cy,6,0,2*Math.PI)
-      ctx.fillStyle=color; ctx.fill()
-    } catch(e){ console.warn('[Gauge] 렌더 오류',e) }
-  })()
+    }
+    const centerPlugin = {
+      id: '_center',
+      beforeDraw(chart) {
+        if (chart.config.type !== 'doughnut') return
+        if (!chart.config.options?._centerText) return
+        const { ctx, chartArea } = chart
+        if (!chartArea) return
+        const cx = (chartArea.left + chartArea.right) / 2
+        const cy = (chartArea.top + chartArea.bottom) / 2
+        ctx.save()
+        ctx.font = 'bold 13px sans-serif'
+        ctx.fillStyle = '#374151'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(chart.config.options._centerText, cx, cy)
+        ctx.restore()
+      }
+    }
 
-  // ── PAGE 3: 카테고리별 식단가 바 차트 ────────────────────────
-  ;(()=>{
-    const el = document.getElementById('rptCatPriceChart')
-    if(!el) return
-    try {
-      const labels = catPriceData.map(c=>c.name)
-      const vals   = catPriceData.map(c=>c.price)
-      const colors = catPriceData.map(c=>c.price>0&&targetPrice>0&&c.price>targetPrice?'rgba(220,38,38,0.75)':c.col.replace('#','rgba(').replace(/^rgba\(([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i,(_,r,g,b)=>`rgba(${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)}`)+',0.75)')
-      // 색상 헥스→rgba 변환 helper
-      const hex2rgba=(h,a)=>{const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16);return `rgba(${r},${g},${b},${a})`}
-      safeChart('rptCatPriceChart',{
+    // 안전한 차트 생성 헬퍼
+    const SC = (id, config, plugins=[]) => {
+      const el = document.getElementById(id)
+      if (!el) { console.warn('[차트] canvas 없음:', id); return null }
+      try {
+        if (Chart.getChart(el)) Chart.getChart(el).destroy()
+        return new Chart(el, { ...config, plugins: [...(config.plugins||[]), ...plugins] })
+      } catch(e) { console.warn('[차트] 생성 오류:', id, e.message); return null }
+    }
+
+    // ── PAGE 2: 게이지 차트 ─────────────────────────────────────
+    ;(()=>{
+      const el = document.getElementById('rptGaugeChart')
+      if (!el) return
+      try {
+        const pct = _prog
+        const color = pct>=90?'#dc2626':pct>=80?'#d97706':'#16a34a'
+        const w = el.offsetWidth||280, h = el.offsetHeight||150
+        el.width = w * (window.devicePixelRatio||1)
+        el.height = h * (window.devicePixelRatio||1)
+        el.style.width = w + 'px'
+        el.style.height = h + 'px'
+        const ctx = el.getContext('2d')
+        ctx.scale(window.devicePixelRatio||1, window.devicePixelRatio||1)
+        const cx = w/2, cy = h*0.82, r = Math.min(w*0.40, h*0.80)
+        const startA = Math.PI, endA = 2*Math.PI
+        const curA = startA + (pct/100)*(endA-startA)
+        ctx.clearRect(0,0,w,h)
+        ctx.beginPath(); ctx.arc(cx,cy,r,startA,endA)
+        ctx.strokeStyle='#e5e7eb'; ctx.lineWidth=16; ctx.lineCap='round'; ctx.stroke()
+        if(pct>0){
+          const grad = ctx.createLinearGradient(cx-r,cy,cx+r,cy)
+          grad.addColorStop(0,'#16a34a'); grad.addColorStop(0.7,'#d97706'); grad.addColorStop(1,'#dc2626')
+          ctx.beginPath(); ctx.arc(cx,cy,r,startA,curA)
+          ctx.strokeStyle=grad; ctx.lineWidth=16; ctx.lineCap='round'; ctx.stroke()
+        }
+        ;[[80,'#d97706'],[90,'#dc2626']].forEach(([p,c])=>{
+          const a = startA + (p/100)*(endA-startA)
+          ctx.beginPath(); ctx.moveTo(cx+(r-10)*Math.cos(a), cy+(r-10)*Math.sin(a))
+          ctx.lineTo(cx+(r+10)*Math.cos(a), cy+(r+10)*Math.sin(a))
+          ctx.strokeStyle=c; ctx.lineWidth=2.5; ctx.stroke()
+        })
+        const needleA = startA + (pct/100)*(endA-startA)
+        ctx.beginPath(); ctx.moveTo(cx,cy)
+        ctx.lineTo(cx+(r-18)*Math.cos(needleA), cy+(r-18)*Math.sin(needleA))
+        ctx.strokeStyle=color; ctx.lineWidth=3; ctx.lineCap='round'; ctx.stroke()
+        ctx.beginPath(); ctx.arc(cx,cy,5,0,2*Math.PI); ctx.fillStyle=color; ctx.fill()
+        ctx.font = '11px sans-serif'; ctx.fillStyle='#9ca3af'; ctx.textAlign='center'
+        ctx.fillText('0%',cx-r-4,cy+14); ctx.fillText('100%',cx+r+4,cy+14)
+        ctx.font = 'bold 12px sans-serif'; ctx.fillStyle='#d97706'; ctx.fillText('80%',cx-r*0.05,cy-r*0.78)
+        ctx.font = 'bold 11px sans-serif'; ctx.fillStyle='#dc2626'; ctx.fillText('90%',cx+r*0.35,cy-r*0.68)
+      } catch(e){ console.warn('[Gauge]',e.message) }
+    })()
+
+    // ── PAGE 3: 카테고리별 식단가 바 차트 ──────────────────────
+    ;(()=>{
+      const el = document.getElementById('rptCatPriceChart')
+      if(!el) return
+      const catColors = ['#064e3b','#1d4ed8','#7c3aed','#dc2626','#d97706','#0891b2','#059669','#9333ea']
+      const rawCat = rptCatDietPrices && rptCatDietPrices.length>0
+        ? rptCatDietPrices.map((c,i)=>({name:c.category_name||c.name||'',price:Math.round(c.mealPrice||c.meal_price||0),col:catColors[i%catColors.length]}))
+        : rptCatMeals.map((c,i)=>({name:c.name,price:0,col:catColors[i%catColors.length]}))
+      if(!rawCat.length) return
+      SC('rptCatPriceChart',{
         type:'bar',
         data:{
-          labels,
+          labels:rawCat.map(c=>c.name),
           datasets:[
-            {label:'카테고리 식단가',data:vals,backgroundColor:catPriceData.map(c=>hex2rgba(c.col,0.75)),borderRadius:6},
-            ...(targetPrice>0?[{label:`목표(${fmt(targetPrice)}원)`,data:Array(labels.length).fill(targetPrice),type:'line',borderColor:'#dc2626',borderDash:[6,4],borderWidth:2,pointRadius:0,fill:false}]:[])
+            {label:'카테고리 식단가',data:rawCat.map(c=>c.price),
+             backgroundColor:rawCat.map(c=>_hex2r(c.col,0.75)),borderRadius:6,_showBarLabels:true},
+            ...(_tp>0?[{label:`목표(${_fmt(_tp)}원)`,data:Array(rawCat.length).fill(_tp),
+              type:'line',borderColor:'#dc2626',borderDash:[6,4],borderWidth:2,pointRadius:0,fill:false}]:[])
           ]
         },
-        options:{
-          responsive:true,maintainAspectRatio:false,
-          _showBarLabels:true,
+        options:{responsive:true,maintainAspectRatio:false,_showBarLabels:true,
           plugins:{legend:{labels:{font:{size:10},boxWidth:10}}},
           scales:{y:{ticks:{callback:v=>`${(v/1000).toFixed(0)}천원`},beginAtZero:true}}
-        },
-        plugins:[rptBarLabelPlugin]
-      })
-    } catch(e){console.warn('[CatPrice] 차트 오류',e)}
-  })()
+        }
+      },[barLabelPlugin])
+    })()
 
-  // ── PAGE 7: 월별 식수 추이 라인 차트 ────────────────────────
-  ;(()=>{
-    const el = document.getElementById('rptMonthlyMealChart')
-    if(!el) return
-    try {
-      const rMonthsShort = Array.from({length:12},(_,i)=>`${i+1}월`)
-      safeChart('rptMonthlyMealChart',{
-        type:'line',
-        data:{
-          labels:rMonthsShort,
-          datasets:[{
-            label:'월별 식수',data:mthMeals,
-            borderColor:'#064e3b',backgroundColor:'rgba(6,78,59,0.08)',
-            fill:true,tension:0.4,pointRadius:5,
-            pointBackgroundColor:mthMeals.map((_,i)=>i===curMthIdx?'#064e3b':'rgba(6,78,59,0.5)'),
-            pointRadius:mthMeals.map((_,i)=>i===curMthIdx?7:4)
-          }]
-        },
-        options:{
-          responsive:true,maintainAspectRatio:false,
-          _showPointLabels:true,
-          plugins:{legend:{display:false}},
-          scales:{y:{ticks:{callback:v=>`${v.toLocaleString()}명`},beginAtZero:false}}
-        },
-        plugins:[rptPointLabelPlugin]
-      })
-    } catch(e){console.warn('[MonthlyMeal] 차트 오류',e)}
-  })()
-
-  // ── PAGE 8: Bullet 차트 (목표 vs 현재 식단가) ────────────────
-  ;(()=>{
-    const el = document.getElementById('rptBulletChart')
-    if(!el||!targetPrice) return
-    try {
-      safeChart('rptBulletChart',{
+    // ── PAGE 4: 일별 매입금액 바 차트 ──────────────────────────
+    ;(()=>{
+      const vals = dailyValues
+      const nonZ = vals.filter(v=>v>0)
+      const avg  = nonZ.length ? Math.round(nonZ.reduce((a,b)=>a+b,0)/nonZ.length) : 0
+      SC('rptDailyChart',{
         type:'bar',
         data:{
-          labels:['식단가'],
+          labels:dailyLabels,
           datasets:[
-            {label:`위험(${fmt(Math.round(targetPrice*1.1))}원+)`,data:[targetPrice*1.3],backgroundColor:'rgba(254,242,242,0.8)',borderWidth:0,barThickness:28},
-            {label:`경고(${fmt(targetPrice)}~${fmt(Math.round(targetPrice*1.1))}원)`,data:[targetPrice*0.1],backgroundColor:'rgba(255,251,235,0.8)',borderWidth:0,barThickness:28},
-            {label:`목표 이내(~${fmt(targetPrice)}원)`,data:[targetPrice],backgroundColor:'rgba(240,253,244,0.8)',borderWidth:0,barThickness:28},
-            {label:'현재 식단가',data:[mealPrice],backgroundColor:mealPrice>targetPrice*1.1?'#dc2626':mealPrice>targetPrice?'#d97706':'#16a34a',borderWidth:0,barThickness:12,order:1,
-              datalabels:{anchor:'end',align:'end',formatter:v=>`${fmt(v)}원`,color:'#374151',font:{weight:'bold',size:10}}}
+            {label:'일별 매입금액',data:vals,
+             backgroundColor:vals.map(v=>v>avg*2&&avg>0?'rgba(220,38,38,0.75)':'rgba(22,163,74,0.7)'),borderRadius:4,order:2},
+            ...(avg>0?[{label:`평균 ${_fmtM(avg)}원`,data:Array(dailyLabels.length).fill(avg),
+              type:'line',borderColor:'#d97706',borderDash:[5,3],borderWidth:2,pointRadius:0,fill:false,order:1}]:[])
           ]
         },
-        options:{
-          indexAxis:'y',
-          responsive:true,maintainAspectRatio:false,
-          plugins:{legend:{labels:{font:{size:9},boxWidth:8}}},
-          scales:{
-            x:{stacked:false,ticks:{callback:v=>`${(v/1000).toFixed(0)}천원`},max:targetPrice*1.4,min:0},
-            y:{stacked:true}
-          }
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{labels:{font:{size:9.5},boxWidth:10}}},
+          scales:{y:{ticks:{callback:v=>`${(v/10000).toFixed(0)}만`},beginAtZero:true}}
         }
       })
-    } catch(e){console.warn('[Bullet] 차트 오류',e)}
-  })()
+    })()
 
-  // ── PAGE 9: 예산 소진 Burn-down 차트 ────────────────────────
-  ;(()=>{
-    const el = document.getElementById('rptBudgetBurnChart')
-    if(!el||!totalBudget) return
-    try {
-      // 일자별 누적 지출 데이터 생성
-      const days = Array.from({length:daysInMonth},(_,i)=>i+1)
-      let cum=0
-      const actualCum = days.map(d=>{
-        const found = rptDailyAll.find(r=>parseInt(r.day)===d)
-        cum += (found?.amount||0)
-        return d<=elapsedDays&&cum>0?cum:null
+    // ── PAGE 5: 업체별 도넛 차트 ───────────────────────────────
+    ;(()=>{
+      const vendorLabels = (rptOrders||[]).slice(0,10).map(v=>v.vendor||v.vendorName||v.name||'')
+      const vendorData   = (rptOrders||[]).slice(0,10).map(v=>v.totalAmount||v.amount||0)
+      const vendorTotal  = vendorData.reduce((s,v)=>s+v,0)
+      if(!vendorData.some(v=>v>0)) return
+      const slicePlugin = {
+        id:'_dSlice',
+        afterDatasetsDraw(chart){
+          const ctx=chart.ctx; const ds=chart.data.datasets[0]; const tot=ds.data.reduce((s,v)=>s+v,0)
+          if(!tot) return
+          chart.getDatasetMeta(0).data.forEach((arc,i)=>{
+            const val=ds.data[i]; if(!val||val/tot<0.04) return
+            const {startAngle,endAngle,outerRadius,innerRadius,x,y}=arc
+            const mid=(startAngle+endAngle)/2, rad=(outerRadius+innerRadius)/2
+            ctx.save(); ctx.font='bold 9px sans-serif'; ctx.fillStyle='rgba(255,255,255,0.95)'
+            ctx.textAlign='center'; ctx.textBaseline='middle'
+            ctx.fillText(_fmtM(val), x+Math.cos(mid)*rad, y+Math.sin(mid)*rad)
+            ctx.restore()
+          })
+        }
+      }
+      SC('rptVendorChart',{
+        type:'doughnut',
+        data:{labels:vendorLabels,datasets:[{data:vendorData,
+          backgroundColor:['#16a34a','#15803d','#22c55e','#86efac','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899','#64748b']}]},
+        options:{responsive:true,maintainAspectRatio:false,_centerText:_fmtM(vendorTotal),
+          plugins:{legend:{position:'right',labels:{font:{size:10},boxWidth:8}}}}
+      },[centerPlugin, slicePlugin])
+    })()
+
+    // ── PAGE 6: 식수 현황 가로 바 차트 ─────────────────────────
+    ;(()=>{
+      const mealColors = ['#064e3b','#1d4ed8','#7c3aed','#d97706','#dc2626','#0891b2']
+      const catList = rptCatMeals.length>0 ? rptCatMeals : [
+        {name:'환자식',count:rptSummary.normalCount||0},{name:'직원식',count:rptSummary.staffCount||0}
+      ].filter(c=>c.count>0)
+      if(!catList.length) return
+      SC('rptWaterChart',{
+        type:'bar',
+        data:{
+          labels:catList.map(c=>c.name),
+          datasets:[{label:'식수(명)',data:catList.map(c=>c.count),
+            backgroundColor:mealColors.map(c=>_hex2r(c,0.75)),borderRadius:6,borderWidth:0}]
+        },
+        options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',_showBarLabels:true,
+          plugins:{legend:{display:false},tooltip:{callbacks:{label:(ctx)=>`${ctx.parsed.x.toLocaleString()}명`}}},
+          scales:{x:{ticks:{callback:v=>`${v.toLocaleString()}명`},beginAtZero:true},
+                  y:{ticks:{font:{size:11,weight:'bold'}}}}
+        }
+      },[barLabelPlugin])
+    })()
+
+    // ── PAGE 7: 월별 식수 추이 라인 차트 ───────────────────────
+    ;(()=>{
+      const mMonths = Array.from({length:12},(_,i)=>`${i+1}월`)
+      const mMeals  = Array.from({length:12},(_,i)=>{
+        const row=(rptMonthlyMeals||[]).find(r=>parseInt(r.month)===i+1)
+        return row?parseInt(row.total_meals||row.totalMeals||0):0
       })
-      // 이상적 소진선 (예산/일수 * 일자)
-      const idealLine = days.map(d=>Math.round(totalBudget/daysInMonth*d))
-      // 추세 연장선 (elapsedDays 이후)
-      const trendLine = days.map(d=>{
-        if(d<elapsedDays) return null
-        if(elapsedDays<=0) return null
-        return Math.round(dailyAvg*d)
-      })
-      // 예산 한계선
-      const limitLine = Array(daysInMonth).fill(totalBudget)
-      safeChart('rptBudgetBurnChart',{
+      const curIdx = reportMonth-1
+      SC('rptMonthlyMealChart',{
         type:'line',
         data:{
-          labels:days.map(d=>`${d}일`),
-          datasets:[
-            {label:'실제 누적 지출',data:actualCum,borderColor:'#1d4ed8',backgroundColor:'rgba(29,78,216,0.1)',fill:true,tension:0.3,pointRadius:0,spanGaps:false,borderWidth:2},
-            {label:'추세 예측',data:trendLine,borderColor:'#d97706',backgroundColor:'rgba(217,119,6,0.05)',fill:false,tension:0.3,pointRadius:0,spanGaps:false,borderDash:[5,4],borderWidth:1.5},
-            {label:'이상적 집행',data:idealLine,borderColor:'#16a34a',fill:false,tension:0,pointRadius:0,borderDash:[3,3],borderWidth:1.5},
-            {label:'예산 한도',data:limitLine,borderColor:'#dc2626',fill:false,tension:0,pointRadius:0,borderDash:[8,4],borderWidth:2}
-          ]
+          labels:mMonths,
+          datasets:[{label:'월별 식수',data:mMeals,
+            borderColor:'#064e3b',backgroundColor:'rgba(6,78,59,0.08)',
+            fill:true,tension:0.4,
+            pointBackgroundColor:mMeals.map((_,i)=>i===curIdx?'#064e3b':'rgba(6,78,59,0.4)'),
+            pointRadius:mMeals.map((_,i)=>i===curIdx?7:4)
+          }]
         },
-        options:{
-          responsive:true,maintainAspectRatio:false,
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:false}},
+          scales:{y:{ticks:{callback:v=>`${v.toLocaleString()}명`},beginAtZero:false}}
+        }
+      })
+    })()
+
+    // ── PAGE 8: 식단가 라인 차트 ───────────────────────────────
+    ;(()=>{
+      const mMonths = Array.from({length:12},(_,i)=>`${i+1}월`)
+      const mUsed = Array(12).fill(0); (annualData?.monthly||[]).forEach(m=>{ mUsed[parseInt(m.month)-1]=m.total_used||0 })
+      const mMeals= Array(12).fill(0); (annualData?.mealMonthly||[]).forEach(m=>{ mMeals[parseInt(m.month)-1]=(m.total_meals||m.total_patient||0) })
+      const mTgt  = Array(12).fill(0); (annualData?.settings||[]).forEach(m=>{ mTgt[m.month-1]=m.meal_price||0 })
+      const mMp   = mMeals.map((v,i)=>v>0?Math.round(mUsed[i]/v):null)
+      SC('rptMealPriceChart',{
+        type:'line',
+        data:{labels:mMonths,datasets:[
+          {label:'식단가',data:mMp,borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,0.08)',fill:true,tension:0.4,pointRadius:4},
+          {label:'목표',data:mTgt.map(v=>v||null),borderColor:'#ef4444',borderWidth:1.5,pointRadius:0,fill:false,borderDash:[6,4]}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{labels:{font:{size:10},boxWidth:10}}},
+          scales:{y:{ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`}}}
+        }
+      })
+      // Bullet 차트
+      if(_tp>0) SC('rptBulletChart',{
+        type:'bar',
+        data:{labels:['식단가'],datasets:[
+          {label:`목표 이내(~${_fmt(_tp)}원)`,data:[_tp*1.3],backgroundColor:'rgba(240,253,244,0.7)',borderWidth:0,barThickness:24},
+          {label:'현재 식단가',data:[_mp],backgroundColor:_mp>_tp*1.1?'#dc2626':_mp>_tp?'#d97706':'#16a34a',
+           borderWidth:0,barThickness:10}
+        ]},
+        options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{labels:{font:{size:9},boxWidth:8}}},
+          scales:{x:{ticks:{callback:v=>`${(v/1000).toFixed(0)}천원`},max:_tp*1.5,min:0},y:{stacked:false}}
+        }
+      })
+    })()
+
+    // ── PAGE 9: 예산 소진 Burn-down 차트 ───────────────────────
+    ;(()=>{
+      if(!_tot) return
+      const days = Array.from({length:_days},(_,i)=>i+1)
+      let cum=0
+      const actCum = days.map(d=>{
+        const found = rptDailyAll.find(r=>parseInt(r.day)===d)
+        cum += (found?.amount||0)
+        return d<=_ela&&cum>0?cum:null
+      })
+      const idealLine = days.map(d=>Math.round(_tot/_days*d))
+      const trendLine = days.map(d=>d<_ela?null:_davg>0?Math.round(_davg*d):null)
+      SC('rptBudgetBurnChart',{
+        type:'line',
+        data:{labels:days.map(d=>`${d}일`),datasets:[
+          {label:'실제 누적',data:actCum,borderColor:'#1d4ed8',backgroundColor:'rgba(29,78,216,0.1)',fill:true,tension:0.3,pointRadius:0,spanGaps:false,borderWidth:2},
+          {label:'추세 예측',data:trendLine,borderColor:'#d97706',fill:false,tension:0.3,pointRadius:0,spanGaps:false,borderDash:[5,4],borderWidth:1.5},
+          {label:'이상적 집행',data:idealLine,borderColor:'#16a34a',fill:false,pointRadius:0,borderDash:[3,3],borderWidth:1.5},
+          {label:'예산 한도',data:Array(_days).fill(_tot),borderColor:'#dc2626',fill:false,pointRadius:0,borderDash:[8,4],borderWidth:2}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
           plugins:{legend:{labels:{font:{size:9.5},boxWidth:10}}},
           scales:{y:{ticks:{callback:v=>`${(v/1e6).toFixed(1)}백만`},beginAtZero:true}}
         }
       })
-    } catch(e){console.warn('[BudgetBurn] 차트 오류',e)}
-  })()
+    })()
 
-  // ── PAGE 10: 법인카드 파이 차트 ────────────────────────────
-  ;(()=>{
-    const el = document.getElementById('rptCardPieChart')
-    if(!el||!rptCardBySubtype.length) return
-    try {
+    // ── PAGE 10: 법인카드 파이 차트 ────────────────────────────
+    ;(()=>{
+      if(!rptCardBySubtype.length) return
       const sorted = [...rptCardBySubtype].sort((a,b)=>b.total-a.total)
-      safeChart('rptCardPieChart',{
+      const cardTotal = rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0)
+      SC('rptCardPieChart',{
         type:'doughnut',
-        data:{
-          labels:sorted.map(s=>s.label),
+        data:{labels:sorted.map(s=>s.label),
           datasets:[{data:sorted.map(s=>s.total),
-            backgroundColor:['#16a34a','#1d4ed8','#7c3aed','#d97706','#dc2626','#0891b2','#ec4899'].map(c=>{const r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16);return `rgba(${r},${g},${b},0.8)`}),
-            borderWidth:2,borderColor:'white'
-          }]
+            backgroundColor:['#16a34a','#1d4ed8','#7c3aed','#d97706','#dc2626','#0891b2','#ec4899'].map(c=>_hex2r(c,0.8)),
+            borderWidth:2,borderColor:'white'}]
         },
-        options:{
-          responsive:true,maintainAspectRatio:false,
-          _centerText:fmtMan(rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0)),
+        options:{responsive:true,maintainAspectRatio:false,_centerText:_fmtM(cardTotal),
           plugins:{legend:{position:'bottom',labels:{font:{size:9.5},boxWidth:8,padding:6}}}
-        },
-        plugins:[rptDoughnutCenterPlugin]
-      })
-    } catch(e){console.warn('[CardPie] 차트 오류',e)}
-  })()
+        }
+      },[centerPlugin])
+    })()
 
-  // ── 마지막 페이지: 종합 점수 레이더/바 차트 ─────────────────
-  ;(()=>{
-    const el = document.getElementById('rptScoreChart')
-    if(!el) return
-    try {
-      safeChart('rptScoreChart',{
+    // ── 마지막 페이지: 종합 점수 레이더 ───────────────────────
+    ;(()=>{
+      const progress = _prog
+      const topVR = _used>0&&rptOrders.length>0?Math.round((rptOrders[0]?.totalAmount||0)/_used*100):0
+      const sItems = [
+        {label:'예산 관리',val:progress>=80&&progress<=90?95:progress>=70&&progress<80?75:progress>=90?80:55},
+        {label:'식단가 관리',val:_tp>0?(_mp<=_tp?90:_mp<=_tp*1.05?75:_mp<=_tp*1.1?60:45):70},
+        {label:'발주 관리',val:topVR<40?90:topVR<60?70:50},
+        {label:'식수 안정성',val:(_s.totalPatients||0)>0?80:50}
+      ]
+      SC('rptScoreChart',{
         type:'radar',
-        data:{
-          labels:scoreItems.map(s=>s.label),
-          datasets:[{
-            label:'운영 점수',
-            data:scoreItems.map(s=>s.val),
-            backgroundColor:'rgba(6,78,59,0.15)',
-            borderColor:'#064e3b',borderWidth:2,
-            pointBackgroundColor:'#064e3b',pointRadius:4,
-            fill:true
-          }]
-        },
-        options:{
-          responsive:true,maintainAspectRatio:false,
+        data:{labels:sItems.map(s=>s.label),datasets:[{
+          label:'운영 점수',data:sItems.map(s=>s.val),
+          backgroundColor:'rgba(6,78,59,0.15)',borderColor:'#064e3b',borderWidth:2,
+          pointBackgroundColor:'#064e3b',pointRadius:4,fill:true
+        }]},
+        options:{responsive:true,maintainAspectRatio:false,
           plugins:{legend:{display:false}},
-          scales:{r:{min:0,max:100,ticks:{stepSize:25,font:{size:8}},pointLabels:{font:{size:9.5,weight:'bold'}},grid:{color:'rgba(0,0,0,0.08)'}}}
+          scales:{r:{min:0,max:100,ticks:{stepSize:25,font:{size:8}},
+            pointLabels:{font:{size:9.5,weight:'bold'}},grid:{color:'rgba(0,0,0,0.08)'}}}
         }
       })
-    } catch(e){console.warn('[Score] 차트 오류',e)}
-  })()
+    })()
 
-  // ── 슬라이드 헤더 개선: 페이지 번호 + 구분선 일괄 적용
   } catch(chartErr) {
-    console.warn('[보고서] 차트 렌더링 오류 (무시하고 계속):', chartErr)
+    console.warn('[보고서] 차트 렌더링 오류:', chartErr)
   }
-
+  })  // requestAnimationFrame
   requestAnimationFrame(() => {
     const reportBody = document.getElementById('reportBody')
     if (!reportBody) return
