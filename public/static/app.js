@@ -1563,6 +1563,7 @@ async function renderOrders() {
   // 환자군 카테고리 전역 저장
   window._patientCats = patientCats || []
   window._catOrderSettings = (catOrderData?.settings) || []
+  window._catDailyOrders = (catOrderData?.dailyByVendorCat) || []  // 실제 카테고리 발주 데이터
   window._catTodayMeals = catOrderData?.todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 }
   window._catPrevSettings = catOrderData?.prevSettings || []
   // 발주 페이지에서 직접 접근 시 catDietPricesData 초기화 (대시보드 미방문 대비)
@@ -1993,10 +1994,9 @@ async function renderOrders() {
           <i class="fas fa-file-excel"></i> <span class="hidden sm:inline">엑셀</span>
         </button>
         <!-- #4 거래내역 엑셀 자동 입력 -->
-        <label style="background:#7c3aed;color:white;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap" title="업체 거래내역 엑셀 업로드 → 발주 자동 입력">
+        <button onclick="openAutoImportDialog()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap" title="업체 거래내역 엑셀 업로드 → 발주 자동 입력">
           <i class="fas fa-file-import"></i><span class="hidden sm:inline">자동입력</span>
-          <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="autoImportOrderFromExcel(this)">
-        </label>
+        </button>
         <button onclick="refreshOrders()" class="btn btn-secondary btn-sm">
           <i class="fas fa-sync"></i>
         </button>
@@ -2096,17 +2096,30 @@ async function renderOrders() {
               <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
             </div>
           </div>
-          <!-- 업체 발주 비중 (#7 개선: TOP3 집중도 + 월목표 대비) -->
+          <!-- 업체 발주 비중 (#7 개선: 도넛 + 상세 분석 패널) -->
           <div id="vendorShareCard" style="background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;padding:10px">
             <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:4px">
-              <span><i class="fas fa-store" style="color:#3b82f6"></i> 업체별 발주 비중</span>
-              <span id="vendorShareTopBadge" style="font-size:9px;color:#6b7280"></span>
+              <span><i class="fas fa-chart-pie" style="color:#3b82f6"></i> 업체별 발주 분석</span>
+              <div style="display:flex;gap:4px;align-items:center">
+                <button onclick="toggleVendorShareView('chart')" id="vsBtn_chart" style="font-size:9px;padding:1px 5px;border-radius:3px;border:1px solid #bfdbfe;background:#1d4ed8;color:white;cursor:pointer">차트</button>
+                <button onclick="toggleVendorShareView('table')" id="vsBtn_table" style="font-size:9px;padding:1px 5px;border-radius:3px;border:1px solid #bfdbfe;background:white;color:#1d4ed8;cursor:pointer">목록</button>
+              </div>
             </div>
-            <div id="vendorShareContent">
-              <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
+            <!-- 차트 뷰 -->
+            <div id="vendorShareChartView">
+              <div style="position:relative;height:110px;display:flex;align-items:center;justify-content:center">
+                <canvas id="vendorShareDonut" width="110" height="110"></canvas>
+              </div>
+              <div id="vendorShareLegend" style="margin-top:6px"></div>
+            </div>
+            <!-- 테이블 뷰 (숨김) -->
+            <div id="vendorShareTableView" style="display:none">
+              <div id="vendorShareContent">
+                <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
+              </div>
             </div>
             <div id="vendorBiasAlert" style="display:none"></div>
-            <!-- TOP3 집중도 요약 -->
+            <!-- TOP3/5 집중도 요약 -->
             <div id="vendorTop3Summary" style="display:none;margin-top:6px;padding:5px 8px;background:#dbeafe;border-radius:6px;font-size:9px;color:#1d4ed8"></div>
           </div>
         </div>
@@ -2217,6 +2230,7 @@ async function renderOrders() {
   const weekEndStr = weekEndStr2
   window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*5])), workingDays, weeklyData }
   window._ordersData = orderData || []
+  window._catDailyOrders = catOrderData?.dailyByVendorCat || []
   window._ordersVendors = vendors || []
   window._ordersMealStats = {
     totalMeals: (mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_guardian||0),
@@ -3184,171 +3198,264 @@ window.refreshOrders = () => {
 window.showMonthAllOrdersModal = function() {
   const vendors = window._vendorsCache || []
   const patientCats = window._patientCats || []
-  const catSettings = window._catOrderSettings || []
+  // 실제 카테고리별 발주 데이터 (_catDailyOrders) 사용
+  const catDailyOrders = window._catDailyOrders || []
   const orderData = window._ordersData || []
   const year = App.currentYear
   const month = App.currentMonth
   const daysInMonth = new Date(year, month, 0).getDate()
-
-  const hasCats = patientCats.length > 0
+  const mm = String(month).padStart(2,'0')
 
   // 날짜 목록
   const days = []
   for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-    const dow = ['일','월','화','수','목','금','토'][new Date(dateStr).getDay()]
-    const isWeekend = new Date(dateStr).getDay() === 0 || new Date(dateStr).getDay() === 6
-    days.push({ dateStr, d, dow, isWeekend })
+    const dateStr = `${year}-${mm}-${String(d).padStart(2,'0')}`
+    const dayOfWeek = new Date(dateStr).getDay()
+    const dow = ['일','월','화','수','목','금','토'][dayOfWeek]
+    days.push({ dateStr, d, dow, isWeekend: dayOfWeek === 0 || dayOfWeek === 6 })
   }
 
-  // 카테고리별 발주 데이터 맵
-  const catDailyMap = {}
-  ;(window._catDailyData || {})
-  // fallback: catOrderSettings에서 읽기
-  const catOrderMap = {}  // { dateStr: { catId: { vendorId: {taxable,exempt,total} } } }
-  ;(catSettings || []).forEach(s => {
-    const key = `${s.order_date}__${s.category_id}__${s.vendor_id}`
-    catOrderMap[key] = s
-  })
-
-  // 업체별/날짜별 발주 맵 (일반 발주)
+  // 발주 맵 구성
   const normalOrderMap = {}
   ;(orderData || []).forEach(o => {
     const k = `${o.order_date}__${o.vendor_id}`
     normalOrderMap[k] = o
   })
-
-  // 월 합계
-  let grandMonthTotal = 0
-  ;(orderData || []).forEach(o => { grandMonthTotal += o.total_amount || 0 })
-  // 카테고리 발주 합계도 포함
-  ;(catSettings||[]).forEach(s => {
-    const total = (s.total_override != null) ? s.total_override : ((s.taxable_amount||0)+(s.exempt_amount||0)+((s.taxable_amount||0)*0.1))
-    grandMonthTotal += total
+  // 카테고리 발주 맵: patient_category_id 기반
+  const catOrderMap = {}
+  ;(catDailyOrders || []).forEach(s => {
+    const key = `${s.order_date}__${s.patient_category_id}__${s.vendor_id}`
+    catOrderMap[key] = s
   })
 
-  // 컬럼 헤더 생성
-  let colHeaders = ''
+  // 환자군 유무 판단
+  const hasCats = patientCats && patientCats.length > 0
+
+  // ── 컬럼 정의 (업체별 과세/면세/부가세/합계 서브컬럼) ──
+  // 컬럼 구조: { catName, vendorId, vendorName, taxType, subType }
+  // subType: 'taxable'|'exempt'|'vat'|'total'|'mixed_total'
+  const columns = []
+
   if (hasCats) {
     patientCats.forEach(cat => {
       vendors.forEach(v => {
-        const catVendors = (catSettings||[]).filter(s => s.category_id == cat.id && s.vendor_id == v.id)
-        if (catVendors.length > 0 || true) {
-          colHeaders += `<th style="min-width:80px;font-size:10px;padding:6px 4px;text-align:right;white-space:nowrap;border-left:1px solid #e5e7eb">
-            <div style="color:#6b7280;font-size:9px">${cat.name}</div>
-            <div style="font-weight:700">${v.name}</div>
-          </th>`
+        if (v.tax_type === 'mixed_total') {
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'mixed_total' })
+        } else if (v.tax_type === 'taxable') {
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+        } else if (v.tax_type === 'exempt') {
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
+        } else { // mixed
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
         }
       })
     })
   } else {
     vendors.forEach(v => {
-      colHeaders += `<th style="min-width:80px;font-size:10px;padding:6px 8px;text-align:right;white-space:nowrap">${v.name}</th>`
+      if (v.tax_type === 'mixed_total') {
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'mixed_total' })
+      } else if (v.tax_type === 'taxable') {
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+      } else if (v.tax_type === 'exempt') {
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
+      } else { // mixed
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+      }
     })
   }
 
+  // 셀값 추출 함수
+  function getCellValue(col, dateStr) {
+    if (col.catId) {
+      const k = `${dateStr}__${col.catId}__${col.vendorId}`
+      const s = catOrderMap[k]
+      if (!s) return 0
+      // dailyByVendorCat API 응답: taxable, exempt, vat, total 필드 사용
+      const taxable = s.taxable || s.taxable_amount || 0
+      const exempt = s.exempt || s.exempt_amount || 0
+      const vat = s.vat != null ? s.vat : (s.vat_amount != null ? s.vat_amount : Math.round(taxable * 0.1))
+      const total = s.total || s.total_amount || (taxable + exempt + vat)
+      if (col.subType === 'taxable') return taxable
+      if (col.subType === 'exempt') return exempt
+      if (col.subType === 'vat') return vat
+      if (col.subType === 'mixed_total') return total
+      return 0
+    } else {
+      const k = `${dateStr}__${col.vendorId}`
+      const o = normalOrderMap[k]
+      if (!o) return 0
+      if (col.subType === 'taxable') return o.taxable_amount || 0
+      if (col.subType === 'exempt') return o.exempt_amount || 0
+      if (col.subType === 'vat') return o.vat_amount || 0
+      if (col.subType === 'mixed_total') return o.total_amount || 0
+      return 0
+    }
+  }
+
+  // 컬럼 합계
+  const colTotals = columns.map(() => 0)
+
+  // 서브타입 라벨/색
+  const subLabel = { taxable:'과세', exempt:'면세', vat:'부가세', mixed_total:'합계' }
+  const subColor = { taxable:'#16a34a', exempt:'#d97706', vat:'#6b7280', mixed_total:'#1d4ed8' }
+  const subBg    = { taxable:'#f0fdf4', exempt:'#fffbeb', vat:'#f9fafb', mixed_total:'#eff6ff' }
+
+  // ── 그룹 헤더 (업체명 colspan) 빌드 ──
+  // vendor별 컬럼 수 계산
+  function vendorColSpan(v) {
+    if (v.tax_type==='mixed_total') return 1
+    if (v.tax_type==='taxable')  return 2
+    if (v.tax_type==='exempt')   return 1
+    return 3 // mixed
+  }
+
+  let groupHeaderHtml = ''
+  if (hasCats) {
+    patientCats.forEach(cat => {
+      vendors.forEach(v => {
+        const span = vendorColSpan(v)
+        groupHeaderHtml += `<th colspan="${span}" style="text-align:center;padding:4px 4px;font-size:10px;border-left:2px solid #e5e7eb;background:#f8fafc;white-space:nowrap">
+          <div style="font-size:9px;color:#7c3aed;font-weight:600">${cat.name}</div>
+          <div style="font-weight:700;color:#1f2937">${v.name}</div>
+        </th>`
+      })
+    })
+  } else {
+    vendors.forEach(v => {
+      const span = vendorColSpan(v)
+      groupHeaderHtml += `<th colspan="${span}" style="text-align:center;padding:5px 4px;font-size:11px;border-left:2px solid #e5e7eb;background:#f8fafc;white-space:nowrap;font-weight:700;color:#1f2937">${v.name}</th>`
+    })
+  }
+
+  // 서브헤더 (과세/면세/부가세/합계)
+  let subHeaderHtml = ''
+  columns.forEach((col, ci) => {
+    const isFirst = ci === 0 || columns[ci-1].vendorId !== col.vendorId || columns[ci-1].catId !== col.catId
+    subHeaderHtml += `<th style="text-align:right;padding:4px 5px;font-size:10px;white-space:nowrap;${isFirst?'border-left:2px solid #e5e7eb':'border-left:1px solid #f0f0f0'};background:${subBg[col.subType]};color:${subColor[col.subType]};font-weight:600">
+      ${subLabel[col.subType]}
+    </th>`
+  })
+
   // 행 생성
   let tbody = ''
-  let monthTotals = {} // vendorId -> total
-  let catMonthTotals = {} // catId+vendorId -> total
+  let grandTotal = 0
 
   days.forEach(({ dateStr, d, dow, isWeekend }) => {
     let rowTotal = 0
     let cells = ''
+    columns.forEach((col, ci) => {
+      const v = getCellValue(col, dateStr)
+      colTotals[ci] += v
+      rowTotal += (col.subType === 'vat' || col.subType === 'taxable' || col.subType === 'exempt' || col.subType === 'mixed_total') && col.subType !== 'vat' && col.subType !== 'taxable' ? 0 : 0
+      // 일 합계에는 total/mixed_total만 포함 (과세+부가세중복 방지)
+      if (col.subType === 'mixed_total') rowTotal += v
+      else if (col.subType === 'exempt') rowTotal += v
+      else if (col.subType === 'taxable') rowTotal += v
+      // vat는 taxable에 포함되므로 따로 합산 안 함 (하지만 표시는 함)
 
+      const isFirst = ci === 0 || columns[ci-1].vendorId !== col.vendorId || columns[ci-1].catId !== col.catId
+      cells += `<td style="text-align:right;padding:3px 5px;font-size:11px;${isFirst?'border-left:2px solid #e5e7eb':'border-left:1px solid #f0f0f0'};${v>0?`color:${subColor[col.subType]};font-weight:600`:'color:#e5e7eb'}">${v>0?v.toLocaleString():'-'}</td>`
+    })
+    // 실제 일 합계: 업체별 total 합산
+    rowTotal = 0
     if (hasCats) {
-      patientCats.forEach(cat => {
-        vendors.forEach(v => {
+      vendors.forEach(v => {
+        patientCats.forEach(cat => {
           const k = `${dateStr}__${cat.id}__${v.id}`
           const s = catOrderMap[k]
-          let amt = 0
           if (s) {
-            amt = s.total_override != null ? s.total_override :
-              (s.taxable_amount||0) + (s.exempt_amount||0) + Math.round((s.taxable_amount||0)*0.1)
+            // dailyByVendorCat API 응답: total, taxable, exempt, vat 필드
+            rowTotal += s.total || s.total_amount || 0
           }
-          rowTotal += amt
-          const ck = `${cat.id}_${v.id}`
-          catMonthTotals[ck] = (catMonthTotals[ck]||0) + amt
-          cells += `<td style="text-align:right;padding:4px 6px;font-size:11px;border-left:1px solid #f3f4f6;${amt>0?'color:#1f2937;font-weight:600':'color:#d1d5db'}">${amt>0?fmtMan(amt):'-'}</td>`
         })
       })
     } else {
       vendors.forEach(v => {
         const k = `${dateStr}__${v.id}`
         const o = normalOrderMap[k]
-        const amt = o ? (o.total_amount||0) : 0
-        rowTotal += amt
-        monthTotals[v.id] = (monthTotals[v.id]||0) + amt
-        cells += `<td style="text-align:right;padding:4px 8px;font-size:11px;${amt>0?'color:#1f2937;font-weight:600':'color:#d1d5db'}">${amt>0?fmtMan(amt):'-'}</td>`
+        if (o) rowTotal += o.total_amount || 0
       })
     }
+    grandTotal += rowTotal
 
     const rowBg = isWeekend ? '#fafafa' : 'white'
-    const dowColor = dow==='일' ? '#dc2626' : dow==='토' ? '#2563eb' : '#374151'
+    const dowColor = dow==='일'?'#dc2626':dow==='토'?'#2563eb':'#374151'
     tbody += `<tr style="background:${rowBg};border-bottom:1px solid #f3f4f6">
-      <td style="padding:4px 8px;font-size:11px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:${rowBg};z-index:1">
+      <td style="padding:4px 8px;font-size:11px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:${rowBg};z-index:1;border-right:1px solid #e5e7eb">
         <span style="color:${dowColor}">${d}일(${dow})</span>
       </td>
       ${cells}
-      <td style="text-align:right;padding:4px 8px;font-size:11px;font-weight:800;color:${rowTotal>0?'#1d4ed8':'#d1d5db'};white-space:nowrap;position:sticky;right:0;background:${rowBg};border-left:2px solid #e5e7eb">${rowTotal>0?fmtMan(rowTotal):'-'}</td>
+      <td style="text-align:right;padding:4px 8px;font-size:11px;font-weight:800;color:${rowTotal>0?'#1d4ed8':'#d1d5db'};white-space:nowrap;position:sticky;right:0;background:${rowBg};border-left:2px solid #bfdbfe">${rowTotal>0?rowTotal.toLocaleString():'-'}</td>
     </tr>`
   })
 
   // 합계 행
   let totalCells = ''
-  if (hasCats) {
-    patientCats.forEach(cat => {
-      vendors.forEach(v => {
-        const ck = `${cat.id}_${v.id}`
-        const t = catMonthTotals[ck]||0
-        totalCells += `<td style="text-align:right;padding:5px 6px;font-size:11px;font-weight:700;color:${t>0?'#1d4ed8':'#9ca3af'};border-left:1px solid #e5e7eb">${t>0?fmtMan(t):'-'}</td>`
-      })
-    })
-  } else {
-    vendors.forEach(v => {
-      const t = monthTotals[v.id]||0
-      totalCells += `<td style="text-align:right;padding:5px 8px;font-size:11px;font-weight:700;color:${t>0?'#1d4ed8':'#9ca3af'}">${t>0?fmtMan(t):'-'}</td>`
-    })
-  }
+  columns.forEach((col, ci) => {
+    const t = colTotals[ci]
+    const isFirst = ci === 0 || columns[ci-1].vendorId !== col.vendorId || columns[ci-1].catId !== col.catId
+    totalCells += `<td style="text-align:right;padding:5px 5px;font-size:11px;font-weight:700;color:${t>0?subColor[col.subType]:'#9ca3af'};${isFirst?'border-left:2px solid #bfdbfe':'border-left:1px solid #dbeafe'}">${t>0?t.toLocaleString():'-'}</td>`
+  })
 
-  const allMonthTotal = Object.values(hasCats ? catMonthTotals : monthTotals).reduce((s,v)=>s+v,0)
-
-  // 모달 생성
+  // ── 모달 생성 ──
   const existing = document.getElementById('monthAllOrdersModal')
   if (existing) existing.remove()
 
   const modal = document.createElement('div')
   modal.id = 'monthAllOrdersModal'
-  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto'
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.55);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto'
   modal.innerHTML = `
-    <div style="background:white;border-radius:16px;width:100%;max-width:900px;box-shadow:0 20px 60px rgba(0,0,0,0.3);margin:auto">
-      <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:white;border-radius:16px 16px 0 0;z-index:2">
+    <div style="background:white;border-radius:16px;width:100%;max-width:1200px;box-shadow:0 20px 60px rgba(0,0,0,0.3);margin:auto">
+      <!-- 헤더 -->
+      <div style="padding:14px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:white;border-radius:16px 16px 0 0;z-index:10">
         <div>
-          <h2 style="font-weight:700;color:#1f2937;font-size:16px"><i class="fas fa-table" style="color:#ea580c;margin-right:8px"></i>${year}년 ${month}월 전체 발주 현황</h2>
-          <p style="font-size:12px;color:#6b7280;margin-top:2px">월 합계: <strong style="color:#1d4ed8">${fmtMan(allMonthTotal)}원</strong></p>
+          <h2 style="font-weight:700;color:#1f2937;font-size:16px;margin:0"><i class="fas fa-table" style="color:#ea580c;margin-right:8px"></i>${year}년 ${mm}월 전체 발주 현황</h2>
+          <p style="font-size:12px;color:#6b7280;margin:3px 0 0">월 합계: <strong style="color:#1d4ed8">${grandTotal.toLocaleString()}원</strong> · ${columns.length}개 컬럼 · ${vendors.length}개 업체</p>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <button onclick="downloadOrdersExcel()" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer">
-            <i class="fas fa-file-excel mr-1"></i>엑셀 다운로드
+          <button onclick="downloadOrdersExcel()" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px">
+            <i class="fas fa-file-excel"></i>엑셀 다운로드
           </button>
-          <button onclick="document.getElementById('monthAllOrdersModal').remove()" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;font-weight:700">✕</button>
+          <button onclick="document.getElementById('monthAllOrdersModal').remove()" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:7px 12px;font-size:14px;cursor:pointer;font-weight:700">✕</button>
         </div>
       </div>
-      <div style="overflow-x:auto;max-height:70vh;overflow-y:auto">
-        <table style="width:100%;border-collapse:collapse;min-width:600px">
-          <thead>
-            <tr style="background:#f8fafc;border-bottom:2px solid #e5e7eb;position:sticky;top:0;z-index:1">
-              <th style="padding:8px;font-size:11px;text-align:left;position:sticky;left:0;background:#f8fafc;z-index:2;white-space:nowrap">날짜</th>
-              ${colHeaders}
-              <th style="padding:8px;font-size:11px;text-align:right;position:sticky;right:0;background:#f8fafc;z-index:2;border-left:2px solid #e5e7eb;white-space:nowrap">일 합계</th>
+      <!-- 범례 -->
+      <div style="padding:8px 16px;background:#f8fafc;border-bottom:1px solid #e5e7eb;display:flex;gap:12px;flex-wrap:wrap;font-size:10px">
+        <span style="color:#16a34a;font-weight:600">■ 과세</span>
+        <span style="color:#d97706;font-weight:600">■ 면세</span>
+        <span style="color:#6b7280;font-weight:600">■ 부가세</span>
+        <span style="color:#1d4ed8;font-weight:600">■ 합계(합산)</span>
+        ${hasCats ? patientCats.map(c=>`<span style="color:#7c3aed;font-weight:600">● ${c.name}</span>`).join('') : ''}
+      </div>
+      <!-- 테이블 -->
+      <div style="overflow:auto;max-height:68vh">
+        <table style="width:100%;border-collapse:collapse;min-width:400px;font-size:12px">
+          <thead style="position:sticky;top:0;z-index:5">
+            <!-- 업체명 그룹 헤더 -->
+            <tr style="background:#f0f4ff;border-bottom:1px solid #e5e7eb">
+              <th style="padding:6px 8px;text-align:left;position:sticky;left:0;background:#f0f4ff;z-index:6;font-size:11px;white-space:nowrap;border-right:1px solid #e5e7eb">날짜</th>
+              ${groupHeaderHtml}
+              <th style="padding:6px 8px;text-align:right;position:sticky;right:0;background:#e0e7ff;z-index:6;border-left:2px solid #bfdbfe;white-space:nowrap;font-size:11px">일 합계</th>
+            </tr>
+            <!-- 과세/면세/부가세 서브헤더 -->
+            <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb">
+              <th style="padding:4px 8px;text-align:left;position:sticky;left:0;background:#f9fafb;z-index:6;font-size:10px;border-right:1px solid #e5e7eb"></th>
+              ${subHeaderHtml}
+              <th style="padding:4px 8px;position:sticky;right:0;background:#eff6ff;z-index:6;border-left:2px solid #bfdbfe"></th>
             </tr>
           </thead>
           <tbody>${tbody}</tbody>
           <tfoot>
             <tr style="background:#eff6ff;border-top:2px solid #bfdbfe;font-weight:700">
-              <td style="padding:6px 8px;font-size:12px;position:sticky;left:0;background:#eff6ff;z-index:1">합계</td>
+              <td style="padding:6px 8px;font-size:12px;position:sticky;left:0;background:#eff6ff;z-index:1;border-right:1px solid #bfdbfe">합계</td>
               ${totalCells}
-              <td style="text-align:right;padding:6px 8px;font-size:12px;font-weight:800;color:#1d4ed8;position:sticky;right:0;background:#eff6ff;border-left:2px solid #bfdbfe">${fmtMan(allMonthTotal)}</td>
+              <td style="text-align:right;padding:6px 8px;font-size:12px;font-weight:800;color:#1d4ed8;position:sticky;right:0;background:#dbeafe;border-left:2px solid #bfdbfe">${grandTotal.toLocaleString()}</td>
             </tr>
           </tfoot>
         </table>
@@ -3364,62 +3471,96 @@ window.downloadOrdersExcel = async function() {
   if (typeof XLSX === 'undefined') {
     const script = document.createElement('script')
     script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    script.onload = () => { showToast('라이브러리 로드 완료. 다시 클릭해주세요.', 'info') }
     document.head.appendChild(script)
-    showToast('엑셀 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
+    showToast('엑셀 라이브러리 로딩 중...', 'warning')
     return
   }
 
   const vendors = window._vendorsCache || []
   const patientCats = window._patientCats || []
-  const catSettings = window._catOrderSettings || []
+  // 실제 카테고리 발주 데이터 사용
+  const catDailyOrders = window._catDailyOrders || []
   const orderData = window._ordersData || []
   const year = App.currentYear
   const month = App.currentMonth
-  const daysInMonth = new Date(year, month, 0).getDate()
   const mm = String(month).padStart(2,'0')
-
-  const hasCats = patientCats.length > 0
-
-  const catOrderMap = {}
-  ;(catSettings||[]).forEach(s => {
-    const key = `${s.order_date}__${s.category_id}__${s.vendor_id}`
-    catOrderMap[key] = s
-  })
-  const normalOrderMap = {}
-  ;(orderData||[]).forEach(o => {
-    const k = `${o.order_date}__${o.vendor_id}`
-    normalOrderMap[k] = o
-  })
-
+  const daysInMonth = new Date(year, month, 0).getDate()
   const DOWK = ['일','월','화','수','목','금','토']
+  const hasCats = patientCats && patientCats.length > 0
+
+  const normalOrderMap = {}
+  ;(orderData || []).forEach(o => { normalOrderMap[`${o.order_date}__${o.vendor_id}`] = o })
+  const catOrderMapXl = {}
+  ;(catDailyOrders || []).forEach(s => { catOrderMapXl[`${s.order_date}__${s.patient_category_id}__${s.vendor_id}`] = s })
+
+  function getCellVal(vendorId, catId, dateStr, subType, taxType) {
+    if (catId) {
+      const s = catOrderMapXl[`${dateStr}__${catId}__${vendorId}`]
+      if (!s) return ''
+      const tx = s.taxable || s.taxable_amount || 0
+      const ex = s.exempt || s.exempt_amount || 0
+      const vt = s.vat != null ? s.vat : (s.vat_amount != null ? s.vat_amount : Math.round(tx*0.1))
+      const tot = s.total || s.total_amount || (tx+ex+vt)
+      if (subType==='taxable') return tx||''
+      if (subType==='exempt')  return ex||''
+      if (subType==='vat')     return vt||''
+      return tot||''
+    } else {
+      const o = normalOrderMap[`${dateStr}__${vendorId}`]
+      if (!o) return ''
+      if (subType==='taxable') return o.taxable_amount||''
+      if (subType==='exempt')  return o.exempt_amount||''
+      if (subType==='vat')     return o.vat_amount||''
+      return o.total_amount||''
+    }
+  }
+
+  const subLabel = { taxable:'과세', exempt:'면세', vat:'부가세', mixed_total:'합계' }
   const wb = XLSX.utils.book_new()
   const wsData = []
 
-  // 헤더 행
-  const headerRow = ['날짜','요일']
-  if (hasCats) {
-    patientCats.forEach(cat => {
-      vendors.forEach(v => {
-        headerRow.push(`${cat.name}-${v.name}(과세)`)
-        headerRow.push(`${cat.name}-${v.name}(면세)`)
-        headerRow.push(`${cat.name}-${v.name}(합계)`)
-      })
-    })
-  } else {
-    vendors.forEach(v => {
-      const isM = v.tax_type==='mixed'
-      if (isM) {
-        headerRow.push(`${v.name}(과세)`)
-        headerRow.push(`${v.name}(면세)`)
-      }
-      headerRow.push(`${v.name}(합계)`)
+  // ── 헤더 행1: 업체명 (병합 예정)
+  const hdr1 = ['날짜','요일']
+  // ── 헤더 행2: 과세/면세/부가세/합계
+  const hdr2 = ['','']
+  // ── 컬럼 정보
+  const colDefs = []
+  const merges = []
+  let colIdx = 2 // 0=날짜, 1=요일
+
+  function addVendorCols(vendorId, vendorName, catId, catName, taxType) {
+    let subs = []
+    if (taxType==='mixed_total') subs = ['mixed_total']
+    else if (taxType==='taxable') subs = ['taxable','vat']
+    else if (taxType==='exempt') subs = ['exempt']
+    else subs = ['taxable','exempt','vat']
+
+    const label = catName ? `[${catName}] ${vendorName}` : vendorName
+    hdr1.push(label)
+    for (let i=1; i<subs.length; i++) hdr1.push('')
+    if (subs.length > 1) {
+      merges.push({ s:{r:0,c:colIdx}, e:{r:0,c:colIdx+subs.length-1} })
+    }
+    subs.forEach(sub => {
+      hdr2.push(subLabel[sub])
+      colDefs.push({ vendorId, catId, subType: sub, taxType })
+      colIdx++
     })
   }
-  headerRow.push('일별 합계')
-  wsData.push(headerRow)
 
-  // 카테고리별 합계 초기화
-  const catVendorTotals = {}
+  if (hasCats) {
+    patientCats.forEach(cat => vendors.forEach(v => addVendorCols(v.id, v.name, cat.id, cat.name, v.tax_type)))
+  } else {
+    vendors.forEach(v => addVendorCols(v.id, v.name, null, null, v.tax_type))
+  }
+  hdr1.push('일 합계')
+  hdr2.push('')
+  wsData.push(hdr1)
+  wsData.push(hdr2)
+
+  // 날짜 행 + 합계 배열
+  const colTotals = new Array(colDefs.length).fill(0)
   let grandTotal = 0
 
   for (let d = 1; d <= daysInMonth; d++) {
@@ -3428,38 +3569,15 @@ window.downloadOrdersExcel = async function() {
     const row = [dateStr, dow]
     let dayTotal = 0
 
-    if (hasCats) {
-      patientCats.forEach(cat => {
-        vendors.forEach(v => {
-          const k = `${dateStr}__${cat.id}__${v.id}`
-          const s = catOrderMap[k]
-          const taxable = s ? (s.taxable_amount||0) : 0
-          const exempt = s ? (s.exempt_amount||0) : 0
-          const total = s ? (s.total_override != null ? s.total_override : taxable + exempt + Math.round(taxable*0.1)) : 0
-          row.push(taxable||'')
-          row.push(exempt||'')
-          row.push(total||'')
-          dayTotal += total
-          const ck = `${cat.id}_${v.id}`
-          catVendorTotals[ck] = (catVendorTotals[ck]||0) + total
-        })
-      })
-    } else {
-      vendors.forEach(v => {
-        const k = `${dateStr}__${v.id}`
-        const o = normalOrderMap[k]
-        const isM = v.tax_type === 'mixed'
-        if (isM) {
-          row.push(o ? (o.taxable_amount||0)||'' : '')
-          row.push(o ? (o.exempt_amount||0)||'' : '')
-        }
-        const amt = o ? (o.total_amount||0) : 0
-        row.push(amt||'')
-        dayTotal += amt
-        catVendorTotals[v.id] = (catVendorTotals[v.id]||0) + amt
-      })
-    }
-
+    colDefs.forEach((cd, i) => {
+      const v = getCellVal(cd.vendorId, cd.catId, dateStr, cd.subType, cd.taxType)
+      const n = typeof v === 'number' ? v : (parseInt(String(v).replace(/[^\d]/g,''))||0)
+      row.push(v)
+      colTotals[i] += n
+      // 일 합계: total/mixed_total/exempt 만 (과세+부가세 = 공급대가이므로 중복방지)
+      if (cd.subType==='mixed_total' || cd.subType==='exempt') dayTotal += n
+      else if (cd.subType==='taxable') dayTotal += n
+    })
     row.push(dayTotal||'')
     grandTotal += dayTotal
     wsData.push(row)
@@ -3467,34 +3585,95 @@ window.downloadOrdersExcel = async function() {
 
   // 합계 행
   const totalRow = ['합계', '']
-  if (hasCats) {
-    patientCats.forEach(cat => {
-      vendors.forEach(v => {
-        totalRow.push('')
-        totalRow.push('')
-        const ck = `${cat.id}_${v.id}`
-        totalRow.push(catVendorTotals[ck]||0)
-      })
-    })
-  } else {
-    vendors.forEach(v => {
-      const isM = v.tax_type === 'mixed'
-      if (isM) { totalRow.push(''); totalRow.push('') }
-      totalRow.push(catVendorTotals[v.id]||0)
-    })
-  }
+  colDefs.forEach((_, i) => totalRow.push(colTotals[i]||''))
   totalRow.push(grandTotal)
   wsData.push(totalRow)
 
   const ws = XLSX.utils.aoa_to_sheet(wsData)
 
-  // 열 너비 설정
-  ws['!cols'] = [{ wch: 12 }, { wch: 5 }]
-  headerRow.slice(2).forEach(() => ws['!cols'].push({ wch: 12 }))
+  // 병합 셀
+  ws['!merges'] = merges
+
+  // 열 너비
+  ws['!cols'] = [{ wch:13 }, { wch:4 }]
+  colDefs.forEach(() => ws['!cols'].push({ wch:11 }))
+  ws['!cols'].push({ wch:13 })
+
+  // 헤더 행 높이
+  ws['!rows'] = [{ hpt:24 }, { hpt:18 }]
+
+  // ── 셀 스타일 적용 (헤더/합계행 강조) ──
+  const totalRows = wsData.length
+  const totalCols = hdr1.length
+  const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  function colLetter(n) {
+    if (n < 26) return LETTERS[n]
+    return LETTERS[Math.floor(n/26)-1] + LETTERS[n%26]
+  }
+
+  // 헤더 행1 스타일
+  for (let c = 0; c < totalCols; c++) {
+    const addr = colLetter(c) + '1'
+    if (!ws[addr]) ws[addr] = { v: '', t: 's' }
+    ws[addr].s = {
+      fill: { fgColor: { rgb: 'E0E7FF' } },
+      font: { bold: true, sz: 11, color: { rgb: '1D4ED8' } },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      border: { top:{style:'thin',color:{rgb:'BFDBFE'}}, bottom:{style:'thin',color:{rgb:'BFDBFE'}}, left:{style:'thin',color:{rgb:'BFDBFE'}}, right:{style:'thin',color:{rgb:'BFDBFE'}} }
+    }
+  }
+
+  // 헤더 행2 (과세/면세/부가세 서브헤더) 스타일
+  for (let c = 0; c < totalCols; c++) {
+    const addr = colLetter(c) + '2'
+    if (!ws[addr]) ws[addr] = { v: '', t: 's' }
+    const subVal = String(ws[addr].v || '')
+    const subFg = subVal==='과세'?'16A34A':subVal==='면세'?'D97706':subVal==='부가세'?'6B7280':subVal==='합계'?'1D4ED8':'374151'
+    ws[addr].s = {
+      fill: { fgColor: { rgb: 'F8FAFC' } },
+      font: { bold: true, sz: 10, color: { rgb: subFg } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { top:{style:'thin',color:{rgb:'E5E7EB'}}, bottom:{style:'medium',color:{rgb:'CBD5E1'}}, left:{style:'thin',color:{rgb:'E5E7EB'}}, right:{style:'thin',color:{rgb:'E5E7EB'}} }
+    }
+  }
+
+  // 데이터 행 스타일
+  for (let r = 2; r < totalRows - 1; r++) {
+    const rowNum = r + 1
+    const isWeekendRow = (() => {
+      const d = wsData[r][0]
+      if (!d || d === '합계') return false
+      const dStr = String(d)
+      const day = new Date(dStr).getDay()
+      return day === 0 || day === 6
+    })()
+    for (let c = 0; c < totalCols; c++) {
+      const addr = colLetter(c) + rowNum
+      if (!ws[addr]) ws[addr] = { v: '', t: 's' }
+      ws[addr].s = {
+        fill: { fgColor: { rgb: isWeekendRow ? 'F9FAFB' : 'FFFFFF' } },
+        font: { sz: 10 },
+        alignment: { horizontal: c <= 1 ? 'center' : 'right', vertical: 'center' },
+        border: { top:{style:'thin',color:{rgb:'F3F4F6'}}, bottom:{style:'thin',color:{rgb:'F3F4F6'}}, left:{style:'thin',color:{rgb:'E5E7EB'}}, right:{style:'thin',color:{rgb:'E5E7EB'}} }
+      }
+    }
+  }
+
+  // 합계 행 스타일 (마지막 행)
+  for (let c = 0; c < totalCols; c++) {
+    const addr = colLetter(c) + totalRows
+    if (!ws[addr]) ws[addr] = { v: '', t: 's' }
+    ws[addr].s = {
+      fill: { fgColor: { rgb: 'EFF6FF' } },
+      font: { bold: true, sz: 11, color: { rgb: '1D4ED8' } },
+      alignment: { horizontal: c <= 1 ? 'center' : 'right', vertical: 'center' },
+      border: { top:{style:'medium',color:{rgb:'BFDBFE'}}, bottom:{style:'medium',color:{rgb:'BFDBFE'}}, left:{style:'thin',color:{rgb:'BFDBFE'}}, right:{style:'thin',color:{rgb:'BFDBFE'}} }
+    }
+  }
 
   XLSX.utils.book_append_sheet(wb, ws, `${year}년${mm}월_발주내역`)
   XLSX.writeFile(wb, `발주내역_${year}년${mm}월.xlsx`)
-  showToast('엑셀 다운로드 완료!', 'success')
+  showToast('✅ 엑셀 다운로드 완료!', 'success')
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4869,12 +5048,15 @@ function updateInsightPanel() {
     dietAlertEl.innerHTML = `<div style="font-size:10px;color:#9ca3af">카테고리 설정 필요</div>`
   }
 
-  // ── 4. 업체 발주 비중 (#7 개선: 월목표 대비 + TOP3/5 집중도) ──
+  // ── 4. 업체 발주 비중 (#7 완전 개선: 도넛+상세분석) ──
   const vendorShareEl = document.getElementById('vendorShareContent')
-  if (vendorShareEl && vendors.length > 0) {
-    // 업체별 발주 합계
+  const vendorShareDonutCanvas = document.getElementById('vendorShareDonut')
+  if ((vendorShareEl || vendorShareDonutCanvas) && vendors.length > 0) {
+    // 업체별 발주 합계 (현재 입력값 + 저장된 데이터 병합)
     const vendorTotals = {}
     vendors.forEach(v => { vendorTotals[v.id] = 0 })
+
+    // 1) 화면 입력값 집계
     if (hasCats) {
       document.querySelectorAll('.cat-order-input').forEach(inp => {
         const vid = parseInt(inp.dataset.vendor)
@@ -4898,8 +5080,26 @@ function updateInsightPanel() {
         }
       })
     }
+
+    // 2) 입력값이 없으면 저장된 데이터(_ordersData / _catDailyOrders) 사용
+    const liveGrand = Object.values(vendorTotals).reduce((a,b)=>a+b,0)
+    if (liveGrand === 0) {
+      if (hasCats) {
+        ;(window._catDailyOrders || []).forEach(r => {
+          if (vendorTotals[r.vendor_id] !== undefined) {
+            vendorTotals[r.vendor_id] += r.total || 0
+          }
+        })
+      } else {
+        ;(window._ordersData || []).forEach(o => {
+          if (vendorTotals[o.vendor_id] !== undefined) {
+            vendorTotals[o.vendor_id] += o.total_amount || 0
+          }
+        })
+      }
+    }
     const grandV = Object.values(vendorTotals).reduce((a,b)=>a+b,0)
-    const vendorColors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#84cc16','#ec4899']
+    const vendorColors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#84cc16','#ec4899','#f97316','#14b8a6']
 
     // 업체를 발주액 내림차순 정렬
     const sortedVendors = vendors
@@ -4907,49 +5107,134 @@ function updateInsightPanel() {
       .filter(v => v.amt > 0)
       .sort((a, b) => b.amt - a.amt)
 
-    const vendorBars = sortedVendors.map((v, rank) => {
-      const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
-      const monthBudget = v.monthly_budget || 0
-      const budgetPct = monthBudget > 0 ? Math.round(v.amt/monthBudget*100) : null
-      const budgetColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
-      const rankBadge = rank < 3 ? `<span style="font-size:8px;font-weight:800;color:white;background:${rank===0?'#f59e0b':rank===1?'#9ca3af':'#cd7c30'};padding:0 3px;border-radius:3px;margin-right:2px">${rank+1}위</span>` : ''
-      return `<div style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">
-          ${rankBadge}
-          <div style="font-size:9px;font-weight:700;color:${v.color};flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${v.name}">${v.name}</div>
-          <span style="font-size:9px;font-weight:700;color:${v.color}">${pct}%</span>
-          <span style="font-size:8px;color:#9ca3af">${fmtMan(v.amt)}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:3px">
-          <div style="flex:1;height:7px;background:#e5e7eb;border-radius:4px;overflow:hidden">
-            <div style="height:100%;width:${pct}%;background:${v.color};border-radius:4px;transition:width 0.4s"></div>
-          </div>
-          ${budgetPct !== null ? `<span style="font-size:8px;color:${budgetColor};font-weight:700;white-space:nowrap">목표 ${budgetPct}%</span>` : ''}
-        </div>
-      </div>`
-    }).join('')
+    // ── 도넛 차트 렌더링 ──
+    if (vendorShareDonutCanvas && grandV > 0) {
+      if (window._vendorShareChart) { try { window._vendorShareChart.destroy() } catch(e){} }
+      if (typeof Chart !== 'undefined') {
+        const doughnutCenterPlugin2 = {
+          id: 'dCenter2',
+          afterDraw(chart) {
+            if (chart.config.type !== 'doughnut') return
+            const { ctx, chartArea: { top, left, width, height } } = chart
+            const cx = left + width/2, cy = top + height/2
+            ctx.save()
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+            ctx.font = 'bold 11px sans-serif'; ctx.fillStyle = '#1d4ed8'
+            ctx.fillText(fmtMan(grandV), cx, cy-6)
+            ctx.font = '9px sans-serif'; ctx.fillStyle = '#6b7280'
+            ctx.fillText('월 합계', cx, cy+7)
+            ctx.restore()
+          }
+        }
+        window._vendorShareChart = new Chart(vendorShareDonutCanvas, {
+          type: 'doughnut',
+          data: {
+            labels: sortedVendors.map(v => v.name),
+            datasets: [{ data: sortedVendors.map(v => v.amt), backgroundColor: sortedVendors.map(v => v.color), borderWidth: 1, borderColor: '#fff' }]
+          },
+          options: {
+            responsive: false, cutout: '62%',
+            plugins: { legend: { display: false }, tooltip: {
+              callbacks: {
+                label(ctx2) {
+                  const v = sortedVendors[ctx2.dataIndex]
+                  const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
+                  const budgetPct = v.monthly_budget > 0 ? Math.round(v.amt/v.monthly_budget*100) : null
+                  return [`${v.name}: ${v.amt.toLocaleString()}원 (${pct}%)`, budgetPct !== null ? `목표 대비: ${budgetPct}%` : '목표 미설정']
+                }
+              }
+            }}
+          },
+          plugins: [doughnutCenterPlugin2]
+        })
+      }
 
-    vendorShareEl.innerHTML = grandV > 0
-      ? vendorBars
-      : `<div style="font-size:10px;color:#9ca3af">발주 데이터 없음</div>`
-
-    // TOP3 집중도 계산 및 표시
-    const top3El = document.getElementById('vendorTop3Summary')
-    const topBadge = document.getElementById('vendorShareTopBadge')
-    if (grandV > 0 && sortedVendors.length > 0) {
-      const top3 = sortedVendors.slice(0, 3)
-      const top5 = sortedVendors.slice(0, 5)
-      const top3pct = Math.round(top3.reduce((s,v)=>s+v.amt,0)/grandV*100)
-      const top5pct = Math.round(top5.reduce((s,v)=>s+v.amt,0)/grandV*100)
-      if (topBadge) topBadge.textContent = `TOP3: ${top3pct}% / TOP5: ${top5pct}%`
-      if (top3El) {
-        const concentration = top3pct >= 80 ? '⚠ 상위 3개 업체 편중 심함' : top3pct >= 60 ? '상위 3개 업체 집중도 높음' : '업체 분산 양호'
-        top3El.style.display = 'block'
-        top3El.innerHTML = `🏆 <strong>TOP3</strong> ${top3.map(v=>v.name).join(' · ')} — ${top3pct}% 집중 | TOP5: ${top5pct}%${top3pct>=80?' <span style="color:#dc2626;font-weight:700">⚠편중</span>':''}`
+      // 범례 (도넛 아래)
+      const legendEl = document.getElementById('vendorShareLegend')
+      if (legendEl) {
+        legendEl.innerHTML = sortedVendors.map((v, rank) => {
+          const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
+          const budgetPct = v.monthly_budget > 0 ? Math.round(v.amt/v.monthly_budget*100) : null
+          const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+          const rankBadge = rank < 3 ? `<span style="font-size:8px;font-weight:800;color:white;background:${rank===0?'#f59e0b':rank===1?'#6b7280':'#cd7c30'};padding:0 3px;border-radius:3px;margin-right:2px;flex-shrink:0">${rank+1}</span>` : `<span style="font-size:8px;color:#9ca3af;width:14px;text-align:center;flex-shrink:0">${rank+1}</span>`
+          return `<div style="display:flex;align-items:center;gap:3px;margin-bottom:3px;font-size:9px">
+            ${rankBadge}
+            <div style="width:8px;height:8px;border-radius:2px;background:${v.color};flex-shrink:0"></div>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151;font-weight:600" title="${v.name}">${v.name}</span>
+            <span style="color:${v.color};font-weight:700">${pct}%</span>
+            ${budgetPct !== null ? `<span style="color:${budColor};font-size:8px">목표${budgetPct}%</span>` : ''}
+          </div>`
+        }).join('')
       }
     }
 
-    // ── 업체 편중 감지 (70% 이상 시 경고) ──
+    // ── 테이블 뷰 (상세) ──
+    if (vendorShareEl) {
+      vendorShareEl.innerHTML = grandV > 0 ? `
+        <table style="width:100%;font-size:9px;border-collapse:collapse">
+          <thead><tr style="background:#dbeafe;color:#1d4ed8">
+            <th style="padding:3px 4px;text-align:left">순위</th>
+            <th style="padding:3px 4px;text-align:left">업체</th>
+            <th style="padding:3px 4px;text-align:right">발주금액</th>
+            <th style="padding:3px 4px;text-align:right">비중</th>
+            <th style="padding:3px 4px;text-align:right">목표대비</th>
+          </tr></thead>
+          <tbody>
+            ${sortedVendors.map((v, rank) => {
+              const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
+              const budgetPct = v.monthly_budget > 0 ? Math.round(v.amt/v.monthly_budget*100) : null
+              const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+              const rankEmoji = rank===0?'🥇':rank===1?'🥈':rank===2?'🥉':`${rank+1}`
+              return `<tr style="border-bottom:1px solid #eff6ff">
+                <td style="padding:3px 4px;text-align:center;font-weight:700">${rankEmoji}</td>
+                <td style="padding:3px 4px;font-weight:700;color:${v.color};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60px" title="${v.name}">${v.name}</td>
+                <td style="padding:3px 4px;text-align:right;color:#1f2937;font-weight:600">${fmtMan(v.amt)}</td>
+                <td style="padding:3px 4px;text-align:right">
+                  <div style="display:flex;align-items:center;gap:2px;justify-content:flex-end">
+                    <div style="width:28px;height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden">
+                      <div style="height:100%;width:${pct}%;background:${v.color};border-radius:3px"></div>
+                    </div>
+                    <span style="color:${v.color};font-weight:700">${pct}%</span>
+                  </div>
+                </td>
+                <td style="padding:3px 4px;text-align:right;color:${budColor};font-weight:700">${budgetPct !== null ? `${budgetPct}%` : '-'}</td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      ` : `<div style="font-size:10px;color:#9ca3af;text-align:center;padding:8px">발주 데이터 없음</div>`
+    }
+
+    // ── TOP3/5 집중도 ──
+    const top3El = document.getElementById('vendorTop3Summary')
+    if (grandV > 0 && sortedVendors.length > 0 && top3El) {
+      const top3 = sortedVendors.slice(0, 3)
+      const top5 = sortedVendors.slice(0, Math.min(5, sortedVendors.length))
+      const top3pct = Math.round(top3.reduce((s,v)=>s+v.amt,0)/grandV*100)
+      const top5pct = Math.round(top5.reduce((s,v)=>s+v.amt,0)/grandV*100)
+      const concColor = top3pct >= 80 ? '#dc2626' : top3pct >= 60 ? '#d97706' : '#16a34a'
+      const concLabel = top3pct >= 80 ? '⚠ 편중 위험' : top3pct >= 60 ? '집중도 높음' : '분산 양호'
+      top3El.style.display = 'block'
+      top3El.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-weight:700">🏆 업체 집중도</span>
+          <span style="color:${concColor};font-weight:700">${concLabel}</span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <div style="flex:1;background:${top3pct>=80?'#fee2e2':top3pct>=60?'#fef3c7':'#dcfce7'};border-radius:4px;padding:4px 6px;text-align:center">
+            <div style="font-size:8px;color:#6b7280">TOP 3</div>
+            <div style="font-size:13px;font-weight:800;color:${concColor}">${top3pct}%</div>
+            <div style="font-size:8px;color:#9ca3af">${top3.map(v=>v.name.slice(0,4)).join(', ')}</div>
+          </div>
+          <div style="flex:1;background:#eff6ff;border-radius:4px;padding:4px 6px;text-align:center">
+            <div style="font-size:8px;color:#6b7280">TOP 5</div>
+            <div style="font-size:13px;font-weight:800;color:#1d4ed8">${top5pct}%</div>
+            <div style="font-size:8px;color:#9ca3af">${top5.map(v=>v.name.slice(0,3)).join(', ')}</div>
+          </div>
+        </div>`
+    }
+
+    // ── 업체 편중 감지 ──
     if (grandV > 0) {
       const biasedVendors = vendors.filter(v => {
         const pct = Math.round((vendorTotals[v.id]||0)/grandV*100)
@@ -4960,7 +5245,7 @@ function updateInsightPanel() {
         if (biasedVendors.length > 0) {
           const v = biasedVendors[0]
           const bpct = Math.round((vendorTotals[v.id]||0)/grandV*100)
-          biasEl.innerHTML = `<div style="font-size:10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:5px 8px;margin-top:6px">⚠️ <strong style="color:#d97706">${v.name}</strong> 발주 비중 <strong style="color:#dc2626">${bpct}%</strong> — 편중 주의</div>`
+          biasEl.innerHTML = `<div style="font-size:9px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:4px 7px;margin-top:5px">⚠️ <strong style="color:#d97706">${v.name}</strong> 발주 집중 <strong style="color:#dc2626">${bpct}%</strong></div>`
           biasEl.style.display = 'block'
         } else {
           biasEl.style.display = 'none'
@@ -7611,7 +7896,7 @@ async function renderIngredientPricesPage() {
   content.innerHTML = `
   <div class="max-w-5xl mx-auto px-2 py-4">
     <!-- 헤더 -->
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-center justify-between mb-3">
       <div>
         <h1 class="text-xl font-bold text-gray-800 flex items-center gap-2">
           <i class="fas fa-leaf text-green-500"></i>
@@ -7629,7 +7914,18 @@ async function renderIngredientPricesPage() {
       </div>
     </div>
 
-    <!-- 변동 요약 카드 -->
+    <!-- 탭 -->
+    <div style="display:flex;gap:2px;margin-bottom:14px;border-bottom:2px solid #e5e7eb">
+      <button onclick="switchIngTab('my')" id="ingTab_my" style="padding:7px 16px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;border-bottom:2px solid #16a34a;color:#16a34a;margin-bottom:-2px">
+        <i class="fas fa-edit mr-1"></i>단가 입력
+      </button>
+      <button onclick="switchIngTab('vendor')" id="ingTab_vendor" style="padding:7px 16px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:#9ca3af;border-bottom:2px solid transparent;margin-bottom:-2px">
+        <i class="fas fa-store mr-1"></i>업체별 비교
+      </button>
+    </div>
+
+    <!-- 단가 입력 탭 -->
+    <div id="ingTabContent_my">
     ${filled.length > 0 ? `
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
       <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-3">
@@ -7750,6 +8046,23 @@ function buildIngRow(i, r, prevMLabel, prevYLabel) {
       <input type="text" class="form-input text-xs py-1 ing-memo" id="ing-pmemo-${i}" value="${r.memo||''}" placeholder="" style="width:80px">
     </td>
   </tr>`
+}
+
+window.toggleVendorShareView = function(view) {
+  const chartView = document.getElementById('vendorShareChartView')
+  const tableView = document.getElementById('vendorShareTableView')
+  const btnChart  = document.getElementById('vsBtn_chart')
+  const btnTable  = document.getElementById('vsBtn_table')
+  if (!chartView || !tableView) return
+  if (view === 'chart') {
+    chartView.style.display = ''; tableView.style.display = 'none'
+    if (btnChart) { btnChart.style.background = '#1d4ed8'; btnChart.style.color = 'white' }
+    if (btnTable) { btnTable.style.background = 'white'; btnTable.style.color = '#1d4ed8' }
+  } else {
+    chartView.style.display = 'none'; tableView.style.display = ''
+    if (btnTable) { btnTable.style.background = '#1d4ed8'; btnTable.style.color = 'white' }
+    if (btnChart) { btnChart.style.background = 'white'; btnChart.style.color = '#1d4ed8' }
+  }
 }
 
 window.refreshIngRow = function(i, prevPrice, prevYearPrice) {
@@ -7951,20 +8264,108 @@ window.autoAnalyzeIngredientFromExcel = async function(input, year, month) {
   }
 }
 
+// ── #4 거래내역 엑셀 자동입력 다이얼로그 ──────────────────────────
+window.openAutoImportDialog = function() {
+  const vendors = window._vendorsCache || []
+  const curYear = App.currentYear
+  const curMonth = App.currentMonth
+
+  // 선택 가능한 연월 목록 (현재 포함 12개월)
+  const monthOptions = []
+  for (let i = 0; i < 12; i++) {
+    let m = curMonth - i
+    let y = curYear
+    while (m <= 0) { m += 12; y-- }
+    monthOptions.push({ y, m })
+  }
+
+  const existing = document.getElementById('autoImportDialog')
+  if (existing) existing.remove()
+
+  const dlg = document.createElement('div')
+  dlg.id = 'autoImportDialog'
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
+  dlg.innerHTML = `
+    <div style="background:white;border-radius:16px;max-width:460px;width:100%;padding:24px;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+      <h3 style="font-size:16px;font-weight:700;color:#1f2937;margin:0 0 4px"><i class="fas fa-file-import" style="color:#7c3aed;margin-right:8px"></i>거래내역 엑셀 자동 입력</h3>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 16px">삼성웰스토리, 아워홈, 이산유통 등 각종 거래명세서를 업로드하면 발주 데이터로 자동 입력됩니다.</p>
+
+      <!-- 업체 선택 -->
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">📦 업체 선택 <span style="color:#9ca3af;font-weight:400">(엑셀에 업체 컬럼 없으면 수동 선택)</span></label>
+        <select id="importVendorSel" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+          <option value="">자동 감지 (엑셀에서 업체 찾기)</option>
+          ${vendors.map(v => `<option value="${v.id}">${v.name} (${v.tax_type==='taxable'?'과세':v.tax_type==='exempt'?'면세':v.tax_type==='mixed'?'과세+면세':'합산'})</option>`).join('')}
+        </select>
+      </div>
+
+      <!-- 연/월 선택 -->
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">📅 입력 대상 연월 <span style="color:#9ca3af;font-weight:400">(엑셀 날짜 자동 감지)</span></label>
+        <div style="display:flex;gap:8px">
+          <select id="importYearSel" style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+            ${[...new Set(monthOptions.map(o=>o.y))].map(y=>`<option value="${y}" ${y===curYear?'selected':''}>${y}년</option>`).join('')}
+          </select>
+          <select id="importMonthSel" style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+            ${monthOptions.map(o=>`<option value="${o.m}" ${o.y===curYear&&o.m===curMonth?'selected':''}>${o.m}월</option>`).join('')}
+          </select>
+        </div>
+        <p style="font-size:11px;color:#9ca3af;margin:4px 0 0">※ 현재 월 외에도 과거 거래내역 입력 가능</p>
+      </div>
+
+      <!-- 파일 업로드 -->
+      <div style="margin-bottom:16px">
+        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">📂 거래내역 엑셀 파일</label>
+        <label style="display:flex;align-items:center;gap:8px;padding:10px 14px;border:2px dashed #d1d5db;border-radius:8px;cursor:pointer;background:#fafafa" id="importFileLabel">
+          <i class="fas fa-cloud-upload-alt" style="color:#7c3aed;font-size:16px"></i>
+          <span id="importFileName" style="font-size:12px;color:#6b7280">클릭하여 파일 선택 (.xlsx, .xls, .csv)</span>
+          <input type="file" id="importFileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="(function(f){document.getElementById('importFileName').textContent=f.files[0]?.name||'파일 선택'})(this)">
+        </label>
+      </div>
+
+      <!-- 지원 형식 안내 -->
+      <div style="background:#f5f3ff;border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:11px;color:#6b7280">
+        <strong style="color:#7c3aed">지원 거래명세서 형식:</strong><br>
+        • 날짜 컬럼: 거래일, 일자, 날짜, 주문일, 배송일, 입고일 등<br>
+        • 금액 컬럼: 합계, 금액, 공급대가, 과세금액, 면세금액, 부가세 등<br>
+        • 업체 컬럼: 업체명, 거래처, 공급자 등 (없으면 위에서 수동 선택)<br>
+        <span style="color:#7c3aed">※ 날짜+금액 컬럼만 있어도 입력 가능</span>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="document.getElementById('autoImportDialog').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer">취소</button>
+        <button onclick="startAutoImport()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:9px 22px;font-size:13px;font-weight:700;cursor:pointer">
+          <i class="fas fa-upload mr-1"></i>분석 시작
+        </button>
+      </div>
+    </div>`
+  document.body.appendChild(dlg)
+}
+
 // ── #4 업체 거래내역 엑셀 자동 입력 ────────────────────────────────
-window.autoImportOrderFromExcel = async function(input) {
-  const file = input.files[0]
+window.startAutoImport = function() {
+  const fileInput = document.getElementById('importFileInput')
+  if (!fileInput?.files[0]) {
+    showToast('파일을 선택해주세요.', 'warning')
+    return
+  }
+  const vendorId = parseInt(document.getElementById('importVendorSel')?.value) || null
+  const importYear = parseInt(document.getElementById('importYearSel')?.value) || App.currentYear
+  const importMonth = parseInt(document.getElementById('importMonthSel')?.value) || App.currentMonth
+  document.getElementById('autoImportDialog')?.remove()
+  autoImportOrderFromExcel(fileInput, vendorId, importYear, importMonth)
+}
+
+window.autoImportOrderFromExcel = async function(input, forcedVendorId, importYear, importMonth) {
+  const file = input.files ? input.files[0] : input
   if (!file) return
-  input.value = ''
 
   // XLSX 라이브러리 로드
   if (typeof XLSX === 'undefined') {
     showToast('XLSX 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
     const s = document.createElement('script')
     s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    s.onload = () => {
-      showToast('라이브러리 로드 완료. 파일을 다시 업로드해주세요.', 'info')
-    }
+    s.onload = () => showToast('라이브러리 로드 완료. 다시 시도해주세요.', 'info')
     document.head.appendChild(s)
     return
   }
@@ -7974,332 +8375,384 @@ window.autoImportOrderFromExcel = async function(input) {
   try {
     const buf = await file.arrayBuffer()
     const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-    const sheetName = wb.SheetNames[0]
-    const ws = wb.Sheets[sheetName]
-    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
 
-    if (raw.length < 2) {
-      showToast('엑셀 데이터가 없습니다.', 'error')
-      return
-    }
+    if (raw.length < 2) { showToast('엑셀 데이터가 없습니다.', 'error'); return }
 
-    // ── 컬럼 헤더 탐지 ──
-    const headerKeywords = {
-      date:    ['날짜','일자','거래일','order date','date','주문일','배송일','입고일'],
-      vendor:  ['업체','업체명','거래처','공급자','supplier','vendor','회사명','납품업체'],
-      taxable: ['과세','과세금액','공급가액','taxable','과세액','과표'],
-      exempt:  ['면세','면세금액','면세액','exempt','비과세'],
-      vat:     ['부가세','vat','세액','tax'],
-      total:   ['합계','total','총액','합산','금액','공급대가','결제금액','청구금액','총금액']
+    const vendors = window._vendorsCache || []
+    const targetYear = importYear || App.currentYear
+    const targetMonth = importMonth || App.currentMonth
+
+    // ── 강화된 헤더 탐지 ──
+    // 다양한 거래명세서 형식을 커버하는 키워드 확장
+    const HK = {
+      date:    ['날짜','일자','거래일','order date','date','주문일','배송일','입고일','전표일','거래일자','발주일','정산일','invoice date'],
+      vendor:  ['업체','업체명','거래처','공급자','supplier','vendor','회사명','납품업체','공급업체','매입처'],
+      item:    ['품목','품명','상품명','식재료','재료명','item','name','product','품명/규격','내역'],
+      qty:     ['수량','qty','quantity','box수','박스수','ea수'],
+      unit:    ['단위','unit'],
+      price:   ['단가','unit price','unit_price','단위가','price','매입단가','공급단가'],
+      taxable: ['과세','과세금액','공급가액','taxable','과세액','과표','과세공급가','과세공급'],
+      exempt:  ['면세','면세금액','면세액','exempt','비과세','면세공급가','면세공급'],
+      vat:     ['부가세','vat','세액','tax','부가가치세'],
+      total:   ['합계','total','총액','합산','금액','공급대가','결제금액','청구금액','총금액','공급가','공급액','실거래금액','거래금액','발주금액','주문금액']
     }
 
     let headerRow = -1
-    let cols = { date:-1, vendor:-1, taxable:-1, exempt:-1, vat:-1, total:-1 }
+    let cols = { date:-1, vendor:-1, item:-1, qty:-1, price:-1, taxable:-1, exempt:-1, vat:-1, total:-1 }
 
-    for (let r = 0; r < Math.min(raw.length, 20); r++) {
-      const row = raw[r].map(c => String(c).trim().toLowerCase())
-      // 날짜 컬럼이 있는 행을 헤더로 판단
-      const dateIdx = row.findIndex(c => headerKeywords.date.some(k => c.includes(k)))
-      if (dateIdx >= 0) {
+    // 헤더 탐지: 최대 25행까지 스캔 (거래명세서마다 헤더 위치 다름)
+    for (let r = 0; r < Math.min(raw.length, 25); r++) {
+      const row = raw[r].map(c => String(c||'').trim().toLowerCase())
+      const dateIdx = row.findIndex(c => HK.date.some(k => c.includes(k)))
+      const totalIdx = row.findIndex(c => HK.total.some(k => c === k || c.includes(k)))
+      // 날짜 또는 합계 컬럼이 있는 행을 헤더로 판단
+      if (dateIdx >= 0 || (totalIdx >= 0 && r < 15)) {
         headerRow = r
         cols.date    = dateIdx
-        cols.vendor  = row.findIndex(c => headerKeywords.vendor.some(k => c.includes(k)))
-        cols.taxable = row.findIndex(c => headerKeywords.taxable.some(k => c.includes(k)))
-        cols.exempt  = row.findIndex(c => headerKeywords.exempt.some(k => c.includes(k)))
-        cols.vat     = row.findIndex(c => headerKeywords.vat.some(k => c.includes(k)))
-        cols.total   = row.findIndex(c => headerKeywords.total.some(k => c.includes(k)))
+        cols.vendor  = row.findIndex(c => HK.vendor.some(k => c.includes(k)))
+        cols.item    = row.findIndex(c => HK.item.some(k => c.includes(k)))
+        cols.qty     = row.findIndex(c => HK.qty.some(k => c === k || c.includes(k)))
+        cols.price   = row.findIndex(c => HK.price.some(k => c === k || c.includes(k)))
+        cols.taxable = row.findIndex(c => HK.taxable.some(k => c.includes(k)))
+        cols.exempt  = row.findIndex(c => HK.exempt.some(k => c.includes(k)))
+        cols.vat     = row.findIndex(c => HK.vat.some(k => c.includes(k)))
+        cols.total   = totalIdx >= 0 ? totalIdx : row.findIndex(c => HK.total.some(k => c.includes(k)))
         break
       }
     }
 
-    // 헤더를 못 찾은 경우: 첫 번째 행이 데이터인 경우 처리
-    if (headerRow === -1) {
-      headerRow = 0
-      // 숫자로 보이는 컬럼 찾기
-      const firstDataRow = raw[1] || []
-      for (let i = 0; i < firstDataRow.length; i++) {
-        const cell = String(firstDataRow[i]).trim()
-        if (cell.match(/^\d{4}[-./]\d{1,2}[-./]\d{1,2}/)) cols.date = i
-        else if (cell.match(/^[\d,]+$/) && parseInt(cell.replace(/,/g,'')) > 0) {
-          if (cols.total === -1) cols.total = i
-        }
-      }
-    }
+    // 헤더 못 찾으면 첫 번째 행 사용
+    if (headerRow === -1) { headerRow = 0 }
 
-    // ── 등록된 업체 목록 가져오기 ──
-    const vendors = window._vendorsCache || []
-
-    // ── 데이터 행 파싱 ──
-    const orderMap = {} // key: "vendorId_date", value: { taxable, exempt, vat, total }
-
-    // 파일명에서 업체 힌트 추출
-    const fileName = file.name.toLowerCase()
-    let fileVendorHint = null
-    vendors.forEach(v => {
-      const vn = v.name.replace(/\s/g,'').toLowerCase()
-      if (fileName.includes(vn) || fileName.includes(v.name.toLowerCase())) {
-        fileVendorHint = v
-      }
-    })
-    // 잘 알려진 업체명 힌트
-    const knownVendorMap = {
-      '삼성웰스토리': '웰스토리', '웰스토리': '웰스토리',
-      '아워홈': '아워홈', 'ourhome': '아워홈',
-      '현대그린푸드': '현대그린', '그린푸드': '현대그린',
-      'cj프레시웨이': 'cj프레시웨이', 'cjfreshway': 'cj프레시웨이',
-    }
-    let knownVendorKey = null
-    for (const [k, v] of Object.entries(knownVendorMap)) {
-      if (fileName.includes(k)) { knownVendorKey = v; break }
-    }
-
-    // 업체명 매칭 함수
-    function matchVendor(nameStr) {
-      if (!nameStr) return fileVendorHint || null
-      const nm = String(nameStr).trim().replace(/\s/g,'').toLowerCase()
-      if (!nm) return fileVendorHint || null
-      // 정확히 일치
-      let found = vendors.find(v => v.name.replace(/\s/g,'').toLowerCase() === nm)
-      if (found) return found
-      // 포함
-      found = vendors.find(v => nm.includes(v.name.replace(/\s/g,'').toLowerCase()) || v.name.replace(/\s/g,'').toLowerCase().includes(nm))
-      if (found) return found
-      // 파일명 힌트 사용
-      return fileVendorHint || null
-    }
-
-    // 날짜 파싱 함수
+    // 날짜 파싱 (강화)
     function parseDate(cell) {
-      if (!cell && cell !== 0) return null
-      // Date 객체
+      if (cell === null || cell === undefined || cell === '') return null
       if (cell instanceof Date) {
-        const y = cell.getFullYear(), m = String(cell.getMonth()+1).padStart(2,'0'), d = String(cell.getDate()).padStart(2,'0')
-        return `${y}-${m}-${d}`
+        if (isNaN(cell)) return null
+        const y = cell.getFullYear(), mo = String(cell.getMonth()+1).padStart(2,'0'), d = String(cell.getDate()).padStart(2,'0')
+        return `${y}-${mo}-${d}`
       }
       const s = String(cell).trim()
-      // YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+      // YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
       let m = s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/)
       if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`
-      // Excel serial number
-      if (/^\d{5}$/.test(s)) {
-        const epoch = new Date(Date.UTC(1899,11,30))
-        epoch.setDate(epoch.getDate() + parseInt(s))
-        const y2 = epoch.getUTCFullYear(), mo = String(epoch.getUTCMonth()+1).padStart(2,'0'), d2 = String(epoch.getUTCDate()).padStart(2,'0')
-        return `${y2}-${mo}-${d2}`
-      }
       // YYYYMMDD
       m = s.match(/^(\d{4})(\d{2})(\d{2})$/)
       if (m) return `${m[1]}-${m[2]}-${m[3]}`
-      // MM/DD (현재 연도 사용)
+      // MM/DD or MM.DD (연도 자동)
       m = s.match(/^(\d{1,2})[./](\d{1,2})$/)
-      if (m) return `${App.currentYear}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`
+      if (m) return `${targetYear}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`
+      // 엑셀 시리얼
+      if (/^\d{4,6}$/.test(s)) {
+        const n = parseInt(s)
+        if (n > 40000 && n < 60000) {
+          const epoch = new Date(Date.UTC(1899,11,30))
+          epoch.setDate(epoch.getDate() + n)
+          const y2=epoch.getUTCFullYear(), mo=String(epoch.getUTCMonth()+1).padStart(2,'0'), d2=String(epoch.getUTCDate()).padStart(2,'0')
+          return `${y2}-${mo}-${d2}`
+        }
+      }
       return null
     }
 
     // 금액 파싱
     function parseAmt(cell) {
-      if (!cell && cell !== 0) return 0
-      const n = parseFloat(String(cell).replace(/[^\d.-]/g,''))
-      return isNaN(n) ? 0 : Math.round(Math.abs(n))
+      if (cell === null || cell === undefined || cell === '') return 0
+      const s = String(cell).replace(/[^\d.-]/g,'')
+      const n = parseFloat(s)
+      return isNaN(n) || n < 0 ? 0 : Math.round(n)
     }
 
+    // 파일명 기반 업체 힌트
+    const fileName = file.name.toLowerCase().replace(/[_\s-]/g,'')
+    function matchVendorByName(nameStr) {
+      if (forcedVendorId) return vendors.find(v=>v.id===forcedVendorId) || null
+      if (!nameStr && !fileName) return null
+      const nm = String(nameStr||'').replace(/[_\s-]/g,'').toLowerCase()
+      // 정확 일치
+      let found = vendors.find(v => v.name.replace(/\s/g,'').toLowerCase() === nm)
+      if (found) return found
+      // 포함 (양방향)
+      found = vendors.find(v => {
+        const vn = v.name.replace(/\s/g,'').toLowerCase()
+        return nm.includes(vn) || vn.includes(nm)
+      })
+      if (found) return found
+      // 파일명에서 업체 감지
+      found = vendors.find(v => {
+        const vn = v.name.replace(/\s/g,'').toLowerCase()
+        return fileName.includes(vn)
+      })
+      return found || null
+    }
+
+    // ── 데이터 파싱 ──
+    // 이산유통 등 단가×수량 형식 포함, 날짜 없는 경우 월 합산 처리
+    let hasDateCol = cols.date >= 0
     const parsed = []
+    const noDateRows = [] // 날짜 없는 행 (월 합산용)
+
+    // ── 이산유통 형식 감지: 단가 컬럼 있고 수량도 있는 경우 ──
+    // 날짜별 단가×수량 합산 모드
+    const isPriceQtyMode = cols.price >= 0 && cols.qty >= 0 && cols.total < 0 && cols.taxable < 0
+
     for (let r = headerRow + 1; r < raw.length; r++) {
       const row = raw[r]
-      if (!row || row.every(c => c === '' || c === null || c === undefined)) continue
+      if (!row || row.every(c => !c || c === '' || c === '0')) continue
 
-      const dateStr = parseDate(cols.date >= 0 ? row[cols.date] : null)
-      if (!dateStr) continue
+      let dateStr = hasDateCol ? parseDate(row[cols.date]) : null
 
-      // 발주 연월 필터 (현재 선택된 연/월로 필터링)
-      const [dy, dm] = dateStr.split('-').map(Number)
-      // 연/월 정보가 선택된 기간과 맞지 않으면 스킵 (단, 연도=0이면 스킵 불필요)
-      // 넓게 허용: 선택 연/월 제한 없이 모두 가져옴
-
-      const vendorCell = cols.vendor >= 0 ? row[cols.vendor] : null
-      const vendor = matchVendor(vendorCell)
-      if (!vendor) continue
-
-      let taxable = 0, exempt = 0, vat = 0, total = 0
-      if (cols.taxable >= 0) taxable = parseAmt(row[cols.taxable])
-      if (cols.exempt  >= 0) exempt  = parseAmt(row[cols.exempt])
-      if (cols.vat     >= 0) vat     = parseAmt(row[cols.vat])
-      if (cols.total   >= 0) total   = parseAmt(row[cols.total])
-
-      // 금액이 없으면 스킵
-      if (taxable === 0 && exempt === 0 && total === 0) continue
-
-      // 과세/면세 미구분이면 total 을 tax_type에 맞게 배분
-      if (taxable === 0 && exempt === 0 && total > 0) {
-        if (vendor.tax_type === 'taxable') {
-          taxable = Math.round(total / 1.1)
-          vat = total - taxable
-          exempt = 0
-        } else if (vendor.tax_type === 'exempt') {
-          exempt = total
-          taxable = 0; vat = 0
-        } else {
-          // mixed or mixed_total: total 그대로
-          taxable = 0; exempt = 0; vat = 0
+      // 날짜 컬럼이 없어도 행에서 날짜처럼 보이는 셀 탐색
+      if (!dateStr) {
+        for (let ci = 0; ci < Math.min(row.length, 5); ci++) {
+          const d = parseDate(row[ci])
+          if (d) { dateStr = d; break }
         }
       }
 
-      if (vat === 0 && taxable > 0 && vendor.tax_type !== 'exempt') {
-        vat = Math.round(taxable * 0.1)
+      // ── 단가×수량 계산 모드 (이산유통 등) ──
+      let taxable = 0, exempt = 0, vat = 0, total = 0
+
+      if (isPriceQtyMode) {
+        const price = parseAmt(row[cols.price])
+        const qty   = cols.qty >= 0 ? parseAmt(row[cols.qty]) : 1
+        const calculated = price * (qty || 1)
+        if (calculated > 0) total = calculated
+      } else {
+        // 일반 금액 컬럼 모드
+        taxable = cols.taxable >= 0 ? parseAmt(row[cols.taxable]) : 0
+        exempt  = cols.exempt  >= 0 ? parseAmt(row[cols.exempt])  : 0
+        vat     = cols.vat     >= 0 ? parseAmt(row[cols.vat])     : 0
+        total   = cols.total   >= 0 ? parseAmt(row[cols.total])   : 0
+
+        // 단가 × 수량 보조 계산 (합계 없을 때)
+        if (total === 0 && taxable === 0 && exempt === 0) {
+          if (cols.price >= 0 && cols.qty >= 0) {
+            const pr2 = parseAmt(row[cols.price])
+            const qt2 = parseAmt(row[cols.qty])
+            if (pr2 > 0 && qt2 > 0) total = pr2 * qt2
+          }
+        }
+
+        // 금액 없으면 숫자형 컬럼 중 가장 큰 값 사용
+        if (total === 0 && taxable === 0 && exempt === 0) {
+          let maxAmt = 0
+          row.forEach((cell, ci) => {
+            if (ci === cols.date || ci === cols.qty || ci === cols.price) return
+            const n = parseAmt(cell)
+            if (n > maxAmt) { maxAmt = n }
+          })
+          if (maxAmt > 100) total = maxAmt
+        }
       }
 
-      const finalTotal = vendor.tax_type === 'mixed_total'
-        ? total || (taxable + exempt + vat)
-        : (taxable + exempt + vat) || total
+      if (total === 0 && taxable === 0 && exempt === 0) continue
 
-      parsed.push({ date: dateStr, vendor, taxable, exempt, vat, total: finalTotal })
+      // 업체 매칭
+      const vendorNameCell = cols.vendor >= 0 ? String(row[cols.vendor]||'').trim() : ''
+      const vendor = matchVendorByName(vendorNameCell)
+
+      if (!dateStr) {
+        noDateRows.push({ vendor, taxable, exempt, vat, total, raw: row })
+        continue
+      }
+
+      // 날짜 필터: 선택된 연/월과 일치하는 것만
+      const [dy, dm] = dateStr.split('-').map(Number)
+      if (dy !== targetYear || dm !== targetMonth) continue
+
+      parsed.push({ date: dateStr, vendor, taxable, exempt, vat, total })
     }
 
-    if (parsed.length === 0) {
-      // 업체 매칭 실패 시: 업체 수동 선택 후 재시도
-      const unmatched = []
-      for (let r = headerRow + 1; r < raw.length; r++) {
-        const row = raw[r]
-        if (!row || row.every(c => c === '' || c === null || c === undefined)) continue
-        const dateStr = parseDate(cols.date >= 0 ? row[cols.date] : null)
-        if (!dateStr) continue
-        const total2 = cols.total >= 0 ? parseAmt(row[cols.total]) : 0
-        if (total2 > 0) unmatched.push({ date: dateStr, total: total2 })
-      }
-
-      if (unmatched.length === 0) {
-        showToast('발주 데이터를 추출하지 못했습니다.\n날짜·금액 컬럼이 포함된 엑셀인지 확인하세요.', 'error')
-        return
-      }
-
-      // 업체 선택 모달
-      const selModal = document.createElement('div')
-      selModal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
-      selModal.innerHTML = `
-        <div style="background:white;border-radius:16px;max-width:400px;width:100%;padding:24px;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
-          <h3 style="font-size:16px;font-weight:700;color:#1f2937;margin:0 0 8px"><i class="fas fa-store" style="color:#7c3aed;margin-right:8px"></i>업체를 선택해주세요</h3>
-          <p style="font-size:12px;color:#6b7280;margin:0 0 16px">엑셀 파일에서 업체 정보를 찾지 못했습니다.<br>${unmatched.length}건의 발주 데이터를 어느 업체로 입력할까요?</p>
-          <select id="manualVendorSel" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:16px">
-            <option value="">-- 업체 선택 --</option>
-            ${vendors.map(v => `<option value="${v.id}">${v.name} (${v.tax_type==='taxable'?'과세':v.tax_type==='exempt'?'면세':v.tax_type==='mixed'?'과+면':'합산'})</option>`).join('')}
-          </select>
-          <div style="display:flex;gap:8px;justify-content:flex-end">
-            <button onclick="this.closest('div[style]').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">취소</button>
-            <button onclick="(function(){
-              const vid = parseInt(document.getElementById('manualVendorSel').value)
-              if (!vid) { alert('업체를 선택하세요'); return }
-              const vnd = (window._vendorsCache||[]).find(v=>v.id===vid)
-              if (!vnd) return
-              const items = ${JSON.stringify(unmatched)}.map(u => ({
-                date: u.date, vendor: vnd,
-                taxable: vnd.tax_type==='taxable'?Math.round(u.total/1.1):0,
-                exempt: vnd.tax_type==='exempt'?u.total:0,
-                vat: vnd.tax_type==='taxable'?u.total-Math.round(u.total/1.1):0,
-                total: u.total
-              }))
-              window._importOrderItems = items
-              this.closest('div[style]').remove()
-              confirmImportOrders()
-            })()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer">
-              <i class="fas fa-check mr-1"></i>이 업체로 입력 (${unmatched.length}건)
-            </button>
-          </div>
-        </div>`
-      document.body.appendChild(selModal)
-      return
+    // ── 날짜 없는 행 처리: 업체 감지된 것 중 월 합산 ──
+    // noDateRows 중 업체가 있는 것은 해당 월 15일 기준 단일 건으로 처리
+    if (noDateRows.length > 0 && parsed.length === 0) {
+      const defaultDate = `${targetYear}-${String(targetMonth).padStart(2,'0')}-15`
+      noDateRows.forEach(nr => {
+        if (nr.vendor) {
+          parsed.push({ date: defaultDate, vendor: nr.vendor, taxable: nr.taxable, exempt: nr.exempt, vat: nr.vat, total: nr.total })
+        }
+      })
     }
 
-    // ── 미리보기 모달 표시 ──
+    // ── 업체 없는 항목 처리 ──
+    const noVendorRows = parsed.filter(p => !p.vendor)
+    const withVendorRows = parsed.filter(p => p.vendor)
+
+    // ── 집계: 날짜+업체 기준 합산 ──
     const grouped = {}
-    parsed.forEach(p => {
+    withVendorRows.forEach(p => {
       const key = `${p.date}_${p.vendor.id}`
-      if (!grouped[key]) grouped[key] = { date: p.date, vendor: p.vendor, taxable:0, exempt:0, vat:0, total:0 }
+      if (!grouped[key]) grouped[key] = { date:p.date, vendor:p.vendor, taxable:0, exempt:0, vat:0, total:0, count:0 }
       grouped[key].taxable += p.taxable
       grouped[key].exempt  += p.exempt
       grouped[key].vat     += p.vat
-      grouped[key].total   += p.total
+      grouped[key].total   += p.total || (p.taxable + p.exempt + p.vat)
+      grouped[key].count++
     })
+
+    // ── 업체 세금 유형 기반 금액 재분류 ──
+    // total만 있고 taxable/exempt가 0인 경우, 업체의 tax_type으로 자동 분류
+    Object.values(grouped).forEach(g => {
+      if (g.total > 0 && g.taxable === 0 && g.exempt === 0) {
+        const v = g.vendor
+        if (v.tax_type === 'taxable') {
+          // 과세: 공급가액 = total/1.1, 부가세 = total - 공급가액
+          g.taxable = Math.round(g.total / 1.1)
+          g.vat = g.total - g.taxable
+        } else if (v.tax_type === 'exempt') {
+          g.exempt = g.total
+        } else if (v.tax_type === 'mixed') {
+          // 혼합 유형: 합계를 과세로 일단 처리 (사용자가 확인)
+          g.taxable = g.total
+        }
+        // mixed_total은 total 그대로 유지
+      }
+    })
+
     const items = Object.values(grouped).sort((a,b) => a.date.localeCompare(b.date))
 
-    // 연/월 그룹핑
-    const monthGroups = {}
-    items.forEach(it => {
-      const [y,m] = it.date.split('-')
-      const key = `${y}-${m}`
-      if (!monthGroups[key]) monthGroups[key] = []
-      monthGroups[key].push(it)
-    })
+    if (items.length === 0 && noVendorRows.length === 0) {
+      const totalAmt = noDateRows.reduce((s,r)=>s+(r.total||r.taxable||0),0)
+      if (totalAmt === 0) {
+        showToast(`${targetYear}년 ${targetMonth}월 발주 데이터를 찾지 못했습니다.\n날짜·금액 컬럼이 포함된 파일인지 확인해주세요.`, 'error')
+        return
+      }
+    }
 
-    const monthKeys = Object.keys(monthGroups).sort()
-    const grandTotal = items.reduce((s,it)=>s+it.total,0)
+    // 업체 미매칭 행이 있으면 수동 선택 모달
+    if (noVendorRows.length > 0 && items.length === 0) {
+      const totalUnmatched = noVendorRows.reduce((s,p)=>s+(p.total||p.taxable||0),0)
+      const uniqueDates = [...new Set(noVendorRows.filter(p=>p.date).map(p=>p.date))].slice(0,5).join(', ')
+      _showManualVendorSelect(noVendorRows, targetYear, targetMonth,
+        `${noVendorRows.length}건 · 합계 ${totalUnmatched.toLocaleString()}원${uniqueDates ? `\n날짜: ${uniqueDates}` : ''}`)
+      return
+    }
 
-    const modal = document.createElement('div')
-    modal.id = 'importOrderModal'
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
-    modal.innerHTML = `
-      <div style="background:white;border-radius:16px;max-width:700px;width:100%;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
-        <div style="padding:16px 20px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
-          <div>
-            <h3 style="font-size:16px;font-weight:700;color:#1f2937;margin:0"><i class="fas fa-file-import" style="color:#7c3aed;margin-right:8px"></i>거래내역 자동 입력 미리보기</h3>
-            <p style="font-size:12px;color:#6b7280;margin:2px 0 0">총 ${items.length}건 · 합계 ${grandTotal.toLocaleString()}원 ← <em style="color:#7c3aed">${file.name}</em></p>
-          </div>
-          <button onclick="document.getElementById('importOrderModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#9ca3af">✕</button>
-        </div>
-        <div style="overflow-y:auto;flex:1;padding:12px 16px">
-          ${monthKeys.map(mk => {
-            const [my, mm] = mk.split('-')
-            const monthItems = monthGroups[mk]
-            const monthSum = monthItems.reduce((s,it)=>s+it.total,0)
-            return `
-              <div style="margin-bottom:12px">
-                <div style="font-size:12px;font-weight:700;color:#7c3aed;margin-bottom:6px;padding:4px 8px;background:#f5f3ff;border-radius:6px">
-                  ${my}년 ${parseInt(mm)}월 · ${monthItems.length}건 · ${monthSum.toLocaleString()}원
-                </div>
-                <table style="width:100%;font-size:12px;border-collapse:collapse">
-                  <thead>
-                    <tr style="background:#f9fafb;color:#6b7280">
-                      <th style="padding:5px 8px;text-align:left;font-weight:600">날짜</th>
-                      <th style="padding:5px 8px;text-align:left;font-weight:600">업체</th>
-                      <th style="padding:5px 8px;text-align:right;font-weight:600">과세</th>
-                      <th style="padding:5px 8px;text-align:right;font-weight:600">면세</th>
-                      <th style="padding:5px 8px;text-align:right;font-weight:600">부가세</th>
-                      <th style="padding:5px 8px;text-align:right;font-weight:600">합계</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${monthItems.map(it => `
-                      <tr style="border-bottom:1px solid #f3f4f6">
-                        <td style="padding:5px 8px;color:#374151">${it.date}</td>
-                        <td style="padding:5px 8px;font-weight:600;color:#1f2937">${it.vendor.name}</td>
-                        <td style="padding:5px 8px;text-align:right;color:#16a34a">${it.taxable > 0 ? it.taxable.toLocaleString() : '-'}</td>
-                        <td style="padding:5px 8px;text-align:right;color:#d97706">${it.exempt > 0 ? it.exempt.toLocaleString() : '-'}</td>
-                        <td style="padding:5px 8px;text-align:right;color:#6b7280">${it.vat > 0 ? it.vat.toLocaleString() : '-'}</td>
-                        <td style="padding:5px 8px;text-align:right;font-weight:700;color:#1f2937">${it.total.toLocaleString()}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </div>`
-          }).join('')}
-        </div>
-        <div style="padding:12px 16px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end;align-items:center">
-          <span style="font-size:11px;color:#9ca3af;flex:1">기존 동일 날짜/업체 데이터는 덮어쓰기됩니다.</span>
-          <button onclick="document.getElementById('importOrderModal').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">취소</button>
-          <button id="importOrderConfirmBtn" onclick="confirmImportOrders()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer">
-            <i class="fas fa-check mr-1"></i>발주 자동 입력 (${items.length}건)
-          </button>
-        </div>
-      </div>`
+    // 업체 미매칭이 일부 있는 경우 알림
+    if (noVendorRows.length > 0) {
+      showToast(`⚠ ${noVendorRows.length}건 업체 미매칭으로 제외됨`, 'warning')
+    }
 
-    document.body.appendChild(modal)
+    // 미리보기 모달
+    _showImportPreview(items, file.name, targetYear, targetMonth)
 
-    // 데이터 임시 저장
-    window._importOrderItems = items
-
-  } catch (e) {
+  } catch(e) {
     console.error('[autoImportOrderFromExcel]', e)
-    showToast('엑셀 파일 분석 중 오류가 발생했습니다: ' + e.message, 'error')
+    showToast('엑셀 분석 오류: ' + e.message, 'error')
   }
+}
+
+// 수동 업체 선택 모달
+function _showManualVendorSelect(rows, year, month, hint) {
+  const vendors = window._vendorsCache || []
+  const sel = document.createElement('div')
+  sel.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px'
+  sel.innerHTML = `
+    <div style="background:white;border-radius:16px;max-width:420px;width:100%;padding:24px;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+      <h3 style="font-size:15px;font-weight:700;color:#1f2937;margin:0 0 6px"><i class="fas fa-store" style="color:#7c3aed;margin-right:6px"></i>업체를 수동으로 선택해주세요</h3>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 14px">엑셀에서 업체 정보를 찾지 못했습니다.<br>${hint}</p>
+      <select id="manualVndSel2" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;margin-bottom:14px">
+        <option value="">-- 업체 선택 --</option>
+        ${vendors.map(v=>`<option value="${v.id}">${v.name} (${v.tax_type==='taxable'?'과세':v.tax_type==='exempt'?'면세':v.tax_type==='mixed'?'과+면':'합산'})</option>`).join('')}
+      </select>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="this.closest('div[style]').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer">취소</button>
+        <button id="manualVndBtn2" onclick="(function(){
+          const vid=parseInt(document.getElementById('manualVndSel2').value)
+          if(!vid){alert('업체를 선택하세요');return}
+          const vnd=(window._vendorsCache||[]).find(v=>v.id===vid)
+          if(!vnd)return
+          this.closest('div[style]').remove()
+          const rows=window._noVendorRows||[]
+          delete window._noVendorRows
+          const grouped={}
+          rows.forEach(p=>{
+            const key=p.date+'_'+vid
+            if(!grouped[key])grouped[key]={date:p.date,vendor:vnd,taxable:0,exempt:0,vat:0,total:0,count:0}
+            grouped[key].taxable+=p.taxable
+            grouped[key].exempt+=p.exempt
+            grouped[key].vat+=p.vat
+            grouped[key].total+=(p.total||(p.taxable+p.exempt+p.vat))
+            grouped[key].count++
+          })
+          const items=Object.values(grouped).sort((a,b)=>a.date.localeCompare(b.date))
+          _showImportPreview(items,'',${year},${month})
+        }).call(this)" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer">
+          <i class="fas fa-check mr-1"></i>이 업체로 입력
+        </button>
+      </div>
+    </div>`
+  window._noVendorRows = rows
+  document.body.appendChild(sel)
+}
+
+// 미리보기 모달
+function _showImportPreview(items, fileName, year, month) {
+  if (!items || !items.length) {
+    showToast('입력할 데이터가 없습니다.', 'error')
+    return
+  }
+
+  const grandTotal = items.reduce((s,it)=>s+(it.total||0),0)
+
+  document.getElementById('importOrderModal')?.remove()
+  const modal = document.createElement('div')
+  modal.id = 'importOrderModal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
+  modal.innerHTML = `
+    <div style="background:white;border-radius:16px;max-width:720px;width:100%;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+      <div style="padding:14px 20px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <h3 style="font-size:15px;font-weight:700;color:#1f2937;margin:0"><i class="fas fa-file-import" style="color:#7c3aed;margin-right:8px"></i>발주 자동입력 미리보기</h3>
+          <p style="font-size:12px;color:#6b7280;margin:2px 0 0">${year}년 ${month}월 · <strong style="color:#7c3aed">${items.length}건</strong> · 합계 <strong style="color:#1d4ed8">${grandTotal.toLocaleString()}원</strong>${fileName?` ← ${fileName}`:''}</p>
+        </div>
+        <button onclick="document.getElementById('importOrderModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#9ca3af">✕</button>
+      </div>
+      <div style="overflow-y:auto;flex:1;padding:12px 16px">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead>
+            <tr style="background:#f9fafb;color:#6b7280">
+              <th style="padding:6px 8px;text-align:left;font-weight:600">날짜</th>
+              <th style="padding:6px 8px;text-align:left;font-weight:600">업체</th>
+              <th style="padding:6px 8px;text-align:right;font-weight:600;color:#16a34a">과세</th>
+              <th style="padding:6px 8px;text-align:right;font-weight:600;color:#d97706">면세</th>
+              <th style="padding:6px 8px;text-align:right;font-weight:600;color:#6b7280">부가세</th>
+              <th style="padding:6px 8px;text-align:right;font-weight:600;color:#1d4ed8">합계</th>
+              <th style="padding:6px 8px;text-align:center;font-weight:600">행수</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(it => {
+              const t = it.total || (it.taxable + it.exempt + it.vat)
+              const ttStr = t > 0 ? t.toLocaleString() : '-'
+              return `<tr style="border-bottom:1px solid #f3f4f6">
+                <td style="padding:5px 8px;color:#374151">${it.date}</td>
+                <td style="padding:5px 8px;font-weight:600;color:#1f2937">${it.vendor?.name||'?'}</td>
+                <td style="padding:5px 8px;text-align:right;color:#16a34a">${it.taxable>0?it.taxable.toLocaleString():'-'}</td>
+                <td style="padding:5px 8px;text-align:right;color:#d97706">${it.exempt>0?it.exempt.toLocaleString():'-'}</td>
+                <td style="padding:5px 8px;text-align:right;color:#6b7280">${it.vat>0?it.vat.toLocaleString():'-'}</td>
+                <td style="padding:5px 8px;text-align:right;font-weight:700;color:#1d4ed8">${ttStr}</td>
+                <td style="padding:5px 8px;text-align:center;color:#9ca3af;font-size:11px">${it.count||1}행</td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid #f3f4f6;display:flex;gap:8px;justify-content:flex-end;align-items:center">
+        <span style="font-size:11px;color:#9ca3af;flex:1">기존 동일 날짜/업체 데이터는 덮어쓰기됩니다.</span>
+        <button onclick="document.getElementById('importOrderModal').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">취소</button>
+        <button id="importOrderConfirmBtn" onclick="confirmImportOrders()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer">
+          <i class="fas fa-check mr-1"></i>발주 자동 입력 (${items.length}건)
+        </button>
+      </div>
+    </div>`
+  window._importOrderItems = items
+  window._importOrderYear = year
+  window._importOrderMonth = month
+  document.body.appendChild(modal)
 }
 
 // ── #4 발주 자동입력 확정 ────────────────────────────────────────
@@ -8330,9 +8783,15 @@ window.confirmImportOrders = async function() {
 
   if (success > 0) {
     showToast(`✅ ${success}건 발주 자동 입력 완료!${fail > 0 ? ` (실패 ${fail}건)` : ''}`, 'success')
-    // 발주 화면 갱신
+    // 저장된 연월로 화면 전환 후 갱신
+    const savedYear = window._importOrderYear || App.currentYear
+    const savedMonth = window._importOrderMonth || App.currentMonth
+    delete window._importOrderYear
+    delete window._importOrderMonth
+    App.currentYear = savedYear
+    App.currentMonth = savedMonth
     if (App._panelReady) {
-      delete App._panelReady[`orders-${App.currentYear}-${App.currentMonth}`]
+      delete App._panelReady[`orders-${savedYear}-${savedMonth}`]
     }
     renderOrders()
   } else {
