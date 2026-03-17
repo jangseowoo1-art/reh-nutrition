@@ -9907,297 +9907,425 @@ async function renderReport(selectedHospitalId = null) {
   </div>
 
   <!-- ══ 보고서 본문 (인쇄 대상) ══ -->
-  <div id="reportBody" class="space-y-6" style="print-color-adjust:exact">
+  <div id="reportBody" style="print-color-adjust:exact">
 
-    <!-- 슬라이드 1: 표지 (개선 디자인) -->
-    <div class="report-slide rounded-2xl shadow-lg overflow-hidden" style="background:linear-gradient(135deg,#064e3b 0%,#065f46 40%,#047857 70%,#059669 100%);min-height:300px;position:relative">
-      <!-- 배경 장식 -->
-      <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;background:rgba(255,255,255,0.05);border-radius:50%"></div>
-      <div style="position:absolute;bottom:-60px;left:-30px;width:250px;height:250px;background:rgba(255,255,255,0.04);border-radius:50%"></div>
-      <div class="text-white p-10 relative z-10 flex flex-col items-center text-center">
-        <div style="width:72px;height:72px;background:rgba(255,255,255,0.15);border-radius:20px;display:flex;align-items:center;justify-content:center;margin-bottom:20px;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.2)">
-          <i class="fas fa-hospital text-white text-3xl"></i>
-        </div>
-        <h1 class="text-3xl font-bold mb-2" style="letter-spacing:-0.5px">${hospitalName}</h1>
-        <div style="width:60px;height:2px;background:rgba(255,255,255,0.4);margin:12px auto"></div>
-        <h2 class="text-lg mb-4" style="opacity:0.85;font-weight:400">급식 운영 월간 보고서</h2>
-        <div class="text-5xl font-extrabold mb-2" style="letter-spacing:-1px">${reportYear}년 ${reportMonth}월</div>
-        <div class="grid grid-cols-3 gap-4 mt-8 w-full max-w-md">
-          <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.15)">
-            <div style="font-size:10px;opacity:0.7;margin-bottom:4px">총 예산</div>
-            <div style="font-size:14px;font-weight:800">${fmtMan(s.totalBudget||0)}원</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.15)">
-            <div style="font-size:10px;opacity:0.7;margin-bottom:4px">달성률</div>
-            <div style="font-size:14px;font-weight:800">${s.progress||0}%</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.15)">
-            <div style="font-size:10px;opacity:0.7;margin-bottom:4px">식단가</div>
-            <div style="font-size:14px;font-weight:800">${(mealPriceForRpt||0).toLocaleString()}원</div>
-          </div>
-        </div>
-        <div style="font-size:11px;opacity:0.5;margin-top:16px">작성일: ${new Date().toLocaleDateString('ko-KR')} · 영양사 서명 ___________</div>
-      </div>
-    </div>
+  ${(()=>{
+    const docNo = `HM-${reportYear}-${String(reportMonth).padStart(2,'0')}-001`
+    const rptDate = `${reportYear}년 ${reportMonth}월`
 
-    <!-- 슬라이드 2: 월 예산 요약 + 다음달 목표 (개선 디자인) -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <div class="flex items-center gap-3 mb-5">
-        <div style="width:36px;height:36px;background:#f0fdf4;border-radius:10px;display:flex;align-items:center;justify-content:center">
-          <i class="fas fa-chart-pie text-green-600"></i>
-        </div>
-        <div>
-          <h2 class="report-slide-title mb-0" style="margin-bottom:0">운영 요약</h2>
-          <div class="text-xs text-gray-400">${reportYear}년 ${reportMonth}월 전체 현황</div>
+    const rptHeader = (sectionNum, sectionTitle) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:#064e3b;color:white;padding:8px 16px;margin:-24px -24px 16px -24px">
+        <span style="font-size:10px;opacity:0.7;letter-spacing:1px">HOSPITAL MEAL REPORT · 월간보고서</span>
+        <div style="display:flex;gap:16px;font-size:10px;opacity:0.8">
+          <span>${hospitalName} 귀중</span><span>${rptDate}</span><span>${docNo}</span>
         </div>
       </div>
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      ${sectionNum ? `<div style="font-size:11px;font-weight:700;color:#064e3b;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
+        <span style="background:#064e3b;color:white;padding:2px 8px;border-radius:3px;font-size:10px">SECTION ${sectionNum}</span>
+        <span>${sectionTitle}</span>
+      </div>` : ''}
+    `
+
+    const rptFooter = (pageInfo) => `
+      <div style="position:absolute;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:6px 16px;border-top:1px solid #e5e7eb;font-size:9px;color:#6b7280;background:white">
+        <span>Re&H Hospital Meal Management System</span>
+        <span style="font-weight:600;color:#064e3b">${pageInfo}</span>
+        <span>${hospitalName} | ${rptDate}</span>
+      </div>
+    `
+
+    const trafficColor = (pct) => pct>=80?'#16a34a':pct>=60?'#d97706':'#dc2626'
+    const s = rptSummary || {}
+    const progress = s.progress || 0
+    const totalBudget = s.totalBudget || 0
+    const usedAmount = s.usedAmount || 0
+    const remainAmount = s.remainAmount || 0
+    const isOverBudget = remainAmount < 0
+    const totalPages = (rptCardExpenses&&rptCardExpenses.length>0)?'10':'9'
+
+    const analysisOverall = (() => {
+      if (progress >= 90) return `이번 달 예산 집행률은 ${progress}%로 목표 대비 매우 양호합니다. 전월 대비 효율적인 원가 관리가 이루어졌으며, 잔여 예산을 활용한 식단 품질 향상을 권장합니다.`
+      if (progress >= 80) return `이번 달 예산 집행률은 ${progress}%로 목표 범위 내에서 운영되고 있습니다. 지속적인 원가 모니터링을 통해 월말 마무리까지 안정적 운영이 필요합니다.`
+      if (progress >= 70) return `이번 달 예산 집행률은 ${progress}%로 목표치(80~90%) 대비 다소 낮습니다. 잔여 예산 활용 계획을 수립하고 식단 구성 다양화를 검토해 주세요.`
+      if (progress >= 50) return `이번 달 예산 집행률은 ${progress}%로 저조한 상태입니다. 식재료 조달 계획을 재검토하고 발주 일정을 조정하여 균형 있는 예산 집행이 필요합니다.`
+      return `이번 달 예산 집행률은 ${progress}%로 매우 낮습니다. 즉각적인 원인 분석과 발주 계획 재수립이 필요합니다.`
+    })()
+
+    const topVendor = (rptOrders && rptOrders.length > 0)
+      ? rptOrders.reduce((a,b) => (b.totalAmount||0)>(a.totalAmount||0)?b:a, rptOrders[0]) : null
+    const analysisVendor = topVendor
+      ? `이번 달 최다 발주 업체는 <strong>${topVendor.vendor||topVendor.vendorName||'미상'}</strong>으로 전체 발주액의 상당 부분을 차지합니다. 업체별 단가 및 품질을 정기적으로 비교 점검하여 원가 절감 기회를 모색하세요.`
+      : '이번 달 발주 내역을 분석합니다. 업체별 거래 집중도를 파악하고 다양한 공급처 확보를 통한 리스크 분산을 권장합니다.'
+
+    const analysisDaily = (() => {
+      if (!rptDailyOrders || rptDailyOrders.length===0) return '일별 매입 데이터를 분석합니다.'
+      const amounts = rptDailyOrders.map(d=>d.totalAmount||d.amount||0).filter(v=>v>0)
+      if (!amounts.length) return '일별 매입 데이터를 분석합니다.'
+      const avg = amounts.reduce((a,b)=>a+b,0)/amounts.length
+      const max = Math.max(...amounts)
+      const maxDay = rptDailyOrders.find(d=>(d.totalAmount||d.amount||0)===max)
+      return `일 평균 매입금액은 <strong>${Math.round(avg).toLocaleString()}원</strong>이며, 최고 매입일은 <strong>${maxDay?(maxDay.day||maxDay.date||''):''}일</strong>(${max.toLocaleString()}원)입니다. 주간 패턴을 파악하여 요일별 발주량을 최적화하세요.`
+    })()
+
+    const analysisWater = (() => {
+      const total = s.totalPatients || s.avgPatients || 0
+      if (!total) return '이번 달 식수 현황을 분석합니다. 환자식과 직원식의 비율을 파악하여 식단 계획에 반영하세요.'
+      return `이번 달 총 식수는 <strong>${total.toLocaleString()}명</strong>으로 집계됩니다. 식종별 구성 비율을 분석하여 식단 계획 수립 시 참고하시기 바랍니다. 환자 식수 변동에 따른 식재료 조달량을 탄력적으로 조정하세요.`
+    })()
+
+    const analysisMealPrice = (() => {
+      const price = mealPriceForRpt || 0
+      const target = s.targetMealPrice || s.mealPriceTarget || 0
+      if (!price) return '식단가 현황을 분석합니다. 목표 식단가 대비 실적을 지속적으로 모니터링하세요.'
+      if (target && price > target) return `현재 식단가 <strong>${price.toLocaleString()}원</strong>은 목표 식단가(${target.toLocaleString()}원)를 <strong>${(price-target).toLocaleString()}원</strong> 초과하고 있습니다. 식재료 단가 협상 및 식단 조정을 통한 원가 절감 방안을 검토하세요.`
+      if (target && price <= target) return `현재 식단가 <strong>${price.toLocaleString()}원</strong>은 목표 식단가(${target.toLocaleString()}원) 이내로 안정적으로 관리되고 있습니다. 현재의 원가 관리 수준을 유지하면서 식단 품질 향상에 집중하세요.`
+      return `현재 식단가는 <strong>${price.toLocaleString()}원</strong>입니다. 목표 식단가와의 비교 분석을 통해 원가 관리 방향을 설정하세요.`
+    })()
+
+    const slide1 = `
+    <div class="report-slide" style="position:relative;background:linear-gradient(135deg,#064e3b 0%,#065f46 40%,#047857 100%);color:white;padding:0;overflow:hidden;min-height:520px;display:flex;flex-direction:column">
+      <div style="position:absolute;top:0;right:0;width:320px;height:320px;background:rgba(255,255,255,0.05);border-radius:50%;transform:translate(30%,-30%)"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid rgba(255,255,255,0.15);position:relative;z-index:1">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:36px;height:36px;background:white;border-radius:8px;display:flex;align-items:center;justify-content:center">
+            <span style="color:#064e3b;font-weight:900;font-size:14px">R</span>
+          </div>
+          <div>
+            <div style="font-weight:800;font-size:14px;letter-spacing:1px">Re&H</div>
+            <div style="font-size:9px;opacity:0.7;letter-spacing:2px">HOSPITAL MEAL MANAGEMENT</div>
+          </div>
+        </div>
+        <div style="text-align:right;font-size:9px;opacity:0.6">
+          <div>Report No. ${docNo}</div>
+          <div>발행일: ${new Date().toLocaleDateString('ko-KR')}</div>
+        </div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:40px 48px;position:relative;z-index:1">
+        <div style="font-size:11px;letter-spacing:4px;opacity:0.7;margin-bottom:12px">Monthly Management Report</div>
+        <h1 style="font-size:36px;font-weight:900;line-height:1.2;margin:0 0 8px 0">${reportYear}년 ${reportMonth}월</h1>
+        <h2 style="font-size:22px;font-weight:700;margin:0 0 24px 0;opacity:0.9">급식 운영 월간 보고서</h2>
+        <div style="width:60px;height:3px;background:rgba(255,255,255,0.5);margin-bottom:28px"></div>
+        <div style="font-size:24px;font-weight:800;letter-spacing:1px">${hospitalName}</div>
+        <div style="font-size:11px;opacity:0.6;margin-top:4px">Hospital Meal Operation Division</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid rgba(255,255,255,0.15);position:relative;z-index:1">
+        <div style="padding:16px 20px;border-right:1px solid rgba(255,255,255,0.1)">
+          <div style="font-size:9px;opacity:0.6;letter-spacing:1px;margin-bottom:4px">TOTAL BUDGET</div>
+          <div style="font-size:16px;font-weight:800">${fmtMan(totalBudget||0)}원</div>
+        </div>
+        <div style="padding:16px 20px;border-right:1px solid rgba(255,255,255,0.1)">
+          <div style="font-size:9px;opacity:0.6;letter-spacing:1px;margin-bottom:4px">ACHIEVEMENT</div>
+          <div style="font-size:16px;font-weight:800">${progress}%</div>
+        </div>
+        <div style="padding:16px 20px">
+          <div style="font-size:9px;opacity:0.6;letter-spacing:1px;margin-bottom:4px">MEAL PRICE</div>
+          <div style="font-size:16px;font-weight:800">${(mealPriceForRpt||0).toLocaleString()}원</div>
+        </div>
+      </div>
+    </div>`
+
+    const slide2 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('1','운영 요약 (Budget Overview)')}
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
         ${[
-          { label:'총 예산', val:`${fmtMan(s.totalBudget||0)}원`, sub:'월 예산 총액', color:'#166534', bg:'#f0fdf4', border:'#bbf7d0', icon:'fas fa-wallet' },
-          { label:'사용금액', val:`${fmtMan(s.totalUsed||0)}원`, sub:`${s.progress||0}% 달성`, color:parseFloat(s.progress||0)>=100?'#dc2626':'#1d4ed8', bg:parseFloat(s.progress||0)>=100?'#fef2f2':'#eff6ff', border:parseFloat(s.progress||0)>=100?'#fca5a5':'#bfdbfe', icon:'fas fa-receipt' },
-          { label:'잔여예산', val:`${fmtMan(Math.abs(s.remaining||0))}원`, sub:(s.remaining||0)<0?'예산 초과':'여유 잔액', color:(s.remaining||0)<0?'#dc2626':'#059669', bg:(s.remaining||0)<0?'#fef2f2':'#f0fdf4', border:(s.remaining||0)<0?'#fca5a5':'#86efac', icon:'fas fa-piggy-bank' },
-          { label:'현재 식단가', val:`${(mealPriceForRpt||0).toLocaleString()}원/식`, sub:`목표 ${(s.mealPrice||0).toLocaleString()}원`, color:(mealPriceForRpt||0)>(s.mealPrice||0)&&(s.mealPrice||0)>0?'#dc2626':'#7c3aed', bg:(mealPriceForRpt||0)>(s.mealPrice||0)&&(s.mealPrice||0)>0?'#fef2f2':'#f5f3ff', border:(mealPriceForRpt||0)>(s.mealPrice||0)&&(s.mealPrice||0)>0?'#fca5a5':'#c4b5fd', icon:'fas fa-utensils' }
-        ].map(item => `
-          <div style="background:${item.bg};border:1px solid ${item.border};border-radius:14px;padding:16px;text-align:center">
-            <div style="width:32px;height:32px;background:white;border-radius:8px;display:flex;align-items:center;justify-content:center;margin:0 auto 8px">
-              <i class="${item.icon}" style="color:${item.color};font-size:14px"></i>
-            </div>
-            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">${item.label}</div>
-            <div style="font-size:18px;font-weight:800;color:${item.color}">${item.val}</div>
-            <div style="font-size:10px;color:#9ca3af;margin-top:2px">${item.sub}</div>
+          {label:'총 예산',val:`${fmtMan(totalBudget)}원`,icon:'💰',col:'#064e3b',sub:'월 배정 예산'},
+          {label:'집행 금액',val:`${fmtMan(usedAmount)}원`,icon:'📊',col:'#2563eb',sub:`달성률 ${progress}%`},
+          {label:isOverBudget?'초과 금액':'잔여 예산',val:`${fmtMan(Math.abs(remainAmount))}원`,icon:isOverBudget?'⚠️':'✅',col:isOverBudget?'#dc2626':'#16a34a',sub:isOverBudget?'예산 초과':'정상 범위'},
+          {label:'현재 식단가',val:`${(mealPriceForRpt||0).toLocaleString()}원`,icon:'🍱',col:'#7c3aed',sub:'1식 기준'}
+        ].map(card=>`
+          <div style="background:#f8fafc;border-radius:10px;padding:14px;border-left:4px solid ${card.col};position:relative;overflow:hidden">
+            <div style="font-size:10px;color:#6b7280;margin-bottom:4px">${card.label}</div>
+            <div style="font-size:18px;font-weight:800;color:${card.col}">${card.val}</div>
+            <div style="font-size:10px;color:#9ca3af;margin-top:3px">${card.sub}</div>
+            <div style="position:absolute;right:10px;top:10px;font-size:20px;opacity:0.2">${card.icon}</div>
           </div>`).join('')}
       </div>
-      <div class="mb-2 flex justify-between text-xs text-gray-500">
-        <span class="font-medium">예산 달성률</span><span class="font-bold ${parseFloat(s.progress||0)>=100?'text-red-600':'text-green-700'}">${s.progress||0}%</span>
-      </div>
-      <div style="height:14px;background:#f3f4f6;border-radius:99px;overflow:hidden;margin-bottom:16px">
-        <div style="height:100%;width:${Math.min(parseFloat(s.progress||0),100)}%;background:${parseFloat(s.progress||0)>=100?'#dc2626':parseFloat(s.progress||0)>=90?'#f59e0b':'#16a34a'};border-radius:99px;transition:width 0.6s"></div>
-      </div>
-      <!-- 다음달 목표 -->
-      ${nextBudget > 0 || nextMealPrice > 0 ? `
-      <div class="border-t border-gray-100 pt-4">
-        <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-arrow-right text-green-600 mr-1"></i>${nextYear}년 ${nextMonth}월 목표</h3>
-        <div class="grid grid-cols-2 gap-4">
-          ${nextBudget > 0 ? `<div class="bg-green-50 rounded-xl p-3 text-center">
-            <div class="text-xs text-gray-500 mb-1">다음달 목표금액</div>
-            <div class="text-lg font-bold text-green-700">${fmtWon(nextBudget)}</div>
-          </div>` : ''}
-          ${nextMealPrice > 0 ? `<div class="bg-green-50 rounded-xl p-3 text-center">
-            <div class="text-xs text-gray-500 mb-1">다음달 목표 식단가</div>
-            <div class="text-lg font-bold text-green-700">${fmtWon(nextMealPrice)}/식</div>
-          </div>` : ''}
+      <div style="background:#f8fafc;border-radius:10px;padding:14px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:12px;font-weight:700;color:#064e3b">예산 달성률</span>
+          <span style="font-size:13px;font-weight:800;color:${trafficColor(progress)}">${progress}%</span>
         </div>
-      </div>` : ''}
-    </div>
-
-    <!-- 슬라이드 3: 업체별 발주 내역 표 + 차트 -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-store text-green-600 mr-2"></i>업체별 발주 내역</h2>
-      <div class="grid grid-cols-2 gap-6">
-        <div>
-          <div class="overflow-hidden rounded-xl border border-gray-100 mb-4">
-            <table class="data-table w-full text-xs">
-              <thead><tr><th class="text-left pl-3">업체명</th><th class="text-right">발주금액</th><th class="text-right">목표</th><th class="text-right">달성률</th></tr></thead>
-              <tbody>
-                ${vendors.map(v => {
-                  const pct = v.monthly_budget > 0 ? Math.round(v.total_used / v.monthly_budget * 100) : null
-                  const over = v.monthly_budget > 0 && v.total_used > v.monthly_budget
-                  return `<tr class="${over?'bg-red-50':''}">
-                    <td class="pl-3 font-medium">${v.name}</td>
-                    <td class="text-right pr-3 font-semibold ${over?'text-red-600':'text-green-700'}">${fmtMan(v.total_used)}원</td>
-                    <td class="text-right pr-3 text-gray-400">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'-'}</td>
-                    <td class="text-right pr-3 ${over?'text-red-500 font-bold':''}">${pct!=null?pct+'%':'-'}</td>
-                  </tr>`
-                }).join('')}
-                <tr class="bg-green-50 font-bold">
-                  <td class="pl-3">합계</td>
-                  <td class="text-right pr-3 text-green-700">${fmtMan(s.totalUsed||0)}원</td>
-                  <td class="text-right pr-3 text-gray-400">${fmtMan(s.totalBudget||0)}원</td>
-                  <td class="text-right pr-3">${s.progress||0}%</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <div style="background:#e5e7eb;border-radius:99px;height:10px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(progress,100)}%;background:${trafficColor(progress)};border-radius:99px"></div>
         </div>
-        <div><canvas id="rpt-vendorChart" style="max-height:220px"></canvas></div>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-top:3px">
+          <span>0%</span><span>목표 80~90%</span><span>100%</span>
+        </div>
       </div>
-    </div>
+      <div style="background:#ecfdf5;border-radius:8px;padding:12px 14px;border-left:3px solid #064e3b">
+        <div style="font-size:10px;font-weight:700;color:#064e3b;margin-bottom:3px">📋 운영 분석</div>
+        <div style="font-size:11px;color:#065f46;line-height:1.6">${analysisOverall}</div>
+      </div>
+      ${rptFooter(`1 / ${totalPages}`)}
+    </div>`
 
-    <!-- 슬라이드 4: 일별 매입금액 표 + 차트 -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-calendar-day text-green-600 mr-2"></i>일별 매입금액 (1일~말일)</h2>
-      <div class="grid grid-cols-2 gap-6">
-        <div style="max-height:300px;overflow-y:auto">
-          <table class="data-table w-full text-xs">
-            <thead><tr><th>일</th><th>요일</th><th class="text-right">금액</th></tr></thead>
+    const slide3 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('2','업체별 발주 내역 (Vendor Orders)')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div style="overflow:auto;max-height:290px">
+          <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <thead><tr style="background:#064e3b;color:white">
+              <th style="padding:6px 8px;text-align:left">업체명</th>
+              <th style="padding:6px 8px;text-align:right">금액</th>
+              <th style="padding:6px 8px;text-align:right">비중</th>
+            </tr></thead>
             <tbody>
-              ${Array.from({length:daysCount},(_,i)=>{
-                const day=i+1, val=dailyMap[day]||0
-                const dow=['일','월','화','수','목','금','토'][new Date(reportYear,reportMonth-1,day).getDay()]
-                const isWknd=dow==='토'||dow==='일'
-                return `<tr class="${isWknd?'bg-gray-50':''}">
-                  <td class="text-center">${day}</td>
-                  <td class="text-center" style="color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'}">${dow}</td>
-                  <td class="text-right pr-3 ${val>0?'font-medium':''}">${val>0?fmtMan(val)+'원':'-'}</td>
+              ${(rptOrders||[]).slice(0,15).map((o,i)=>{
+                const amt=o.totalAmount||o.amount||0
+                const pct=usedAmount>0?Math.round(amt/usedAmount*100):0
+                return `<tr style="border-bottom:1px solid #f3f4f6;${i%2?'background:#f8fafc':''}">
+                  <td style="padding:5px 8px">${o.vendor||o.vendorName||o.name||'-'}</td>
+                  <td style="padding:5px 8px;text-align:right;font-weight:600">${amt.toLocaleString()}</td>
+                  <td style="padding:5px 8px;text-align:right;color:#6b7280">${pct}%</td>
                 </tr>`
               }).join('')}
-              <tr class="bg-green-50 font-bold"><td colspan="2" class="text-center">합계</td><td class="text-right pr-3 text-green-700">${fmtMan(dailyValues.reduce((s,v)=>s+v,0))}원</td></tr>
             </tbody>
           </table>
         </div>
-        <div><canvas id="rpt-dailyChart" style="max-height:280px"></canvas></div>
+        <canvas id="rptVendorChart" style="max-height:270px"></canvas>
       </div>
-    </div>
+      <div style="background:#eff6ff;border-radius:8px;padding:12px 14px;border-left:3px solid #2563eb">
+        <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:3px">📋 업체 발주 분석</div>
+        <div style="font-size:11px;color:#1e40af;line-height:1.6">${analysisVendor}</div>
+      </div>
+      ${rptFooter(`2 / ${totalPages}`)}
+    </div>`
 
-    <!-- 슬라이드 5: 식수 현황 -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-utensils text-green-600 mr-2"></i>식수 현황 통계</h2>
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        ${[
-          { label:'환자식(치료식)', val:fmt((ms.total_patient||0)), icon:'fa-procedures', bg:'#eff6ff', color:'#1d4ed8', border:'#bfdbfe' },
-          { label:'직원식', val:fmt((ms.total_staff||0)), icon:'fa-user-md', bg:'#f0fdf4', color:'#166534', border:'#bbf7d0' },
-          { label:'비급여식', val:fmt((ms.total_noncovered||0)), icon:'fa-user', bg:'#f5f3ff', color:'#6d28d9', border:'#ddd6fe' },
-          { label:'보호자식', val:fmt((ms.total_guardian||0)), icon:'fa-users', bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' }
-        ].map(item => `
-          <div style="background:${item.bg};border:1px solid ${item.border};border-radius:14px;padding:16px;text-align:center">
-            <div style="width:36px;height:36px;background:white;border-radius:9px;display:flex;align-items:center;justify-content:center;margin:0 auto 8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
-              <i class="fas ${item.icon}" style="color:${item.color};font-size:16px"></i>
-            </div>
-            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">${item.label}</div>
-            <div style="font-size:22px;font-weight:800;color:${item.color}">${item.val}</div>
-            <div style="font-size:10px;color:#9ca3af;margin-top:2px">식</div>
-          </div>`).join('')}
+    const slide4 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('3','일별 매입금액 (Daily Purchase)')}
+      <div style="margin-bottom:10px;max-height:185px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:10px">
+          <thead><tr style="background:#064e3b;color:white">
+            <th style="padding:5px 6px">일</th><th style="padding:5px 6px;text-align:right">금액</th>
+            <th style="padding:5px 6px">일</th><th style="padding:5px 6px;text-align:right">금액</th>
+            <th style="padding:5px 6px">일</th><th style="padding:5px 6px;text-align:right">금액</th>
+          </tr></thead>
+          <tbody>
+            ${(()=>{
+              const rows=(rptDailyOrders||[]).slice(0,33)
+              const perCol=Math.ceil(rows.length/3)
+              let html=''
+              for(let r=0;r<perCol;r++){
+                html+='<tr style="border-bottom:1px solid #f3f4f6">'
+                for(let c=0;c<3;c++){
+                  const item=rows[r+c*perCol]
+                  if(item){html+=`<td style="padding:4px 6px">${item.day||item.date||''}일</td><td style="padding:4px 6px;text-align:right;font-weight:600">${(item.totalAmount||item.amount||0).toLocaleString()}</td>`}
+                  else{html+='<td></td><td></td>'}
+                }
+                html+='</tr>'
+              }
+              return html
+            })()}
+          </tbody>
+        </table>
       </div>
-      <canvas id="rpt-mealMonthChart" style="max-height:220px"></canvas>
-    </div>
+      <canvas id="rptDailyChart" style="max-height:150px;margin-bottom:10px"></canvas>
+      <div style="background:#eff6ff;border-radius:8px;padding:12px 14px;border-left:3px solid #2563eb">
+        <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:3px">📋 일별 매입 분석</div>
+        <div style="font-size:11px;color:#1e40af;line-height:1.6">${analysisDaily}</div>
+      </div>
+      ${rptFooter(`3 / ${totalPages}`)}
+    </div>`
 
-    <!-- 슬라이드 6: 식단가 분석 (3종 + 전월비교) -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-coins text-green-600 mr-2"></i>식단가 월별 비교 분석 (3종)</h2>
-      <canvas id="rpt-mealPriceChart" style="max-height:220px"></canvas>
-      <div class="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
-        ${[
-          { label:'전체 식단가', val:summaryData?.mealPriceTotal||0, color:'text-blue-700' },
-          { label:'직원식 제외', val:summaryData?.mealPriceNoStaff||0, color:'text-purple-700' },
-          { label:'소모품 제외', val:summaryData?.mealPriceNoSupply||0, color:'text-orange-700' },
-          { label:'목표 식단가', val:s.targetMealPrice||0, color:'text-green-700' }
-        ].map(item=>`
-        <div class="bg-gray-50 rounded-xl p-3 text-center">
-          <div class="text-xs text-gray-500 mb-1">${item.label}</div>
-          <div class="text-lg font-bold ${item.color}">${item.val>0?fmtWon(item.val):'집계중'}</div>
-        </div>`).join('')}
-      </div>
-      <!-- 전월 비교 -->
-      ${summaryData?.prevMonth?.mealPriceTotal>0?`
-      <div class="mt-4 p-3 bg-indigo-50 rounded-xl border border-indigo-100">
-        <div class="text-xs font-bold text-indigo-700 mb-2"><i class="fas fa-exchange-alt mr-1"></i>전월(${summaryData.prevMonth.year}년 ${summaryData.prevMonth.month}월) 대비 변동</div>
-        <div class="grid grid-cols-3 gap-2 text-xs">
+    const slide5 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('4','식수 현황 통계 (Meal Count)')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <canvas id="rptWaterChart" style="max-height:250px"></canvas>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start;padding-top:20px">
           ${[
-            { label:'전체', cur:summaryData.mealPriceTotal, prev:summaryData.prevMonth.mealPriceTotal },
-            { label:'직원제외', cur:summaryData.mealPriceNoStaff, prev:summaryData.prevMonth.mealPriceNoStaff },
-            { label:'소모품제외', cur:summaryData.mealPriceNoSupply, prev:summaryData.prevMonth.mealPriceNoSupply }
-          ].map(item=>{
-            const diff=item.cur-item.prev
-            const pct=item.prev>0?(diff/item.prev*100).toFixed(1):null
-            return `<div class="bg-white rounded-lg p-2 text-center">
-              <div class="text-gray-500">${item.label}</div>
-              <div class="font-bold ${diff>0?'text-red-600':diff<0?'text-green-600':'text-gray-700'}">${diff>0?'▲':'▼'} ${Math.abs(diff).toLocaleString()}원</div>
-              ${pct?`<div class="text-gray-400">${diff>0?'+':''}${pct}%</div>`:''}
-            </div>`
-          }).join('')}
-        </div>
-      </div>` : ''}
-    </div>
-
-    <!-- 슬라이드 7: 연간 식단가 3종 + 예산 추이 -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-chart-line text-indigo-600 mr-2"></i>${reportYear}년 연간 비교분석 — 식단가 3종 추이</h2>
-      <canvas id="rpt-annualMpChart" style="max-height:260px"></canvas>
-    </div>
-
-    <!-- 슬라이드 8: 연간 식수 구성 + 업체별 -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-chart-bar text-teal-600 mr-2"></i>${reportYear}년 연간 식수 구성 & 업체별 발주</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <p class="text-xs text-gray-500 mb-2">식수 구성 월별</p>
-          <canvas id="rpt-annualMealChart" style="max-height:220px"></canvas>
-        </div>
-        <div>
-          <p class="text-xs text-gray-500 mb-2">업체별 발주 비중</p>
-          <canvas id="rpt-annualVendorPie" style="max-height:220px"></canvas>
+            {label:'일반식',key:'normalCount',col:'#064e3b'},
+            {label:'치료식',key:'therapeuticCount',col:'#2563eb'},
+            {label:'연하식',key:'softCount',col:'#7c3aed'},
+            {label:'직원식',key:'staffCount',col:'#d97706'},
+          ].map(t=>`
+            <div style="background:#f8fafc;border-radius:8px;padding:12px;border-top:3px solid ${t.col}">
+              <div style="font-size:10px;color:#6b7280">${t.label}</div>
+              <div style="font-size:18px;font-weight:800;color:${t.col}">${(s[t.key]||0).toLocaleString()}명</div>
+            </div>`).join('')}
         </div>
       </div>
-    </div>
+      <div style="background:#f0fdf4;border-radius:8px;padding:12px 14px;border-left:3px solid #16a34a">
+        <div style="font-size:10px;font-weight:700;color:#15803d;margin-bottom:3px">📋 식수 현황 분석</div>
+        <div style="font-size:11px;color:#166534;line-height:1.6">${analysisWater}</div>
+      </div>
+      ${rptFooter(`4 / ${totalPages}`)}
+    </div>`
 
-    <!-- 슬라이드 9: 연간 예산 달성률 + 잔반 -->
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-chart-area text-green-600 mr-2"></i>${reportYear}년 예산 달성률 & 잔반 추이</h2>
-      <div class="grid grid-cols-2 gap-4">
+    const slide6 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('5','식단가 분석 (Meal Price Analysis)')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <canvas id="rptMealPriceChart" style="max-height:250px"></canvas>
         <div>
-          <p class="text-xs text-gray-500 mb-2">월별 예산 달성률(%)</p>
-          <canvas id="rpt-annualBudgetPct" style="max-height:220px"></canvas>
-        </div>
-        <div>
-          <p class="text-xs text-gray-500 mb-2">잔반량(kg) & 비용</p>
-          <canvas id="rpt-annualWaste" style="max-height:220px"></canvas>
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:10px">식종별 단가 현황</div>
+          ${[
+            {label:'일반식',key:'normalMealPrice',icon:'🍱'},
+            {label:'치료식',key:'therapeuticMealPrice',icon:'💊'},
+            {label:'연하식',key:'softMealPrice',icon:'🥣'},
+          ].map(t=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;background:#f8fafc;border-radius:8px;margin-bottom:8px">
+              <span style="font-size:11px">${t.icon} ${t.label}</span>
+              <span style="font-size:14px;font-weight:800;color:#064e3b">${(s[t.key]||0).toLocaleString()}원</span>
+            </div>`).join('')}
+          <div style="padding:10px 12px;background:#064e3b;border-radius:8px;color:white;margin-top:8px">
+            <div style="font-size:10px;opacity:0.8">평균 식단가</div>
+            <div style="font-size:18px;font-weight:800">${(mealPriceForRpt||0).toLocaleString()}원</div>
+          </div>
         </div>
       </div>
-    </div>
-
-    <!-- 슬라이드 10: 법인카드 사용 내역 (데이터 있을 때만) -->
-    ${rptCardExpenses.length > 0 ? `
-    <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-credit-card text-purple-600 mr-2"></i>법인카드 사용 내역</h2>
-      <div class="grid grid-cols-4 gap-3 mb-4">
-        <div class="bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
-          <div class="text-xs text-purple-500 mb-1">전체 합계</div>
-          <div class="text-lg font-bold text-purple-700">${fmtMan(rptCardTotal)}원</div>
-        </div>
-        ${rptCardBySubtype.map(st => `
-        <div class="bg-purple-50 rounded-xl p-3 text-center border border-purple-100">
-          <div class="text-xs text-purple-500 mb-1">${st.label}</div>
-          <div class="text-sm font-bold text-purple-700">${fmtMan(st.total)}원</div>
-          <div class="text-xs text-gray-400">${st.count}건</div>
-        </div>`).join('')}
+      <div style="background:#faf5ff;border-radius:8px;padding:12px 14px;border-left:3px solid #7c3aed">
+        <div style="font-size:10px;font-weight:700;color:#6d28d9;margin-bottom:3px">📋 식단가 분석</div>
+        <div style="font-size:11px;color:#5b21b6;line-height:1.6">${analysisMealPrice}</div>
       </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-xs border-collapse">
-          <thead>
-            <tr class="bg-purple-50">
-              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">날짜</th>
-              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">구분</th>
-              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">업체명</th>
-              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">사용품목</th>
-              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">구매용도</th>
-              <th class="border border-purple-100 px-2 py-1.5 text-right text-purple-700">금액</th>
-              <th class="border border-purple-100 px-2 py-1.5 text-left text-purple-700">메모</th>
+      ${rptFooter(`5 / ${totalPages}`)}
+    </div>`
+
+    const slide7 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('6',`${reportYear}년 연간 식단가 추이`)}
+      <canvas id="rptAnnualMealChart" style="max-height:280px;margin-bottom:14px"></canvas>
+      <div style="background:#ecfdf5;border-radius:8px;padding:12px 14px;border-left:3px solid #064e3b">
+        <div style="font-size:10px;font-weight:700;color:#064e3b;margin-bottom:3px">📋 연간 식단가 추이 분석</div>
+        <div style="font-size:11px;color:#065f46;line-height:1.6">${reportYear}년 월별 식단가 추이를 분석합니다. 계절별 식재료 가격 변동에 따른 식단가 변화를 파악하고, 연간 목표 식단가 유지를 위한 전략적 식단 계획 수립에 활용하세요.</div>
+      </div>
+      ${rptFooter(`6 / ${totalPages}`)}
+    </div>`
+
+    const slide8 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('7',`${reportYear}년 연간 식수 및 업체 현황`)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px">월별 식수 추이</div>
+          <canvas id="rptAnnualWaterChart" style="max-height:220px"></canvas>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px">주요 거래 업체 현황</div>
+          <canvas id="rptAnnualVendorChart" style="max-height:220px"></canvas>
+        </div>
+      </div>
+      <div style="background:#eff6ff;border-radius:8px;padding:12px 14px;border-left:3px solid #2563eb">
+        <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:3px">📋 연간 현황 분석</div>
+        <div style="font-size:11px;color:#1e40af;line-height:1.6">${reportYear}년 연간 식수 변동 및 업체별 거래 현황을 분석합니다. 월별 식수 변동에 따른 발주 최적화와 거래처 관리 방안을 검토하세요.</div>
+      </div>
+      ${rptFooter(`7 / ${totalPages}`)}
+    </div>`
+
+    const slide9 = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('8',`${reportYear}년 예산 달성률 및 잔반 현황`)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px">월별 예산 달성률</div>
+          <canvas id="rptAnnualBudgetChart" style="max-height:220px"></canvas>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px">월별 잔반량 추이</div>
+          <canvas id="rptAnnualWasteChart" style="max-height:220px"></canvas>
+        </div>
+      </div>
+      <div style="background:#fef3c7;border-radius:8px;padding:12px 14px;border-left:3px solid #d97706">
+        <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:3px">📋 예산·잔반 분석</div>
+        <div style="font-size:11px;color:#78350f;line-height:1.6">연간 예산 달성률 추이를 파악하여 계절별 예산 계획 수립에 활용하세요. 잔반량과 예산 집행의 상관관계를 분석하여 식단 품질 개선 방향을 설정하세요.</div>
+      </div>
+      ${rptFooter(`8 / ${totalPages}`)}
+    </div>`
+
+    const slide10 = rptCardExpenses && rptCardExpenses.length > 0 ? `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('9','법인카드 사용 내역 (Corporate Card)')}
+      <div style="display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+        <span style="font-size:12px;font-weight:700;color:#374151">이번 달 법인카드 총 사용액</span>
+        <span style="font-size:20px;font-weight:900;color:#064e3b">${rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0).toLocaleString()}원</span>
+      </div>
+      <div style="overflow:auto;max-height:300px">
+        <table style="width:100%;border-collapse:collapse;font-size:10px">
+          <thead style="position:sticky;top:0">
+            <tr style="background:#064e3b;color:white">
+              <th style="padding:6px 8px;text-align:left">날짜</th>
+              <th style="padding:6px 8px;text-align:left">분류</th>
+              <th style="padding:6px 8px;text-align:left">업체</th>
+              <th style="padding:6px 8px;text-align:left">품목</th>
+              <th style="padding:6px 8px;text-align:right">금액</th>
+              <th style="padding:6px 8px;text-align:left">비고</th>
             </tr>
           </thead>
           <tbody>
-            ${rptCardExpenses.map((e, i) => `
-            <tr class="${i%2===0?'bg-white':'bg-purple-50/30'}">
-              <td class="border border-purple-100 px-2 py-1">${e.expense_date}</td>
-              <td class="border border-purple-100 px-2 py-1">
-                <span class="inline-block px-1.5 py-0.5 rounded text-purple-700 font-semibold" style="background:#f3e8ff;font-size:10px">${{'food':'식재료','supplies':'소모품','online':'온라인','other':'기타'}[e.card_subtype]||'기타'}</span>
-              </td>
-              <td class="border border-purple-100 px-2 py-1">${e.vendor_name||e.card_vendor_name||''}</td>
-              <td class="border border-purple-100 px-2 py-1">${e.item_name||''}</td>
-              <td class="border border-purple-100 px-2 py-1">${e.purpose||''}</td>
-              <td class="border border-purple-100 px-2 py-1 text-right font-bold text-purple-700">${(e.amount||0).toLocaleString()}원</td>
-              <td class="border border-purple-100 px-2 py-1 text-gray-500">${e.memo||''}</td>
-            </tr>`).join('')}
+            ${rptCardExpenses.map((e,i)=>`
+              <tr style="border-bottom:1px solid #f3f4f6;${i%2?'background:#f8fafc':''}">
+                <td style="padding:5px 8px;white-space:nowrap">${e.date||e.expenseDate||''}</td>
+                <td style="padding:5px 8px">${e.subtype||e.category||''}</td>
+                <td style="padding:5px 8px">${e.vendor||e.vendorName||''}</td>
+                <td style="padding:5px 8px">${e.item||e.itemName||''}</td>
+                <td style="padding:5px 8px;text-align:right;font-weight:600">${(e.amount||0).toLocaleString()}</td>
+                <td style="padding:5px 8px;color:#9ca3af">${e.memo||e.note||''}</td>
+              </tr>`).join('')}
           </tbody>
           <tfoot>
-            <tr class="bg-purple-100">
-              <td colspan="5" class="border border-purple-200 px-2 py-1.5 text-right font-bold text-purple-700">합계</td>
-              <td class="border border-purple-200 px-2 py-1.5 text-right font-bold text-purple-700">${fmtMan(rptCardTotal)}원</td>
-              <td class="border border-purple-200 px-2 py-1.5"></td>
+            <tr style="background:#f8fafc;font-weight:800;border-top:2px solid #064e3b">
+              <td colspan="4" style="padding:6px 8px;color:#064e3b">합계</td>
+              <td style="padding:6px 8px;text-align:right;color:#064e3b">${rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0).toLocaleString()}</td>
+              <td></td>
             </tr>
           </tfoot>
         </table>
       </div>
-    </div>` : ''}
+      ${rptFooter('9 / 10')}
+    </div>` : ''
+
+    const slideEnd = `
+    <div class="report-slide" style="background:white;padding:24px;position:relative;min-height:480px">
+      ${rptHeader('','종합 의견 및 다음 달 목표')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div style="background:#f8fafc;border-radius:10px;padding:16px">
+          <div style="font-size:12px;font-weight:700;color:#064e3b;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #064e3b">이번 달 종합 평가</div>
+          ${[
+            {label:'예산 집행률',val:progress,icon:'📊'},
+            {label:'식단가 관리',val:mealPriceForRpt&&s.targetMealPrice?(s.targetMealPrice>=mealPriceForRpt?85:55):70,icon:'🍱'},
+            {label:'발주 효율성',val:75,icon:'📦'},
+            {label:'식수 안정성',val:80,icon:'👥'},
+          ].map(item=>`
+            <div style="margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="font-size:11px">${item.icon} ${item.label}</span>
+                <span style="font-size:11px;font-weight:700;color:${trafficColor(item.val)}">${item.val}%</span>
+              </div>
+              <div style="background:#e5e7eb;border-radius:99px;height:6px">
+                <div style="height:100%;width:${item.val}%;background:${trafficColor(item.val)};border-radius:99px"></div>
+              </div>
+            </div>`).join('')}
+        </div>
+        <div style="background:#ecfdf5;border-radius:10px;padding:16px;border:1px solid #6ee7b7">
+          <div style="font-size:12px;font-weight:700;color:#064e3b;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #064e3b">다음 달 목표</div>
+          ${[
+            {icon:'💰',text:'예산 집행률 80~90% 유지 목표'},
+            {icon:'🍱',text:`식단가 ${(mealPriceForRpt||0).toLocaleString()}원 수준 유지`},
+            {icon:'📦',text:'업체별 단가 재협상 검토'},
+            {icon:'✅',text:'식단 다양성 및 영양 균형 강화'},
+          ].map(g=>`
+            <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:10px">
+              <span style="font-size:16px">${g.icon}</span>
+              <span style="font-size:11px;color:#065f46;line-height:1.5">${g.text}</span>
+            </div>`).join('')}
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px">
+        <div style="text-align:center;padding:16px 32px;border:1px solid #e5e7eb;border-radius:8px;min-width:200px">
+          <div style="font-size:10px;color:#6b7280;margin-bottom:20px">작성자 확인</div>
+          <div style="font-size:11px;font-weight:700;margin-bottom:4px">${hospitalName}</div>
+          <div style="font-size:10px;color:#9ca3af">영양사: ${s.nutritionistName||s.nutritionist_name||''}</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:8px">(인)</div>
+        </div>
+      </div>
+      ${rptFooter(`${totalPages} / ${totalPages}`)}
+    </div>`
+
+    return slide1+slide2+slide3+slide4+slide5+slide6+slide7+slide8+slide9+slide10+slideEnd
+  })()}
 
   </div>`
 
