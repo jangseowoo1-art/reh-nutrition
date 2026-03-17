@@ -10618,11 +10618,11 @@ window.printReportA4 = function() {
     page.className = 'print-page'
     // 슬라이드 내용 복제 (canvas 포함)
     const clone = slide.cloneNode(true)
-    // 표지 슬라이드: 인쇄용 스타일 조정
+    // 표지 슬라이드: 패딩 0, gradient 배경 유지
     if (idx === 0) {
-      clone.style.cssText = 'width:100%;height:100%;margin:0;padding:0;border-radius:0;box-shadow:none;overflow:hidden'
+      clone.style.cssText = 'width:100%;height:100%;margin:0;padding:40px;border-radius:0;box-shadow:none;overflow:hidden;box-sizing:border-box'
     } else {
-      clone.style.cssText = 'width:100%;margin:0;padding:0;border-radius:0;box-shadow:none;border:none'
+      clone.style.cssText = 'width:100%;margin:0;padding:0;border-radius:0;box-shadow:none;border:none;background:transparent'
     }
     // canvas는 DataURL 이미지로 교체 (인쇄 시 canvas 렌더링 보장)
     const origCanvases = slide.querySelectorAll('canvas')
@@ -10747,7 +10747,10 @@ function renderPrintPreviewPage(idx) {
   // 슬라이드 복제 + canvas → img 교체 (실제 인쇄와 동일)
   const origSlide = window._ppSlides[idx]
   const clone = origSlide.cloneNode(true)
-  clone.style.cssText = 'margin:0!important;border-radius:0!important;box-shadow:none!important;padding:20px!important;display:block!important;background:white!important;width:100%!important;box-sizing:border-box!important;'
+  // 표지(idx===0)는 gradient 배경 유지, 나머지는 white
+  const isCover = idx === 0
+  const origBg = origSlide.style.background || origSlide.style.backgroundImage || ''
+  clone.style.cssText = `margin:0!important;border-radius:0!important;box-shadow:none!important;padding:20px!important;display:block!important;width:100%!important;box-sizing:border-box!important;${isCover ? '' : 'background:white!important;'}`
 
   // canvas → img (실제 인쇄 결과와 동일하게)
   const origCanvases = origSlide.querySelectorAll('canvas')
