@@ -1054,7 +1054,26 @@ dashboard.get('/annual/:year', async (c) => {
     prevYearOrders: prevYearOrders.results || [],
     supplyAnnual: supplyAnnual.results || [],
     staffAnnual: staffAnnual.results || [],
-    annualCatDietPrices: annualCatDietPrices || []
+    annualCatDietPrices: annualCatDietPrices || [],
+    // 월별 카테고리별 식수 집계 (PAGE 7 세분화용)
+    // monthCatMeals: { "1": { "cat_항암": 120, "cat_요양": 340, staff: 95, guardian: 30 }, ... }
+    monthCatMeals: (() => {
+      const result: Record<string, Record<string,number>> = {}
+      for (let m = 1; m <= 12; m++) {
+        const mStr = String(m)
+        const custom = monthCustomTotals[mStr] || {}
+        result[mStr] = {
+          ...custom,
+          staff: monthStaffTotals[mStr] || 0,
+          guardian: monthGuardianTotals[mStr] || 0
+        }
+      }
+      return result
+    })(),
+    // 카테고리 목록 (이름/키 매핑용)
+    annualCats: (annualCats.results || []).map((c: any) => ({
+      id: c.id, category_key: c.category_key, category_name: c.category_name
+    }))
   })
 })
 

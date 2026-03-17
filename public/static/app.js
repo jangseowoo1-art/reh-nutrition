@@ -9942,6 +9942,9 @@ async function renderReport(selectedHospitalId = null) {
   const rptMonthlyMeals    = (annualData?.mealMonthly || [])
   const rptMonthlyUsed     = (annualData?.monthly || [])
   const rptMonthlySettings = (annualData?.settings || [])
+  // 월별 카테고리별 식수 세분화 데이터 (PAGE 7용)
+  const rptMonthCatMeals   = annualData?.monthCatMeals || {}
+  const rptAnnualCats      = annualData?.annualCats || []
 
   // 일별 발주 전체 (0 포함, 추세선용)
   const rptDailyAll = dailyLabels.map((label, i) => ({
@@ -10428,36 +10431,99 @@ async function renderReport(selectedHospitalId = null) {
       ${AIBox(waterAnalysis, waterWarn, '#064e3b','#f0fdf4')}
     </div>`
 
-    // ══ PAGE 7: 월별 식수 추이 ══════════════════════════════════
-    const mthMeals = Array.from({length:12},(_,i)=>{
-      const row=(rptMonthlyMeals||[]).find(r=>parseInt(r.month)===i+1)
-      return row?parseInt(row.total_meals||row.totalMeals||0):0
+    // ══ PAGE 7: 월별 식수 추이 (카테고리별 세분화) ══════════════════
+    // 카테고리 목록 구성 (항암, 요양 등 + 직원 + 보호자)
+    const p7Cats = rptAnnualCats.length > 0 ? rptAnnualCats : []
+    // 카테고리별 색상
+    const p7CatColors = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#ef4444','#0891b2','#ec4899','#64748b']
+    const p7StaffColor = '#6366f1'
+    const p7GuardColor = '#f97316'
+    // 각 카테고리의 월별 식수 배열 구성 (12개월)
+    const p7CatData = p7Cats.map((cat, ci) => ({
+      name: cat.category_name,
+      key: `cat_${cat.category_key}`,
+      color: p7CatColors[ci % p7CatColors.length],
+      values: Array.from({length:12}, (_,i) => {
+        const mStr = String(i+1)
+        return (rptMonthCatMeals[mStr]?.[`cat_${cat.category_key}`]) || 0
+      })
+    }))
+    const p7StaffData = Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.staff) || 0)
+    const p7GuardData = Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.guardian) || 0)
+    // 총 식수 (카테고리 + 직원 + 보호자)
+    const p7TotalData = Array.from({length:12}, (_,i) => {
+      const catSum = p7CatData.reduce((s,c) => s + c.values[i], 0)
+      return catSum + p7StaffData[i] + p7GuardData[i]
     })
-    const mthMealMax = Math.max(...mthMeals,1)
-    const curMthIdx  = reportMonth-1
-    const mthChg = curMthIdx>0&&mthMeals[curMthIdx-1]>0&&mthMeals[curMthIdx]>0
-      ?((mthMeals[curMthIdx]-mthMeals[curMthIdx-1])/mthMeals[curMthIdx-1]*100).toFixed(1):null
-    const mthAnalysis = mthMeals.some(v=>v>0)
-      ?`${reportMonth}월 식수는 ${fmt(mthMeals[curMthIdx])}명${mthChg?`으로 전월 대비 ${mthChg>0?'+':''}${mthChg}% 변동`:''}했습니다.`
-      :'연간 식수 데이터를 분석합니다.'
-    const mthWarn = mthChg&&Math.abs(parseFloat(mthChg))>20?`⚠ 식수 변동률이 ${Math.abs(parseFloat(mthChg))}%로 평균 대비 이상 급변입니다.`:null
+    // 전월 대비 분석 (현재 월 기준)
+    const p7CurIdx  = reportMonth - 1
+    const p7PrevIdx = reportMonth - 2
+    const hasPrevP7 = p7PrevIdx >= 0 && p7TotalData[p7PrevIdx] > 0
+    const p7Changes = hasPrevP7 ? [
+      ...p7CatData.map(cat => {
+        const diff = cat.values[p7CurIdx] - cat.values[p7PrevIdx]
+        return { name: cat.name, cur: cat.values[p7CurIdx], prev: cat.values[p7PrevIdx], diff, color: diff>0?'#16a34a':diff<0?'#dc2626':'#6b7280' }
+      }),
+      { name:'직원', cur:p7StaffData[p7CurIdx], prev:p7StaffData[p7PrevIdx], diff:p7StaffData[p7CurIdx]-p7StaffData[p7PrevIdx], color:(p7StaffData[p7CurIdx]-p7StaffData[p7PrevIdx])>0?'#16a34a':(p7StaffData[p7CurIdx]-p7StaffData[p7PrevIdx])<0?'#dc2626':'#6b7280' },
+      { name:'보호자', cur:p7GuardData[p7CurIdx], prev:p7GuardData[p7PrevIdx], diff:p7GuardData[p7CurIdx]-p7GuardData[p7PrevIdx], color:(p7GuardData[p7CurIdx]-p7GuardData[p7PrevIdx])>0?'#16a34a':(p7GuardData[p7CurIdx]-p7GuardData[p7PrevIdx])<0?'#dc2626':'#6b7280' }
+    ] : []
+    const p7AnalysisParts = p7Changes.filter(c=>c.diff!==0).map(c=>`전월 대비 ${c.name} 식수 ${Math.abs(c.diff)}명 ${c.diff>0?'증가':'감소'}`)
+    const mthAnalysis = p7TotalData.some(v=>v>0)
+      ? (p7AnalysisParts.length>0 ? p7AnalysisParts.join(', ') + '했습니다.' : `${reportMonth}월 총 식수 ${fmt(p7TotalData[p7CurIdx])}명으로 전월과 유사한 수준입니다.`)
+      : '연간 식수 데이터를 분석합니다.'
+    const mthWarn = (() => {
+      const totalDiff = hasPrevP7 ? p7TotalData[p7CurIdx] - p7TotalData[p7PrevIdx] : 0
+      const totalPct  = hasPrevP7 && p7TotalData[p7PrevIdx] > 0 ? (totalDiff / p7TotalData[p7PrevIdx] * 100) : 0
+      return Math.abs(totalPct) > 20 ? `⚠ 총 식수 변동률이 ${Math.abs(totalPct.toFixed(1))}%로 평균 대비 이상 급변입니다.` : null
+    })()
+    // 누적 막대 + 월별 현황표에 표시할 최근 6개월 (또는 데이터 있는 월) 추출
+    const p7ActiveMonths = Array.from({length:12},(_,i)=>i).filter(i=>p7TotalData[i]>0)
     const slide7 = `
     <div class="report-slide rpt-report-page">
       ${SH(7,'월별 식수 추이','Monthly Meal Trend')}
-      <!-- 라인 차트 -->
-      <div style="background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px">
-        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">월별 누적 식수 추이 (라인 차트, 포인트 값 표시)</div>
-        <div id="rptMonthlyMealChart" style="width:100%;height:280px"></div>
+      <!-- 누적 막대그래프 -->
+      <div style="background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">월별 카테고리별 식수 (누적 막대)</div>
+        <div id="rptMonthlyMealChart" style="width:100%;height:240px"></div>
       </div>
-      <!-- 월별 수치 테이블 -->
+      <!-- 전월 대비 변화 카드 -->
+      ${p7Changes.filter(c=>c.cur>0||c.prev>0).length>0?`
       <div style="margin-bottom:8px;flex-shrink:0">
-        <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:6px">월별 식수 현황</div>
-        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px">
-          ${Array.from({length:12},(_,i)=>`
-            <div style="text-align:center;padding:6px;border-radius:6px;background:${i===curMthIdx?'#064e3b':mthMeals[i]>0?'#f0fdf4':'#f9fafb'};border:1px solid ${i===curMthIdx?'#064e3b':mthMeals[i]>0?'#bbf7d0':'#f3f4f6'}">
-              <div style="font-size:9px;color:${i===curMthIdx?'rgba(255,255,255,0.8)':'#4b5563'};font-weight:600">${i+1}월</div>
-              <div style="font-size:11px;font-weight:700;color:${i===curMthIdx?'white':mthMeals[i]>0?'#064e3b':'#9ca3af'}">${mthMeals[i]>0?mthMeals[i].toLocaleString():'—'}</div>
+        <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:5px">전월 대비 변화 (${reportMonth-1}월 → ${reportMonth}월)</div>
+        <div style="display:grid;grid-template-columns:repeat(${Math.min(p7Changes.filter(c=>c.cur>0||c.prev>0).length,4)},1fr);gap:5px">
+          ${p7Changes.filter(c=>c.cur>0||c.prev>0).map(c=>`
+            <div style="background:${c.diff>0?'#f0fdf4':c.diff<0?'#fef2f2':'#f9fafb'};border-radius:8px;padding:7px 8px;border-left:3px solid ${c.color};text-align:center">
+              <div style="font-size:9px;color:#374151;font-weight:700;margin-bottom:3px">${c.name}</div>
+              <div style="font-size:14px;font-weight:800;color:${c.color}">${c.cur>0?c.cur.toLocaleString():'0'}<span style="font-size:9px;font-weight:500;margin-left:1px">명</span></div>
+              <div style="font-size:9px;color:${c.color};font-weight:600;margin-top:2px">${c.diff>0?'▲+':c.diff<0?'▼':''}${c.diff!==0?Math.abs(c.diff).toLocaleString()+'명':'-'}</div>
             </div>`).join('')}
+        </div>
+      </div>`:``}
+      <!-- 월별 현황 표 (최근 월 중심) -->
+      <div style="flex-shrink:0">
+        <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:5px">월별 카테고리별 식수 현황표</div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:9px">
+            <thead>
+              <tr style="background:#1f2937;color:white">
+                <th style="padding:5px 6px;text-align:left;font-weight:700;white-space:nowrap">구분</th>
+                ${p7ActiveMonths.map(i=>`<th style="padding:5px 4px;text-align:center;font-weight:700">${i+1}월</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${[...p7CatData.filter(c=>c.values.some(v=>v>0)), {name:'직원',color:p7StaffColor,values:p7StaffData}, {name:'보호자',color:p7GuardColor,values:p7GuardData}].map((row,ri)=>`
+              <tr style="background:${ri%2===0?'#f9fafb':'white'}">
+                <td style="padding:5px 6px;font-weight:700;color:${row.color};white-space:nowrap">
+                  <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${row.color};margin-right:4px;vertical-align:middle"></span>${row.name}
+                </td>
+                ${p7ActiveMonths.map(i=>`<td style="padding:5px 4px;text-align:center;color:${i===p7CurIdx?'#1d4ed8':'#374151'};font-weight:${i===p7CurIdx?'700':'500'}">${row.values[i]>0?row.values[i].toLocaleString():'—'}</td>`).join('')}
+              </tr>`).join('')}
+              <tr style="background:#f0fdf4;font-weight:700;border-top:2px solid #d1fae5">
+                <td style="padding:5px 6px;color:#064e3b;font-weight:700">합계</td>
+                ${p7ActiveMonths.map(i=>`<td style="padding:5px 4px;text-align:center;color:${i===p7CurIdx?'#064e3b':'#1f2937'};font-weight:700">${p7TotalData[i]>0?p7TotalData[i].toLocaleString():'—'}</td>`).join('')}
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
       ${AIBox(mthAnalysis, mthWarn, '#0891b2','#ecfeff')}
@@ -10577,30 +10643,42 @@ async function renderReport(selectedHospitalId = null) {
     <div class="report-slide rpt-report-page">
       ${SH(10,'법인카드 사용 분석','Corporate Card')}
       <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
-        <!-- 테이블 -->
+        <!-- 테이블: 사용 품목/진행 용도/비고 포함 -->
         <div style="display:flex;flex-direction:column">
           <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:6px;padding-bottom:5px;border-bottom:2px solid #064e3b">법인카드 상세 내역</div>
           <div style="flex:1;overflow:hidden">
-            <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <table style="width:100%;border-collapse:collapse;font-size:9.5px">
               <thead>
                 <tr style="background:#064e3b;color:white">
-                  <th style="padding:5px 7px;text-align:left">날짜</th>
-                  <th style="padding:5px 7px;text-align:left">업체</th>
-                  <th style="padding:5px 7px;text-align:right">금액</th>
-                  <th style="padding:5px 7px;text-align:left">품목</th>
+                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">날짜</th>
+                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">결제업체</th>
+                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">사용 품목</th>
+                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">진행 용도</th>
+                  <th style="padding:5px 6px;text-align:right;white-space:nowrap">금액</th>
+                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">비고</th>
                 </tr>
               </thead>
               <tbody>
                 ${rptCardExpenses.slice(0,12).map((e,i)=>`
                   <tr style="border-bottom:1px solid #f1f5f9;${i%2?'background:#f8fafc':''}">
-                    <td style="padding:4px 7px;color:#6b7280">${(e.expense_date||'').split('T')[0]}</td>
-                    <td style="padding:4px 7px;font-weight:600;color:#1f2937">${e.vendor_name||e.description||'-'}</td>
-                    <td style="padding:4px 7px;text-align:right;font-weight:700;color:#064e3b">${(e.amount||0).toLocaleString()}원</td>
-                    <td style="padding:4px 7px;color:#6b7280">${e.card_subtype||'-'}</td>
+                    <td style="padding:4px 6px;color:#6b7280;white-space:nowrap">${(e.expense_date||'').split('T')[0].slice(5)}</td>
+                    <td style="padding:4px 6px;font-weight:600;color:#1f2937;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.vendor_name||'')}">
+                      ${e.vendor_name||e.description||'-'}
+                    </td>
+                    <td style="padding:4px 6px;color:#374151;font-weight:600;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.item_name||'')}">
+                      ${e.item_name||'<span style="color:#9ca3af">-</span>'}
+                    </td>
+                    <td style="padding:4px 6px;color:#4b5563;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.purpose||'')}">
+                      ${e.purpose||'<span style="color:#9ca3af">-</span>'}
+                    </td>
+                    <td style="padding:4px 6px;text-align:right;font-weight:700;color:#064e3b;white-space:nowrap">${(e.amount||0).toLocaleString()}원</td>
+                    <td style="padding:4px 6px;color:#9ca3af;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.memo||'')}">
+                      ${e.memo||''}
+                    </td>
                   </tr>`).join('')}
                 <tr style="background:#f0fdf4;border-top:2px solid #064e3b">
-                  <td colspan="2" style="padding:5px 7px;font-weight:800;color:#064e3b">합  계</td>
-                  <td style="padding:5px 7px;text-align:right;font-weight:800;color:#064e3b">${rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0).toLocaleString()}원</td>
+                  <td colspan="4" style="padding:5px 6px;font-weight:800;color:#064e3b">합  계</td>
+                  <td style="padding:5px 6px;text-align:right;font-weight:800;color:#064e3b">${rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0).toLocaleString()}원</td>
                   <td></td>
                 </tr>
               </tbody>
@@ -11104,53 +11182,91 @@ async function renderReport(selectedHospitalId = null) {
       },[waterLabel])
     })()
 
-    // ── PAGE 7: 월별 식수 추이 라인 차트 (포인트 값 표시) ─────────
+    // ── PAGE 7: 월별 식수 추이 누적 막대 차트 (카테고리별 세분화) ──
     ;(()=>{
+      const el = document.getElementById('rptMonthlyMealChart')
+      if (!el) return
       const mMonths = Array.from({length:12},(_,i)=>`${i+1}월`)
-      const mMeals  = Array.from({length:12},(_,i)=>{
-        const row=(rptMonthlyMeals||[]).find(r=>parseInt(r.month)===i+1)
-        return row?parseInt(row.total_meals||row.totalMeals||0):0
-      })
-      const curIdx = reportMonth-1
-      const mealPtLabel = {
-        id:'_mealPt',
-        afterDatasetsDraw(chart){
-          const {ctx,data}=chart
-          data.datasets.forEach((ds,di)=>{
-            const meta=chart.getDatasetMeta(di)
-            meta.data.forEach((pt,i)=>{
-              const val=ds.data[i]; if(!val||val===0) return
-              ctx.save()
-              ctx.font=`bold ${i===curIdx?'12':'10'}px sans-serif`
-              ctx.fillStyle=i===curIdx?'#064e3b':'#374151'
-              ctx.textAlign='center'; ctx.textBaseline='bottom'
-              ctx.fillText(val.toLocaleString()+'명', pt.x, pt.y-6)
-              ctx.restore()
-            })
+      const curIdx = reportMonth - 1
+      // 카테고리 + 직원 + 보호자 합쳐서 datasets 구성
+      const catColors7 = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#ef4444','#0891b2','#ec4899']
+      const allSeries = [
+        ...(rptAnnualCats||[]).map((cat,ci) => ({
+          label: cat.category_name,
+          color: catColors7[ci % catColors7.length],
+          data: Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.[`cat_${cat.category_key}`]) || 0)
+        })),
+        { label:'직원', color:'#6366f1', data: Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.staff) || 0) },
+        { label:'보호자', color:'#f97316', data: Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.guardian) || 0) }
+      ].filter(s => s.data.some(v=>v>0))
+      // 데이터 없으면 mealMonthly 폴백 (기존 방식)
+      if (allSeries.length === 0) {
+        const mMeals = Array.from({length:12},(_,i)=>{ const row=(rptMonthlyMeals||[]).find(r=>parseInt(r.month)===i+1); return row?parseInt(row.total_meals||0):0 })
+        SC('rptMonthlyMealChart',{
+          type:'bar', data:{ labels:mMonths,
+            datasets:[{label:'월별 식수', data:mMeals, backgroundColor:mMonths.map((_,i)=>i===curIdx?'rgba(6,78,59,0.9)':'rgba(6,78,59,0.45)'), borderRadius:5, barThickness:28}]
+          },
+          options:{responsive:true,maintainAspectRatio:false,layout:{padding:{top:20}},
+            plugins:{legend:{display:false}},
+            scales:{y:{ticks:{callback:v=>`${v.toLocaleString()}명`,font:{size:10}},grid:{color:'rgba(0,0,0,0.06)'},beginAtZero:true},x:{ticks:{font:{size:10}}}}}
+        },[])
+        return
+      }
+      // 각 바 위에 합계 표시 플러그인
+      const stackTotalLabel = {
+        id:'_stackTotal',
+        afterDatasetsDraw(chart) {
+          const {ctx, data} = chart
+          const lastDsIdx = data.datasets.length - 1
+          const lastMeta = chart.getDatasetMeta(lastDsIdx)
+          data.labels.forEach((_, i) => {
+            const total = data.datasets.reduce((s,ds) => s + (ds.data[i]||0), 0)
+            if (!total) return
+            const bar = lastMeta.data[i]
+            ctx.save()
+            ctx.font = `bold ${i===curIdx?'11':'10'}px sans-serif`
+            ctx.fillStyle = i===curIdx ? '#064e3b' : '#374151'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'bottom'
+            ctx.fillText(total.toLocaleString()+'명', bar.x, bar.y - 3)
+            ctx.restore()
           })
         }
       }
-      SC('rptMonthlyMealChart',{
-        type:'line',
-        data:{
-          labels:mMonths,
-          datasets:[{label:'월별 식수',data:mMeals,
-            borderColor:'#064e3b',backgroundColor:'rgba(6,78,59,0.1)',
-            fill:true,tension:0.35,borderWidth:2.5,
-            pointBackgroundColor:mMeals.map((_,i)=>i===curIdx?'#064e3b':'rgba(6,78,59,0.5)'),
-            pointBorderColor:mMeals.map((_,i)=>i===curIdx?'white':'rgba(6,78,59,0.3)'),
-            pointBorderWidth:mMeals.map((_,i)=>i===curIdx?2:1),
-            pointRadius:mMeals.map((_,i)=>i===curIdx?8:5)
-          }]
+      SC('rptMonthlyMealChart', {
+        type: 'bar',
+        data: {
+          labels: mMonths,
+          datasets: allSeries.map((s,si) => ({
+            label: s.label,
+            data: s.data,
+            backgroundColor: s.data.map((_,i) => i===curIdx ? s.color : s.color+'bb'),
+            borderRadius: si===allSeries.length-1 ? 5 : 0,
+            borderSkipped: false,
+            stack: 'meals',
+            barThickness: 32
+          }))
         },
-        options:{responsive:true,maintainAspectRatio:false,
-          layout:{padding:{top:26}},
-          plugins:{legend:{display:false}},
-          scales:{y:{ticks:{callback:v=>`${v.toLocaleString()}명`,font:{size:10},color:'#374151'},
-                     grid:{color:'rgba(0,0,0,0.06)'},beginAtZero:false},
-                 x:{ticks:{font:{size:10},color:'#374151'}}}
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          layout: { padding: { top: 24 } },
+          plugins: {
+            legend: {
+              position: 'top',
+              labels: { font: { size: 11, weight: '600' }, boxWidth: 12, padding: 10, color: '#1f2937' }
+            },
+            tooltip: {
+              callbacks: {
+                label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString()}명`
+              }
+            }
+          },
+          scales: {
+            y: { stacked: true, ticks: { callback: v=>`${v.toLocaleString()}명`, font:{size:10}, color:'#374151' }, grid:{color:'rgba(0,0,0,0.06)'}, beginAtZero: true },
+            x: { stacked: true, ticks: { font:{size:10}, color:'#374151' } }
+          }
         }
-      },[mealPtLabel])
+      }, [stackTotalLabel])
     })()
 
     // ── PAGE 8: 식단가 라인 차트 + 불릿 (포인트 값, 숫자 명확) ────
@@ -12577,15 +12693,25 @@ function renderCardExpenseModal(modal, vendor, dateStr, items) {
 
     <!-- 입력 테이블 -->
     <div class="flex-1 overflow-y-auto px-4 py-3">
+      <!-- 입력 가이드 -->
+      <div class="mb-3 p-3 bg-purple-50 rounded-xl border border-purple-100 text-xs text-purple-700">
+        <span class="font-semibold">입력 예시:</span>
+        사용 품목 <span class="text-purple-900 font-bold">위생장갑</span> /
+        진행 용도 <span class="text-purple-900 font-bold">주방 소모품 구매</span> /
+        비고 <span class="text-purple-900 font-bold">긴급 구매</span>
+        &nbsp;·&nbsp; 또는 품목 <span class="text-purple-900 font-bold">과일</span> /
+        용도 <span class="text-purple-900 font-bold">환자 추가 간식 제공</span> /
+        비고 <span class="text-purple-900 font-bold">당일 추가 발주 대체</span>
+      </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm border-collapse" style="min-width:580px;">
           <thead>
             <tr class="bg-purple-50">
               <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700 rounded-tl-lg" style="min-width:110px">업체명</th>
-              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:110px">사용품목</th>
-              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:120px">구매/진행용도</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:110px">사용 품목 <span class="text-red-400">*</span></th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:130px">진행 용도 <span class="text-red-400">*</span></th>
               <th class="px-2 py-2 text-right text-xs font-semibold text-purple-700" style="min-width:90px">금액(원)</th>
-              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:100px">메모</th>
+              <th class="px-2 py-2 text-left text-xs font-semibold text-purple-700" style="min-width:100px">비고</th>
               <th class="px-2 py-2 rounded-tr-lg" style="width:36px"></th>
             </tr>
           </thead>
@@ -12621,11 +12747,11 @@ function renderCardExpenseModal(modal, vendor, dateStr, items) {
 
 function renderCardExpenseRow(item, idx) {
   return `<tr class="card-expense-row border-b border-gray-100 hover:bg-gray-50" data-idx="${idx}" ${item.id ? `data-id="${item.id}"` : ''}>
-    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="vendorName" data-idx="${idx}" value="${escHtml(item.vendorName||'')}" placeholder="예: 이마트" style="width:100%;min-width:100px;"></td>
-    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="itemName" data-idx="${idx}" value="${escHtml(item.itemName||'')}" placeholder="예: 식재료" style="width:100%;min-width:100px;"></td>
-    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="purpose" data-idx="${idx}" value="${escHtml(item.purpose||'')}" placeholder="예: 환자식 재료" style="width:100%;min-width:110px;"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="vendorName" data-idx="${idx}" value="${escHtml(item.vendorName||'')}" placeholder="예: 이마트, 쿠팡" style="width:100%;min-width:100px;"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="itemName" data-idx="${idx}" value="${escHtml(item.itemName||'')}" placeholder="예: 위생장갑, 과일" style="width:100%;min-width:100px;" title="사용 품목을 입력하세요 (예: 위생장갑, 과일, 세제)"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="purpose" data-idx="${idx}" value="${escHtml(item.purpose||'')}" placeholder="예: 주방소모품 구매" style="width:100%;min-width:120px;" title="진행 용도를 입력하세요 (예: 주방 소모품 구매, 환자 추가 간식 제공)"></td>
     <td class="px-1 py-1.5"><input type="text" inputmode="numeric" class="card-exp-input form-input text-xs py-1 px-2 text-right" data-field="amount" data-idx="${idx}" value="${item.amount > 0 ? parseInt(item.amount).toLocaleString() : ''}" placeholder="0" style="width:100%;min-width:82px;" oninput="this.value=this.value.replace(/[^0-9,]/g,'');updateCardExpenseTotal()"></td>
-    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="memo" data-idx="${idx}" value="${escHtml(item.memo||'')}" placeholder="선택" style="width:100%;min-width:90px;"></td>
+    <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="memo" data-idx="${idx}" value="${escHtml(item.memo||'')}" placeholder="예: 긴급구매" style="width:100%;min-width:90px;" title="비고: 선택 입력 (예: 긴급 구매, 당일 추가 발주 대체)"></td>
     <td class="px-1 py-1.5 text-center">
       <button onclick="removeCardExpenseRow(${idx})" class="text-red-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 transition-colors mx-auto">
         <i class="fas fa-trash text-xs"></i>
