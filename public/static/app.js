@@ -9881,9 +9881,13 @@ async function renderReport(selectedHospitalId = null) {
     ? Math.round((s.totalUsed||0) / rptTotalMeals) : (s.mealPrice || 0)
 
   // ── 새 보고서 섹션용 변수 매핑 ──────────────────────────────────────────
+  // settings에서 meal_price 가져오기 (summaryData.settings 혹은 catDietPrices[0].targetPrice)
+  const _settings = summaryData?.settings || {}
+  const _targetMealPrice = _settings.meal_price || (summaryData?.catDietPrices?.[0]?.targetPrice) || 0
+
   const rptSummary = {
     progress: parseFloat(s.progress) || 0,
-    totalBudget: s.totalBudget || 0,
+    totalBudget: s.totalBudget || _settings.total_budget || 0,
     usedAmount: s.totalUsed || 0,
     remainAmount: s.remaining || ((s.totalBudget||0) - (s.totalUsed||0)),
     totalPatients: rptTotalMeals,
@@ -9895,15 +9899,15 @@ async function renderReport(selectedHospitalId = null) {
     normalMealPrice: s.normalMealPrice || mealPriceForRpt || 0,
     therapeuticMealPrice: s.therapeuticMealPrice || 0,
     softMealPrice: s.softMealPrice || 0,
-    targetMealPrice: s.mealPrice || 0,
-    mealPriceTarget: s.mealPrice || 0,
+    targetMealPrice: _targetMealPrice,
+    mealPriceTarget: _targetMealPrice,
     nutritionistName: s.nutritionistName || s.nutritionist_name || '',
   }
   const rptOrders = (vendorOrders || []).map(v => ({
     vendor: v.vendor_name || v.vendorName || v.name || v.vendor || '',
     vendorName: v.vendor_name || v.vendorName || v.name || '',
-    totalAmount: v.total_amount || v.totalAmount || v.amount || 0,
-    amount: v.total_amount || v.totalAmount || v.amount || 0,
+    totalAmount: v.total_used || v.total_amount || v.totalAmount || v.amount || 0,
+    amount: v.total_used || v.total_amount || v.totalAmount || v.amount || 0,
   })).sort((a,b) => b.totalAmount - a.totalAmount)
   const rptDailyOrders = dailyLabels.map((label, i) => ({
     day: label,
@@ -10704,6 +10708,9 @@ async function renderReport(selectedHospitalId = null) {
   </div>`
 
   // ── 차트 렌더링 (renderReport 스코프 변수 사용) ──
+  // innerHTML 완료 후 DOM이 실제로 그려진 다음에 차트를 그리기 위해 setTimeout 사용
+  setTimeout(() => {
+  // 한 번 더 requestAnimationFrame으로 브라우저 페인트 완료 대기
   requestAnimationFrame(() => {
   try {
 
@@ -10796,24 +10803,58 @@ async function renderReport(selectedHospitalId = null) {
       }
     }
 
-    // 안전한 차트 생성 헬퍼
+    // 안전한 차트 생성 헬퍼 (div 또는 canvas 모두 지원)
     const SC = (id, config, plugins=[]) => {
-      const el = document.getElementById(id)
-      if (!el) { console.warn('[차트] canvas 없음:', id); return null }
-      try {
+      let el = document.getElementById(id)
+      if (!el) { console.warn('[차트] 컨테이너 없음:', id); return null }
+      // div라면 내부에 canvas를 생성
+      if (el.tagName.toLowerCase() !== 'canvas') {
+        const existing = el.querySelector('canvas')
+        if (existing) {
+          const oldChart = Chart.getChart(existing)
+          if (oldChart) oldChart.destroy()
+          el = existing
+        } else {
+          const canvas = document.createElement('canvas')
+          canvas.style.width = '100%'
+          canvas.style.height = '100%'
+          el.innerHTML = ''
+          el.appendChild(canvas)
+          el = canvas
+        }
+      } else {
         if (Chart.getChart(el)) Chart.getChart(el).destroy()
-        return new Chart(el, { ...config, plugins: [...(config.plugins||[]), ...plugins] })
+      }
+      try {
+        const chart = new Chart(el, { ...config, plugins: [...(config.plugins||[]), ...plugins] })
+        console.log('[차트] 생성 완료:', id)
+        return chart
       } catch(e) { console.warn('[차트] 생성 오류:', id, e.message); return null }
     }
 
+    // 차트 렌더링 시작 로그
+    console.log('[보고서] 차트 렌더링 시작, 컨테이너 IDs:', 
+      ['rptGaugeChart','rptCatPriceChart','rptDailyChart','rptVendorChart','rptWaterChart',
+       'rptMonthlyMealChart','rptMealPriceChart','rptBulletChart','rptBudgetBurnChart','rptCardPieChart','rptScoreChart']
+      .map(id => id + ':' + (document.getElementById(id) ? '존재' : '없음'))
+      .join(', ')
+    )
+
     // ── PAGE 2: 게이지 차트 ─────────────────────────────────────
     ;(()=>{
-      const el = document.getElementById('rptGaugeChart')
-      if (!el) return
+      const container = document.getElementById('rptGaugeChart')
+      if (!container) { console.warn('[차트] rptGaugeChart 없음'); return }
       try {
+        // div 컨테이너라면 canvas를 생성
+        let el = container.tagName.toLowerCase() === 'canvas' ? container : container.querySelector('canvas')
+        if (!el) {
+          el = document.createElement('canvas')
+          container.innerHTML = ''
+          container.appendChild(el)
+        }
         const pct = _prog
         const color = pct>=90?'#dc2626':pct>=80?'#d97706':'#16a34a'
-        const w = el.offsetWidth||280, h = el.offsetHeight||150
+        const w = container.offsetWidth||280, h = container.offsetHeight||150
         el.width = w * (window.devicePixelRatio||1)
         el.height = h * (window.devicePixelRatio||1)
         el.style.width = w + 'px'
@@ -10847,6 +10888,7 @@ async function renderReport(selectedHospitalId = null) {
         ctx.fillText('0%',cx-r-4,cy+14); ctx.fillText('100%',cx+r+4,cy+14)
         ctx.font = 'bold 12px sans-serif'; ctx.fillStyle='#d97706'; ctx.fillText('80%',cx-r*0.05,cy-r*0.78)
         ctx.font = 'bold 11px sans-serif'; ctx.fillStyle='#dc2626'; ctx.fillText('90%',cx+r*0.35,cy-r*0.68)
+        console.log('[차트] rptGaugeChart 완료, pct:', pct)
       } catch(e){ console.warn('[Gauge]',e.message) }
     })()
 
@@ -10856,7 +10898,7 @@ async function renderReport(selectedHospitalId = null) {
       if(!el) return
       const catColors = ['#064e3b','#1d4ed8','#7c3aed','#dc2626','#d97706','#0891b2','#059669','#9333ea']
       const rawCat = rptCatDietPrices && rptCatDietPrices.length>0
-        ? rptCatDietPrices.map((c,i)=>({name:c.category_name||c.name||'',price:Math.round(c.mealPrice||c.meal_price||0),col:catColors[i%catColors.length]}))
+        ? rptCatDietPrices.map((c,i)=>({name:c.category_name||c.name||'',price:Math.round(c.monthDietPrice||c.mealPrice||c.meal_price||0),col:catColors[i%catColors.length]}))
         : rptCatMeals.map((c,i)=>({name:c.name,price:0,col:catColors[i%catColors.length]}))
       if(!rawCat.length) return
       SC('rptCatPriceChart',{
@@ -10934,10 +10976,25 @@ async function renderReport(selectedHospitalId = null) {
     // ── PAGE 6: 식수 현황 가로 바 차트 ─────────────────────────
     ;(()=>{
       const mealColors = ['#064e3b','#1d4ed8','#7c3aed','#d97706','#dc2626','#0891b2']
-      const catList = rptCatMeals.length>0 ? rptCatMeals : [
-        {name:'환자식',count:rptSummary.normalCount||0},{name:'직원식',count:rptSummary.staffCount||0}
-      ].filter(c=>c.count>0)
-      if(!catList.length) return
+      // 카테고리별 식수 데이터 구성 (다양한 소스 시도)
+      let catList = []
+      if (rptCatMeals.length > 0) {
+        catList = rptCatMeals
+      } else {
+        // mealStats에서 직접 가져오기
+        const patientCnt = (summaryData?.mealStats?.total_patient||0)
+        const staffCnt   = (summaryData?.mealStats?.total_staff||0)
+        const guardCnt   = (summaryData?.mealStats?.total_guardian||0)
+        const ncCnt      = (summaryData?.mealStats?.total_noncovered||0)
+        if (patientCnt>0) catList.push({name:'환자식', count:patientCnt})
+        if (staffCnt>0)   catList.push({name:'직원식', count:staffCnt})
+        if (guardCnt>0)   catList.push({name:'보호자식', count:guardCnt})
+        if (ncCnt>0)      catList.push({name:'비급여', count:ncCnt})
+      }
+      if (!catList.length) {
+        console.warn('[차트] rptWaterChart: 식수 데이터 없음')
+        return
+      }
       SC('rptWaterChart',{
         type:'bar',
         data:{
@@ -11085,7 +11142,10 @@ async function renderReport(selectedHospitalId = null) {
   } catch(chartErr) {
     console.warn('[보고서] 차트 렌더링 오류:', chartErr)
   }
-  })  // requestAnimationFrame
+  }) // inner requestAnimationFrame
+  }, 100)  // setTimeout 100ms - DOM 완전 렌더링 대기
+  // 페이지 번호 배지 추가 (차트와 별도)
+  setTimeout(() => {
   requestAnimationFrame(() => {
     const reportBody = document.getElementById('reportBody')
     if (!reportBody) return
@@ -11103,7 +11163,8 @@ async function renderReport(selectedHospitalId = null) {
       h2.style.cssText = 'display:flex;align-items:center;font-size:15px;font-weight:700;color:#1f2937;padding-bottom:10px;border-bottom:2px solid #f0fdf4;margin-bottom:16px'
       h2.insertBefore(badge, h2.firstChild)
     })
-  })
+  }) // requestAnimationFrame
+  }, 200) // setTimeout 200ms
 }
 
 // 캔버스를 고화질 PNG DataURL로 변환 (devicePixelRatio 4배 적용)

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>차트 렌더링 테스트</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+body { font-family: sans-serif; padding: 20px; }
+.chart-box { border: 1px solid #e5e7eb; padding: 16px; margin: 16px 0; border-radius: 8px; }
+.chart-box h3 { margin: 0 0 12px 0; }
+#status { background: #f0fdf4; padding: 12px; border-radius: 8px; margin-bottom: 20px; white-space: pre-wrap; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>보고서 차트 렌더링 테스트</h1>
+<div id="status">로딩 중...</div>
+
+<div class="chart-box">
+  <h3>PAGE 2: 예산 게이지</h3>
+  <div id="rptGaugeChart" style="width:100%;height:150px;background:#f9fafb"></div>
+</div>
+<div class="chart-box">
+  <h3>PAGE 3: 카테고리별 식단가</h3>
+  <div id="rptCatPriceChart" style="width:100%;height:220px;background:#f9fafb"></div>
+</div>
+<div class="chart-box">
+  <h3>PAGE 4: 일별 매입금액</h3>
+  <div id="rptDailyChart" style="width:100%;height:240px;background:#f9fafb"></div>
+</div>
+<div class="chart-box">
+  <h3>PAGE 5: 업체별 도넛</h3>
+  <div id="rptVendorChart" style="width:100%;height:250px;background:#f9fafb"></div>
+</div>
+<div class="chart-box">
+  <h3>PAGE 6: 식수 현황</h3>
+  <div id="rptWaterChart" style="width:100%;height:200px;background:#f9fafb"></div>
+</div>
+<div class="chart-box">
+  <h3>PAGE 7: 월별 식수 추이</h3>
+  <div id="rptMonthlyMealChart" style="width:100%;height:260px;background:#f9fafb"></div>
+</div>
+<div class="chart-box">
+  <h3>PAGE 9: 예산 Burn-down</h3>
+  <div id="rptBudgetBurnChart" style="width:100%;height:200px;background:#f9fafb"></div>
+</div>
+
+<script>
+const TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImhvc3BpdGFsSWQiOm51bGwsImhvc3BpdGFsTmFtZSI6bnVsbCwiaG9zcGl0YWxDb2RlIjpudWxsLCJyb2xlIjoiYWRtaW4iLCJ1c2VybmFtZSI6ImFkbWluIiwiZXhwIjoxNzc0MzUzMjY2fQ.YGlDadnF__1cXA5igDeQ1hcMgk88mNpV-XTLemFVEz4';
+const API_BASE = '';
+
+async function apiFetch(path) {
+  const r = await fetch(path, { headers: { Authorization: 'Bearer ' + TOKEN } });
+  return r.json();
+}
+
+// SC 헬퍼 (div → canvas 생성 지원)
+const SC = (id, config, plugins=[]) => {
+  let el = document.getElementById(id);
+  if (!el) { console.warn('[차트] 없음:', id); return null; }
+  if (el.tagName.toLowerCase() !== 'canvas') {
+    const existing = el.querySelector('canvas');
+    if (existing) { const c = Chart.getChart(existing); if(c) c.destroy(); el = existing; }
+    else { const canvas = document.createElement('canvas'); el.innerHTML=''; el.appendChild(canvas); el = canvas; }
+  } else { if(Chart.getChart(el)) Chart.getChart(el).destroy(); }
+  try {
+    const chart = new Chart(el, { ...config, plugins: [...(config.plugins||[]), ...plugins] });
+    console.log('[차트] 완료:', id);
+    return chart;
+  } catch(e) { console.warn('[차트] 오류:', id, e.message); return null; }
+};
+
+async function main() {
+  const statusEl = document.getElementById('status');
+  try {
+    statusEl.textContent = 'API 로딩 중...';
+    const [summaryData, annualData] = await Promise.all([
+      apiFetch('/api/dashboard/summary/2026/3?hospitalId=1'),
+      apiFetch('/api/dashboard/annual/2026?hospitalId=1')
+    ]);
+    
+    const s = summaryData?.summary || {};
+    const vendors = summaryData?.vendors || [];
+    const ms = summaryData?.mealStats || {};
+    const dailyOrders = summaryData?.dailyOrders || [];
+    const settings = summaryData?.settings || {};
+    const cats = summaryData?.catDietPrices || [];
+    const dep = summaryData?.budgetDepletion || {};
+    const proj = summaryData?.projection || {};
+    const customFields = summaryData?.mealCustomFields || [];
+    const customTotals = summaryData?.mealCustomTotals || {};
+    
+    const progress = parseFloat(s.progress)||0;
+    const totalBudget = s.totalBudget||settings.total_budget||0;
+    const targetPrice = settings.meal_price || (cats[0]?.targetPrice) || 0;
+    
+    // 일별 데이터
+    const daysCount = new Date(2026, 3, 0).getDate(); // 31
+    const dailyMap = {};
+    dailyOrders.forEach(d => { const day = parseInt(d.order_date.split('-')[2]); dailyMap[day] = (dailyMap[day]||0) + d.daily_total; });
+    const dailyLabels = Array.from({length:daysCount}, (_,i)=>String(i+1));
+    const dailyValues = Array.from({length:daysCount}, (_,i)=>dailyMap[i+1]||0);
+    
+    statusEl.textContent = 
+      'progress: ' + progress + '\n' +
+      'totalBudget: ' + totalBudget + '\n' +
+      'targetPrice: ' + targetPrice + '\n' +
+      'catDietPrices: ' + cats.length + '\n' +
+      'vendors: ' + vendors.length + '\n' +
+      'dailyOrders: ' + dailyOrders.length + '\n' +
+      'depletion: ' + JSON.stringify(dep) + '\n' +
+      'customFields: ' + customFields.length + ', totals: ' + JSON.stringify(customTotals);
+    
+    setTimeout(() => requestAnimationFrame(() => {
+      // PAGE 2 게이지
+      const gaugeContainer = document.getElementById('rptGaugeChart');
+      if (gaugeContainer) {
+        let canvas = gaugeContainer.querySelector('canvas');
+        if (!canvas) { canvas = document.createElement('canvas'); gaugeContainer.appendChild(canvas); }
+        const w = gaugeContainer.offsetWidth||300, h=150;
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        const pct = progress;
+        const color = pct>=90?'#dc2626':pct>=80?'#d97706':'#16a34a';
+        const cx = w/2, cy = h*0.82, r = Math.min(w*0.4, h*0.8);
+        const startA = Math.PI, endA = 2*Math.PI;
+        ctx.clearRect(0,0,w,h);
+        ctx.beginPath(); ctx.arc(cx,cy,r,startA,endA);
+        ctx.strokeStyle='#e5e7eb'; ctx.lineWidth=16; ctx.lineCap='round'; ctx.stroke();
+        if(pct>0){
+          const grad=ctx.createLinearGradient(cx-r,cy,cx+r,cy);
+          grad.addColorStop(0,'#16a34a'); grad.addColorStop(0.7,'#d97706'); grad.addColorStop(1,'#dc2626');
+          ctx.beginPath(); ctx.arc(cx,cy,r,startA,startA+(pct/100)*(endA-startA));
+          ctx.strokeStyle=grad; ctx.lineWidth=16; ctx.lineCap='round'; ctx.stroke();
+        }
+        ctx.font='bold 22px sans-serif'; ctx.fillStyle=color; ctx.textAlign='center';
+        ctx.fillText(pct.toFixed(1)+'%', cx, cy+24);
+        console.log('[게이지] 완료, pct:', pct);
+      }
+      
+      // PAGE 3 카테고리 바
+      if (cats.length > 0) {
+        const catColors=['#064e3b','#1d4ed8','#7c3aed','#dc2626','#d97706','#0891b2','#059669','#9333ea'];
+        SC('rptCatPriceChart',{
+          type:'bar',
+          data:{labels:cats.map(c=>c.category_name||c.name||''),datasets:[
+            {label:'식단가',data:cats.map(c=>Math.round(c.monthDietPrice||c.mealPrice||0)),
+             backgroundColor:catColors.slice(0,cats.length).map(c=>{const r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16);return 'rgba('+r+','+g+','+b+',0.75)'}),borderRadius:6},
+            ...(targetPrice>0?[{label:'목표('+targetPrice+'원)',data:Array(cats.length).fill(targetPrice),
+              type:'line',borderColor:'#dc2626',borderDash:[6,4],borderWidth:2,pointRadius:0,fill:false}]:[])
+          ]},
+          options:{responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{labels:{font:{size:10}}}},
+            scales:{y:{ticks:{callback:v=>Math.round(v/1000)+'천원'},beginAtZero:true}}}
+        });
+      }
+      
+      // PAGE 4 일별 바
+      const nonZ = dailyValues.filter(v=>v>0);
+      const avg = nonZ.length ? Math.round(nonZ.reduce((a,b)=>a+b,0)/nonZ.length) : 0;
+      SC('rptDailyChart',{
+        type:'bar',
+        data:{labels:dailyLabels,datasets:[
+          {label:'일별',data:dailyValues,backgroundColor:dailyValues.map(v=>v>avg*2&&avg>0?'rgba(220,38,38,0.75)':'rgba(22,163,74,0.7)'),borderRadius:4},
+          ...(avg>0?[{label:'평균',data:Array(dailyLabels.length).fill(avg),type:'line',borderColor:'#d97706',borderDash:[5,3],borderWidth:2,pointRadius:0,fill:false}]:[])
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          scales:{y:{ticks:{callback:v=>(v/10000).toFixed(0)+'만'},beginAtZero:true}}}
+      });
+      
+      // PAGE 5 업체 도넛
+      const vendorData = vendors.slice(0,10).map(v=>v.total_used||0);
+      const vendorTotal = vendorData.reduce((s,v)=>s+v,0);
+      if (vendorData.some(v=>v>0)) {
+        SC('rptVendorChart',{
+          type:'doughnut',
+          data:{labels:vendors.slice(0,10).map(v=>v.name||''),
+            datasets:[{data:vendorData,
+              backgroundColor:['#16a34a','#15803d','#22c55e','#86efac','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899']}]},
+          options:{responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{position:'right',labels:{font:{size:10},boxWidth:8}}}}
+        });
+      }
+      
+      // PAGE 6 식수 가로 바
+      let catList = [];
+      customFields.filter(f=>f.field_key&&f.field_key.startsWith('cat_')).forEach(f=>{
+        const cnt = customTotals[f.field_key]||0;
+        if(cnt>0) catList.push({name:f.field_name||f.field_key, count:cnt});
+      });
+      if(catList.length===0) {
+        if((ms.total_patient||0)>0) catList.push({name:'환자식',count:ms.total_patient});
+        if((ms.total_staff||0)>0) catList.push({name:'직원식',count:ms.total_staff});
+      }
+      if(catList.length>0) {
+        SC('rptWaterChart',{
+          type:'bar',
+          data:{labels:catList.map(c=>c.name),datasets:[{label:'식수',data:catList.map(c=>c.count),
+            backgroundColor:['rgba(6,78,59,0.75)','rgba(29,78,216,0.75)','rgba(124,58,237,0.75)'],borderRadius:6}]},
+          options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+            plugins:{legend:{display:false}},
+            scales:{x:{ticks:{callback:v=>v.toLocaleString()+'명'},beginAtZero:true}}}
+        });
+      }
+      
+      // PAGE 7 월별 식수 라인
+      const mMonths = Array.from({length:12},(_,i)=>i+1+'월');
+      const mMeals = Array(12).fill(0);
+      (annualData?.mealMonthly||[]).forEach(m=>{mMeals[parseInt(m.month)-1]=parseInt(m.total_meals||m.total_staff||0);});
+      SC('rptMonthlyMealChart',{
+        type:'line',
+        data:{labels:mMonths,datasets:[{label:'월별 식수',data:mMeals,
+          borderColor:'#064e3b',backgroundColor:'rgba(6,78,59,0.08)',fill:true,tension:0.4,pointRadius:5}]},
+        options:{responsive:true,maintainAspectRatio:false,
+          scales:{y:{ticks:{callback:v=>v.toLocaleString()+'명'},beginAtZero:false}}}
+      });
+      
+      // PAGE 9 예산 번다운
+      const days = Array.from({length:daysCount},(_,i)=>i+1);
+      const ela = proj.elapsedDays||17;
+      const davg = dep.dailyAvgUsed||0;
+      let cum=0;
+      const actCum = days.map(d=>{ const r=(dailyMap[d]||0); cum+=r; return d<=ela&&cum>0?cum:null; });
+      SC('rptBudgetBurnChart',{
+        type:'line',
+        data:{labels:days.map(d=>d+'일'),datasets:[
+          {label:'실제',data:actCum,borderColor:'#1d4ed8',fill:true,backgroundColor:'rgba(29,78,216,0.1)',pointRadius:0,spanGaps:false},
+          {label:'예산한도',data:Array(daysCount).fill(totalBudget),borderColor:'#dc2626',fill:false,pointRadius:0,borderDash:[8,4]},
+          ...(davg>0?[{label:'추세',data:days.map(d=>d<ela?null:Math.round(davg*d)),borderColor:'#d97706',fill:false,pointRadius:0,borderDash:[5,4],spanGaps:false}]:[])
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          scales:{y:{ticks:{callback:v=>(v/1e6).toFixed(1)+'백만'},beginAtZero:true}}}
+      });
+      
+      statusEl.textContent += '\n\n✅ 차트 렌더링 완료!';
+    }), 100);
+    
+  } catch(err) {
+    statusEl.textContent = '❌ 오류: ' + err.message;
+    console.error(err);
+  }
+}
+
+main();
+</script>
+</body>
+</html>
