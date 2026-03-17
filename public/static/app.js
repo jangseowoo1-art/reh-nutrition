@@ -10928,56 +10928,188 @@ async function renderReport(selectedHospitalId = null) {
       .join(', ')
     )
 
-    // ── PAGE 2: 게이지 차트 ─────────────────────────────────────
+    // ── PAGE 2: 게이지 차트 (정형화된 반원 게이지 v2) ────────────────
     ;(()=>{
       const container = document.getElementById('rptGaugeChart')
       if (!container) { console.warn('[차트] rptGaugeChart 없음'); return }
       try {
-        // div 컨테이너라면 canvas를 생성
         let el = container.tagName.toLowerCase() === 'canvas' ? container : container.querySelector('canvas')
         if (!el) {
           el = document.createElement('canvas')
           container.innerHTML = ''
           container.appendChild(el)
         }
-        const pct = _prog
-        const color = pct>=90?'#dc2626':pct>=80?'#d97706':'#16a34a'
-        const w = container.offsetWidth||280, h = container.offsetHeight||150
-        el.width = w * (window.devicePixelRatio||1)
-        el.height = h * (window.devicePixelRatio||1)
-        el.style.width = w + 'px'
-        el.style.height = h + 'px'
+        const pct = Math.min(Math.max(_prog, 0), 100)
+        // 진행률에 따른 메인 색상
+        const arcColor = pct >= 90 ? '#dc2626' : pct >= 80 ? '#f59e0b' : '#10b981'
+
+        // 고해상도 렌더링
+        const dpr = window.devicePixelRatio || 1
+        const W = container.offsetWidth || 320
+        const H = container.offsetHeight || 180
+        el.width  = W * dpr
+        el.height = H * dpr
+        el.style.width  = W + 'px'
+        el.style.height = H + 'px'
         const ctx = el.getContext('2d')
-        ctx.scale(window.devicePixelRatio||1, window.devicePixelRatio||1)
-        const cx = w/2, cy = h*0.82, r = Math.min(w*0.40, h*0.80)
-        const startA = Math.PI, endA = 2*Math.PI
-        const curA = startA + (pct/100)*(endA-startA)
-        ctx.clearRect(0,0,w,h)
-        ctx.beginPath(); ctx.arc(cx,cy,r,startA,endA)
-        ctx.strokeStyle='#e5e7eb'; ctx.lineWidth=16; ctx.lineCap='round'; ctx.stroke()
-        if(pct>0){
-          const grad = ctx.createLinearGradient(cx-r,cy,cx+r,cy)
-          grad.addColorStop(0,'#16a34a'); grad.addColorStop(0.7,'#d97706'); grad.addColorStop(1,'#dc2626')
-          ctx.beginPath(); ctx.arc(cx,cy,r,startA,curA)
-          ctx.strokeStyle=grad; ctx.lineWidth=16; ctx.lineCap='round'; ctx.stroke()
+        ctx.scale(dpr, dpr)
+        ctx.clearRect(0, 0, W, H)
+
+        // ── 기하 설정 ──────────────────────────────
+        // 반원 중심을 아래쪽 72% 지점에 배치, 상단 여유 확보
+        const cx = W / 2
+        const cy = H * 0.72
+        // 반지름: 너비/2에서 레이블 공간 32px 빼기
+        const R = Math.min(W * 0.40, cy - 10)
+        const THICK = Math.max(16, R * 0.13)    // 두께 = 반지름의 13%
+        const S_ANG = Math.PI       // 180° (왼쪽)
+        const E_ANG = 2 * Math.PI   // 360° (오른쪽)
+        const pctToAngle = p => S_ANG + (p / 100) * Math.PI
+
+        // ── 1. 배경 트랙 (연한 회색) ──
+        ctx.beginPath()
+        ctx.arc(cx, cy, R, S_ANG, E_ANG)
+        ctx.strokeStyle = '#e5e7eb'
+        ctx.lineWidth = THICK
+        ctx.lineCap = 'butt'
+        ctx.stroke()
+
+        // ── 2. 구간별 색상 트랙 그리기 ──
+        // 0–80%: 초록
+        ctx.beginPath()
+        ctx.arc(cx, cy, R, pctToAngle(0), pctToAngle(80))
+        ctx.strokeStyle = '#d1fae5'   // 연한 초록 배경
+        ctx.lineWidth = THICK
+        ctx.lineCap = 'butt'
+        ctx.stroke()
+        // 80–90%: 연한 노랑
+        ctx.beginPath()
+        ctx.arc(cx, cy, R, pctToAngle(80), pctToAngle(90))
+        ctx.strokeStyle = '#fde68a'
+        ctx.lineWidth = THICK
+        ctx.lineCap = 'butt'
+        ctx.stroke()
+        // 90–100%: 연한 빨강
+        ctx.beginPath()
+        ctx.arc(cx, cy, R, pctToAngle(90), pctToAngle(100))
+        ctx.strokeStyle = '#fecaca'
+        ctx.lineWidth = THICK
+        ctx.lineCap = 'butt'
+        ctx.stroke()
+
+        // ── 3. 진행률 채움 (진한 색) ──
+        if (pct > 0) {
+          // pct 지점까지 진한 색으로 덮어씌움
+          const fillEnd = pctToAngle(Math.min(pct, 80))
+          ctx.beginPath()
+          ctx.arc(cx, cy, R, pctToAngle(0), fillEnd)
+          ctx.strokeStyle = '#10b981'
+          ctx.lineWidth = THICK
+          ctx.lineCap = 'butt'
+          ctx.stroke()
+          if (pct > 80) {
+            ctx.beginPath()
+            ctx.arc(cx, cy, R, pctToAngle(80), pctToAngle(Math.min(pct, 90)))
+            ctx.strokeStyle = '#f59e0b'
+            ctx.lineWidth = THICK
+            ctx.lineCap = 'butt'
+            ctx.stroke()
+          }
+          if (pct > 90) {
+            ctx.beginPath()
+            ctx.arc(cx, cy, R, pctToAngle(90), pctToAngle(pct))
+            ctx.strokeStyle = '#ef4444'
+            ctx.lineWidth = THICK
+            ctx.lineCap = 'butt'
+            ctx.stroke()
+          }
         }
-        ;[[80,'#d97706'],[90,'#dc2626']].forEach(([p,c])=>{
-          const a = startA + (p/100)*(endA-startA)
-          ctx.beginPath(); ctx.moveTo(cx+(r-10)*Math.cos(a), cy+(r-10)*Math.sin(a))
-          ctx.lineTo(cx+(r+10)*Math.cos(a), cy+(r+10)*Math.sin(a))
-          ctx.strokeStyle=c; ctx.lineWidth=2.5; ctx.stroke()
+
+        // ── 4. 구간 경계 마크 (80%, 90%) ──
+        ;[[80, '#d97706'], [90, '#dc2626']].forEach(([p, c]) => {
+          const a = pctToAngle(p)
+          const r1 = R - THICK / 2 - 2
+          const r2 = R + THICK / 2 + 2
+          ctx.beginPath()
+          ctx.moveTo(cx + r1 * Math.cos(a), cy + r1 * Math.sin(a))
+          ctx.lineTo(cx + r2 * Math.cos(a), cy + r2 * Math.sin(a))
+          ctx.strokeStyle = c
+          ctx.lineWidth = 2.5
+          ctx.lineCap = 'butt'
+          ctx.stroke()
         })
-        const needleA = startA + (pct/100)*(endA-startA)
-        ctx.beginPath(); ctx.moveTo(cx,cy)
-        ctx.lineTo(cx+(r-18)*Math.cos(needleA), cy+(r-18)*Math.sin(needleA))
-        ctx.strokeStyle=color; ctx.lineWidth=3; ctx.lineCap='round'; ctx.stroke()
-        ctx.beginPath(); ctx.arc(cx,cy,5,0,2*Math.PI); ctx.fillStyle=color; ctx.fill()
-        ctx.font = '11px sans-serif'; ctx.fillStyle='#9ca3af'; ctx.textAlign='center'
-        ctx.fillText('0%',cx-r-4,cy+14); ctx.fillText('100%',cx+r+4,cy+14)
-        ctx.font = 'bold 12px sans-serif'; ctx.fillStyle='#d97706'; ctx.fillText('80%',cx-r*0.05,cy-r*0.78)
-        ctx.font = 'bold 11px sans-serif'; ctx.fillStyle='#dc2626'; ctx.fillText('90%',cx+r*0.35,cy-r*0.68)
-        console.log('[차트] rptGaugeChart 완료, pct:', pct)
-      } catch(e){ console.warn('[Gauge]',e.message) }
+
+        // ── 5. 바늘 (삼각형 + 중심 허브) ──
+        const needleA = pctToAngle(pct)
+        const nLen    = R - THICK / 2 - 4   // 바늘 끝이 트랙 안쪽에 닿도록
+        const hubR    = THICK * 0.5
+        // 바늘 삼각형 (얇고 날카로운 형태)
+        const baseHalf = hubR * 0.5
+        const perpA = needleA + Math.PI / 2
+        ctx.beginPath()
+        ctx.moveTo(cx + nLen * Math.cos(needleA), cy + nLen * Math.sin(needleA))  // 끝점
+        ctx.lineTo(cx + baseHalf * Math.cos(perpA), cy + baseHalf * Math.sin(perpA))   // 왼쪽 밑
+        ctx.lineTo(cx - baseHalf * Math.cos(perpA), cy - baseHalf * Math.sin(perpA))   // 오른쪽 밑
+        ctx.closePath()
+        ctx.fillStyle = '#374151'
+        ctx.fill()
+        // 허브 원 (흰 테두리 + 진한 채우기)
+        ctx.beginPath()
+        ctx.arc(cx, cy, hubR, 0, 2 * Math.PI)
+        ctx.fillStyle = '#1f2937'
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(cx, cy, hubR * 0.55, 0, 2 * Math.PI)
+        ctx.fillStyle = 'white'
+        ctx.fill()
+
+        // ── 6. 외곽 레이블 (0%, 80%, 90%, 100%) ──
+        const labelR = R + THICK / 2 + 13
+        ;[
+          [0,   '0%',   '#9ca3af', 'right',  'middle'],
+          [50,  '50%',  '#9ca3af', 'center', 'bottom'],
+          [80,  '80%',  '#d97706', 'center', 'bottom'],
+          [90,  '90%',  '#dc2626', 'center', 'bottom'],
+          [100, '100%', '#9ca3af', 'left',   'middle'],
+        ].forEach(([p, lbl, c, align, base]) => {
+          const a = pctToAngle(p)
+          const lx = cx + labelR * Math.cos(a)
+          const ly = cy + labelR * Math.sin(a)
+          const isMark = p === 80 || p === 90
+          ctx.font = isMark ? 'bold 10px sans-serif' : '9px sans-serif'
+          ctx.fillStyle = c
+          ctx.textAlign = align
+          ctx.textBaseline = base
+          ctx.fillText(lbl, lx, ly)
+        })
+
+        // ── 7. 중앙 숫자 표시 (반원 안쪽 중심 위) ──
+        // 숫자를 cy 기준으로 약간 위에 크게 표시
+        const numY = cy - R * 0.28
+        ctx.font = `bold ${Math.round(R * 0.38)}px sans-serif`
+        ctx.fillStyle = arcColor
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'alphabetic'
+        ctx.fillText(`${Math.round(pct)}%`, cx, numY)
+
+        // 서브텍스트 (숫자 바로 아래)
+        ctx.font = `${Math.round(R * 0.10)}px sans-serif`
+        ctx.fillStyle = '#6b7280'
+        ctx.textBaseline = 'top'
+        ctx.fillText('목표: 80 ~ 90%', cx, numY + 4)
+
+        // ── 8. 상태 텍스트 (게이지 하단 중심) ──
+        const statusY = cy + 12
+        const statusText = pct >= 90 ? '⚠ 예산 초과 주의' : pct >= 80 ? '✓ 정상 범위' : '◎ 양호'
+        const statusColor = pct >= 90 ? '#dc2626' : pct >= 80 ? '#d97706' : '#059669'
+        ctx.font = `bold ${Math.round(R * 0.10)}px sans-serif`
+        ctx.fillStyle = statusColor
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'top'
+        ctx.fillText(statusText, cx, statusY)
+
+        console.log('[차트] rptGaugeChart v2 완료, pct:', pct)
+      } catch(e){ console.warn('[Gauge]', e.message) }
     })()
 
     // ── PAGE 3: 카테고리별 식단가 바 차트 (바 위 값 표시 강화) ─────

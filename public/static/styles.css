@@ -636,6 +636,7 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 }
 #printLayer .print-page {
   width: 277mm;
+  margin: 0 auto;             /* 중앙 정렬 */
   min-height: 190mm;
   padding: 5mm 7mm 6mm 7mm;  /* 여백 줄여 차트 공간 확보 */
   box-sizing: border-box;
@@ -690,7 +691,8 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   #printLayer .print-page {
     display: flex !important;
     flex-direction: column !important;
-    width: 297mm !important;
+    width: 267mm !important;           /* 90% 크기: 297mm × 0.9 ≈ 267mm */
+    margin: 0 auto !important;         /* 좌우 중앙 정렬 */
     min-height: 185mm !important;
     padding: 5mm 7mm 5mm 7mm !important;  /* 여백 최소화 → 차트 크게 */
     page-break-after: always !important;
