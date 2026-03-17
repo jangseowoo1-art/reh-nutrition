@@ -604,6 +604,29 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 .mobile-nav-item:active { background: #f0fdf4; }
 
 /* ══════════════════════════════════════════
+   보고서 화면 표시 스타일
+══════════════════════════════════════════ */
+
+/* 화면에서 보이는 보고서 페이지 (rpt-report-page) */
+.rpt-report-page {
+  background: white;
+  padding: 20px 24px 32px 24px;
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* 보고서 본문 헤더 (SECTION 배지 영역) */
+.rpt-report-page .rpt-section-header {
+  margin-bottom: 16px;
+}
+
+/* ══════════════════════════════════════════
    인쇄 스타일 - A4 문서형 레이아웃
 ══════════════════════════════════════════ */
 
@@ -612,21 +635,37 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   display: none;
 }
 #printLayer .print-page {
-  width: 257mm;       /* A4 landscape 가로 (297 - 여백) */
-  min-height: 182mm;  /* A4 landscape 세로 (210 - 여백) */
-  padding: 10mm 12mm;
+  width: 277mm;
+  min-height: 190mm;
+  height: 190mm;
+  padding: 8mm 10mm 10mm 10mm;
   box-sizing: border-box;
   overflow: hidden;
   background: white;
   position: relative;
   page-break-after: always;
   page-break-inside: avoid;
+  display: flex;
+  flex-direction: column;
 }
 /* 표지는 패딩 없이 전체 페이지 꽉 채우기 */
 #printLayer .print-page:first-child {
   padding: 0;
+  height: 210mm;
+  min-height: 210mm;
 }
 #printLayer .print-page:last-child { page-break-after: avoid; }
+
+/* 인쇄 레이어 내 rpt-report-page는 고정 레이아웃으로 */
+#printLayer .print-page .rpt-report-page,
+#printLayer .print-page .report-slide {
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
 
 @media print {
   @page {
@@ -646,11 +685,12 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     background: white !important;
   }
   #printLayer .print-page {
-    display: block !important;
+    display: flex !important;
+    flex-direction: column !important;
     width: 297mm !important;
     min-height: 210mm !important;
     height: 210mm !important;
-    padding: 10mm 12mm !important;
+    padding: 8mm 10mm 10mm 10mm !important;
     page-break-after: always !important;
     page-break-inside: avoid !important;
     break-after: page !important;
@@ -662,12 +702,15 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   /* 표지: 여백 없이 꽉 채우기 */
   #printLayer .print-page:first-child {
     padding: 0 !important;
+    height: 210mm !important;
   }
   #printLayer .print-page:first-child .report-slide {
     width: 100% !important;
+    height: 210mm !important;
     min-height: 210mm !important;
     border-radius: 0 !important;
     box-shadow: none !important;
+    flex: 1;
   }
   #printLayer .print-page:last-child {
     page-break-after: avoid !important;
@@ -682,14 +725,21 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   }
   #printLayer canvas {
     max-width: 100% !important;
-    height: auto !important;
   }
   #printLayer table {
-    font-size: 10px !important;
+    font-size: 9.5px !important;
     width: 100% !important;
   }
   #printLayer th, #printLayer td {
     padding: 3px 5px !important;
+  }
+  /* 인쇄 시 분석 박스 배경색 보존 */
+  #printLayer [style*="background:#f0fdf4"],
+  #printLayer [style*="background:#eff6ff"],
+  #printLayer [style*="background:#faf5ff"],
+  #printLayer [style*="background:#fef3c7"],
+  #printLayer [style*="background:#fef2f2"] {
+    print-color-adjust: exact !important;
   }
 }
 
