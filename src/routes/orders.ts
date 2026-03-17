@@ -741,4 +741,76 @@ orders.put('/inspection/batch', async (c) => {
   return c.json({ success: true, updated })
 })
 
+// #1 검수 이슈 저장 (단건)
+orders.post('/inspection/issue', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const body = await c.req.json()
+  const { order_id, vendor_name, item_name, issue_type, issue_detail,
+          deduction_amount, order_amount, actual_amount, inspection_status } = body
+
+  if (!order_id || !issue_type) {
+    return c.json({ error: 'order_id, issue_type 필요' }, 400)
+  }
+
+  const existing = await c.env.DB.prepare(
+    `SELECT id, total_amount FROM daily_orders WHERE id = ? AND hospital_id = ?`
+  ).bind(order_id, hospitalId).first<any>()
+  if (!existing) return c.json({ error: '발주를 찾을 수 없습니다' }, 404)
+
+  const now = new Date().toISOString()
+  const username = user.username || user.name || 'unknown'
+
+  // inspection_issues 테이블에 이슈 저장
+  await c.env.DB.prepare(
+    `INSERT INTO inspection_issues (order_id, hospital_id, vendor_name, item_name,
+       issue_type, issue_detail, deduction_amount, order_amount, actual_amount, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    order_id, hospitalId, vendor_name ?? null, item_name ?? null,
+    issue_type, issue_detail ?? null,
+    deduction_amount ?? 0, order_amount ?? existing.total_amount,
+    actual_amount ?? (existing.total_amount - (deduction_amount ?? 0)),
+    username
+  ).run()
+
+  // daily_orders 상태 업데이트
+  const newStatus = inspection_status || 'completed_issue'
+  const newActual = actual_amount ?? (existing.total_amount - (deduction_amount ?? 0))
+  await c.env.DB.prepare(
+    `UPDATE daily_orders SET
+       is_inspected = 1, inspection_status = ?,
+       actual_amount = ?, deduction_amount = ?,
+       inspection_memo = ?, inspected_at = ?, inspected_by = ?
+     WHERE id = ? AND hospital_id = ?`
+  ).bind(
+    newStatus, newActual, deduction_amount ?? 0,
+    issue_detail ?? null, now, username,
+    order_id, hospitalId
+  ).run()
+
+  return c.json({ success: true })
+})
+
+// #1 검수 이슈 목록 조회
+orders.get('/inspection/issues/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const { year, month } = c.req.param()
+
+  const data = await c.env.DB.prepare(
+    `SELECT ii.*, d.order_date, d.total_amount as order_total,
+            d.inspection_status, v.name as vendor_name_actual
+     FROM inspection_issues ii
+     JOIN daily_orders d ON ii.order_id = d.id
+     JOIN vendors v ON d.vendor_id = v.id
+     WHERE ii.hospital_id = ?
+       AND strftime('%Y', d.order_date) = ?
+       AND strftime('%m', d.order_date) = printf('%02d', ?)
+     ORDER BY d.order_date DESC, ii.created_at DESC`
+  ).bind(hospitalId, year, month).all<any>()
+
+  return c.json(data.results || [])
+})
+
 export default orders

@@ -274,7 +274,8 @@ function getHospitalMenus() {
     { id: 'orders', icon: 'fa-clipboard-list', label: '발주 입력', section: null },
     { id: 'meals', icon: 'fa-utensils', label: '식수 입력', section: null },
     { id: 'schedule', icon: 'fa-calendar-alt', label: '스케줄 관리', section: null },
-    { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
+    { id: 'ingredient-prices', icon: 'fa-leaf', label: '식재료 단가 분석', section: '분석' },
+    { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: null },
     { id: 'settings', icon: 'fa-flag-checkered', label: '마감 요청', section: '관리' },
     { id: 'expense-doc', icon: 'fa-file-invoice-dollar', label: '지출결의서', section: null }
   ]
@@ -392,7 +393,8 @@ function navigateTo(page, forceReload = false) {
     'hospital-manage': renderHospitalManage,
     'holiday-manage':  renderHolidayManage,
     report: renderReport,
-    'expense-doc': renderExpenseDoc
+    'expense-doc': renderExpenseDoc,
+    'ingredient-prices': renderIngredientPricesPage  // #8 독립 메뉴
   }
 
   if (pages[page]) {
@@ -740,7 +742,7 @@ async function renderDashboard() {
       <div class="text-xs text-gray-300 mt-1">일평균 ${fmtMan(budgetDepl.dailyAvgUsed||0)}원 기준</div>
     </div>
 
-    <!-- 2.4 식수 대비 발주 적정성 -->
+    <!-- 2.4 식수 대비 발주 적정성 (#6 개선: 일별/주별/월별 구분) -->
     <div class="bg-white rounded-2xl shadow-sm border ${orderAppr.label==='over'?'border-orange-200':orderAppr.label==='under'?'border-blue-200':'border-green-200'} p-4">
       <div class="flex items-center gap-2 mb-2">
         <div class="w-8 h-8 rounded-lg ${orderAppr.label==='over'?'bg-orange-50':orderAppr.label==='under'?'bg-blue-50':'bg-green-50'} flex items-center justify-center">
@@ -748,9 +750,35 @@ async function renderDashboard() {
         </div>
         <span class="text-xs text-gray-500 font-semibold">발주 적정성</span>
       </div>
-      <div class="text-lg font-bold ${orderAppr.label==='over'?'text-orange-600':orderAppr.label==='under'?'text-blue-600':'text-green-700'}">
-        ${orderAppr.label==='over' ? '과다 발주' : orderAppr.label==='under' ? '과소 발주' : (orderAppr.targetMealPrice > 0 ? '적정 수준' : '목표 미설정')}
+      <div class="text-base font-bold ${orderAppr.label==='over'?'text-orange-600':orderAppr.label==='under'?'text-blue-600':'text-green-700'}">
+        ${orderAppr.label==='over' ? '⚠ 과다 발주' : orderAppr.label==='under' ? '▼ 과소 발주' : (orderAppr.targetMealPrice > 0 ? '✓ 적정 수준' : '목표 미설정')}
       </div>
+      <!-- #6 일별/주별/월별 적정성 3단계 표시 -->
+      ${orderAppr.targetMealPrice > 0 ? (() => {
+        const todayPct = s.dailyBudget > 0 ? Math.round(s.todayUsed / s.dailyBudget * 100) : null
+        const weekPct  = s.weeklyBudget > 0 ? Math.round(s.weekUsed / s.weeklyBudget * 100) : null
+        const monthPct = parseFloat(s.progress || 0)
+        const rows = [
+          { label:'일별', pct: todayPct, used: s.todayUsed, budget: s.dailyBudget },
+          { label:'주별', pct: weekPct,  used: s.weekUsed,  budget: s.weeklyBudget },
+          { label:'월별', pct: monthPct, used: s.totalUsed, budget: s.totalBudget },
+        ]
+        return `<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">
+          ${rows.map(r => {
+            if (r.pct === null || r.budget <= 0) return `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;font-weight:700;color:#6b7280;width:24px">${r.label}</span><span style="font-size:10px;color:#9ca3af">미설정</span></div>`
+            const c = r.pct >= 100 ? '#dc2626' : r.pct >= 80 ? '#f59e0b' : '#10b981'
+            const status = r.pct >= 110 ? '초과' : r.pct >= 80 ? '주의' : '정상'
+            return `<div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:10px;font-weight:700;color:#374151;width:24px">${r.label}</span>
+              <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden">
+                <div style="height:100%;width:${Math.min(r.pct,100)}%;background:${c};border-radius:3px"></div>
+              </div>
+              <span style="font-size:10px;font-weight:700;color:${c};width:34px;text-align:right">${r.pct}%</span>
+              <span style="font-size:9px;color:${c};background:${c}20;padding:1px 4px;border-radius:8px;white-space:nowrap">${status}</span>
+            </div>`
+          }).join('')}
+        </div>`
+      })() : `
       <div class="text-xs text-gray-400 mt-1">
         실제: ${fmtMan(orderAppr.actualOrderAmt||0)}원 · 적정: ${fmtMan(orderAppr.appropriateOrderAmt||0)}원
       </div>
@@ -759,7 +787,7 @@ async function renderDashboard() {
         ${orderAppr.diffRatio > 0 ? '+' : ''}${orderAppr.diffRatio}%
         (${fmtMan(Math.abs(orderAppr.diffAmt||0))}원 ${orderAppr.label==='over'?'초과':orderAppr.label==='under'?'부족':'차이'})
       </div>` : ''}
-      <div class="text-xs text-gray-300 mt-1">식수 ${fmt(orderAppr.totalMeals||0)}식 기준</div>
+      <div class="text-xs text-gray-300 mt-1">목표 식단가 미설정</div>`}
     </div>
 
     <!-- 2.5 발주 이상 탐지 -->
@@ -812,8 +840,25 @@ async function renderDashboard() {
         </div>
       </div>
       <div class="text-xl md:text-2xl font-bold ${s.remaining<0?'text-red-600':'text-gray-800'}">${fmtMan(Math.abs(s.remaining))}<span class="text-xs font-normal text-gray-400 ml-1">원</span></div>
-      <div class="text-xs ${s.remaining<0?'text-red-500':'text-gray-400'} mt-1">${s.remaining<0?'⚠️ 예산 초과!':'남은 예산'}</div>
-      <div class="text-xs text-gray-400 mt-1">잔여 ${remainingDays}일 · 일평균 ${fmtMan(remainingDays>0?Math.round(s.remaining/remainingDays):0)}원 가능</div>
+      <div class="text-xs ${s.remaining<0?'text-red-500 font-semibold':'text-gray-400'} mt-1">${s.remaining<0?'⚠️ 예산 초과!':'남은 예산'}</div>
+      <!-- #6 잔여 예산 Progress Bar 시각화 -->
+      ${s.totalBudget > 0 ? `
+      <div class="mt-2">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-bottom:3px">
+          <span>사용 ${fmtMan(s.totalUsed)}원</span>
+          <span>목표 ${fmtMan(s.totalBudget)}원</span>
+        </div>
+        <div style="position:relative;height:10px;background:#f3f4f6;border-radius:6px;overflow:hidden">
+          <div style="position:absolute;left:0;top:0;height:100%;border-radius:6px;transition:width 0.5s;
+            background:${parseFloat(s.progress)>=100?'#dc2626':parseFloat(s.progress)>=80?'#f59e0b':'#10b981'};
+            width:${Math.min(parseFloat(s.progress||0),100)}%"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;margin-top:3px">
+          <span style="font-weight:700;color:${parseFloat(s.progress)>=100?'#dc2626':parseFloat(s.progress)>=80?'#d97706':'#059669'}">${s.progress}% 사용</span>
+          <span style="color:#6b7280">잔여 ${remainingDays}일</span>
+        </div>
+        <div style="font-size:10px;color:#6b7280;margin-top:2px">일 가용: ${fmtMan(remainingDays>0?Math.round(s.remaining/remainingDays):0)}원/일</div>
+      </div>` : '<div class="text-xs text-gray-400 mt-1">예산 미설정</div>'}
     </div>
 
     <div class="stat-card">
@@ -1941,6 +1986,12 @@ async function renderOrders() {
         <button onclick="openInspectionModal()" class="btn btn-sm" style="background:#ecfdf5;color:#059669;border:1px solid #6ee7b7" title="발주 검수 관리">
           <i class="fas fa-clipboard-check"></i> <span class="hidden sm:inline">검수</span>
         </button>
+        <button onclick="showMonthAllOrdersModal()" class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa" title="월 전체 발주 펼쳐보기">
+          <i class="fas fa-table"></i> <span class="hidden sm:inline">전체보기</span>
+        </button>
+        <button onclick="downloadOrdersExcel()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0" title="발주 데이터 엑셀 다운로드">
+          <i class="fas fa-file-excel"></i> <span class="hidden sm:inline">엑셀</span>
+        </button>
         <button onclick="refreshOrders()" class="btn btn-secondary btn-sm">
           <i class="fas fa-sync"></i>
         </button>
@@ -2040,15 +2091,18 @@ async function renderOrders() {
               <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
             </div>
           </div>
-          <!-- 업체 발주 비중 -->
+          <!-- 업체 발주 비중 (#7 개선: TOP3 집중도 + 월목표 대비) -->
           <div id="vendorShareCard" style="background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;padding:10px">
-            <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;display:flex;align-items:center;gap:4px">
-              <i class="fas fa-store" style="color:#3b82f6"></i> 업체별 발주 비중
+            <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:4px">
+              <span><i class="fas fa-store" style="color:#3b82f6"></i> 업체별 발주 비중</span>
+              <span id="vendorShareTopBadge" style="font-size:9px;color:#6b7280"></span>
             </div>
             <div id="vendorShareContent">
               <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
             </div>
             <div id="vendorBiasAlert" style="display:none"></div>
+            <!-- TOP3 집중도 요약 -->
+            <div id="vendorTop3Summary" style="display:none;margin-top:6px;padding:5px 8px;background:#dbeafe;border-radius:6px;font-size:9px;color:#1d4ed8"></div>
           </div>
         </div>
       </div>
@@ -2772,21 +2826,31 @@ window.openTodayDetailForVendor = function(vendorId) {
 // ── 아코디언: 상세 행 토글 ──────────────────────────────────────
 window.toggleOrderDetail = function(dateStr) {
   const detailRows = document.querySelectorAll(`.order-detail-row[data-date="${dateStr}"]`)
-  // 탭 구조: tab-index=0인 행이 보이면 열린 상태
   const firstDetailRow = detailRows[0]
-  const isOpen = firstDetailRow && firstDetailRow.style.display !== 'none'
+
+  // #10 버그 수정: 탭 전환 후 요양→항암 display:none 상태에서도
+  // "하나라도 보이면 열린 상태"로 판단 (첫 번째 행만 체크하면 오탐)
+  const isOpen = Array.from(detailRows).some(row => row.style.display !== 'none')
 
   if (isOpen) {
     // 닫기: 모든 상세 행 숨기기
     detailRows.forEach(row => { row.style.display = 'none' })
   } else {
-    // 열기: tab-index=0 행만 표시 (탭 구조), 비탭은 모두 표시
+    // 열기: 현재 활성 탭 인덱스를 유지하면서 해당 탭 행만 표시
+    // 활성 탭 인덱스: 마지막으로 클릭된 탭(data-active-tab) 또는 0
+    const activeTabIdx = parseInt(
+      document.querySelector(`.order-detail-row.cat-tab-row[data-date="${dateStr}"]`)
+        ?.closest('tbody')
+        ?.querySelector(`tr[data-date="${dateStr}"][data-active-tab]`)
+        ?.dataset?.activeTab ?? '0'
+    )
     detailRows.forEach(row => {
       const tabIdx = row.dataset.tabIndex
       if (tabIdx === undefined) {
         row.style.display = ''  // 비탭 구조
       } else {
-        row.style.display = tabIdx === '0' ? '' : 'none'  // 탭 구조: 첫 탭만 표시
+        // 활성 탭 인덱스에 맞는 행만 표시
+        row.style.display = parseInt(tabIdx) === activeTabIdx ? '' : 'none'
       }
     })
   }
@@ -2816,6 +2880,21 @@ window.switchOrderDetailTab = function(dateStr, tabIndex) {
     const idx = parseInt(row.dataset.tabIndex || '0')
     row.style.display = idx === tabIndex ? '' : 'none'
   })
+
+  // #10 버그 수정: 활성 탭 인덱스를 tr 행에 data-active-tab 속성으로 저장
+  // toggleOrderDetail이 이 값을 읽어 올바른 탭 행만 표시하도록 함
+  detailRows.forEach(row => {
+    row.dataset.activeTab = String(tabIndex)
+  })
+
+  // 탭 버튼 스타일 업데이트 (활성/비활성)
+  const tabBtns = document.querySelectorAll(`[data-date="${dateStr}"] .cat-tab-btn, span[onclick*="switchOrderDetailTab('${dateStr}'"]`)
+  tabBtns.forEach(btn => {
+    const btnIdx = parseInt(btn.dataset?.tabIdx ?? btn.getAttribute('onclick')?.match(/,(\d+)\)/)?.[1] ?? '-1')
+    if (btnIdx === -1) return
+    // 탭 버튼 스타일 처리는 HTML에서 동적으로 생성되므로 건너뜀
+  })
+
   // 탭 전환 후 첫 입력에 포커스
   const activeRow = document.querySelector(`.order-detail-row.cat-tab-row[data-date="${dateStr}"][data-tab-index="${tabIndex}"]`)
   if (activeRow) {
@@ -3096,6 +3175,323 @@ window.refreshOrders = () => {
   renderOrders()
 }
 
+// ── #2 월 전체 발주 확인 모달 ────────────────────────────────────
+window.showMonthAllOrdersModal = function() {
+  const vendors = window._vendorsCache || []
+  const patientCats = window._patientCats || []
+  const catSettings = window._catOrderSettings || []
+  const orderData = window._ordersData || []
+  const year = App.currentYear
+  const month = App.currentMonth
+  const daysInMonth = new Date(year, month, 0).getDate()
+
+  const hasCats = patientCats.length > 0
+
+  // 날짜 목록
+  const days = []
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    const dow = ['일','월','화','수','목','금','토'][new Date(dateStr).getDay()]
+    const isWeekend = new Date(dateStr).getDay() === 0 || new Date(dateStr).getDay() === 6
+    days.push({ dateStr, d, dow, isWeekend })
+  }
+
+  // 카테고리별 발주 데이터 맵
+  const catDailyMap = {}
+  ;(window._catDailyData || {})
+  // fallback: catOrderSettings에서 읽기
+  const catOrderMap = {}  // { dateStr: { catId: { vendorId: {taxable,exempt,total} } } }
+  ;(catSettings || []).forEach(s => {
+    const key = `${s.order_date}__${s.category_id}__${s.vendor_id}`
+    catOrderMap[key] = s
+  })
+
+  // 업체별/날짜별 발주 맵 (일반 발주)
+  const normalOrderMap = {}
+  ;(orderData || []).forEach(o => {
+    const k = `${o.order_date}__${o.vendor_id}`
+    normalOrderMap[k] = o
+  })
+
+  // 월 합계
+  let grandMonthTotal = 0
+  ;(orderData || []).forEach(o => { grandMonthTotal += o.total_amount || 0 })
+  // 카테고리 발주 합계도 포함
+  ;(catSettings||[]).forEach(s => {
+    const total = (s.total_override != null) ? s.total_override : ((s.taxable_amount||0)+(s.exempt_amount||0)+((s.taxable_amount||0)*0.1))
+    grandMonthTotal += total
+  })
+
+  // 컬럼 헤더 생성
+  let colHeaders = ''
+  if (hasCats) {
+    patientCats.forEach(cat => {
+      vendors.forEach(v => {
+        const catVendors = (catSettings||[]).filter(s => s.category_id == cat.id && s.vendor_id == v.id)
+        if (catVendors.length > 0 || true) {
+          colHeaders += `<th style="min-width:80px;font-size:10px;padding:6px 4px;text-align:right;white-space:nowrap;border-left:1px solid #e5e7eb">
+            <div style="color:#6b7280;font-size:9px">${cat.name}</div>
+            <div style="font-weight:700">${v.name}</div>
+          </th>`
+        }
+      })
+    })
+  } else {
+    vendors.forEach(v => {
+      colHeaders += `<th style="min-width:80px;font-size:10px;padding:6px 8px;text-align:right;white-space:nowrap">${v.name}</th>`
+    })
+  }
+
+  // 행 생성
+  let tbody = ''
+  let monthTotals = {} // vendorId -> total
+  let catMonthTotals = {} // catId+vendorId -> total
+
+  days.forEach(({ dateStr, d, dow, isWeekend }) => {
+    let rowTotal = 0
+    let cells = ''
+
+    if (hasCats) {
+      patientCats.forEach(cat => {
+        vendors.forEach(v => {
+          const k = `${dateStr}__${cat.id}__${v.id}`
+          const s = catOrderMap[k]
+          let amt = 0
+          if (s) {
+            amt = s.total_override != null ? s.total_override :
+              (s.taxable_amount||0) + (s.exempt_amount||0) + Math.round((s.taxable_amount||0)*0.1)
+          }
+          rowTotal += amt
+          const ck = `${cat.id}_${v.id}`
+          catMonthTotals[ck] = (catMonthTotals[ck]||0) + amt
+          cells += `<td style="text-align:right;padding:4px 6px;font-size:11px;border-left:1px solid #f3f4f6;${amt>0?'color:#1f2937;font-weight:600':'color:#d1d5db'}">${amt>0?fmtMan(amt):'-'}</td>`
+        })
+      })
+    } else {
+      vendors.forEach(v => {
+        const k = `${dateStr}__${v.id}`
+        const o = normalOrderMap[k]
+        const amt = o ? (o.total_amount||0) : 0
+        rowTotal += amt
+        monthTotals[v.id] = (monthTotals[v.id]||0) + amt
+        cells += `<td style="text-align:right;padding:4px 8px;font-size:11px;${amt>0?'color:#1f2937;font-weight:600':'color:#d1d5db'}">${amt>0?fmtMan(amt):'-'}</td>`
+      })
+    }
+
+    const rowBg = isWeekend ? '#fafafa' : 'white'
+    const dowColor = dow==='일' ? '#dc2626' : dow==='토' ? '#2563eb' : '#374151'
+    tbody += `<tr style="background:${rowBg};border-bottom:1px solid #f3f4f6">
+      <td style="padding:4px 8px;font-size:11px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:${rowBg};z-index:1">
+        <span style="color:${dowColor}">${d}일(${dow})</span>
+      </td>
+      ${cells}
+      <td style="text-align:right;padding:4px 8px;font-size:11px;font-weight:800;color:${rowTotal>0?'#1d4ed8':'#d1d5db'};white-space:nowrap;position:sticky;right:0;background:${rowBg};border-left:2px solid #e5e7eb">${rowTotal>0?fmtMan(rowTotal):'-'}</td>
+    </tr>`
+  })
+
+  // 합계 행
+  let totalCells = ''
+  if (hasCats) {
+    patientCats.forEach(cat => {
+      vendors.forEach(v => {
+        const ck = `${cat.id}_${v.id}`
+        const t = catMonthTotals[ck]||0
+        totalCells += `<td style="text-align:right;padding:5px 6px;font-size:11px;font-weight:700;color:${t>0?'#1d4ed8':'#9ca3af'};border-left:1px solid #e5e7eb">${t>0?fmtMan(t):'-'}</td>`
+      })
+    })
+  } else {
+    vendors.forEach(v => {
+      const t = monthTotals[v.id]||0
+      totalCells += `<td style="text-align:right;padding:5px 8px;font-size:11px;font-weight:700;color:${t>0?'#1d4ed8':'#9ca3af'}">${t>0?fmtMan(t):'-'}</td>`
+    })
+  }
+
+  const allMonthTotal = Object.values(hasCats ? catMonthTotals : monthTotals).reduce((s,v)=>s+v,0)
+
+  // 모달 생성
+  const existing = document.getElementById('monthAllOrdersModal')
+  if (existing) existing.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'monthAllOrdersModal'
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto'
+  modal.innerHTML = `
+    <div style="background:white;border-radius:16px;width:100%;max-width:900px;box-shadow:0 20px 60px rgba(0,0,0,0.3);margin:auto">
+      <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:white;border-radius:16px 16px 0 0;z-index:2">
+        <div>
+          <h2 style="font-weight:700;color:#1f2937;font-size:16px"><i class="fas fa-table" style="color:#ea580c;margin-right:8px"></i>${year}년 ${month}월 전체 발주 현황</h2>
+          <p style="font-size:12px;color:#6b7280;margin-top:2px">월 합계: <strong style="color:#1d4ed8">${fmtMan(allMonthTotal)}원</strong></p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="downloadOrdersExcel()" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer">
+            <i class="fas fa-file-excel mr-1"></i>엑셀 다운로드
+          </button>
+          <button onclick="document.getElementById('monthAllOrdersModal').remove()" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;font-weight:700">✕</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto;max-height:70vh;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse;min-width:600px">
+          <thead>
+            <tr style="background:#f8fafc;border-bottom:2px solid #e5e7eb;position:sticky;top:0;z-index:1">
+              <th style="padding:8px;font-size:11px;text-align:left;position:sticky;left:0;background:#f8fafc;z-index:2;white-space:nowrap">날짜</th>
+              ${colHeaders}
+              <th style="padding:8px;font-size:11px;text-align:right;position:sticky;right:0;background:#f8fafc;z-index:2;border-left:2px solid #e5e7eb;white-space:nowrap">일 합계</th>
+            </tr>
+          </thead>
+          <tbody>${tbody}</tbody>
+          <tfoot>
+            <tr style="background:#eff6ff;border-top:2px solid #bfdbfe;font-weight:700">
+              <td style="padding:6px 8px;font-size:12px;position:sticky;left:0;background:#eff6ff;z-index:1">합계</td>
+              ${totalCells}
+              <td style="text-align:right;padding:6px 8px;font-size:12px;font-weight:800;color:#1d4ed8;position:sticky;right:0;background:#eff6ff;border-left:2px solid #bfdbfe">${fmtMan(allMonthTotal)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  document.body.appendChild(modal)
+}
+
+// ── #2 발주 엑셀 다운로드 ────────────────────────────────────────
+window.downloadOrdersExcel = async function() {
+  if (typeof XLSX === 'undefined') {
+    const script = document.createElement('script')
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    document.head.appendChild(script)
+    showToast('엑셀 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
+    return
+  }
+
+  const vendors = window._vendorsCache || []
+  const patientCats = window._patientCats || []
+  const catSettings = window._catOrderSettings || []
+  const orderData = window._ordersData || []
+  const year = App.currentYear
+  const month = App.currentMonth
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const mm = String(month).padStart(2,'0')
+
+  const hasCats = patientCats.length > 0
+
+  const catOrderMap = {}
+  ;(catSettings||[]).forEach(s => {
+    const key = `${s.order_date}__${s.category_id}__${s.vendor_id}`
+    catOrderMap[key] = s
+  })
+  const normalOrderMap = {}
+  ;(orderData||[]).forEach(o => {
+    const k = `${o.order_date}__${o.vendor_id}`
+    normalOrderMap[k] = o
+  })
+
+  const DOWK = ['일','월','화','수','목','금','토']
+  const wb = XLSX.utils.book_new()
+  const wsData = []
+
+  // 헤더 행
+  const headerRow = ['날짜','요일']
+  if (hasCats) {
+    patientCats.forEach(cat => {
+      vendors.forEach(v => {
+        headerRow.push(`${cat.name}-${v.name}(과세)`)
+        headerRow.push(`${cat.name}-${v.name}(면세)`)
+        headerRow.push(`${cat.name}-${v.name}(합계)`)
+      })
+    })
+  } else {
+    vendors.forEach(v => {
+      const isM = v.tax_type==='mixed'
+      if (isM) {
+        headerRow.push(`${v.name}(과세)`)
+        headerRow.push(`${v.name}(면세)`)
+      }
+      headerRow.push(`${v.name}(합계)`)
+    })
+  }
+  headerRow.push('일별 합계')
+  wsData.push(headerRow)
+
+  // 카테고리별 합계 초기화
+  const catVendorTotals = {}
+  let grandTotal = 0
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${mm}-${String(d).padStart(2,'0')}`
+    const dow = DOWK[new Date(dateStr).getDay()]
+    const row = [dateStr, dow]
+    let dayTotal = 0
+
+    if (hasCats) {
+      patientCats.forEach(cat => {
+        vendors.forEach(v => {
+          const k = `${dateStr}__${cat.id}__${v.id}`
+          const s = catOrderMap[k]
+          const taxable = s ? (s.taxable_amount||0) : 0
+          const exempt = s ? (s.exempt_amount||0) : 0
+          const total = s ? (s.total_override != null ? s.total_override : taxable + exempt + Math.round(taxable*0.1)) : 0
+          row.push(taxable||'')
+          row.push(exempt||'')
+          row.push(total||'')
+          dayTotal += total
+          const ck = `${cat.id}_${v.id}`
+          catVendorTotals[ck] = (catVendorTotals[ck]||0) + total
+        })
+      })
+    } else {
+      vendors.forEach(v => {
+        const k = `${dateStr}__${v.id}`
+        const o = normalOrderMap[k]
+        const isM = v.tax_type === 'mixed'
+        if (isM) {
+          row.push(o ? (o.taxable_amount||0)||'' : '')
+          row.push(o ? (o.exempt_amount||0)||'' : '')
+        }
+        const amt = o ? (o.total_amount||0) : 0
+        row.push(amt||'')
+        dayTotal += amt
+        catVendorTotals[v.id] = (catVendorTotals[v.id]||0) + amt
+      })
+    }
+
+    row.push(dayTotal||'')
+    grandTotal += dayTotal
+    wsData.push(row)
+  }
+
+  // 합계 행
+  const totalRow = ['합계', '']
+  if (hasCats) {
+    patientCats.forEach(cat => {
+      vendors.forEach(v => {
+        totalRow.push('')
+        totalRow.push('')
+        const ck = `${cat.id}_${v.id}`
+        totalRow.push(catVendorTotals[ck]||0)
+      })
+    })
+  } else {
+    vendors.forEach(v => {
+      const isM = v.tax_type === 'mixed'
+      if (isM) { totalRow.push(''); totalRow.push('') }
+      totalRow.push(catVendorTotals[v.id]||0)
+    })
+  }
+  totalRow.push(grandTotal)
+  wsData.push(totalRow)
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData)
+
+  // 열 너비 설정
+  ws['!cols'] = [{ wch: 12 }, { wch: 5 }]
+  headerRow.slice(2).forEach(() => ws['!cols'].push({ wch: 12 }))
+
+  XLSX.utils.book_append_sheet(wb, ws, `${year}년${mm}월_발주내역`)
+  XLSX.writeFile(wb, `발주내역_${year}년${mm}월.xlsx`)
+  showToast('엑셀 다운로드 완료!', 'success')
+}
+
 // ══════════════════════════════════════════════════════════════
 // 2.1 발주 검수 관리 모달
 // ══════════════════════════════════════════════════════════════
@@ -3183,7 +3579,15 @@ window.openInspectionModal = async () => {
             </tr>
           </thead>
           <tbody>
-            ${all.map(r => `
+            ${all.map(r => {
+              const statusMap = {
+                pending: {label:'⏳ 미검수', bg:'#fef3c7', color:'#d97706'},
+                completed_ok: {label:'✓ 검수완료', bg:'#dcfce7', color:'#16a34a'},
+                completed_issue: {label:'⚠ 이슈발생', bg:'#fff7ed', color:'#ea580c'},
+                returned: {label:'↩ 반품발생', bg:'#fee2e2', color:'#dc2626'}
+              }
+              const statusInfo = statusMap[r.inspection_status || (r.is_inspected ? 'completed_ok' : 'pending')] || statusMap.pending
+              return `
             <tr id="insp-row-${r.id}" style="border-bottom:1px solid #f3f4f6;${r.is_inspected?'background:#f0fdf4':''}">
               <td style="padding:6px 8px;color:#6b7280">${r.order_date}</td>
               <td style="padding:6px 8px;font-weight:600;color:#374151">${r.vendor_name}</td>
@@ -3191,16 +3595,14 @@ window.openInspectionModal = async () => {
               <td style="padding:6px 8px;text-align:right">
                 ${r.is_inspected ? `
                   <span class="font-bold ${(r.actual_amount||r.total_amount)!==r.total_amount?'text-orange-600':'text-green-600'}">${fmt(r.actual_amount||r.total_amount)}원</span>
+                  ${r.deduction_amount > 0 ? `<div style="font-size:10px;color:#dc2626">차감: -${fmt(r.deduction_amount)}원</div>` : ''}
                 ` : `
                   <input type="number" id="actual-${r.id}" value="${r.total_amount}"
                     style="width:90px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;text-align:right;font-size:11px">
                 `}
               </td>
               <td style="padding:6px 8px;text-align:center">
-                ${r.is_inspected
-                  ? `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">✓ 검수완료</span>`
-                  : `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">⏳ 미검수</span>`
-                }
+                <span style="background:${statusInfo.bg};color:${statusInfo.color};padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${statusInfo.label}</span>
               </td>
               <td style="padding:6px 8px;text-align:center">
                 ${r.is_inspected ? `
@@ -3208,9 +3610,14 @@ window.openInspectionModal = async () => {
                     <i class="fas fa-undo"></i>
                   </button>
                 ` : `
-                  <button onclick="completeInspection(${r.id})" style="background:#059669;color:white;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">
-                    검수완료
-                  </button>
+                  <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+                    <button onclick="completeInspection(${r.id},'completed_ok')" style="background:#059669;color:white;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer;white-space:nowrap">
+                      ✓ 검수완료
+                    </button>
+                    <button onclick="openIssueForm(${r.id},'${r.vendor_name}',${r.total_amount})" style="background:#ea580c;color:white;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer;white-space:nowrap">
+                      ⚠ 이슈기록
+                    </button>
+                  </div>
                 `}
               </td>
             </tr>
@@ -3220,7 +3627,59 @@ window.openInspectionModal = async () => {
                 📝 ${r.inspection_memo}
               </td>
             </tr>` : ''}
-            `).join('')}
+            <!-- 이슈 입력 폼 (숨김 상태) -->
+            <tr id="issue-form-${r.id}" style="display:none;background:#fff7ed;border-bottom:1px solid #fed7aa">
+              <td colspan="6" style="padding:12px 16px">
+                <div style="font-weight:700;color:#ea580c;font-size:12px;margin-bottom:8px">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>${r.vendor_name} 이슈 기록
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">이슈 유형 *</label>
+                    <select id="issue-type-${r.id}" style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px">
+                      <option value="미입고">미입고</option>
+                      <option value="품질불량">품질 불량</option>
+                      <option value="반품">반품</option>
+                      <option value="수량부족">수량 부족</option>
+                      <option value="단가오류">단가 오류</option>
+                      <option value="기타">기타</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">검수 상태</label>
+                    <select id="issue-status-${r.id}" style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px">
+                      <option value="completed_issue">이슈 발생</option>
+                      <option value="returned">반품 발생</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">품목명</label>
+                    <input type="text" id="issue-item-${r.id}" placeholder="예: 돼지고기 1kg" style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px;box-sizing:border-box">
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">차감 금액 (원)</label>
+                    <input type="number" id="issue-deduction-${r.id}" placeholder="0" value="0"
+                      oninput="updateActualFromDeduction(${r.id},${r.total_amount})"
+                      style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px;box-sizing:border-box">
+                  </div>
+                </div>
+                <div style="margin-bottom:8px">
+                  <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">실제 입고 금액: <strong id="issue-actual-display-${r.id}" style="color:#ea580c">${fmt(r.total_amount)}원</strong> (발주: ${fmt(r.total_amount)}원)</label>
+                </div>
+                <div style="margin-bottom:10px">
+                  <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">이슈 상세 내용</label>
+                  <textarea id="issue-detail-${r.id}" rows="2" placeholder="상세 내용을 입력하세요..."
+                    style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px;resize:vertical;box-sizing:border-box"></textarea>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end">
+                  <button onclick="cancelIssueForm(${r.id})" style="background:#f3f4f6;color:#374151;border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">취소</button>
+                  <button onclick="saveInspectionIssue(${r.id},'${r.vendor_name}',${r.total_amount})" style="background:#ea580c;color:white;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">
+                    <i class="fas fa-save mr-1"></i>이슈 저장
+                  </button>
+                </div>
+              </td>
+            </tr>
+            `}).join('')}
           </tbody>
         </table>`}
       </div>
@@ -3234,14 +3693,15 @@ window.openInspectionModal = async () => {
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
 }
 
-window.completeInspection = async (orderId) => {
+window.completeInspection = async (orderId, status = 'completed_ok') => {
   const actualEl = document.getElementById(`actual-${orderId}`)
   const actualAmount = actualEl ? parseInt(actualEl.value.replace(/,/g,'')) || 0 : null
-  const memo = null // 메모는 간략화 (확장 가능)
+  const memo = null
 
   try {
     await api('PUT', `/api/orders/inspection/${orderId}`, {
-      is_inspected: true, actual_amount: actualAmount, inspection_memo: memo
+      is_inspected: true, actual_amount: actualAmount, inspection_memo: memo,
+      status: status
     })
     const row = document.getElementById(`insp-row-${orderId}`)
     if (row) {
@@ -3255,6 +3715,51 @@ window.completeInspection = async (orderId) => {
     }
     showToast('검수 완료 처리됨', 'success')
   } catch(e) { showToast('처리 실패', 'error') }
+}
+
+// #1 이슈 입력 폼 열기/닫기
+window.openIssueForm = function(orderId, vendorName, orderAmount) {
+  document.getElementById(`issue-form-${orderId}`).style.display = ''
+  document.getElementById(`actual-${orderId}`) && (document.getElementById(`actual-${orderId}`).closest('tr').style.display = 'none')
+}
+window.cancelIssueForm = function(orderId) {
+  document.getElementById(`issue-form-${orderId}`).style.display = 'none'
+}
+window.updateActualFromDeduction = function(orderId, orderAmount) {
+  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||0)||0
+  const actual = orderAmount - deduction
+  const dispEl = document.getElementById(`issue-actual-display-${orderId}`)
+  if (dispEl) dispEl.textContent = fmt(Math.max(0, actual)) + '원'
+}
+
+// #1 이슈 저장
+window.saveInspectionIssue = async function(orderId, vendorName, orderAmount) {
+  const issueType = document.getElementById(`issue-type-${orderId}`)?.value
+  const issueStatus = document.getElementById(`issue-status-${orderId}`)?.value || 'completed_issue'
+  const itemName = document.getElementById(`issue-item-${orderId}`)?.value || ''
+  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||0)||0
+  const detail = document.getElementById(`issue-detail-${orderId}`)?.value || ''
+  const actualAmount = Math.max(0, orderAmount - deduction)
+
+  if (!issueType) { showToast('이슈 유형을 선택하세요', 'error'); return }
+
+  try {
+    await api('POST', '/api/orders/inspection/issue', {
+      order_id: orderId,
+      vendor_name: vendorName,
+      item_name: itemName,
+      issue_type: issueType,
+      issue_detail: detail,
+      deduction_amount: deduction,
+      order_amount: orderAmount,
+      actual_amount: actualAmount,
+      inspection_status: issueStatus
+    })
+    showToast('이슈가 기록되었습니다', 'success')
+    // 모달 새로고침
+    document.getElementById('inspection-modal')?.remove()
+    openInspectionModal()
+  } catch(e) { showToast('이슈 저장 실패', 'error') }
 }
 
 window.undoInspection = async (orderId) => {
@@ -3505,14 +4010,28 @@ function bindOrderInputEvents() {
   tbody.addEventListener('keydown', function(e) {
     if (e.key !== 'Enter' && e.key !== 'Tab') return
     const input = e.target
+
+    // #3 수정: Tab(다음칸) / Shift+Tab(이전칸) 모두 처리
     if (input.classList.contains('order-input')) {
-      const inputs = [...tbody.querySelectorAll('.order-input')]
+      const inputs = [...tbody.querySelectorAll('.order-input')].filter(el => el.offsetParent !== null)
       const idx = inputs.indexOf(input)
-      if (idx < inputs.length - 1) { e.preventDefault(); inputs[idx + 1].focus() }
+      if (e.shiftKey) {
+        // Shift+Tab: 이전 입력칸으로 이동
+        if (idx > 0) { e.preventDefault(); inputs[idx - 1].focus() }
+      } else {
+        // Tab 또는 Enter: 다음 입력칸으로 이동
+        if (idx < inputs.length - 1) { e.preventDefault(); inputs[idx + 1].focus() }
+      }
     } else if (input.classList.contains('cat-order-input')) {
-      const inputs = [...tbody.querySelectorAll('.cat-order-input')]
+      const inputs = [...tbody.querySelectorAll('.cat-order-input')].filter(el => el.offsetParent !== null)
       const idx = inputs.indexOf(input)
-      if (idx < inputs.length - 1) { e.preventDefault(); inputs[idx + 1].focus() }
+      if (e.shiftKey) {
+        // Shift+Tab: 이전 입력칸으로 이동
+        if (idx > 0) { e.preventDefault(); inputs[idx - 1].focus() }
+      } else {
+        // Tab 또는 Enter: 다음 입력칸으로 이동
+        if (idx < inputs.length - 1) { e.preventDefault(); inputs[idx + 1].focus() }
+      }
     }
   })
 }
@@ -4345,7 +4864,7 @@ function updateInsightPanel() {
     dietAlertEl.innerHTML = `<div style="font-size:10px;color:#9ca3af">카테고리 설정 필요</div>`
   }
 
-  // ── 4. 업체 발주 비중 ──
+  // ── 4. 업체 발주 비중 (#7 개선: 월목표 대비 + TOP3/5 집중도) ──
   const vendorShareEl = document.getElementById('vendorShareContent')
   if (vendorShareEl && vendors.length > 0) {
     // 업체별 발주 합계
@@ -4376,25 +4895,54 @@ function updateInsightPanel() {
     }
     const grandV = Object.values(vendorTotals).reduce((a,b)=>a+b,0)
     const vendorColors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#84cc16','#ec4899']
-    const vendorBars = vendors.map((v, vi) => {
-      const amt = vendorTotals[v.id] || 0
-      const pct = grandV > 0 ? Math.round(amt/grandV*100) : 0
-      const vColor = vendorColors[vi % vendorColors.length]
-      if (amt === 0) return ''
-      return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
-        <div style="min-width:64px;font-size:9px;font-weight:700;color:${vColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${v.name}">${v.name}</div>
-        <div style="flex:1;height:10px;background:#e5e7eb;border-radius:5px;overflow:hidden">
-          <div style="height:100%;width:${pct}%;background:${vColor};border-radius:5px;transition:width 0.4s"></div>
+
+    // 업체를 발주액 내림차순 정렬
+    const sortedVendors = vendors
+      .map((v, vi) => ({ ...v, amt: vendorTotals[v.id]||0, color: vendorColors[vi%vendorColors.length] }))
+      .filter(v => v.amt > 0)
+      .sort((a, b) => b.amt - a.amt)
+
+    const vendorBars = sortedVendors.map((v, rank) => {
+      const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
+      const monthBudget = v.monthly_budget || 0
+      const budgetPct = monthBudget > 0 ? Math.round(v.amt/monthBudget*100) : null
+      const budgetColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+      const rankBadge = rank < 3 ? `<span style="font-size:8px;font-weight:800;color:white;background:${rank===0?'#f59e0b':rank===1?'#9ca3af':'#cd7c30'};padding:0 3px;border-radius:3px;margin-right:2px">${rank+1}위</span>` : ''
+      return `<div style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">
+          ${rankBadge}
+          <div style="font-size:9px;font-weight:700;color:${v.color};flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${v.name}">${v.name}</div>
+          <span style="font-size:9px;font-weight:700;color:${v.color}">${pct}%</span>
+          <span style="font-size:8px;color:#9ca3af">${fmtMan(v.amt)}</span>
         </div>
-        <div style="min-width:52px;text-align:right">
-          <span style="font-size:9px;font-weight:700;color:${vColor}">${pct}%</span>
-          <span style="font-size:8px;color:#9ca3af;margin-left:2px">${fmtMan(amt)}</span>
+        <div style="display:flex;align-items:center;gap:3px">
+          <div style="flex:1;height:7px;background:#e5e7eb;border-radius:4px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:${v.color};border-radius:4px;transition:width 0.4s"></div>
+          </div>
+          ${budgetPct !== null ? `<span style="font-size:8px;color:${budgetColor};font-weight:700;white-space:nowrap">목표 ${budgetPct}%</span>` : ''}
         </div>
       </div>`
-    }).filter(Boolean).join('')
+    }).join('')
+
     vendorShareEl.innerHTML = grandV > 0
       ? vendorBars
       : `<div style="font-size:10px;color:#9ca3af">발주 데이터 없음</div>`
+
+    // TOP3 집중도 계산 및 표시
+    const top3El = document.getElementById('vendorTop3Summary')
+    const topBadge = document.getElementById('vendorShareTopBadge')
+    if (grandV > 0 && sortedVendors.length > 0) {
+      const top3 = sortedVendors.slice(0, 3)
+      const top5 = sortedVendors.slice(0, 5)
+      const top3pct = Math.round(top3.reduce((s,v)=>s+v.amt,0)/grandV*100)
+      const top5pct = Math.round(top5.reduce((s,v)=>s+v.amt,0)/grandV*100)
+      if (topBadge) topBadge.textContent = `TOP3: ${top3pct}% / TOP5: ${top5pct}%`
+      if (top3El) {
+        const concentration = top3pct >= 80 ? '⚠ 상위 3개 업체 편중 심함' : top3pct >= 60 ? '상위 3개 업체 집중도 높음' : '업체 분산 양호'
+        top3El.style.display = 'block'
+        top3El.innerHTML = `🏆 <strong>TOP3</strong> ${top3.map(v=>v.name).join(' · ')} — ${top3pct}% 집중 | TOP5: ${top5pct}%${top3pct>=80?' <span style="color:#dc2626;font-weight:700">⚠편중</span>':''}`
+      }
+    }
 
     // ── 업체 편중 감지 (70% 이상 시 경고) ──
     if (grandV > 0) {
@@ -6997,7 +7545,249 @@ window.saveIngredientPrices = async function(year, month, count) {
   }
 }
 
-async function submitClosingRequest(year, month) {
+// ── #8 식재료 단가 분석 독립 페이지 ──────────────────────────────
+async function renderIngredientPricesPage() {
+  const content = document.getElementById('pageContent')
+  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+
+  const year  = App.currentYear
+  const month = App.currentMonth
+
+  // 현재 + 전월 + 전년 데이터 병렬 로드
+  const prevM = month === 1 ? 12 : month - 1
+  const prevY = month === 1 ? year - 1 : year
+  const prevMLabel = `${prevY}년 ${prevM}월`
+  const prevYLabel = `${year-1}년 ${month}월`
+
+  const [data, prevData, prevYData] = await Promise.all([
+    api('GET', `/api/settings/ingredient-prices/${year}/${month}`).catch(()=>[]),
+    api('GET', `/api/settings/ingredient-prices/${prevY}/${prevM}`).catch(()=>[]),
+    api('GET', `/api/settings/ingredient-prices/${year-1}/${month}`).catch(()=>[]),
+  ])
+
+  const DEFAULT_INGREDIENTS = [
+    { name: '쌀', unit: 'kg' }, { name: '닭고기', unit: 'kg' }, { name: '돼지고기', unit: 'kg' },
+    { name: '두부', unit: 'kg' }, { name: '계란', unit: '개' }, { name: '양파', unit: 'kg' },
+    { name: '감자', unit: 'kg' }, { name: '당근', unit: 'kg' }, { name: '배추', unit: 'kg' },
+    { name: '양배추', unit: 'kg' }, { name: '대파', unit: 'kg' }, { name: '마늘', unit: 'kg' },
+    { name: '쇠고기', unit: 'kg' },
+  ]
+
+  const eMap = {}, pMap = {}, pyMap = {}
+  ;(data||[]).forEach(r => { eMap[r.ingredient_name] = r })
+  ;(prevData||[]).forEach(r => { pMap[r.ingredient_name] = r })
+  ;(prevYData||[]).forEach(r => { pyMap[r.ingredient_name] = r })
+
+  const allNames = [...new Set([
+    ...DEFAULT_INGREDIENTS.map(d=>d.name),
+    ...(data||[]).map(r=>r.ingredient_name)
+  ])]
+  const rows = allNames.map(name => {
+    const def = DEFAULT_INGREDIENTS.find(d=>d.name===name) || { name, unit:'kg' }
+    const ex  = eMap[name] || {}
+    const prev = pMap[name] || {}
+    const prevY = pyMap[name] || {}
+    return {
+      name, unit: ex.unit || def.unit,
+      price: ex.unit_price || '',
+      prevPrice: prev.unit_price || 0,
+      prevYearPrice: prevY.unit_price || 0,
+      memo: ex.memo || ''
+    }
+  })
+
+  // 단가 변동 분석 카드 (입력된 데이터만)
+  const filled = rows.filter(r => r.price > 0)
+  const risings = filled.filter(r => r.prevPrice > 0 && r.price > r.prevPrice)
+    .sort((a,b) => ((b.price-b.prevPrice)/b.prevPrice) - ((a.price-a.prevPrice)/a.prevPrice))
+  const fallings = filled.filter(r => r.prevPrice > 0 && r.price < r.prevPrice)
+    .sort((a,b) => ((a.price-a.prevPrice)/a.prevPrice) - ((b.price-b.prevPrice)/b.prevPrice))
+
+  content.innerHTML = `
+  <div class="max-w-5xl mx-auto px-2 py-4">
+    <!-- 헤더 -->
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h1 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+          <i class="fas fa-leaf text-green-500"></i>
+          식재료 단가 분석
+        </h1>
+        <p class="text-xs text-gray-400 mt-0.5">${year}년 ${month}월 기준 · 전월(${prevMLabel}) · 전년동월(${prevYLabel}) 비교</p>
+      </div>
+      <div class="flex gap-2">
+        <select id="ingYearSel" class="form-input text-sm py-1.5" onchange="reloadIngPage()">
+          ${[year-1,year].map(y=>`<option value="${y}" ${y===year?'selected':''}>${y}년</option>`).join('')}
+        </select>
+        <select id="ingMonthSel" class="form-input text-sm py-1.5" onchange="reloadIngPage()">
+          ${Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===month?'selected':''}>${i+1}월</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <!-- 변동 요약 카드 -->
+    ${filled.length > 0 ? `
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-3">
+        <div class="text-xs text-gray-400 mb-1">입력 품목</div>
+        <div class="text-xl font-bold text-gray-800">${filled.length}<span class="text-xs text-gray-400 ml-1">종</span></div>
+      </div>
+      <div class="bg-white rounded-xl border border-red-100 shadow-sm p-3">
+        <div class="text-xs text-gray-400 mb-1">전월 대비 상승</div>
+        <div class="text-xl font-bold text-red-600">${risings.length}<span class="text-xs text-red-400 ml-1">종</span></div>
+        ${risings.length > 0 ? `<div class="text-xs text-red-500 mt-1">▲ ${risings[0].name} +${(((risings[0].price-risings[0].prevPrice)/risings[0].prevPrice)*100).toFixed(1)}%</div>` : ''}
+      </div>
+      <div class="bg-white rounded-xl border border-green-100 shadow-sm p-3">
+        <div class="text-xs text-gray-400 mb-1">전월 대비 하락</div>
+        <div class="text-xl font-bold text-green-600">${fallings.length}<span class="text-xs text-green-400 ml-1">종</span></div>
+        ${fallings.length > 0 ? `<div class="text-xs text-green-600 mt-1">▼ ${fallings[0].name} ${(((fallings[0].price-fallings[0].prevPrice)/fallings[0].prevPrice)*100).toFixed(1)}%</div>` : ''}
+      </div>
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-3">
+        <div class="text-xs text-gray-400 mb-1">미변동</div>
+        <div class="text-xl font-bold text-gray-500">${filled.filter(r=>r.prevPrice>0&&r.price===r.prevPrice).length}<span class="text-xs text-gray-400 ml-1">종</span></div>
+      </div>
+    </div>` : ''}
+
+    <!-- 단가 입력 테이블 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
+      <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+        <h2 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-green-500 mr-1"></i>품목별 단가 입력</h2>
+        <div class="flex gap-2">
+          <button onclick="addIngredientRow()" class="btn btn-secondary btn-sm">
+            <i class="fas fa-plus mr-1"></i>품목 추가
+          </button>
+          <button onclick="saveIngredientPricesPage(${year},${month})" class="btn btn-primary btn-sm">
+            <i class="fas fa-save mr-1"></i>저장
+          </button>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm" id="ingTable">
+          <thead>
+            <tr class="bg-gray-50 text-xs text-gray-500">
+              <th class="py-2.5 px-3 text-left font-semibold">식재료</th>
+              <th class="py-2.5 px-3 text-center font-semibold">단위</th>
+              <th class="py-2.5 px-3 text-right font-semibold">당월 단가(원)</th>
+              <th class="py-2.5 px-3 text-right font-semibold">${prevMLabel}</th>
+              <th class="py-2.5 px-3 text-right font-semibold">전월 대비</th>
+              <th class="py-2.5 px-3 text-right font-semibold">${prevYLabel}</th>
+              <th class="py-2.5 px-3 text-right font-semibold">전년 대비</th>
+              <th class="py-2.5 px-3 text-left font-semibold">메모</th>
+            </tr>
+          </thead>
+          <tbody id="ing-page-tbody">
+            ${rows.map((r,i) => buildIngRow(i, r, prevMLabel, prevYLabel)).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="text-xs text-gray-400 text-right">* 단가 입력 후 저장 버튼을 클릭하세요.</div>
+  </div>`
+
+  window._ingPageRows = rows
+}
+
+function buildIngRow(i, r, prevMLabel, prevYLabel) {
+  const diffPrev = r.prevPrice > 0 && r.price > 0
+    ? (() => {
+        const d = r.price - r.prevPrice
+        const p = ((d/r.prevPrice)*100).toFixed(1)
+        return `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원 (${d>0?'+':''}${p}%)</span>`
+      })()
+    : '<span style="color:#9ca3af">-</span>'
+  const diffYear = r.prevYearPrice > 0 && r.price > 0
+    ? (() => {
+        const d = r.price - r.prevYearPrice
+        const p = ((d/r.prevYearPrice)*100).toFixed(1)
+        return `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원 (${d>0?'+':''}${p}%)</span>`
+      })()
+    : '<span style="color:#9ca3af">-</span>'
+
+  const rowBg = r.price > 0 && r.prevPrice > 0
+    ? r.price > r.prevPrice ? 'background:#fff5f5' : r.price < r.prevPrice ? 'background:#f0fdf4' : ''
+    : ''
+
+  return `<tr class="border-b border-gray-50" data-ing-idx="${i}" style="${rowBg}">
+    <td class="py-2 px-3">
+      <input type="text" class="form-input text-xs py-1 ing-name" id="ing-pname-${i}" value="${r.name}" style="width:90px">
+    </td>
+    <td class="py-2 px-3 text-center">
+      <select class="form-input text-xs py-1 ing-unit" id="ing-punit-${i}" style="width:56px">
+        ${['kg','개','박스','묶음','L','봉','팩'].map(u=>`<option value="${u}" ${r.unit===u?'selected':''}>${u}</option>`).join('')}
+      </select>
+    </td>
+    <td class="py-2 px-3">
+      <input type="number" class="form-input text-xs py-1 text-right ing-price" id="ing-pprice-${i}"
+        value="${r.price||''}" placeholder="0" min="0" style="width:90px"
+        oninput="refreshIngRow(${i},${r.prevPrice},${r.prevYearPrice})">
+    </td>
+    <td class="py-2 px-3 text-right text-xs text-gray-500" id="ing-pprev-${i}">
+      ${r.prevPrice > 0 ? r.prevPrice.toLocaleString()+'원' : '-'}
+    </td>
+    <td class="py-2 px-3 text-right text-xs" id="ing-pdiff-${i}">${diffPrev}</td>
+    <td class="py-2 px-3 text-right text-xs text-gray-500" id="ing-pprevy-${i}">
+      ${r.prevYearPrice > 0 ? r.prevYearPrice.toLocaleString()+'원' : '-'}
+    </td>
+    <td class="py-2 px-3 text-right text-xs" id="ing-pdiffy-${i}">${diffYear}</td>
+    <td class="py-2 px-3">
+      <input type="text" class="form-input text-xs py-1 ing-memo" id="ing-pmemo-${i}" value="${r.memo||''}" placeholder="" style="width:80px">
+    </td>
+  </tr>`
+}
+
+window.refreshIngRow = function(i, prevPrice, prevYearPrice) {
+  const cur = parseInt(document.getElementById(`ing-pprice-${i}`)?.value||0)||0
+  const diffEl = document.getElementById(`ing-pdiff-${i}`)
+  const diffYEl = document.getElementById(`ing-pdiffy-${i}`)
+  const rowEl = document.querySelector(`tr[data-ing-idx="${i}"]`)
+  if (diffEl && prevPrice > 0 && cur > 0) {
+    const d = cur - prevPrice, p = ((d/prevPrice)*100).toFixed(1)
+    diffEl.innerHTML = `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원 (${d>0?'+':''}${p}%)</span>`
+    if (rowEl) rowEl.style.background = d > 0 ? '#fff5f5' : d < 0 ? '#f0fdf4' : ''
+  }
+  if (diffYEl && prevYearPrice > 0 && cur > 0) {
+    const d = cur - prevYearPrice, p = ((d/prevYearPrice)*100).toFixed(1)
+    diffYEl.innerHTML = `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원 (${d>0?'+':''}${p}%)</span>`
+  }
+}
+
+window.addIngredientRow = function() {
+  const tbody = document.getElementById('ing-page-tbody')
+  if (!tbody) return
+  const idx = tbody.querySelectorAll('tr').length
+  const newRow = buildIngRow(idx, { name:'', unit:'kg', price:'', prevPrice:0, prevYearPrice:0, memo:'' }, '', '')
+  tbody.insertAdjacentHTML('beforeend', newRow)
+}
+
+window.saveIngredientPricesPage = async function(year, month) {
+  const tbody = document.getElementById('ing-page-tbody')
+  if (!tbody) return
+  const rows = tbody.querySelectorAll('tr[data-ing-idx]')
+  const items = []
+  rows.forEach(row => {
+    const i = row.dataset.ingIdx
+    const name = document.getElementById(`ing-pname-${i}`)?.value?.trim()
+    const unit = document.getElementById(`ing-punit-${i}`)?.value || 'kg'
+    const price = parseInt(document.getElementById(`ing-pprice-${i}`)?.value||0)||0
+    const memo  = document.getElementById(`ing-pmemo-${i}`)?.value || ''
+    if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price, memo })
+  })
+  if (!items.length) { showToast('입력된 단가가 없습니다', 'warning'); return }
+  const res = await api('POST', '/api/settings/ingredient-prices', { year, month, items })
+  if (res?.success) {
+    showToast(`식재료 단가 ${res.saved}건 저장됨`, 'success')
+    renderIngredientPricesPage()  // 저장 후 새로고침
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
+window.reloadIngPage = function() {
+  const y = parseInt(document.getElementById('ingYearSel')?.value) || App.currentYear
+  const m = parseInt(document.getElementById('ingMonthSel')?.value) || App.currentMonth
+  App.currentYear  = y
+  App.currentMonth = m
+  renderIngredientPricesPage()
+}
   const memo = document.getElementById('closingMemo')?.value || ''
   if (!confirm(`${year}년 ${month}월 마감 요청을 보내시겠습니까?\n관리자 승인 후 다음 달로 전환됩니다.`)) return
   const res = await api('POST', '/api/settings/closing-request', { year, month, memo })
@@ -8673,6 +9463,7 @@ function renderBudgetVendorRows(vendors) {
       <p class="text-xs mt-1">업체관리 탭에서 업체를 먼저 추가하세요</p>
     </div>`
   }
+  const initSum = vendors.reduce((s,v) => s + (v.monthly_budget||0), 0)
   return `<div class="space-y-2">
     ${vendors.map(v => `
       <div class="flex items-center gap-3 py-2 border-b border-gray-50">
@@ -8688,26 +9479,50 @@ function renderBudgetVendorRows(vendors) {
         </div>
       </div>
     `).join('')}
-    <div class="flex items-center gap-3 py-2 border-t-2 border-green-200 bg-green-50 rounded-lg px-2 mt-2">
-      <div class="flex-1 font-semibold text-sm text-green-800"><i class="fas fa-calculator mr-1 text-green-600"></i>업체별 합계</div>
-      <div class="flex items-center gap-2">
-        <span id="vendorBudgetSum" class="font-bold text-green-700 text-sm"></span>
-        <span class="text-xs text-gray-400">원</span>
+    <!-- #9: 업체 합계 + 자동반영 옵션 -->
+    <div class="py-3 border-t-2 border-green-200 bg-green-50 rounded-lg px-3 mt-2">
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold text-sm text-green-800">
+          <i class="fas fa-calculator mr-1 text-green-600"></i>업체별 합계
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="vendorBudgetSum" class="font-bold text-green-700 text-base">${fmt(initSum)}</span>
+          <span class="text-xs text-gray-400">원</span>
+        </div>
+      </div>
+      <div class="flex items-center justify-between">
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" id="autoSyncTotalBudget" checked onchange="syncVendorBudgetTotal()"
+            style="width:14px;height:14px;accent-color:#16a34a">
+          <span class="text-xs text-green-700 font-medium">업체 합계 → 월 총 목표금액 자동 반영</span>
+        </label>
+        <button onclick="syncVendorBudgetTotal(true)" 
+          class="text-xs bg-green-600 text-white px-3 py-1 rounded-lg font-semibold hover:bg-green-700">
+          <i class="fas fa-sync mr-1"></i>지금 반영
+        </button>
       </div>
     </div>
   </div>`
 }
 
-// 업체별 예산 합산 자동 동기화
-window.syncVendorBudgetTotal = function() {
+// 업체별 예산 합산 자동 동기화 (#9 개선: 자동반영 체크박스 + 강제반영 옵션)
+window.syncVendorBudgetTotal = function(force = false) {
   const inputs = document.querySelectorAll('.vendor-budget-input')
   let sum = 0
   inputs.forEach(inp => { sum += parseInt(inp.value||0)||0 })
   const sumEl = document.getElementById('vendorBudgetSum')
   if (sumEl) sumEl.textContent = fmt(sum)
-  // 월 총 목표금액 필드 자동 반영
-  const totalEl = document.getElementById('hb-total')
-  if (totalEl) { totalEl.value = sum; totalEl.style.background = '#f0fdf4' }
+  // 자동반영 체크박스 확인
+  const autoCheckEl = document.getElementById('autoSyncTotalBudget')
+  const shouldSync = force || (autoCheckEl ? autoCheckEl.checked : true)
+  if (shouldSync) {
+    const totalEl = document.getElementById('hb-total')
+    if (totalEl) {
+      totalEl.value = sum
+      totalEl.style.background = '#f0fdf4'
+      totalEl.style.borderColor = '#16a34a'
+    }
+  }
 }
 
 // 계정 목록 행 렌더
@@ -9096,6 +9911,10 @@ function switchHospTab(tab) {
   // 환자군 탭으로 전환 시 데이터 로드
   if (tab === 'categories' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
+  }
+  // #9: 예산 탭으로 전환 시 업체별 합계 자동 계산
+  if (tab === 'budget') {
+    setTimeout(() => syncVendorBudgetTotal(), 50)
   }
 }
 
