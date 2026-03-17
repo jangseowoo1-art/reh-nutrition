@@ -643,7 +643,8 @@ orders.get('/inspection/pending/:year/:month', async (c) => {
       completedCount: completed.length,
       pendingAmount: pending.reduce((s: number, r: any) => s + r.total_amount, 0),
       completedAmount: completed.reduce((s: number, r: any) => s + r.total_amount, 0),
-      actualAmount: completed.reduce((s: number, r: any) => s + (r.actual_amount || r.total_amount), 0)
+      actualAmount: completed.reduce((s: number, r: any) => s + (r.actual_amount || r.total_amount), 0),
+      pendingList: pending.slice(0, 10)
     }
   })
 })

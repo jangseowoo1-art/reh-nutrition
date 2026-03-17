@@ -613,6 +613,13 @@ async function renderDashboard() {
     foodWasteData = await api('GET', `/api/settings/food-waste/${App.currentYear}/${App.currentMonth}`) || []
   } catch(e) {}
 
+  // 검수 미완료 데이터 비동기 로드
+  let inspectionSummary = null
+  try {
+    const inspResult = await api('GET', `/api/orders/inspection/pending/${App.currentYear}/${App.currentMonth}`)
+    inspectionSummary = inspResult?.summary || null
+  } catch(e) {}
+
   content.innerHTML = `
   <!-- 예산 초과 알림 -->
   ${overBudget.length > 0 ? `
@@ -628,6 +635,63 @@ async function renderDashboard() {
           (+${fmt(v.total_used - v.monthly_budget)}원 초과)
         </div>
       `).join('')}
+    </div>
+  </div>` : ''}
+
+  <!-- 검수 미완료 알림 배너 -->
+  ${inspectionSummary && inspectionSummary.pendingCount > 0 ? `
+  <div class="mb-4 bg-orange-50 border border-orange-300 rounded-xl p-3">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-clipboard-check text-orange-500 text-sm"></i>
+        </div>
+        <div>
+          <div class="font-bold text-orange-700 text-sm">
+            <i class="fas fa-exclamation-circle mr-1"></i>검수 미완료 ${inspectionSummary.pendingCount}건
+          </div>
+          <div class="text-xs text-orange-600">
+            미검수 금액: ${fmtMan(inspectionSummary.pendingAmount)}원 · 전체 ${inspectionSummary.total}건 중 ${inspectionSummary.completedCount}건 완료
+          </div>
+        </div>
+      </div>
+      <button onclick="openInspectionModal()" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-white flex-shrink-0" style="background:#ea580c">
+        <i class="fas fa-clipboard-check mr-1"></i>검수 현황 보기
+      </button>
+    </div>
+    <!-- 검수 현황 미니 테이블 (날짜별) -->
+    <div id="inspStatusTable" class="mt-2">
+      <div class="overflow-x-auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;background:white;border-radius:8px;overflow:hidden">
+          <thead>
+            <tr style="background:#fed7aa;color:#7c2d12">
+              <th style="padding:5px 8px;text-align:left;font-weight:700">날짜</th>
+              <th style="padding:5px 8px;text-align:left;font-weight:700">업체</th>
+              <th style="padding:5px 8px;text-align:right;font-weight:700">발주금액</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:700">상태</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:700">처리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(inspectionSummary.pendingList || []).slice(0, 5).map((r, idx) => `
+            <tr style="border-bottom:1px solid #fed7aa;background:${idx%2===0?'#fff7ed':'white'}">
+              <td style="padding:5px 8px;color:#6b7280">${r.order_date||''}</td>
+              <td style="padding:5px 8px;font-weight:600;color:#374151">${r.vendor_name||''}</td>
+              <td style="padding:5px 8px;text-align:right;color:#1d4ed8;font-weight:600">${fmt(r.total_amount||0)}원</td>
+              <td style="padding:5px 8px;text-align:center">
+                <span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:600;font-size:10px">⏳ 미검수</span>
+              </td>
+              <td style="padding:5px 8px;text-align:center">
+                <button onclick="quickInspect(${r.id})" style="background:#059669;color:white;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">
+                  <i class="fas fa-check"></i> 완료
+                </button>
+              </td>
+            </tr>`).join('')}
+            ${(inspectionSummary.pendingList||[]).length > 5 ? `
+            <tr><td colspan="5" style="padding:5px 8px;text-align:center;color:#9ca3af;font-style:italic">+${(inspectionSummary.pendingList||[]).length - 5}건 더... (전체보기 클릭)</td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>` : ''}
 
@@ -3035,6 +3099,21 @@ window.refreshOrders = () => {
 // ══════════════════════════════════════════════════════════════
 // 2.1 발주 검수 관리 모달
 // ══════════════════════════════════════════════════════════════
+
+// 빠른 단건 검수 완료 (대시보드 알림에서 호출)
+window.quickInspect = async (orderId) => {
+  try {
+    await api('PUT', `/api/orders/inspection/${orderId}`, {
+      is_inspected: true, actual_amount: null, inspection_memo: null, received_date: null
+    })
+    showToast('검수 완료 처리되었습니다', 'success')
+    // 알림 배너 새로고침
+    setTimeout(() => renderDashboard(), 800)
+  } catch(e) {
+    showToast('검수 처리 실패', 'error')
+  }
+}
+
 window.openInspectionModal = async () => {
   const year = App.currentYear, month = App.currentMonth
   let inspData = null
@@ -5893,7 +5972,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   <div id="ingredientAnalysisSection"></div>`
   const ingredientSectionEl = document.getElementById('ingredientAnalysisSection')
   if (ingredientSectionEl) {
-    const ingData = await api('GET', `/api/settings/ingredient-prices/${curYear}/${App.currentMonth}${hospId ? `?hospitalId=${hospId}` : ''}`).catch(()=>[]) || []
+    const ingData = await api('GET', `/api/settings/ingredient-prices/${curYear}/${App.currentMonth}${selectedHospitalId ? `?hospitalId=${selectedHospitalId}` : ''}`).catch(()=>[]) || []
     if (ingData.length > 0) {
       const ingRows = ingData.map(r => {
         const momDiff = r.mom_diff
@@ -5961,6 +6040,18 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   ;['annual','monthly'].forEach(t => {
     const el = document.getElementById(`anaContent-${t}`)
     if (el) el.style.display = ''
+  })
+
+  // 이전 분석 차트 인스턴스 제거 (재방문 시 canvas 재사용 문제 방지)
+  const anaCanvasIds = [
+    'chart-yrBudget','chart-yrMealPrice','chart-yrMeals','chart-yrVendor',
+    'chart-yrWaste','chart-yrVendorPie','chart-yrMpDetail',
+    'chart-mpMonthly','chart-mealStack','chart-budgetPct','chart-wasteMonthly',
+    'chart-vendorMonthly','chart-catMonthly','chart-catBudgetPct'
+  ]
+  anaCanvasIds.forEach(id => {
+    const el = document.getElementById(id)
+    if (el) { const c = typeof Chart !== 'undefined' && Chart.getChart ? Chart.getChart(el) : null; if (c) c.destroy() }
   })
 
   const COLORS = ['#16a34a','#2563eb','#9333ea','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1','#14b8a6','#a855f7']
@@ -9769,6 +9860,11 @@ async function renderReport(selectedHospitalId = null) {
   const dailyLabels = Array.from({length:daysCount}, (_,i)=>`${i+1}`)
   const dailyValues = Array.from({length:daysCount}, (_,i)=>dailyMap[i+1]||0)
 
+  // 식단가 계산 (보고서용)
+  const rptTotalMeals = (ms.total_patient||0) + (ms.total_staff||0) + (ms.total_guardian||0)
+  const mealPriceForRpt = rptTotalMeals > 0 && (s.totalUsed||0) > 0
+    ? Math.round((s.totalUsed||0) / rptTotalMeals) : (s.mealPrice || 0)
+
   content.innerHTML = `
   <!-- 보고서 컨트롤 (인쇄 제외) -->
   <div class="mb-4 flex items-center gap-3 flex-wrap no-print">
@@ -9779,12 +9875,18 @@ async function renderReport(selectedHospitalId = null) {
       <i class="fas fa-file-pdf text-red-500"></i>
       <span>${reportYear}년 ${reportMonth}월 월간 보고서</span>
     </div>
-    <div class="ml-auto flex gap-2">
+    <div class="ml-auto flex gap-2 flex-wrap">
+      <button onclick="showPrintPreview()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0">
+        <i class="fas fa-search mr-1"></i>인쇄 미리보기
+      </button>
+      <button onclick="window.print()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
+        <i class="fas fa-print mr-1"></i>인쇄하기
+      </button>
       <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-primary btn-sm">
-        <i class="fas fa-file-pdf mr-1"></i>A4 PDF 다운로드
+        <i class="fas fa-file-pdf mr-1"></i>PDF 저장
       </button>
       <button onclick="exportReportPPT('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-secondary btn-sm">
-        <i class="fas fa-file-powerpoint mr-1"></i>PPT 다운로드
+        <i class="fas fa-file-powerpoint mr-1"></i>PPT
       </button>
     </div>
   </div>
@@ -9792,35 +9894,69 @@ async function renderReport(selectedHospitalId = null) {
   <!-- ══ 보고서 본문 (인쇄 대상) ══ -->
   <div id="reportBody" class="space-y-6" style="print-color-adjust:exact">
 
-    <!-- 슬라이드 1: 표지 -->
-    <div class="report-slide bg-gradient-to-br from-green-800 to-green-600 text-white rounded-2xl p-10 text-center shadow-lg">
-      <div class="text-5xl mb-4">🏥</div>
-      <h1 class="text-3xl font-bold mb-2">${hospitalName}</h1>
-      <h2 class="text-xl mb-6 opacity-80">급식 운영 월간 보고서</h2>
-      <div class="text-4xl font-bold mb-2">${reportYear}년 ${reportMonth}월</div>
-      <div class="text-sm opacity-60 mt-6">작성일: ${new Date().toLocaleDateString('ko-KR')}</div>
+    <!-- 슬라이드 1: 표지 (개선 디자인) -->
+    <div class="report-slide rounded-2xl shadow-lg overflow-hidden" style="background:linear-gradient(135deg,#064e3b 0%,#065f46 40%,#047857 70%,#059669 100%);min-height:300px;position:relative">
+      <!-- 배경 장식 -->
+      <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;background:rgba(255,255,255,0.05);border-radius:50%"></div>
+      <div style="position:absolute;bottom:-60px;left:-30px;width:250px;height:250px;background:rgba(255,255,255,0.04);border-radius:50%"></div>
+      <div class="text-white p-10 relative z-10 flex flex-col items-center text-center">
+        <div style="width:72px;height:72px;background:rgba(255,255,255,0.15);border-radius:20px;display:flex;align-items:center;justify-content:center;margin-bottom:20px;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.2)">
+          <i class="fas fa-hospital text-white text-3xl"></i>
+        </div>
+        <h1 class="text-3xl font-bold mb-2" style="letter-spacing:-0.5px">${hospitalName}</h1>
+        <div style="width:60px;height:2px;background:rgba(255,255,255,0.4);margin:12px auto"></div>
+        <h2 class="text-lg mb-4" style="opacity:0.85;font-weight:400">급식 운영 월간 보고서</h2>
+        <div class="text-5xl font-extrabold mb-2" style="letter-spacing:-1px">${reportYear}년 ${reportMonth}월</div>
+        <div class="grid grid-cols-3 gap-4 mt-8 w-full max-w-md">
+          <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.15)">
+            <div style="font-size:10px;opacity:0.7;margin-bottom:4px">총 예산</div>
+            <div style="font-size:14px;font-weight:800">${fmtMan(s.totalBudget||0)}원</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.15)">
+            <div style="font-size:10px;opacity:0.7;margin-bottom:4px">달성률</div>
+            <div style="font-size:14px;font-weight:800">${s.progress||0}%</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.1);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.15)">
+            <div style="font-size:10px;opacity:0.7;margin-bottom:4px">식단가</div>
+            <div style="font-size:14px;font-weight:800">${(mealPriceForRpt||0).toLocaleString()}원</div>
+          </div>
+        </div>
+        <div style="font-size:11px;opacity:0.5;margin-top:16px">작성일: ${new Date().toLocaleDateString('ko-KR')} · 영양사 서명 ___________</div>
+      </div>
     </div>
 
-    <!-- 슬라이드 2: 월 예산 요약 + 다음달 목표 -->
+    <!-- 슬라이드 2: 월 예산 요약 + 다음달 목표 (개선 디자인) -->
     <div class="report-slide bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h2 class="report-slide-title"><i class="fas fa-chart-pie text-green-600 mr-2"></i>월 예산 요약</h2>
+      <div class="flex items-center gap-3 mb-5">
+        <div style="width:36px;height:36px;background:#f0fdf4;border-radius:10px;display:flex;align-items:center;justify-content:center">
+          <i class="fas fa-chart-pie text-green-600"></i>
+        </div>
+        <div>
+          <h2 class="report-slide-title mb-0" style="margin-bottom:0">운영 요약</h2>
+          <div class="text-xs text-gray-400">${reportYear}년 ${reportMonth}월 전체 현황</div>
+        </div>
+      </div>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         ${[
-          { label:'총 예산', val:`${fmtMan(s.totalBudget||0)}원`, color:'text-green-700' },
-          { label:'사용금액', val:`${fmtMan(s.totalUsed||0)}원`, color:'text-green-700' },
-          { label:'달성률', val:`${s.progress||0}%`, color: parseFloat(s.progress||0)>=100?'text-red-600':'text-green-700' },
-          { label:'잔여예산', val:`${fmtMan(Math.abs(s.remaining||0))}원`, color:(s.remaining||0)<0?'text-red-600':'text-gray-800' }
+          { label:'총 예산', val:`${fmtMan(s.totalBudget||0)}원`, sub:'월 예산 총액', color:'#166534', bg:'#f0fdf4', border:'#bbf7d0', icon:'fas fa-wallet' },
+          { label:'사용금액', val:`${fmtMan(s.totalUsed||0)}원`, sub:`${s.progress||0}% 달성`, color:parseFloat(s.progress||0)>=100?'#dc2626':'#1d4ed8', bg:parseFloat(s.progress||0)>=100?'#fef2f2':'#eff6ff', border:parseFloat(s.progress||0)>=100?'#fca5a5':'#bfdbfe', icon:'fas fa-receipt' },
+          { label:'잔여예산', val:`${fmtMan(Math.abs(s.remaining||0))}원`, sub:(s.remaining||0)<0?'예산 초과':'여유 잔액', color:(s.remaining||0)<0?'#dc2626':'#059669', bg:(s.remaining||0)<0?'#fef2f2':'#f0fdf4', border:(s.remaining||0)<0?'#fca5a5':'#86efac', icon:'fas fa-piggy-bank' },
+          { label:'현재 식단가', val:`${(mealPriceForRpt||0).toLocaleString()}원/식`, sub:`목표 ${(s.mealPrice||0).toLocaleString()}원`, color:(mealPriceForRpt||0)>(s.mealPrice||0)&&(s.mealPrice||0)>0?'#dc2626':'#7c3aed', bg:(mealPriceForRpt||0)>(s.mealPrice||0)&&(s.mealPrice||0)>0?'#fef2f2':'#f5f3ff', border:(mealPriceForRpt||0)>(s.mealPrice||0)&&(s.mealPrice||0)>0?'#fca5a5':'#c4b5fd', icon:'fas fa-utensils' }
         ].map(item => `
-          <div class="bg-gray-50 rounded-xl p-4 text-center">
-            <div class="text-xs text-gray-500 mb-1">${item.label}</div>
-            <div class="text-xl font-bold ${item.color}">${item.val}</div>
+          <div style="background:${item.bg};border:1px solid ${item.border};border-radius:14px;padding:16px;text-align:center">
+            <div style="width:32px;height:32px;background:white;border-radius:8px;display:flex;align-items:center;justify-content:center;margin:0 auto 8px">
+              <i class="${item.icon}" style="color:${item.color};font-size:14px"></i>
+            </div>
+            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">${item.label}</div>
+            <div style="font-size:18px;font-weight:800;color:${item.color}">${item.val}</div>
+            <div style="font-size:10px;color:#9ca3af;margin-top:2px">${item.sub}</div>
           </div>`).join('')}
       </div>
       <div class="mb-2 flex justify-between text-xs text-gray-500">
-        <span>예산 달성률</span><span>${s.progress||0}%</span>
+        <span class="font-medium">예산 달성률</span><span class="font-bold ${parseFloat(s.progress||0)>=100?'text-red-600':'text-green-700'}">${s.progress||0}%</span>
       </div>
-      <div class="progress-bar h-4 mb-6">
-        <div class="progress-fill ${getProgressColor(parseFloat(s.progress||0))}" style="width:${Math.min(parseFloat(s.progress||0),100)}%"></div>
+      <div style="height:14px;background:#f3f4f6;border-radius:99px;overflow:hidden;margin-bottom:16px">
+        <div style="height:100%;width:${Math.min(parseFloat(s.progress||0),100)}%;background:${parseFloat(s.progress||0)>=100?'#dc2626':parseFloat(s.progress||0)>=90?'#f59e0b':'#16a34a'};border-radius:99px;transition:width 0.6s"></div>
       </div>
       <!-- 다음달 목표 -->
       ${nextBudget > 0 || nextMealPrice > 0 ? `
@@ -10368,6 +10504,26 @@ async function renderReport(selectedHospitalId = null) {
         y1:{ ticks:{callback:v=>`${(v/1e4).toFixed(0)}만`}, position:'right', grid:{drawOnChartArea:false} }
       } },
     plugins: [rptBarLabelPlugin]
+  })
+
+  // ── 슬라이드 헤더 개선: 페이지 번호 + 구분선 일괄 적용
+  requestAnimationFrame(() => {
+    const reportBody = document.getElementById('reportBody')
+    if (!reportBody) return
+    const slides = reportBody.querySelectorAll('.report-slide')
+    slides.forEach((slide, i) => {
+      if (i === 0) return // 표지는 제외
+      const h2 = slide.querySelector('h2.report-slide-title')
+      if (!h2) return
+      // 이미 개선된 경우 건너뜀
+      if (slide.querySelector('.rpt-page-badge')) return
+      const badge = document.createElement('div')
+      badge.className = 'rpt-page-badge'
+      badge.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;background:#064e3b;color:white;border-radius:6px;font-size:11px;font-weight:800;margin-right:8px;flex-shrink:0;vertical-align:middle'
+      badge.textContent = i + 1
+      h2.style.cssText = 'display:flex;align-items:center;font-size:15px;font-weight:700;color:#1f2937;padding-bottom:10px;border-bottom:2px solid #f0fdf4;margin-bottom:16px'
+      h2.insertBefore(badge, h2.firstChild)
+    })
   })
 }
 
