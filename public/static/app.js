@@ -12368,21 +12368,22 @@ async function renderReport(selectedHospitalId = null) {
     const slide5 = `
     <div class="report-slide rpt-report-page">
       ${SH(5,'업체별 발주 분석','Vendor Orders')}
-      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:28px;flex:1;min-height:0;margin-bottom:20px">
+      <!-- 메인 콘텐츠: 도넛차트 + 업체테이블 -->
+      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:28px;flex:1;min-height:0;overflow:hidden">
         <!-- 도넛 차트 -->
-        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
-          <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">업체별 발주 비중 (도넛 차트)</div>
-          <div id="rptVendorChart" style="width:100%;flex:1;min-height:320px"></div>
+        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column;min-height:0;overflow:hidden">
+          <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px;flex-shrink:0">업체별 발주 비중 (도넛 차트)</div>
+          <div id="rptVendorChart" style="width:100%;flex:1;min-height:0"></div>
         </div>
-        <!-- 업체 테이블 -->
-        <div style="display:flex;flex-direction:column;gap:12px">
-          <div style="font-size:14px;font-weight:700;color:#1f2937;padding-bottom:8px;border-bottom:2px solid #064e3b">업체별 발주 금액</div>
+        <!-- 업체 테이블 + TOP3 -->
+        <div style="display:flex;flex-direction:column;gap:10px;min-height:0;overflow:hidden">
+          <div style="font-size:14px;font-weight:700;color:#1f2937;padding-bottom:8px;border-bottom:2px solid #064e3b;flex-shrink:0">업체별 발주 금액</div>
           <div style="flex:1;overflow:hidden">
             ${(rptOrders||[]).slice(0,8).map((o,i)=>{
               const amt=o.totalAmount||0
               const pct=usedAmount>0?Math.round(amt/usedAmount*100):0
               const c=['#064e3b','#1d4ed8','#7c3aed','#dc2626','#d97706','#0891b2','#059669','#9333ea']
-              return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0 7px 8px;border-bottom:1px solid #f3f4f6">
+              return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0 6px 8px;border-bottom:1px solid #f3f4f6">
                 <span style="width:24px;height:24px;background:${c[i]||'#374151'};border-radius:5px;flex-shrink:0;display:flex;align-items:center;justify-content:center">
                   <span style="color:white;font-size:11px;font-weight:700">${i+1}</span>
                 </span>
@@ -12401,18 +12402,32 @@ async function renderReport(selectedHospitalId = null) {
           </div>
           <!-- TOP3 박스 -->
           <div style="background:#f0fdf4;border-radius:8px;padding:10px;border:1px solid #bbf7d0;flex-shrink:0">
-            <div style="font-size:13px;font-weight:700;color:#064e3b;margin-bottom:8px">🏆 TOP 3 업체</div>
+            <div style="font-size:13px;font-weight:700;color:#064e3b;margin-bottom:6px">🏆 TOP 3 업체</div>
             ${(rptOrders||[]).slice(0,3).map((o,i)=>{
               const pct=usedAmount>0?Math.round((o.totalAmount||0)/usedAmount*100):0
               return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #d1fae5">
-                <span style="font-size:10px;color:#374151">${['🥇','🥈','🥉'][i]} ${o.vendor||'-'}</span>
+                <span style="font-size:11px;color:#374151">${['🥇','🥈','🥉'][i]} ${o.vendor||'-'}</span>
                 <span style="font-size:13px;font-weight:700;color:#064e3b">${pct}%</span>
               </div>`
             }).join('')}
           </div>
         </div>
       </div>
-      ${AIBox(vendAnalysis, vendWarn, '#1d4ed8','#eff6ff')}
+      <!-- AI 분석/경고: 슬라이드 하단 고정 (flex-shrink:0) -->
+      <div style="display:grid;grid-template-columns:1fr${vendWarn?' 1fr':''};gap:20px;margin-top:14px;flex-shrink:0">
+        <div style="background:#eff6ff;border:1px solid #1d4ed830;border-left:5px solid #1d4ed8;border-radius:10px;padding:12px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:0.5px">AI 분석</span>
+          </div>
+          <div style="font-size:13px;color:#1e3a5f;line-height:1.7;font-weight:500">${vendAnalysis}</div>
+        </div>
+        ${vendWarn?`<div style="background:#fef2f2;border:1px solid #dc262630;border-left:5px solid #dc2626;border-radius:10px;padding:12px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="background:#dc2626;color:white;padding:3px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:0.5px">AI 경고</span>
+          </div>
+          <div style="font-size:13px;color:#7f1d1d;line-height:1.7;font-weight:500">${vendWarn}</div>
+        </div>`:''}
+      </div>
     </div>`
 
     // ══ PAGE 6: 식수 현황 분석 ══════════════════════════════════
@@ -12717,74 +12732,83 @@ async function renderReport(selectedHospitalId = null) {
     const slide13 = `
     <div class="report-slide rpt-report-page">
       ${SH(13,'종합 운영 점수','Overall Operation Score')}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;flex:1;min-height:0;margin-bottom:12px">
-        <!-- 왼쪽: 레이더 차트 + 점수 항목 (분리된 두 영역) -->
-        <div style="display:flex;flex-direction:column;gap:0;min-height:0">
-          <!-- 레이더 차트 영역 -->
-          <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex-shrink:0">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-              <div style="font-size:16px;font-weight:800;color:#064e3b">종합 운영 점수</div>
-              <div style="font-size:32px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:14px">점</span></div>
-            </div>
-            <div id="rptScoreChart" style="width:100%;height:200px"></div>
+      <!-- 상단: 레이더 차트(왼) + AI경고/서명(오) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:28px;flex-shrink:0;margin-bottom:16px">
+        <!-- 레이더 차트 단독 카드 -->
+        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <div style="font-size:15px;font-weight:800;color:#064e3b">종합 운영 점수</div>
+            <div style="font-size:30px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:13px">점</span></div>
           </div>
-          <!-- 30px 간격: 레이더 차트와 막대 그래프 분리 -->
-          <div style="height:30px;flex-shrink:0"></div>
-          <!-- 점수 항목 막대 그래프 영역 -->
-          <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;min-height:0;overflow:auto">
-            ${scoreItems.map(item=>`
-              <div style="margin-bottom:8px">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
-                  <span style="font-size:13px;font-weight:600;color:#374151">${item.icon} ${item.label}</span>
-                  <div style="text-align:right">
-                    <span style="font-size:15px;font-weight:900;color:${tc(item.val)}">${item.val}점</span>
-                    <span style="font-size:11px;color:#9ca3af;margin-left:4px">${item.desc}</span>
-                  </div>
-                </div>
-                <div style="background:#e5e7eb;border-radius:99px;height:7px;overflow:hidden">
-                  <div style="height:100%;width:${item.val}%;background:${tc(item.val)};border-radius:99px"></div>
-                </div>
-              </div>`).join('')}
-          </div>
+          <div id="rptScoreChart" style="width:100%;height:220px"></div>
         </div>
-        <!-- 오른쪽: AI 경고 요약 + 서명란 -->
-        <div style="display:flex;flex-direction:column;gap:16px">
+        <!-- AI 경고 요약 + 서명란 -->
+        <div style="display:flex;flex-direction:column;gap:12px">
           ${aiWarnings.length>0?`
-          <div style="background:#fef2f2;border-radius:12px;padding:16px;border:1px solid #fca5a5;flex:1;display:flex;flex-direction:column">
-            <div style="font-size:13px;font-weight:800;color:#dc2626;margin-bottom:10px;display:flex;align-items:center;gap:6px">
+          <div style="background:#fef2f2;border-radius:12px;padding:14px;border:1px solid #fca5a5;flex:1;display:flex;flex-direction:column">
+            <div style="font-size:12px;font-weight:800;color:#dc2626;margin-bottom:8px;display:flex;align-items:center;gap:6px">
               <span style="background:#dc2626;color:white;padding:3px 12px;border-radius:10px;font-size:10px">△ AI 경고 요약</span>
             </div>
-            <div style="display:flex;flex-direction:column;justify-content:center;flex:1;gap:8px">
+            <div style="display:flex;flex-direction:column;justify-content:center;flex:1;gap:6px">
               ${aiWarnings.slice(0,4).map(w=>`
-                <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:rgba(255,255,255,0.7);border-radius:8px;border-left:3px solid ${w.color||'#dc2626'}">
-                  <span style="font-size:16px;flex-shrink:0">${w.icon||'⚠️'}</span>
-                  <div style="font-size:13px;color:#7f1d1d;line-height:1.5">${w.text}</div>
+                <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:rgba(255,255,255,0.7);border-radius:8px;border-left:3px solid ${w.color||'#dc2626'}">
+                  <span style="font-size:15px;flex-shrink:0">${w.icon||'⚠️'}</span>
+                  <div style="font-size:12px;color:#7f1d1d;line-height:1.5">${w.text}</div>
                 </div>`).join('')}
             </div>
           </div>`:`
-          <div style="background:#f0fdf4;border-radius:12px;padding:16px;border:1px solid #6ee7b7;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
-            <div style="font-size:40px;margin-bottom:8px">✅</div>
-            <div style="font-size:15px;font-weight:700;color:#065f46;text-align:center">이번 달 경고 없음</div>
-            <div style="font-size:13px;color:#047857;margin-top:6px;text-align:center">안정적인 운영이 이루어지고 있습니다</div>
+          <div style="background:#f0fdf4;border-radius:12px;padding:14px;border:1px solid #6ee7b7;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
+            <div style="font-size:36px;margin-bottom:6px">✅</div>
+            <div style="font-size:14px;font-weight:700;color:#065f46;text-align:center">이번 달 경고 없음</div>
+            <div style="font-size:12px;color:#047857;margin-top:4px;text-align:center">안정적인 운영이 이루어지고 있습니다</div>
           </div>`}
           <!-- 서명란 -->
-          <div style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid #e5e7eb;flex-shrink:0">
+          <div style="background:#f8fafc;border-radius:10px;padding:12px;border:1px solid #e5e7eb;flex-shrink:0">
             <div style="display:flex;justify-content:space-between;align-items:center">
-              <div style="font-size:12px;color:#9ca3af;line-height:1.7">
+              <div style="font-size:11px;color:#9ca3af;line-height:1.7">
                 <div>본 보고서는 Re&amp;H 급식 운영 관리 시스템에 의해 자동 생성되었습니다.</div>
                 <div>보고 기간: ${reportYear}년 ${reportMonth}월 | 작성일: ${new Date().toLocaleDateString('ko-KR')}</div>
               </div>
-              <div style="text-align:center;padding:10px 20px;border:1px solid #e5e7eb;border-radius:8px;min-width:120px;background:white;flex-shrink:0">
-                <div style="font-size:12px;color:#9ca3af;margin-bottom:10px">영양사 서명 확인</div>
+              <div style="text-align:center;padding:8px 16px;border:1px solid #e5e7eb;border-radius:8px;min-width:110px;background:white;flex-shrink:0">
+                <div style="font-size:11px;color:#9ca3af;margin-bottom:8px">영양사 서명 확인</div>
                 <div style="font-size:11px;font-weight:700;color:#1f2937">${hospitalName}</div>
-                <div style="font-size:13px;color:#6b7280;margin-top:4px">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
-                <div style="font-size:11px;color:#374151;margin-top:8px;letter-spacing:4px">(인)</div>
+                <div style="font-size:12px;color:#6b7280;margin-top:3px">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
+                <div style="font-size:11px;color:#374151;margin-top:6px;letter-spacing:4px">(인)</div>
               </div>
             </div>
           </div>
         </div>
       </div>
-      ${AIBox(scoreAnalysis, scoreWarn, '#064e3b','#f0fdf4')}
+      <!-- 중단: 점수 항목 막대 (5개 가로 배치) -->
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex-shrink:0;margin-bottom:14px">
+        ${scoreItems.map(item=>`
+          <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border:1px solid #e2e8f0;border-top:3px solid ${tc(item.val)}">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+              <span style="font-size:16px">${item.icon}</span>
+              <span style="font-size:12px;font-weight:600;color:#374151">${item.label}</span>
+            </div>
+            <div style="font-size:22px;font-weight:900;color:${tc(item.val)};margin-bottom:4px">${item.val}<span style="font-size:11px">점</span></div>
+            <div style="font-size:11px;color:#6b7280;margin-bottom:6px">${item.desc}</div>
+            <div style="background:#e5e7eb;border-radius:99px;height:6px;overflow:hidden">
+              <div style="height:100%;width:${item.val}%;background:${tc(item.val)};border-radius:99px"></div>
+            </div>
+          </div>`).join('')}
+      </div>
+      <!-- 하단: AI 분석/경고 -->
+      <div style="display:grid;grid-template-columns:1fr${scoreWarn?' 1fr':''};gap:16px;flex-shrink:0">
+        <div style="background:#f0fdf4;border:1px solid #064e3b30;border-left:5px solid #064e3b;border-radius:10px;padding:11px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+            <span style="background:#064e3b;color:white;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">AI 분석</span>
+          </div>
+          <div style="font-size:12px;color:#1e3a5f;line-height:1.7;font-weight:500">${scoreAnalysis}</div>
+        </div>
+        ${scoreWarn?`<div style="background:#fef2f2;border:1px solid #dc262630;border-left:5px solid #dc2626;border-radius:10px;padding:11px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+            <span style="background:#dc2626;color:white;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">AI 경고</span>
+          </div>
+          <div style="font-size:12px;color:#7f1d1d;line-height:1.7;font-weight:500">${scoreWarn}</div>
+        </div>`:''}
+      </div>
     </div>`
 
     // ══ PAGE 14: 다음 달 운영 전략 ══════════════════════════════════
