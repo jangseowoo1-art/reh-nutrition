@@ -142,3 +142,73 @@ ON CONFLICT(hospital_id, patient_category_id, year, month) DO UPDATE SET
   target_meal_price = excluded.target_meal_price,
   working_days      = excluded.working_days,
   updated_at        = CURRENT_TIMESTAMP;
+
+-- 10. 테스트 발주 데이터 (모두 삼성웰스토리 vendor_id=20 기준)
+-- 삭제 후 재삽입
+DELETE FROM daily_orders WHERE hospital_id = 3 AND strftime('%Y-%m', order_date) = '2026-03';
+
+INSERT INTO daily_orders
+  (hospital_id, order_date, vendor_id, patient_category_id,
+   taxable_amount, exempt_amount, vat_amount, total_amount,
+   is_inspected, inspection_status)
+SELECT
+  3, '2026-03-10', v.id, hpc.id,
+  200000, 0, 20000, 220000, 1, 'approved'
+FROM vendors v, hospital_patient_categories hpc
+WHERE v.hospital_id=3 AND v.name='삼성웰스토리'
+  AND hpc.hospital_id=3 AND hpc.category_key='cancer';
+
+INSERT INTO daily_orders
+  (hospital_id, order_date, vendor_id, patient_category_id,
+   taxable_amount, exempt_amount, vat_amount, total_amount,
+   is_inspected, inspection_status)
+SELECT
+  3, '2026-03-10', v.id, hpc.id,
+  800000, 0, 80000, 880000, 1, 'approved'
+FROM vendors v, hospital_patient_categories hpc
+WHERE v.hospital_id=3 AND v.name='삼성웰스토리'
+  AND hpc.hospital_id=3 AND hpc.category_key='nursing';
+
+INSERT INTO daily_orders
+  (hospital_id, order_date, vendor_id, patient_category_id,
+   taxable_amount, exempt_amount, vat_amount, total_amount,
+   is_inspected, inspection_status)
+SELECT
+  3, '2026-03-16', v.id, hpc.id,
+  1363636, 0, 136364, 1500000, 0, 'pending'
+FROM vendors v, hospital_patient_categories hpc
+WHERE v.hospital_id=3 AND v.name='삼성웰스토리'
+  AND hpc.hospital_id=3 AND hpc.category_key='cancer';
+
+INSERT INTO daily_orders
+  (hospital_id, order_date, vendor_id, patient_category_id,
+   taxable_amount, exempt_amount, vat_amount, total_amount,
+   is_inspected, inspection_status)
+SELECT
+  3, '2026-03-16', v.id, hpc.id,
+  4545455, 0, 454545, 5000000, 0, 'pending'
+FROM vendors v, hospital_patient_categories hpc
+WHERE v.hospital_id=3 AND v.name='삼성웰스토리'
+  AND hpc.hospital_id=3 AND hpc.category_key='nursing';
+
+INSERT INTO daily_orders
+  (hospital_id, order_date, vendor_id, patient_category_id,
+   taxable_amount, exempt_amount, vat_amount, total_amount,
+   is_inspected, inspection_status)
+SELECT
+  3, '2026-03-17', v.id, hpc.id,
+  3000000, 0, 0, 3000000, 0, 'pending'
+FROM vendors v, hospital_patient_categories hpc
+WHERE v.hospital_id=3 AND v.name='현지 육류업체'
+  AND hpc.hospital_id=3 AND hpc.category_key='cancer';
+
+INSERT INTO daily_orders
+  (hospital_id, order_date, vendor_id, patient_category_id,
+   taxable_amount, exempt_amount, vat_amount, total_amount,
+   is_inspected, inspection_status)
+SELECT
+  3, '2026-03-17', v.id, hpc.id,
+  1000000, 0, 0, 1000000, 0, 'pending'
+FROM vendors v, hospital_patient_categories hpc
+WHERE v.hospital_id=3 AND v.name='이산유통'
+  AND hpc.hospital_id=3 AND hpc.category_key='nursing';
