@@ -12749,7 +12749,7 @@ async function renderReport(selectedHospitalId = null) {
             <div style="font-size:11px;font-weight:800;color:#064e3b">종합 운영 점수</div>
             <div style="font-size:28px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:14px">점</span></div>
           </div>
-          <div id="rptScoreChart" style="width:100%;height:120px;margin-bottom:8px"></div>
+          <div id="rptScoreChart" style="width:100%;height:200px;margin-bottom:8px"></div>
           ${scoreItems.map(item=>`
             <div style="margin-bottom:8px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
@@ -13634,11 +13634,14 @@ async function renderReport(selectedHospitalId = null) {
 function canvasToHiResPng(canvas) {
   if (!canvas) return null
   try {
+    // offsetWidth/offsetHeight는 DOM에 없을 때 0이 될 수 있음 → 실제 픽셀 크기로 폴백
+    const srcW = (canvas.offsetWidth  > 0 ? canvas.offsetWidth  : canvas.width)  || 300
+    const srcH = (canvas.offsetHeight > 0 ? canvas.offsetHeight : canvas.height) || 200
     // 4배 해상도로 offscreen canvas 생성
     const scale = 4
     const off = document.createElement('canvas')
-    off.width = canvas.offsetWidth * scale || canvas.width * scale
-    off.height = canvas.offsetHeight * scale || canvas.height * scale
+    off.width  = srcW * scale
+    off.height = srcH * scale
     const ctx2 = off.getContext('2d')
     ctx2.imageSmoothingEnabled = true
     ctx2.imageSmoothingQuality = 'high'
@@ -13646,7 +13649,7 @@ function canvasToHiResPng(canvas) {
     ctx2.fillStyle = '#ffffff'
     ctx2.fillRect(0, 0, off.width, off.height)
     ctx2.scale(scale, scale)
-    ctx2.drawImage(canvas, 0, 0, canvas.offsetWidth || canvas.width, canvas.offsetHeight || canvas.height)
+    ctx2.drawImage(canvas, 0, 0, srcW, srcH)
     return off.toDataURL('image/png', 1.0)
   } catch(e) {
     return canvas.toDataURL('image/png', 1.0)
@@ -13731,8 +13734,9 @@ window.printReportA4 = function() {
         if (!imgData) return
         const imgEl = document.createElement('img')
         imgEl.src = imgData
-        // 원본 컨테이너 높이를 읽어서 최소 높이 보장
-        const parentH = origC.closest('[style*="height"]')?.offsetHeight || origC.offsetHeight || 0
+        // offsetHeight 폴백: canvas 자체 height 사용
+        const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : origC.height
+        const parentH = origC.closest('[style*="height"]')?.offsetHeight || srcH || 0
         const minH = Math.max(parentH, 160)  // 최소 160px
         imgEl.style.cssText = [
           'width:100%',
@@ -13863,7 +13867,9 @@ function renderPrintPreviewPage(idx) {
     try {
       const imgEl = document.createElement('img')
       imgEl.src = canvasToHiResPng(origC) || origC.toDataURL('image/png')
-      const parentH = origC.closest('[style*="height"]')?.offsetHeight || origC.offsetHeight || 0
+      // offsetHeight가 0이면 canvas 자체 height로 폴백
+      const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : origC.height
+      const parentH = origC.closest('[style*="height"]')?.offsetHeight || srcH || 0
       const minH = Math.max(parentH, 160)
       imgEl.style.cssText = `width:100%;max-width:100%;height:auto;min-height:${minH}px;display:block`
       if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
@@ -13938,14 +13944,20 @@ async function exportReportPPT(hospitalName, year, month) {
     })
   }
 
+  // A4 가로 비율: 297×210mm → PPT 단위(인치) 10×7.08
+  // 너무 넓으면 내용이 퍼지므로 실제 A4 가로 비율로 고정
+  const PPT_W = 10.0
+  const PPT_H = 7.08
   const pptx = new window.PptxGenJS()
-  // A4 가로(297×210mm) 비율에 맞게 레이아웃 설정
-  pptx.defineLayout({ name: 'A4_LAND', width: 13.33, height: 7.5 })
+  pptx.defineLayout({ name: 'A4_LAND', width: PPT_W, height: PPT_H })
   pptx.layout = 'A4_LAND'
 
-  // 렌더링용 임시 컨테이너 (인쇄 미리보기와 동일한 방식)
+  // 캡처 폭: A4 가로(297mm) ≒ 794px @ 96dpi
+  const CAPTURE_W = 794
+
+  // 렌더링용 임시 컨테이너
   const tmpContainer = document.createElement('div')
-  tmpContainer.style.cssText = 'position:absolute;top:-19999px;left:0;width:960px;background:white;visibility:hidden;z-index:-1'
+  tmpContainer.style.cssText = `position:absolute;top:-19999px;left:0;width:${CAPTURE_W}px;background:white;visibility:hidden;z-index:-1;overflow:hidden`
   document.body.appendChild(tmpContainer)
 
   for (let i = 0; i < slides.length; i++) {
@@ -13956,8 +13968,9 @@ async function exportReportPPT(hospitalName, year, month) {
     const isCover = i === 0
 
     clone.style.cssText = [
-      'margin:0', 'padding:20px', 'border-radius:0', 'box-shadow:none',
-      'display:block', 'width:960px', 'box-sizing:border-box',
+      'margin:0', `padding:16px`, 'border-radius:0', 'box-shadow:none',
+      `display:block`, `width:${CAPTURE_W}px`, 'box-sizing:border-box',
+      'overflow:hidden',
       isCover ? '' : 'background:white'
     ].filter(Boolean).join(';')
 
@@ -13968,8 +13981,10 @@ async function exportReportPPT(hospitalName, year, month) {
       try {
         const imgEl = document.createElement('img')
         imgEl.src = canvasToHiResPng(origC) || origC.toDataURL('image/png')
-        const parentH = origC.closest('[style*="height"]')?.offsetHeight || origC.offsetHeight || 0
-        const minH = Math.max(parentH, 160)
+        // offsetHeight 폴백
+        const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : origC.height
+        const parentH = origC.closest('[style*="height"]')?.offsetHeight || srcH || 0
+        const minH = Math.max(parentH, 120)
         imgEl.style.cssText = `width:100%;max-width:100%;height:auto;min-height:${minH}px;display:block`
         if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
       } catch(e) {}
@@ -13978,21 +13993,22 @@ async function exportReportPPT(hospitalName, year, month) {
     tmpContainer.innerHTML = ''
     tmpContainer.appendChild(clone)
 
-    // 렌더링 대기
-    await new Promise(r => setTimeout(r, 300))
+    // 렌더링 대기 (이미지 로드 포함)
+    await new Promise(r => setTimeout(r, 400))
 
-    // html2canvas로 슬라이드 캡처
+    // html2canvas로 슬라이드 캡처 (scale:3 → 고화질)
     let imgData = null
     try {
       tmpContainer.style.visibility = 'visible'
       const canvas = await window.html2canvas(clone, {
-        scale: 2,
+        scale: 3,
         useCORS: true,
         allowTaint: true,
         backgroundColor: isCover ? null : '#ffffff',
         scrollX: 0,
         scrollY: 0,
-        windowWidth: 960
+        windowWidth: CAPTURE_W,
+        width: CAPTURE_W
       })
       tmpContainer.style.visibility = 'hidden'
       imgData = canvas.toDataURL('image/png')
