@@ -7,7 +7,7 @@ const adminRouter = new Hono<{ Bindings: { DB: D1Database } }>()
 adminRouter.get('/hospitals', async (c) => {
   const hospitals = await c.env.DB.prepare(`
     SELECT h.*, hi.hospital_type, hi.licensed_beds, hi.avg_inpatients,
-           hi.staff_count, hi.main_specialty, hi.operation_type,
+           hi.staff_count, hi.main_specialty, hi.operation_type, hi.care_type,
            hi.consignment_company, hi.meals_per_day, hi.current_meal_price,
            hi.target_meal_price, hi.supply_method, hi.annual_budget,
            hi.dietitian_name, hi.dietitian_phone, hi.admin_memo,
@@ -70,7 +70,7 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
       updated_at=CURRENT_TIMESTAMP
   `).bind(
     id, hospital_type, address, licensed_beds||0, avg_inpatients||0,
-    staff_count||0, main_specialty||'', operation_type, consignment_company||'',
+    staff_count||0, main_specialty||'', operation_type, care_type||'general', consignment_company||'',
     meals_per_day||3, current_meal_price||0, target_meal_price||0, supply_method,
     annual_budget||0, dietitian_name||'', dietitian_phone||'', admin_memo||''
   ).run()

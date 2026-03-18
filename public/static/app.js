@@ -287,7 +287,8 @@ function getAdminMenus() {
     { id: 'hospital-manage', icon: 'fa-hospital', label: '병원 관리', section: null },
     { id: 'holiday-manage', icon: 'fa-calendar-times', label: '공휴일 관리', section: null },
     { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
-    { id: 'report', icon: 'fa-file-pdf', label: '보고서 출력', section: null }
+    { id: 'report', icon: 'fa-file-pdf', label: '보고서 출력', section: null },
+    { id: 'ceo-dashboard', icon: 'fa-crown', label: '경영 대시보드', section: '경영' }
   ]
 }
 
@@ -356,7 +357,8 @@ function navigateTo(page, forceReload = false) {
     'hospital-manage': { title: '병원 관리', sub: '병원 정보 및 예산 설정' },
     'holiday-manage': { title: '공휴일 관리', sub: '공휴일 조회 및 수동 추가' },
     report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' },
-    'expense-doc': { title: '지출결의서', sub: '법인카드 사용 내역 결의서' }
+    'expense-doc': { title: '지출결의서', sub: '법인카드 사용 내역 결의서' },
+    'ceo-dashboard': { title: '경영 대시보드', sub: 'CEO · 경영진 운영 현황 분석' }
   }
   const t = titles[page] || { title: page, sub: '' }
   const titleEl = document.getElementById('pageTitle')
@@ -394,7 +396,8 @@ function navigateTo(page, forceReload = false) {
     'holiday-manage':  renderHolidayManage,
     report: renderReport,
     'expense-doc': renderExpenseDoc,
-    'ingredient-prices': renderIngredientPricesPage  // #8 독립 메뉴
+    'ingredient-prices': renderIngredientPricesPage,  // #8 독립 메뉴
+    'ceo-dashboard': renderCeoDashboard
   }
 
   if (pages[page]) {
@@ -10297,6 +10300,18 @@ async function openHospitalDetail(hospitalId) {
               <option value="consignment" ${hosp.operation_type==='consignment'?'selected':''}>위탁</option>
             </select>
           </div>
+          <div>
+            <label class="block text-xs font-semibold text-gray-500 mb-1">운영 유형 (케어)</label>
+            <select id="hi-caretype" class="form-input">
+              <option value="general"          ${(hosp.care_type||'general')==='general'          ?'selected':''}>일반</option>
+              <option value="oncology"         ${hosp.care_type==='oncology'         ?'selected':''}>항암</option>
+              <option value="nursing_care"     ${hosp.care_type==='nursing_care'     ?'selected':''}>요양</option>
+              <option value="rehab"            ${hosp.care_type==='rehab'            ?'selected':''}>재활</option>
+              <option value="oncology_nursing" ${hosp.care_type==='oncology_nursing' ?'selected':''}>항암+요양</option>
+              <option value="oncology_rehab"   ${hosp.care_type==='oncology_rehab'   ?'selected':''}>항암+재활</option>
+              <option value="nursing_rehab"    ${hosp.care_type==='nursing_rehab'    ?'selected':''}>요양+재활</option>
+            </select>
+          </div>
           <div id="hi-consign-wrap" style="${hosp.operation_type==='consignment'?'':'display:none'}">
             <label class="block text-xs font-semibold text-gray-500 mb-1">위탁업체명</label>
             <input id="hi-consign" class="form-input" value="${hosp.consignment_company||''}">
@@ -11147,6 +11162,7 @@ async function saveHospitalInfo(hospitalId) {
     staff_count: parseInt(document.getElementById('hi-staff').value)||0,
     main_specialty: document.getElementById('hi-specialty').value,
     operation_type: document.getElementById('hi-optype').value,
+    care_type: document.getElementById('hi-caretype')?.value || 'general',
     consignment_company: document.getElementById('hi-consign')?.value || '',
     meals_per_day: parseInt(document.getElementById('hi-meals').value)||3,
     current_meal_price: parseInt(document.getElementById('hi-curprice').value)||0,
@@ -15580,4 +15596,597 @@ window.exportExpenseDocExcel = async function() {
   // ── 다운로드 ──
   XLSX.writeFile(wb, `법인카드지출결의서_${year}년${mm}월.xlsx`)
   showToast('엑셀 파일이 다운로드되었습니다', 'success')
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CEO 경영 대시보드
+// ══════════════════════════════════════════════════════════════
+
+// ── 공통 헬퍼 ─────────────────────────────────────────────────
+const CEO_CARE_TYPE_LABELS = {
+  oncology:         '항암',
+  nursing_care:     '요양',
+  rehab:            '재활',
+  oncology_nursing: '항암+요양',
+  oncology_rehab:   '항암+재활',
+  nursing_rehab:    '요양+재활',
+  general:          '일반'
+}
+const CEO_HOSPITAL_TYPE_LABELS = {
+  general:       '종합병원',
+  oriental:      '한방병원',
+  nursing:       '요양병원',
+  rehab:         '재활병원',
+  clinic:        '의원',
+  care_facility: '요양원'
+}
+function ceoCareLabel(v)     { return CEO_CARE_TYPE_LABELS[v]    || v || '-' }
+function ceoHospTypeLabel(v) { return CEO_HOSPITAL_TYPE_LABELS[v] || v || '-' }
+
+// ── 전역 필터 상태 ──────────────────────────────────────────
+window._ceoFilter = {
+  year: new Date().getFullYear(),
+  month: new Date().getMonth() + 1,
+  hospitalType: '',
+  careType: '',
+  bedSize: '',
+  hospitalId: ''
+}
+
+// ── 메인 렌더 함수 ──────────────────────────────────────────
+async function renderCeoDashboard() {
+  const content = document.getElementById('pageContent')
+  if (!content) return
+  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+
+  // care_type 목록 로드
+  let careTypes = []
+  try { careTypes = await api('GET', '/api/ceo-dashboard/care-types') } catch(e) {}
+
+  // 병원 목록 (필터용)
+  let allHospitals = []
+  try { allHospitals = (await api('GET', '/api/admin/hospitals')) || [] } catch(e) {}
+
+  const f = window._ceoFilter
+  const qs = new URLSearchParams({
+    ...(f.hospitalType && { hospital_type: f.hospitalType }),
+    ...(f.careType     && { care_type:     f.careType }),
+    ...(f.bedSize      && { bed_size:      f.bedSize }),
+    ...(f.hospitalId   && { hospital_id:   f.hospitalId })
+  }).toString()
+  const qsStr = qs ? `?${qs}` : ''
+
+  // 병렬 API 호출
+  const [kpiData, hospitalsData, graphsData, alertsData, expensesData] = await Promise.all([
+    api('GET', `/api/ceo-dashboard/kpi/${f.year}/${f.month}${qsStr}`).catch(() => null),
+    api('GET', `/api/ceo-dashboard/hospitals/${f.year}/${f.month}${qsStr}`).catch(() => []),
+    api('GET', `/api/ceo-dashboard/graphs/${f.year}/${f.month}`).catch(() => null),
+    api('GET', `/api/ceo-dashboard/alerts/${f.year}/${f.month}`).catch(() => null),
+    api('GET', `/api/ceo-dashboard/expenses/${f.year}/${f.month}${qsStr}`).catch(() => [])
+  ])
+
+  content.innerHTML = `
+    <!-- 상단 필터 바 -->
+    <div id="ceoFilterBar" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-5 sticky top-0 z-10">
+      ${renderCeoFilterBar(f, careTypes, allHospitals)}
+    </div>
+
+    <!-- KPI 카드 8개 -->
+    <div id="ceoKpiSection" class="mb-5">
+      ${renderCeoKpi(kpiData)}
+    </div>
+
+    <!-- 병원 운영 상태 카드 -->
+    <div id="ceoHospitalCards" class="mb-5">
+      ${renderCeoHospitalCards(hospitalsData || [])}
+    </div>
+
+    <!-- 비교 그래프 4종 -->
+    <div id="ceoGraphSection" class="mb-5">
+      ${renderCeoGraphSection()}
+    </div>
+
+    <!-- AI 경고 + 인사이트 -->
+    <div id="ceoAlertsSection" class="mb-5">
+      ${renderCeoAlerts(alertsData)}
+    </div>
+
+    <!-- 지출 사용내역 조회 -->
+    <div id="ceoExpensesSection">
+      ${renderCeoExpenses(expensesData || [], f)}
+    </div>
+  `
+
+  // 차트 렌더 (DOM 완성 후)
+  requestAnimationFrame(() => {
+    renderCeoCharts(graphsData, hospitalsData || [])
+  })
+}
+
+// ── 필터 바 ────────────────────────────────────────────────
+function renderCeoFilterBar(f, careTypes, hospitals) {
+  const months = Array.from({length: 12}, (_, i) => i + 1)
+  const years  = [f.year - 1, f.year, f.year + 1]
+  return `
+    <div class="flex flex-wrap gap-2 items-center">
+      <i class="fas fa-filter text-indigo-400 mr-1"></i>
+
+      <!-- 기준 년월 -->
+      <select id="ceoFilterYear" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        ${years.map(y => `<option value="${y}" ${f.year===y?'selected':''}>${y}년</option>`).join('')}
+      </select>
+      <select id="ceoFilterMonth" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        ${months.map(m => `<option value="${m}" ${f.month===m?'selected':''}>${m}월</option>`).join('')}
+      </select>
+
+      <div class="w-px h-5 bg-gray-200 mx-1"></div>
+
+      <!-- 병원 유형 -->
+      <select id="ceoFilterHospType" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        <option value="">전체 병원유형</option>
+        ${Object.entries(CEO_HOSPITAL_TYPE_LABELS).map(([v,l]) =>
+          `<option value="${v}" ${f.hospitalType===v?'selected':''}>${l}</option>`
+        ).join('')}
+      </select>
+
+      <!-- 운영 유형 (care_type) -->
+      <select id="ceoFilterCareType" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        <option value="">전체 운영유형</option>
+        ${(careTypes.length > 0 ? careTypes : Object.entries(CEO_CARE_TYPE_LABELS).map(([code,label_ko]) => ({code,label_ko}))).map(ct =>
+          `<option value="${ct.code}" ${f.careType===ct.code?'selected':''}>${ct.label_ko}</option>`
+        ).join('')}
+      </select>
+
+      <!-- 병상 규모 -->
+      <select id="ceoFilterBedSize" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        <option value="">전체 병상규모</option>
+        <option value="under30"  ${f.bedSize==='under30' ?'selected':''}>30병상 이하</option>
+        <option value="31to60"   ${f.bedSize==='31to60'  ?'selected':''}>31~60병상</option>
+        <option value="61to100"  ${f.bedSize==='61to100' ?'selected':''}>61~100병상</option>
+        <option value="over100"  ${f.bedSize==='over100' ?'selected':''}>100병상 이상</option>
+      </select>
+
+      <!-- 병원 직접 선택 -->
+      <select id="ceoFilterHospital" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        <option value="">전체 병원</option>
+        ${hospitals.map(h => `<option value="${h.id}" ${f.hospitalId==h.id?'selected':''}>${h.name}</option>`).join('')}
+      </select>
+
+      <button onclick="ceoFilterReset()" class="text-xs text-gray-400 hover:text-red-400 ml-1">
+        <i class="fas fa-times-circle"></i> 초기화
+      </button>
+    </div>
+  `
+}
+
+window.ceoFilterChange = function() {
+  const f = window._ceoFilter
+  f.year        = parseInt(document.getElementById('ceoFilterYear')?.value    || f.year)
+  f.month       = parseInt(document.getElementById('ceoFilterMonth')?.value   || f.month)
+  f.hospitalType = document.getElementById('ceoFilterHospType')?.value  || ''
+  f.careType    = document.getElementById('ceoFilterCareType')?.value   || ''
+  f.bedSize     = document.getElementById('ceoFilterBedSize')?.value    || ''
+  f.hospitalId  = document.getElementById('ceoFilterHospital')?.value   || ''
+  renderCeoDashboard()
+}
+window.ceoFilterReset = function() {
+  const now = new Date()
+  window._ceoFilter = { year: now.getFullYear(), month: now.getMonth()+1, hospitalType:'', careType:'', bedSize:'', hospitalId:'' }
+  renderCeoDashboard()
+}
+
+// ── KPI 카드 ────────────────────────────────────────────────
+function renderCeoKpi(d) {
+  if (!d) return '<div class="text-center text-gray-400 py-6 text-sm">데이터를 불러오는 중...</div>'
+  const fmtW = v => v >= 10000 ? `${Math.round(v/10000)}만` : v >= 1000 ? `${(v/1000).toFixed(1)}천` : (v||0).toLocaleString()
+  const fmtKo = v => (v||0).toLocaleString()
+
+  const catPrices = d.mealPriceByCategory || {}
+  const catItems = [
+    { key:'oncology',     label:'항암 식단가', color:'#7c3aed' },
+    { key:'nursing_care', label:'요양 식단가', color:'#0891b2' },
+    { key:'rehab',        label:'재활 식단가', color:'#059669' }
+  ].filter(c => (catPrices[c.key] || 0) > 0)
+
+  const cards = [
+    { icon:'fa-hospital',      color:'#4f46e5', label:'운영 병원',     value:`${d.hospitalCount||0}개`,          sub:'' },
+    { icon:'fa-coins',         color:'#0891b2', label:'그룹 총 예산',   value:`${fmtW(d.totalBudget)}원`,        sub:'' },
+    { icon:'fa-shopping-cart', color:'#059669', label:'그룹 총 사용',   value:`${fmtW(d.totalUsed)}원`,          sub:'' },
+    { icon:'fa-percent',       color: d.avgBudgetPct>=90?'#dc2626':d.avgBudgetPct>=80?'#f59e0b':'#059669',
+                                              label:'평균 예산 사용률', value:`${d.avgBudgetPct||0}%`,           sub:'', danger: d.avgBudgetPct>=90, warn: d.avgBudgetPct>=80 },
+    { icon:'fa-utensils',      color:'#7c3aed', label:'평균 식단가',    value:`${fmtKo(d.avgMealPrice)}원`,      sub:'' },
+    { icon:'fa-exclamation-triangle', color:'#dc2626', label:'예산 위험 병원', value:`${d.dangerBudgetCount||0}개`, sub:'90% 초과', danger: d.dangerBudgetCount>0 },
+    { icon:'fa-chart-line',    color:'#f59e0b', label:'식단가 위험 병원', value:`${d.dangerMealCount||0}개`,     sub:'목표 110%↑', warn: d.dangerMealCount>0 },
+    { icon:'fa-clipboard-check', color:'#6b7280', label:'검수 미완료 병원', value:`${d.pendingInspectCount||0}개`, sub:'확인 필요', warn: d.pendingInspectCount>0 }
+  ]
+
+  const mainCards = cards.map(c => `
+    <div class="bg-white rounded-xl border ${c.danger?'border-red-200 bg-red-50':c.warn?'border-yellow-200 bg-yellow-50':'border-gray-100'} p-4 flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style="background:${c.color}18">
+        <i class="fas ${c.icon} text-sm" style="color:${c.color}"></i>
+      </div>
+      <div class="min-w-0">
+        <div class="text-xs text-gray-500 mb-0.5">${c.label}</div>
+        <div class="text-lg font-bold" style="color:${c.color}">${c.value}</div>
+        ${c.sub ? `<div class="text-xs text-gray-400">${c.sub}</div>` : ''}
+      </div>
+    </div>
+  `).join('')
+
+  const catCardsHtml = catItems.length > 0 ? `
+    <div class="bg-white rounded-xl border border-gray-100 p-4 col-span-full">
+      <div class="text-xs font-bold text-gray-600 mb-3"><i class="fas fa-fork text-purple-400 mr-1"></i>케어유형별 평균 식단가</div>
+      <div class="flex gap-4 flex-wrap">
+        ${catItems.map(c => `
+          <div class="text-center">
+            <div class="text-xs text-gray-400 mb-1">${c.label}</div>
+            <div class="text-base font-bold" style="color:${c.color}">${fmtKo(catPrices[c.key])}원</div>
+          </div>
+        `).join('<div class="w-px bg-gray-200"></div>')}
+      </div>
+    </div>
+  ` : ''
+
+  return `
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      ${mainCards}
+      ${catCardsHtml}
+    </div>
+  `
+}
+
+// ── 병원 운영 상태 카드 ──────────────────────────────────────
+function renderCeoHospitalCards(hospitals) {
+  if (!hospitals.length) return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400">
+      <i class="fas fa-hospital text-3xl mb-3 text-gray-200"></i>
+      <p class="text-sm">선택한 필터에 해당하는 병원이 없습니다</p>
+    </div>`
+
+  const fmtMan = v => v >= 10000 ? `${Math.round(v/10000)}만` : (v||0).toLocaleString()
+  const fmtKo  = v => (v||0).toLocaleString()
+
+  // 위험도 정렬: danger → warn → safe
+  const sorted = [...hospitals].sort((a, b) => {
+    const order = { danger:0, warn:1, safe:2 }
+    return (order[a.riskLevel]||2) - (order[b.riskLevel]||2)
+  })
+
+  const cards = sorted.map(h => {
+    const riskBg    = h.riskLevel==='danger' ? '#fef2f2' : h.riskLevel==='warn' ? '#fffbeb' : '#f0fdf4'
+    const riskBorder= h.riskLevel==='danger' ? '#fecaca' : h.riskLevel==='warn' ? '#fde68a' : '#bbf7d0'
+    const riskBadge = h.riskLevel==='danger'
+      ? `<span class="text-xs font-bold text-white bg-red-500 rounded px-1.5 py-0.5">🔴 위험</span>`
+      : h.riskLevel==='warn'
+      ? `<span class="text-xs font-bold text-white bg-yellow-500 rounded px-1.5 py-0.5">🟡 주의</span>`
+      : `<span class="text-xs font-bold text-white bg-green-500 rounded px-1.5 py-0.5">🟢 정상</span>`
+
+    const budgetPct  = h.budgetPct || 0
+    const barColor   = budgetPct>=90?'#ef4444':budgetPct>=80?'#f59e0b':'#4f46e5'
+    const mpPct      = (h.target||0) > 0 ? Math.round((h.mealPrice||0)/(h.target)*100) : null
+    const mpColor    = mpPct===null?'#9ca3af':mpPct>=110?'#dc2626':mpPct>=105?'#f59e0b':'#059669'
+
+    const catMpHtml  = Object.entries(h.mealPriceByCategory||{})
+      .filter(([,v]) => v > 0)
+      .map(([k,v]) => `<span class="text-xs text-gray-500">${ceoCareLabel(k)} <b>${fmtKo(v)}원</b></span>`)
+      .join(' · ')
+
+    const alertHtml  = h.alerts?.length
+      ? `<div class="mt-2 flex flex-wrap gap-1">${h.alerts.map(a => `<span class="text-xs bg-red-50 text-red-600 border border-red-100 rounded px-1.5 py-0.5">${a}</span>`).join('')}</div>`
+      : ''
+
+    return `
+      <div class="rounded-xl border p-4" style="background:${riskBg};border-color:${riskBorder}">
+        <div class="flex items-start justify-between mb-2">
+          <div>
+            <div class="font-bold text-gray-800 text-sm">${h.name}</div>
+            <div class="text-xs text-gray-500 mt-0.5">
+              ${ceoHospTypeLabel(h.hospitalType)} · ${ceoCareLabel(h.careType)} · ${h.licensedBeds||'-'}병상
+            </div>
+          </div>
+          ${riskBadge}
+        </div>
+
+        <!-- 예산 -->
+        <div class="mb-2">
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-gray-500">예산 사용률</span>
+            <span class="font-bold" style="color:${barColor}">${budgetPct}%</span>
+          </div>
+          <div class="bg-white bg-opacity-60 rounded h-1.5 overflow-hidden">
+            <div style="width:${Math.min(budgetPct,100)}%;height:100%;background:${barColor};border-radius:3px"></div>
+          </div>
+          <div class="text-xs text-gray-400 mt-0.5">
+            사용 ${fmtMan(h.used)}원 · 목표 ${fmtMan(h.budget)}원 · 잔여 ${fmtMan(h.remaining)}원
+          </div>
+        </div>
+
+        <!-- 식단가 -->
+        <div class="flex items-center justify-between text-xs mb-1">
+          <span class="text-gray-500">전체 식단가</span>
+          <span class="font-bold" style="color:${mpColor}">${fmtKo(h.mealPrice)}원 ${mpPct!==null?`<span class="text-gray-400">(목표${mpPct}%)</span>`:''}</span>
+        </div>
+        ${catMpHtml ? `<div class="text-xs flex flex-wrap gap-2 mb-1">${catMpHtml}</div>` : ''}
+
+        <!-- 기타 지표 -->
+        <div class="flex gap-3 text-xs text-gray-500 mt-1">
+          <span><i class="fas fa-users mr-0.5"></i>${fmtKo(h.meals)}식</span>
+          <span><i class="fas fa-shopping-cart mr-0.5"></i>오늘 ${fmtMan(h.todayOrder)}원</span>
+          ${h.pendingInspections>0?`<span class="text-yellow-600"><i class="fas fa-clipboard mr-0.5"></i>검수${h.pendingInspections}건</span>`:''}
+          ${h.vendorConcentration>=40?`<span class="text-orange-500"><i class="fas fa-store mr-0.5"></i>집중도${h.vendorConcentration}%</span>`:''}
+        </div>
+        ${alertHtml}
+      </div>
+    `
+  }).join('')
+
+  return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+          <i class="fas fa-hospital text-indigo-500"></i> 병원 운영 상태
+          <span class="text-xs font-normal text-gray-400">(${hospitals.length}개 병원)</span>
+        </h2>
+        <div class="flex gap-2 text-xs text-gray-400">
+          <span>🔴 위험: ${hospitals.filter(h=>h.riskLevel==='danger').length}</span>
+          <span>🟡 주의: ${hospitals.filter(h=>h.riskLevel==='warn').length}</span>
+          <span>🟢 정상: ${hospitals.filter(h=>h.riskLevel==='safe').length}</span>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">${cards}</div>
+    </div>
+  `
+}
+
+// ── 비교 그래프 섹션 HTML ────────────────────────────────────
+function renderCeoGraphSection() {
+  return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+      <h2 class="font-bold text-gray-800 text-sm flex items-center gap-1.5 mb-4">
+        <i class="fas fa-chart-bar text-indigo-500"></i> 병원 비교 분석
+      </h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div>
+          <div class="text-xs font-bold text-gray-600 mb-2">① 병원유형별 평균 예산 사용률</div>
+          <canvas id="ceoChart1" height="160"></canvas>
+        </div>
+        <div>
+          <div class="text-xs font-bold text-gray-600 mb-2">② 케어유형별 평균 식단가</div>
+          <canvas id="ceoChart2" height="160"></canvas>
+        </div>
+        <div>
+          <div class="text-xs font-bold text-gray-600 mb-2">③ 병원별 식단가 비교</div>
+          <canvas id="ceoChart3" height="160"></canvas>
+        </div>
+        <div>
+          <div class="text-xs font-bold text-gray-600 mb-2">④ 식수 vs 발주금액 (발주 적정성)</div>
+          <canvas id="ceoChart4" height="160"></canvas>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+// ── 비교 그래프 렌더 (Chart.js) ──────────────────────────────
+function renderCeoCharts(graphsData, hospitals) {
+  if (!graphsData) return
+
+  // 기존 차트 정리
+  ['_ceoChart1','_ceoChart2','_ceoChart3','_ceoChart4'].forEach(k => {
+    if (window[k]) { try { window[k].destroy() } catch(e) {} }
+  })
+
+  const PALETTE = ['#4f46e5','#0891b2','#059669','#f59e0b','#dc2626','#7c3aed','#db2777','#ea580c']
+
+  // 그래프 1: 병원유형별 평균 예산 사용률 (가로 막대)
+  const ctx1 = document.getElementById('ceoChart1')
+  if (ctx1 && graphsData.graph1?.length) {
+    const labels = graphsData.graph1.map(d => ceoHospTypeLabel(d.type))
+    const values = graphsData.graph1.map(d => d.avgBudgetPct)
+    const bgColors = values.map(v => v>=90?'#fca5a5':v>=80?'#fde68a':'#a5b4fc')
+    window._ceoChart1 = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ label: '예산 사용률(%)', data: values, backgroundColor: bgColors, borderRadius: 4 }]
+      },
+      options: {
+        indexAxis: 'y', responsive: true,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw}%` } } },
+        scales: { x: { max: 100, ticks: { callback: v => `${v}%`, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+      }
+    })
+  }
+
+  // 그래프 2: 케어유형별 평균 식단가 (막대)
+  const ctx2 = document.getElementById('ceoChart2')
+  if (ctx2 && graphsData.graph2) {
+    const careOrder = ['oncology','nursing_care','rehab']
+    const labels = careOrder.filter(k => graphsData.graph2[k] > 0).map(ceoCareLabel)
+    const values = careOrder.filter(k => graphsData.graph2[k] > 0).map(k => graphsData.graph2[k])
+    window._ceoChart2 = new Chart(ctx2, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ label: '평균 식단가(원)', data: values, backgroundColor: ['#a78bfa','#67e8f9','#6ee7b7'], borderRadius: 4 }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw.toLocaleString()}원` } } },
+        scales: { y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } }
+      }
+    })
+  }
+
+  // 그래프 3: 병원별 식단가 비교
+  const ctx3 = document.getElementById('ceoChart3')
+  if (ctx3 && graphsData.graph3?.length) {
+    const g3 = [...graphsData.graph3].sort((a,b) => b.mealPrice - a.mealPrice)
+    const labels = g3.map(d => d.name.length>5 ? d.name.slice(0,5)+'…' : d.name)
+    const values = g3.map(d => d.mealPrice)
+    const targets = g3.map(d => d.target || null)
+    const bgColors = g3.map(d => {
+      if (!d.target) return '#a5b4fc'
+      const r = d.mealPrice/d.target
+      return r >= 1.1 ? '#fca5a5' : r >= 1.05 ? '#fde68a' : '#a5b4fc'
+    })
+    window._ceoChart3 = new Chart(ctx3, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: '식단가', data: values, backgroundColor: bgColors, borderRadius: 3 },
+          { label: '목표', data: targets, type: 'line', borderColor: '#94a3b8', borderDash: [4,3], borderWidth: 1.5, pointRadius: 2, fill: false }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { font: { size: 9 }, boxWidth: 10 } }, tooltip: { callbacks: { label: ctx => `${ctx.raw?.toLocaleString()}원` } } },
+        scales: { y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 9 } } }, x: { ticks: { font: { size: 9 }, maxRotation: 30 } } }
+      }
+    })
+  }
+
+  // 그래프 4: 식수 vs 발주금액 (산점도)
+  const ctx4 = document.getElementById('ceoChart4')
+  if (ctx4 && graphsData.graph4?.length) {
+    const normal  = graphsData.graph4.filter(d => !d.anomaly)
+    const anomaly = graphsData.graph4.filter(d =>  d.anomaly)
+    window._ceoChart4 = new Chart(ctx4, {
+      type: 'scatter',
+      data: {
+        datasets: [
+          { label: '정상', data: normal.map(d => ({x:d.meals,y:d.used,name:d.name})), backgroundColor: '#818cf8', pointRadius: 5 },
+          { label: '주의', data: anomaly.map(d => ({x:d.meals,y:d.used,name:d.name})), backgroundColor: '#f87171', pointRadius: 7, pointStyle: 'triangle' }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { font:{size:9}, boxWidth:10 } },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw.name}: 식수 ${ctx.raw.x.toLocaleString()}식, 발주 ${Math.round(ctx.raw.y/10000)}만원` } }
+        },
+        scales: {
+          x: { title: { display:true, text:'총 식수', font:{size:9} }, ticks: { font:{size:9} } },
+          y: { title: { display:true, text:'발주금액(원)', font:{size:9} }, ticks: { callback: v => `${Math.round(v/10000)}만`, font:{size:9} } }
+        }
+      }
+    })
+  }
+}
+
+// ── AI 경고 & 인사이트 ──────────────────────────────────────
+function renderCeoAlerts(data) {
+  const alerts   = data?.alerts   || []
+  const insights = data?.insights || []
+
+  const alertHtml = alerts.length === 0
+    ? `<div class="text-sm text-green-600 font-medium py-2"><i class="fas fa-check-circle mr-1"></i>이번 달 특이 경고 사항이 없습니다.</div>`
+    : alerts.map(a => {
+        const bg  = a.level==='danger' ? '#fef2f2' : '#fffbeb'
+        const bc  = a.level==='danger' ? '#fecaca' : '#fde68a'
+        const ic  = a.level==='danger' ? 'fa-exclamation-circle text-red-500' : 'fa-exclamation-triangle text-yellow-500'
+        return `<div class="flex items-start gap-2 p-3 rounded-lg text-sm mb-2" style="background:${bg};border:1px solid ${bc}">
+          <i class="fas ${ic} mt-0.5 flex-shrink-0"></i>
+          <span class="text-gray-700">${a.message}</span>
+        </div>`
+      }).join('')
+
+  const insightHtml = insights.length === 0 ? '' : `
+    <div class="mt-4 pt-4 border-t border-gray-100">
+      <div class="text-xs font-bold text-gray-600 mb-3"><i class="fas fa-lightbulb text-amber-400 mr-1"></i>AI 운영 인사이트</div>
+      ${insights.map(s => `
+        <div class="flex items-start gap-2 text-sm text-gray-600 mb-2">
+          <i class="fas fa-angle-right text-indigo-300 mt-1 flex-shrink-0"></i>
+          <span>${s}</span>
+        </div>
+      `).join('')}
+    </div>
+  `
+
+  return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+      <h2 class="font-bold text-gray-800 text-sm flex items-center gap-1.5 mb-4">
+        <i class="fas fa-bell text-red-400"></i> AI 경고 시스템
+        ${alerts.length>0 ? `<span class="text-xs bg-red-100 text-red-600 rounded-full px-2 py-0.5 font-bold">${alerts.length}건</span>` : ''}
+      </h2>
+      ${alertHtml}
+      ${insightHtml}
+    </div>
+  `
+}
+
+// ── 지출 사용내역 조회 ──────────────────────────────────────
+function renderCeoExpenses(expenses, f) {
+  const EXPENSE_TYPES = ['법인카드','현장구매','추가발주','소모품','기타']
+  const fmtKo = v => (v||0).toLocaleString()
+
+  const total = expenses.reduce((s, e) => s + (e.amount||0), 0)
+  const rows  = expenses.slice(0, 200).map(e => `
+    <tr class="border-b border-gray-50 hover:bg-gray-50">
+      <td class="py-2 px-3 text-xs text-gray-500">${e.expense_date}</td>
+      <td class="py-2 px-3 text-xs font-medium text-gray-800">${e.hospital_name}</td>
+      <td class="py-2 px-3 text-xs text-gray-600">${e.vendor_name||'-'}</td>
+      <td class="py-2 px-3 text-xs font-bold text-right text-indigo-600">${fmtKo(e.amount)}원</td>
+      <td class="py-2 px-3 text-xs text-gray-600">${e.item_name||'-'}</td>
+      <td class="py-2 px-3 text-xs text-gray-500">${e.usage_purpose||'-'}</td>
+      <td class="py-2 px-3">
+        <span class="text-xs bg-gray-100 text-gray-600 rounded px-1.5 py-0.5">${e.expense_type||'-'}</span>
+      </td>
+      <td class="py-2 px-3 text-xs text-gray-400">${e.memo||''}</td>
+    </tr>
+  `).join('')
+
+  return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+          <i class="fas fa-receipt text-indigo-500"></i> 지출 사용내역 조회
+        </h2>
+        <div class="flex items-center gap-2">
+          <select id="ceoExpenseType" onchange="ceoExpenseTypeFilter()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+            <option value="">전체 유형</option>
+            ${EXPENSE_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+          </select>
+          <span class="text-xs text-gray-500">총 ${fmtKo(total)}원 · ${expenses.length}건</span>
+        </div>
+      </div>
+      ${expenses.length === 0
+        ? `<div class="text-center text-gray-400 py-8 text-sm">이번 달 지출 내역이 없습니다</div>`
+        : `<div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-gray-100">
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">날짜</th>
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">병원</th>
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">업체</th>
+                  <th class="text-right py-2 px-3 text-xs font-bold text-gray-500">금액</th>
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">사용 품목</th>
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">진행 용도</th>
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">지출 유형</th>
+                  <th class="text-left py-2 px-3 text-xs font-bold text-gray-500">비고</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+            ${expenses.length > 200 ? `<div class="text-center text-xs text-gray-400 mt-2">최대 200건 표시 · 전체 ${expenses.length}건</div>` : ''}
+          </div>`}
+    </div>
+  `
+}
+
+window.ceoExpenseTypeFilter = function() {
+  const type = document.getElementById('ceoExpenseType')?.value || ''
+  const f    = window._ceoFilter
+  const qs   = new URLSearchParams({
+    ...(f.hospitalId && { hospital_id: f.hospitalId }),
+    ...(type         && { expense_type: type })
+  }).toString()
+  api('GET', `/api/ceo-dashboard/expenses/${f.year}/${f.month}${qs?`?${qs}`:''}`)
+    .then(data => {
+      const el = document.getElementById('ceoExpensesSection')
+      if (el) el.innerHTML = renderCeoExpenses(data||[], f)
+      const sel = document.getElementById('ceoExpenseType')
+      if (sel) sel.value = type
+    })
 }
