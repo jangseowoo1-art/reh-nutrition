@@ -619,7 +619,7 @@ orders.get('/inspection/pending/:year/:month', async (c) => {
   const data = await c.env.DB.prepare(
     `SELECT d.id, d.order_date, d.total_amount, d.taxable_amount, d.exempt_amount,
             d.is_inspected, d.actual_amount, d.inspection_memo, d.received_date,
-            d.inspected_at, d.inspected_by,
+            d.inspected_at, d.inspected_by, d.inspection_status,
             COALESCE(v.name, '미등록 업체(ID:'||d.vendor_id||')') as vendor_name,
             v.category, v.tax_type
      FROM daily_orders d
@@ -648,6 +648,45 @@ orders.get('/inspection/pending/:year/:month', async (c) => {
       pendingList: pending.slice(0, 10)
     }
   })
+})
+
+// 일괄 검수 완료 처리 (반드시 /inspection/:orderId 보다 앞에 위치해야 함)
+orders.put('/inspection/batch', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const body = await c.req.json()
+  const { orderIds, inspection_memo, received_date } = body
+
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    return c.json({ error: 'orderIds 필요' }, 400)
+  }
+
+  const now = new Date().toISOString()
+  const username = user.username || user.name || 'unknown'
+  let updated = 0
+
+  for (const orderId of orderIds) {
+    const existing = await c.env.DB.prepare(
+      `SELECT id, total_amount FROM daily_orders WHERE id = ? AND hospital_id = ?`
+    ).bind(orderId, hospitalId).first<any>()
+    if (!existing) continue
+
+    await c.env.DB.prepare(
+      `UPDATE daily_orders SET is_inspected=1, actual_amount=total_amount,
+         inspection_status='completed_ok',
+         inspection_memo=?, received_date=?, inspected_at=?, inspected_by=?
+       WHERE id = ? AND hospital_id = ?`
+    ).bind(inspection_memo ?? null, received_date ?? null, now, username, orderId, hospitalId).run()
+
+    await c.env.DB.prepare(
+      `INSERT INTO order_inspections (order_id, hospital_id, inspected_at, inspected_by,
+         original_amount, actual_amount, difference, memo, status)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'completed')`
+    ).bind(orderId, hospitalId, now, username, existing.total_amount, existing.total_amount, inspection_memo ?? null).run()
+    updated++
+  }
+
+  return c.json({ success: true, updated })
 })
 
 // 검수 완료 처리 (단건)
@@ -702,44 +741,6 @@ orders.put('/inspection/:orderId', async (c) => {
   }
 
   return c.json({ success: true, orderId })
-})
-
-// 일괄 검수 완료 처리
-orders.put('/inspection/batch', async (c) => {
-  const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
-  const body = await c.req.json()
-  const { orderIds, inspection_memo, received_date } = body
-
-  if (!Array.isArray(orderIds) || orderIds.length === 0) {
-    return c.json({ error: 'orderIds 필요' }, 400)
-  }
-
-  const now = new Date().toISOString()
-  const username = user.username || user.name || 'unknown'
-  let updated = 0
-
-  for (const orderId of orderIds) {
-    const existing = await c.env.DB.prepare(
-      `SELECT id, total_amount FROM daily_orders WHERE id = ? AND hospital_id = ?`
-    ).bind(orderId, hospitalId).first<any>()
-    if (!existing) continue
-
-    await c.env.DB.prepare(
-      `UPDATE daily_orders SET is_inspected=1, actual_amount=total_amount,
-         inspection_memo=?, received_date=?, inspected_at=?, inspected_by=?
-       WHERE id = ? AND hospital_id = ?`
-    ).bind(inspection_memo ?? null, received_date ?? null, now, username, orderId, hospitalId).run()
-
-    await c.env.DB.prepare(
-      `INSERT INTO order_inspections (order_id, hospital_id, inspected_at, inspected_by,
-         original_amount, actual_amount, difference, memo, status)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'completed')`
-    ).bind(orderId, hospitalId, now, username, existing.total_amount, existing.total_amount, inspection_memo ?? null).run()
-    updated++
-  }
-
-  return c.json({ success: true, updated })
 })
 
 // #1 검수 이슈 저장 (단건)

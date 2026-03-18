@@ -14054,7 +14054,12 @@ async function exportReportPDF(hospitalName, year, month) {
   async function captureSection(elementId, doc, x, y, maxW, maxH) {
     const el = document.getElementById(elementId)
     if (!el) return 0
-    const canvas = await html2canvas(el, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' })
+    // 캡처 직전 잠깐 visibility 해제 (html2canvas는 visibility:hidden 요소 캡처 안 됨)
+    const container = document.getElementById('pdfTempContainer')
+    if (container) container.style.visibility = 'visible'
+    await new Promise(r => setTimeout(r, 100))
+    const canvas = await html2canvas(el, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 794, windowHeight: el.scrollHeight || 1123 })
+    if (container) container.style.visibility = 'hidden'
     const imgData = canvas.toDataURL('image/jpeg', 0.92)
     const ratio = canvas.width / canvas.height
     let w = maxW, h = maxW / ratio
@@ -14091,7 +14096,7 @@ async function exportReportPDF(hospitalName, year, month) {
   // 임시 A4 렌더링 컨테이너 생성
   const pdfContainer = document.createElement('div')
   pdfContainer.id = 'pdfTempContainer'
-  pdfContainer.style.cssText = 'position:fixed;left:-9999px;top:0;width:794px;background:white;font-family:sans-serif;z-index:-1'
+  pdfContainer.style.cssText = 'position:absolute;left:0;top:-9999px;width:794px;background:white;font-family:sans-serif;z-index:-1;visibility:hidden'
   document.body.appendChild(pdfContainer)
 
   // 운영요약 페이지 HTML
