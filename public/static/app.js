@@ -1458,26 +1458,26 @@ async function renderDashboard() {
       <!-- 헤더 -->
       <div class="flex items-center justify-between mb-3">
         <h2 class="font-bold text-gray-800 text-sm flex items-center gap-1.5">
-          <i class="fas fa-chart-pie text-indigo-500"></i> 업체 카테고리별 비중
+          <i class="fas fa-chart-pie text-indigo-500"></i> 업체 카테고리별 발주 분석
         </h2>
-        <div class="flex gap-1">
-          <button id="vendorPieBtn_chart" onclick="switchVendorPieView('chart')"
-            style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #c7d2fe;background:#4f46e5;color:white;cursor:pointer">차트</button>
-          <button id="vendorPieBtn_detail" onclick="switchVendorPieView('detail')"
-            style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #c7d2fe;background:white;color:#4f46e5;cursor:pointer">상세</button>
+      </div>
+
+      <!-- 좌우 2단 레이아웃: 도넛+범례 | 상세분석 -->
+      <div style="display:flex;gap:14px;align-items:flex-start">
+
+        <!-- 왼쪽: 도넛 차트 + 카테고리 범례 -->
+        <div style="flex-shrink:0;width:148px">
+          <div style="width:120px;height:120px;position:relative;margin:0 auto 8px">
+            <canvas id="vendorPieChart" width="120" height="120"></canvas>
+          </div>
+          <div id="vendorPieLegend"></div>
         </div>
-      </div>
 
-      <!-- 차트 뷰 -->
-      <div id="vendorPieChartView">
-        <canvas id="vendorPieChart" style="max-height:180px"></canvas>
-        <!-- 업체별 간략 범례 -->
-        <div id="vendorPieLegend" class="mt-3 space-y-1"></div>
-      </div>
+        <!-- 세로 구분선 -->
+        <div style="width:1px;background:#f3f4f6;align-self:stretch;flex-shrink:0"></div>
 
-      <!-- 상세 분석 뷰 (숨김) -->
-      <div id="vendorPieDetailView" style="display:none">
-        <div id="vendorPieDetailContent"></div>
+        <!-- 오른쪽: 상세 분석 -->
+        <div id="vendorPieDetailContent" style="flex:1;min-width:0;overflow-y:auto;max-height:340px"></div>
       </div>
     </div>
   </div>`
@@ -1619,12 +1619,12 @@ async function renderDashboard() {
         const budgetTotal = cvs.reduce((s, v) => s + (v.monthly_budget||0), 0)
         const budgetPct = budgetTotal > 0 ? Math.round(amt/budgetTotal*100) : null
         const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
-        return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #f9fafb">
-          <div style="width:10px;height:10px;border-radius:2px;background:${pieColors[i]};flex-shrink:0"></div>
-          <span style="flex:1;font-size:11px;color:#374151;font-weight:600">${label}</span>
-          <span style="font-size:11px;color:${pieColors[i]};font-weight:700">${pct}%</span>
-          <span style="font-size:10px;color:#9ca3af">${fmtMan(amt)}원</span>
-          ${budgetPct !== null ? `<span style="font-size:10px;color:${budColor};font-weight:600">목표${budgetPct}%</span>` : ''}
+        return `<div style="display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #f9fafb">
+          <div style="width:8px;height:8px;border-radius:2px;background:${pieColors[i]};flex-shrink:0"></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:10px;color:#374151;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
+            <div style="font-size:9px;color:#9ca3af">${fmtMan(amt)}원 · <span style="color:${pieColors[i]};font-weight:700">${pct}%</span>${budgetPct !== null ? ` · <span style="color:${budColor};font-weight:600">목표${budgetPct}%</span>` : ''}</div>
+          </div>
         </div>`
       }).join('')
     }
@@ -1637,113 +1637,93 @@ async function renderDashboard() {
 
     detailEl.innerHTML = `
       <!-- 과세/면세 분류 요약 -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
-        <div style="background:#f0fdf4;border-radius:8px;padding:7px;text-align:center">
-          <div style="font-size:9px;color:#6b7280;margin-bottom:2px">과세</div>
-          <div style="font-size:12px;font-weight:700;color:#16a34a">${fmtMan(totalTaxable)}원</div>
-          <div style="font-size:9px;color:#9ca3af">${totalUsed>0?((totalTaxable/totalUsed)*100).toFixed(1):0}%</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">
+        <div style="background:#f0fdf4;border-radius:6px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:#6b7280;margin-bottom:1px">과세</div>
+          <div style="font-size:11px;font-weight:700;color:#16a34a">${fmtMan(totalTaxable)}</div>
+          <div style="font-size:8px;color:#9ca3af">${totalUsed>0?((totalTaxable/totalUsed)*100).toFixed(1):0}%</div>
         </div>
-        <div style="background:#fffbeb;border-radius:8px;padding:7px;text-align:center">
-          <div style="font-size:9px;color:#6b7280;margin-bottom:2px">면세</div>
-          <div style="font-size:12px;font-weight:700;color:#d97706">${fmtMan(totalExempt)}원</div>
-          <div style="font-size:9px;color:#9ca3af">${totalUsed>0?((totalExempt/totalUsed)*100).toFixed(1):0}%</div>
+        <div style="background:#fffbeb;border-radius:6px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:#6b7280;margin-bottom:1px">면세</div>
+          <div style="font-size:11px;font-weight:700;color:#d97706">${fmtMan(totalExempt)}</div>
+          <div style="font-size:8px;color:#9ca3af">${totalUsed>0?((totalExempt/totalUsed)*100).toFixed(1):0}%</div>
         </div>
-        <div style="background:#f5f3ff;border-radius:8px;padding:7px;text-align:center">
-          <div style="font-size:9px;color:#6b7280;margin-bottom:2px">부가세</div>
-          <div style="font-size:12px;font-weight:700;color:#7c3aed">${fmtMan(totalVat)}원</div>
-          <div style="font-size:9px;color:#9ca3af">${totalUsed>0?((totalVat/totalUsed)*100).toFixed(1):0}%</div>
+        <div style="background:#f5f3ff;border-radius:6px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:#6b7280;margin-bottom:1px">부가세</div>
+          <div style="font-size:11px;font-weight:700;color:#7c3aed">${fmtMan(totalVat)}</div>
+          <div style="font-size:8px;color:#9ca3af">${totalUsed>0?((totalVat/totalUsed)*100).toFixed(1):0}%</div>
         </div>
       </div>
 
       <!-- TOP 3 업체 -->
       ${top3.length > 0 ? `
-      <div style="margin-bottom:10px">
-        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:5px">🏆 TOP 발주 업체</div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:4px">🏆 TOP 발주 업체</div>
         ${top3.map((v, i) => {
           const pct = totalUsed > 0 ? ((v.total_used/totalUsed)*100).toFixed(1) : 0
           const budgetPct = v.monthly_budget > 0 ? Math.round(v.total_used/v.monthly_budget*100) : null
           const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
           const medal = i===0?'🥇':i===1?'🥈':'🥉'
-          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:#f9fafb;border-radius:6px;margin-bottom:3px">
-            <span style="font-size:13px">${medal}</span>
+          return `<div style="display:flex;align-items:center;gap:5px;padding:3px 5px;background:#f9fafb;border-radius:5px;margin-bottom:2px">
+            <span style="font-size:12px">${medal}</span>
             <div style="flex:1;min-width:0">
-              <div style="font-size:11px;font-weight:700;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${v.name}</div>
-              <div style="font-size:9px;color:#9ca3af">${getCategoryLabel(v.category)}</div>
+              <div style="font-size:10px;font-weight:700;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${v.name}</div>
+              <div style="font-size:8px;color:#9ca3af">${getCategoryLabel(v.category)} · ${pct}%${budgetPct!==null?` · <span style="color:${budColor}">목표${budgetPct}%</span>`:''}</div>
             </div>
-            <div style="text-align:right;flex-shrink:0">
-              <div style="font-size:11px;font-weight:700;color:#4f46e5">${fmtMan(v.total_used)}원</div>
-              <div style="font-size:9px;color:#9ca3af">${pct}% ${budgetPct!==null?`<span style="color:${budColor}">목표${budgetPct}%</span>`:''}</div>
-            </div>
+            <div style="font-size:10px;font-weight:700;color:#4f46e5;flex-shrink:0">${fmtMan(v.total_used)}</div>
           </div>`
         }).join('')}
       </div>` : ''}
 
       <!-- 카테고리별 요약 -->
-      <div style="margin-bottom:10px">
-        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:5px">📦 카테고리별 현황</div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:4px">📦 카테고리별 현황</div>
         ${cats.map((cat, i) => {
           const pct = totalUsed > 0 ? ((cat.total/totalUsed)*100).toFixed(1) : 0
           const budgetPct = cat.budget > 0 ? Math.round(cat.total/cat.budget*100) : null
           const barColor = budgetPct !== null && budgetPct >= 100 ? '#ef4444' : budgetPct !== null && budgetPct >= 80 ? '#f59e0b' : pieColors[i%pieColors.length]
-          return `<div style="margin-bottom:5px">
+          return `<div style="margin-bottom:4px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-              <div style="display:flex;align-items:center;gap:4px">
-                <div style="width:8px;height:8px;border-radius:2px;background:${pieColors[i%pieColors.length]}"></div>
+              <div style="display:flex;align-items:center;gap:3px">
+                <div style="width:7px;height:7px;border-radius:2px;background:${pieColors[i%pieColors.length]}"></div>
                 <span style="font-size:10px;font-weight:600;color:#374151">${cat.label}</span>
-                <span style="font-size:9px;color:#9ca3af">${cat.vendors.length}개 업체</span>
+                <span style="font-size:8px;color:#9ca3af">${cat.vendors.length}업체</span>
               </div>
-              <div style="font-size:10px;font-weight:700;color:${pieColors[i%pieColors.length]}">${fmtMan(cat.total)}원 <span style="color:#9ca3af;font-weight:400">(${pct}%)</span></div>
+              <div style="font-size:10px;font-weight:700;color:${pieColors[i%pieColors.length]}">${fmtMan(cat.total)} <span style="color:#9ca3af;font-weight:400;font-size:8px">${pct}%</span></div>
             </div>
-            <div style="background:#e5e7eb;border-radius:3px;height:5px;overflow:hidden">
-              <div style="height:100%;width:${pct}%;background:${pieColors[i%pieColors.length]};border-radius:3px"></div>
+            <div style="background:#e5e7eb;border-radius:3px;height:4px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:${barColor};border-radius:3px"></div>
             </div>
-            ${budgetPct !== null ? `<div style="font-size:9px;color:${budgetPct>=100?'#dc2626':budgetPct>=80?'#f59e0b':'#10b981'};margin-top:1px;text-align:right">목표 대비 ${budgetPct}%</div>` : ''}
+            ${budgetPct !== null ? `<div style="font-size:8px;color:${budgetPct>=100?'#dc2626':budgetPct>=80?'#f59e0b':'#10b981'};margin-top:1px;text-align:right">목표 대비 ${budgetPct}%</div>` : ''}
           </div>`
         }).join('')}
       </div>
 
       <!-- 예산 초과 업체 경고 -->
       ${overBudget.length > 0 ? `
-      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:7px;margin-bottom:8px">
-        <div style="font-size:10px;font-weight:700;color:#dc2626;margin-bottom:4px">⚠️ 예산 초과 업체 (${overBudget.length}개)</div>
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px;margin-bottom:6px">
+        <div style="font-size:9px;font-weight:700;color:#dc2626;margin-bottom:3px">⚠️ 예산 초과 (${overBudget.length}개)</div>
         ${overBudget.map(v => {
           const over = v.total_used - v.monthly_budget
           const pct = Math.round(v.total_used/v.monthly_budget*100)
-          return `<div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;padding:2px 0">
+          return `<div style="display:flex;justify-content:space-between;font-size:9px;color:#374151;padding:1px 0">
             <span style="font-weight:600">${v.name}</span>
-            <span style="color:#dc2626;font-weight:700">+${fmtMan(over)}원 초과 (${pct}%)</span>
+            <span style="color:#dc2626;font-weight:700">+${fmtMan(over)} (${pct}%)</span>
           </div>`
         }).join('')}
-      </div>` : `<div style="background:#f0fdf4;border-radius:8px;padding:6px;text-align:center;font-size:10px;color:#16a34a;font-weight:600;margin-bottom:8px">✅ 모든 업체 예산 내 발주 중</div>`}
+      </div>` : `<div style="background:#f0fdf4;border-radius:6px;padding:5px;text-align:center;font-size:9px;color:#16a34a;font-weight:600;margin-bottom:6px">✅ 모든 업체 예산 내</div>`}
 
       <!-- 미발주 업체 -->
       ${noOrder.length > 0 ? `
-      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:7px">
-        <div style="font-size:10px;font-weight:700;color:#6b7280;margin-bottom:3px">📭 이번 달 미발주 업체 (${noOrder.length}개)</div>
-        <div style="font-size:10px;color:#9ca3af">${noOrder.map(v=>v.name).join(' · ')}</div>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:6px">
+        <div style="font-size:9px;font-weight:700;color:#6b7280;margin-bottom:2px">📭 미발주 업체 (${noOrder.length}개)</div>
+        <div style="font-size:9px;color:#9ca3af">${noOrder.map(v=>v.name).join(' · ')}</div>
       </div>` : ''}
     `
   }
 
-  // ── 차트↔상세 전환 함수 ──
-  window.switchVendorPieView = function(view) {
-    const chartView  = document.getElementById('vendorPieChartView')
-    const detailView = document.getElementById('vendorPieDetailView')
-    const btnChart   = document.getElementById('vendorPieBtn_chart')
-    const btnDetail  = document.getElementById('vendorPieBtn_detail')
-    if (!chartView || !detailView) return
-    if (view === 'chart') {
-      chartView.style.display  = ''
-      detailView.style.display = 'none'
-      if (btnChart)  { btnChart.style.background  = '#4f46e5'; btnChart.style.color  = 'white' }
-      if (btnDetail) { btnDetail.style.background = 'white';   btnDetail.style.color = '#4f46e5' }
-    } else {
-      chartView.style.display  = 'none'
-      detailView.style.display = ''
-      if (btnDetail) { btnDetail.style.background = '#4f46e5'; btnDetail.style.color  = 'white' }
-      if (btnChart)  { btnChart.style.background  = 'white';   btnChart.style.color   = '#4f46e5' }
-    }
-  }
+  // switchVendorPieView는 더 이상 차트/상세를 전환하지 않음 (동시 표시로 변경됨)
+  window.switchVendorPieView = function(view) { /* 레거시 - 현재는 미사용 */ }
 }
 
 // ══════════════════════════════════════════════════════════════
