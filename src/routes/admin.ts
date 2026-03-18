@@ -599,7 +599,14 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
       const weekBudget = dailyBudget * 5
 
-      const totalUsed = (vendors.results || []).reduce((s: number, v: any) => s + v.used, 0)
+      // totalUsed: daily_orders 직접 집계 (vendor_id가 다른 병원 업체를 참조해도 포함)
+      const totalUsedRow2 = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(total_amount),0) as total FROM daily_orders
+         WHERE hospital_id=?
+           AND strftime('%Y',order_date)=?
+           AND strftime('%m',order_date)=printf('%02d',?)`
+      ).bind(h.id, hYear, hMonth).first<any>()
+      const totalUsed = totalUsedRow2?.total || 0
       const progress = totalBudget > 0 ? ((totalUsed / totalBudget) * 100) : 0
 
       // 식단가 계산 (3종) - 커스텀 식수 포함
@@ -802,6 +809,16 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         }
       })
 
+      // ── 전체 식단가: 총발주÷총식수 방식 (카테고리 있으면 카테고리 합산, 없으면 기존 방식) ──
+      // 올바른 방식: (항암발주+요양발주) / (항암식수+요양식수)
+      let formulaMealPriceTotal = mealPriceTotal  // 기본값 (카테고리 없는 병원)
+      const activeCatPricesAdmin = catDietPrices.filter((c: any) => c.monthMeals > 0 && c.monthAmt > 0)
+      if (activeCatPricesAdmin.length >= 1) {
+        const sumAmt   = activeCatPricesAdmin.reduce((s: number, c: any) => s + c.monthAmt,   0)
+        const sumMeals = activeCatPricesAdmin.reduce((s: number, c: any) => s + c.monthMeals, 0)
+        if (sumMeals > 0) formulaMealPriceTotal = Math.round(sumAmt / sumMeals)
+      }
+
       // 이슈 목록 생성
       const issues: any[] = []
       // 1. 예산 초과 업체
@@ -834,10 +851,10 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         }
       }
       // 4. 식단가 초과
-      if (targetMealPrice > 0 && mealPriceTotal > targetMealPrice) {
-        const pct = ((mealPriceTotal - targetMealPrice) / targetMealPrice * 100).toFixed(1)
+      if (targetMealPrice > 0 && formulaMealPriceTotal > targetMealPrice) {
+        const pct = ((formulaMealPriceTotal - targetMealPrice) / targetMealPrice * 100).toFixed(1)
         issues.push({ type: 'meal_price_over', level: 'danger',
-          msg: `[식단가초과] 실제 ${mealPriceTotal.toLocaleString()}원 (목표대비 ${pct}% 초과)` })
+          msg: `[식단가초과] 실제 ${formulaMealPriceTotal.toLocaleString()}원 (목표대비 ${pct}% 초과)` })
       }
 
       return {
@@ -846,7 +863,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         totalUsed,
         progress: progress.toFixed(1),
         remaining: totalBudget - totalUsed,
-        mealPriceTotal,
+        mealPriceTotal: formulaMealPriceTotal,  // 총발주÷총식수 (카테고리 가중평균)
+        mealPriceRaw: mealPriceTotal,            // 기존 방식 (전체발주÷전체식수) 참고용
         mealPriceNoStaff,
         mealPriceNoSupply,
         targetMealPrice,

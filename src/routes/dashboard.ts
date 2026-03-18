@@ -134,7 +134,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
      FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
   ).bind(hospitalId, weekStartStr, weekEndStr).first<any>()
 
-  const totalUsed = vendors.results?.reduce((sum: number, v: any) => sum + v.total_used, 0) || 0
+  // totalUsed: daily_orders 직접 집계 (vendor_id가 다른 병원 업체를 참조해도 포함)
+  // vendors 집계와 별도로 계산해야 정확한 발주 합계 산출 가능
+  const totalUsedRow = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(total_amount),0) as total
+     FROM daily_orders
+     WHERE hospital_id = ?
+       AND strftime('%Y', order_date) = ?
+       AND strftime('%m', order_date) = printf('%02d', ?)`
+  ).bind(hospitalId, year, month).first<any>()
+  const totalUsed = totalUsedRow?.total || 0
   const totalBudget = settings?.total_budget || 0
   const eventBudget = settings?.event_budget || 0
   const workingDays = settings?.working_days || 30
@@ -461,22 +470,19 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const prevMealPriceNoSupply = prevMealsForPrice > 0
     ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0
 
-  // ── formula 기반 가중평균 전체 식단가 계산 ──────────────────────
-  // 카테고리가 있는 병원: 예산 비중 가중평균으로 전체 식단가 계산
-  // - 카테고리 1개: 해당 카테고리 식단가 = 전체 식단가
-  // - 카테고리 2개 이상: (각 카테고리 식단가 × 예산비중) 합산
-  let formulaMealPriceTotal = mealPriceTotal  // 기본값: 기존 계산
-  const activeCatDietPrices = catDietPrices.filter(c => c.monthDietPrice > 0 && c.monthAmt > 0)
-  if (activeCatDietPrices.length === 1) {
-    // 카테고리 1개: 해당 카테고리 식단가 = 전체 식단가
-    formulaMealPriceTotal = activeCatDietPrices[0].monthDietPrice
-  } else if (activeCatDietPrices.length >= 2) {
-    // 카테고리 2개 이상: 예산(발주금액) 비중 가중평균
-    const totalCatAmt = activeCatDietPrices.reduce((s, c) => s + c.monthAmt, 0)
-    if (totalCatAmt > 0) {
-      formulaMealPriceTotal = Math.round(
-        activeCatDietPrices.reduce((s, c) => s + (c.monthDietPrice * (c.monthAmt / totalCatAmt)), 0)
-      )
+  // ── formula 기반 전체 식단가 계산 (총발주÷총식수 방식) ────────────
+  // 카테고리가 있는 병원: 각 카테고리의 발주금액 합산 ÷ 식수 합산
+  // = (항암발주 + 요양발주) / (항암식수 + 요양식수)  ← 올바른 가중평균
+  // ※ 예산비중 가중평균(식단가×비중)은 잘못된 방식 — 발주 단가가 높은 카테고리 비중이
+  //   실제보다 부풀려지므로 사용하지 않음
+  let formulaMealPriceTotal = mealPriceTotal  // 기본값: 기존 계산 (카테고리 없는 병원)
+  const activeCatDietPrices = catDietPrices.filter(c => c.monthMeals > 0 && c.monthAmt > 0)
+  if (activeCatDietPrices.length >= 1) {
+    // 카테고리 1개 이상: 총발주금액 ÷ 총식수 (올바른 가중평균)
+    const totalCatAmt   = activeCatDietPrices.reduce((s, c) => s + c.monthAmt,   0)
+    const totalCatMeals = activeCatDietPrices.reduce((s, c) => s + c.monthMeals, 0)
+    if (totalCatMeals > 0) {
+      formulaMealPriceTotal = Math.round(totalCatAmt / totalCatMeals)
     }
   }
 
