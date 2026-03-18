@@ -288,7 +288,8 @@ function getAdminMenus() {
     { id: 'holiday-manage', icon: 'fa-calendar-times', label: '공휴일 관리', section: null },
     { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
     { id: 'report', icon: 'fa-file-pdf', label: '보고서 출력', section: null },
-    { id: 'ceo-dashboard', icon: 'fa-crown', label: '경영 대시보드', section: '경영' }
+    { id: 'ceo-dashboard', icon: 'fa-crown', label: '경영 대시보드', section: '경영' },
+    { id: 'transaction-analysis', icon: 'fa-file-invoice', label: '거래명세서 분석', section: '데이터 분석' }
   ]
 }
 
@@ -358,7 +359,8 @@ function navigateTo(page, forceReload = false) {
     'holiday-manage': { title: '공휴일 관리', sub: '공휴일 조회 및 수동 추가' },
     report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' },
     'expense-doc': { title: '지출결의서', sub: '법인카드 사용 내역 결의서' },
-    'ceo-dashboard': { title: '경영 대시보드', sub: 'CEO · 경영진 운영 현황 분석' }
+    'ceo-dashboard': { title: '경영 대시보드', sub: 'CEO · 경영진 운영 현황 분석' },
+    'transaction-analysis': { title: '거래명세서 분석', sub: '업체별 납품 명세서 업로드 · 파싱 · 비용 분석' }
   }
   const t = titles[page] || { title: page, sub: '' }
   const titleEl = document.getElementById('pageTitle')
@@ -397,7 +399,8 @@ function navigateTo(page, forceReload = false) {
     report: renderReport,
     'expense-doc': renderExpenseDoc,
     'ingredient-prices': renderIngredientPricesPage,  // #8 독립 메뉴
-    'ceo-dashboard': renderCeoDashboard
+    'ceo-dashboard': renderCeoDashboard,
+    'transaction-analysis': renderTransactionAnalysis
   }
 
   if (pages[page]) {
@@ -16735,4 +16738,1006 @@ window.ceoExpenseTypeFilter = function() {
       const sel = document.getElementById('ceoExpenseType')
       if (sel) sel.value = type
     })
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 거래명세서 분석 페이지 (transaction-analysis)
+// ══════════════════════════════════════════════════════════════════════
+
+// ── 전역 상태 ──────────────────────────────────────────────────────────
+const TXState = {
+  year: new Date().getFullYear(),
+  month: new Date().getMonth() + 1,
+  tab: 'upload',       // upload | preview | monthly | cross
+  currentFileId: null,
+  previewItems: [],
+  categories: [],
+  charts: {}
+}
+
+// ── 차트 정리 헬퍼 ────────────────────────────────────────────────────
+function txDestroyCharts() {
+  Object.values(TXState.charts).forEach(c => { try { c.destroy() } catch(_){} })
+  TXState.charts = {}
+}
+
+// ── 메인 렌더 함수 ───────────────────────────────────────────────────
+async function renderTransactionAnalysis() {
+  txDestroyCharts()
+  const el = document.getElementById('pageContent')
+  el.innerHTML = `
+  <div class="space-y-4">
+    <!-- 헤더 바 -->
+    <div class="flex flex-wrap items-center justify-between gap-3 bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,#1e40af,#3b82f6)">
+          <i class="fas fa-file-invoice text-white"></i>
+        </div>
+        <div>
+          <div class="font-bold text-gray-800">거래명세서 분석</div>
+          <div class="text-xs text-gray-400">업체 납품 명세서 업로드 · 파싱 · 비용 분석</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <select id="txYear" class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          ${[2024,2025,2026,2027].map(y => `<option value="${y}" ${y===TXState.year?'selected':''}>${y}년</option>`).join('')}
+        </select>
+        <select id="txMonth" class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          ${Array.from({length:12},(_,i)=>i+1).map(m => `<option value="${m}" ${m===TXState.month?'selected':''}>${m}월</option>`).join('')}
+        </select>
+        <button onclick="txLoadDashboard()" class="text-sm bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 transition">
+          <i class="fas fa-sync-alt text-xs"></i> 조회
+        </button>
+      </div>
+    </div>
+
+    <!-- 탭 -->
+    <div class="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+      ${[
+        {id:'upload',  icon:'fa-cloud-upload-alt', label:'파일 업로드'},
+        {id:'preview', icon:'fa-table',            label:'데이터 확인'},
+        {id:'monthly', icon:'fa-chart-bar',        label:'월별 분석'},
+        {id:'cross',   icon:'fa-exchange-alt',     label:'발주 교차분석'}
+      ].map(t => `
+        <button id="txTab-${t.id}" onclick="txSwitchTab('${t.id}')"
+          class="tx-tab flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${TXState.tab===t.id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">
+          <i class="fas ${t.icon} text-xs"></i>${t.label}
+        </button>`).join('')}
+    </div>
+
+    <!-- 탭 컨텐츠 -->
+    <div id="txTabContent"></div>
+  </div>`
+
+  // 연/월 변경 이벤트
+  document.getElementById('txYear').addEventListener('change', e => { TXState.year = +e.target.value })
+  document.getElementById('txMonth').addEventListener('change', e => { TXState.month = +e.target.value })
+
+  // 카테고리 로드
+  await txLoadCategories()
+  // 현재 탭 렌더링
+  txSwitchTab(TXState.tab)
+}
+
+// ── 탭 전환 ──────────────────────────────────────────────────────────
+function txSwitchTab(tab) {
+  TXState.tab = tab
+  // 탭 버튼 스타일 갱신
+  document.querySelectorAll('.tx-tab').forEach(btn => {
+    const isActive = btn.id === `txTab-${tab}`
+    btn.className = `tx-tab flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${isActive ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`
+  })
+  txDestroyCharts()
+  const c = document.getElementById('txTabContent')
+  if (!c) return
+  if (tab === 'upload')  txRenderUploadTab(c)
+  else if (tab === 'preview') txRenderPreviewTab(c)
+  else if (tab === 'monthly') txRenderMonthlyTab(c)
+  else if (tab === 'cross')   txRenderCrossTab(c)
+}
+
+// ── 카테고리 로드 ─────────────────────────────────────────────────────
+async function txLoadCategories() {
+  try {
+    const res = await axios.get('/api/transaction/categories', { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    TXState.categories = res.data.data || []
+  } catch(e) { TXState.categories = [] }
+}
+
+// ════════════════════════════════════════
+// TAB 1: 파일 업로드
+// ════════════════════════════════════════
+function txRenderUploadTab(container) {
+  container.innerHTML = `
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <!-- 업로드 영역 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <h3 class="font-bold text-gray-700 mb-4 flex items-center gap-2">
+        <i class="fas fa-cloud-upload-alt text-blue-500"></i> 명세서 파일 업로드
+      </h3>
+
+      <!-- 드래그앤드롭 존 -->
+      <div id="txDropZone"
+        class="border-2 border-dashed border-blue-200 rounded-xl p-8 text-center hover:border-blue-400 hover:bg-blue-50 transition-all cursor-pointer"
+        onclick="document.getElementById('txFileInput').click()"
+        ondragover="event.preventDefault();this.classList.add('border-blue-500','bg-blue-50')"
+        ondragleave="this.classList.remove('border-blue-500','bg-blue-50')"
+        ondrop="txHandleDrop(event)">
+        <i class="fas fa-file-upload text-4xl text-blue-300 mb-3"></i>
+        <div class="text-gray-600 font-medium mb-1">파일을 드래그하거나 클릭하여 선택</div>
+        <div class="text-xs text-gray-400">지원 형식: XLSX, XLS, CSV, PDF (텍스트 기반)</div>
+        <input id="txFileInput" type="file" class="hidden" accept=".xlsx,.xls,.csv,.pdf"
+          onchange="txHandleFileSelect(event)">
+      </div>
+
+      <!-- 파일 메타 입력 -->
+      <div class="mt-4 space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">업체명</label>
+            <input id="txVendorName" type="text" placeholder="예: 삼성웰스토리"
+              class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+          </div>
+          <div>
+            <label class="text-xs font-medium text-gray-600 mb-1 block">명세서 년/월</label>
+            <div class="flex gap-1">
+              <select id="txDocYear" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                ${[2024,2025,2026].map(y=>`<option value="${y}" ${y===TXState.year?'selected':''}>${y}</option>`).join('')}
+              </select>
+              <select id="txDocMonth" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===TXState.month?'selected':''}>${m}월</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 컬럼 매핑 (범용 파서) -->
+        <div class="bg-gray-50 rounded-lg p-3">
+          <div class="text-xs font-medium text-gray-600 mb-2">
+            <i class="fas fa-columns mr-1 text-blue-400"></i>컬럼 매핑 (Excel 열 번호 · 0부터 시작)
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            ${[
+              {id:'colItemName', label:'품목명', def:'0'},
+              {id:'colQty',      label:'수량',   def:'1'},
+              {id:'colUnit',     label:'단위',   def:'2'},
+              {id:'colPrice',    label:'단가',   def:'3'},
+              {id:'colAmount',   label:'금액',   def:'4'},
+              {id:'colTax',      label:'세금구분', def:'5'}
+            ].map(c=>`
+              <div>
+                <label class="text-xs text-gray-500">${c.label}</label>
+                <input id="${c.id}" type="number" min="0" value="${c.def}"
+                  class="w-full text-xs border border-gray-200 rounded px-2 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none mt-0.5">
+              </div>`).join('')}
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <label class="text-xs text-gray-500">헤더 행 건너뛰기</label>
+            <input id="txSkipRows" type="number" min="0" max="10" value="1"
+              class="w-16 text-xs border border-gray-200 rounded px-2 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none">
+            <span class="text-xs text-gray-400">행</span>
+          </div>
+        </div>
+
+        <button onclick="txUploadFile()" id="txUploadBtn"
+          class="w-full bg-blue-600 text-white font-medium py-2.5 rounded-xl hover:bg-blue-700 transition flex items-center justify-center gap-2">
+          <i class="fas fa-upload"></i> 업로드 및 파싱
+        </button>
+      </div>
+      <div id="txUploadMsg" class="mt-3 hidden"></div>
+    </div>
+
+    <!-- 업로드된 파일 목록 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2">
+          <i class="fas fa-folder-open text-yellow-500"></i> 업로드 파일 목록
+        </h3>
+        <button onclick="txLoadFileList()" class="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1">
+          <i class="fas fa-sync-alt"></i> 새로고침
+        </button>
+      </div>
+      <div id="txFileList" class="space-y-2 max-h-96 overflow-y-auto">
+        <div class="text-center text-gray-400 py-8 text-sm">
+          <i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>불러오는 중...
+        </div>
+      </div>
+    </div>
+  </div>`
+
+  txLoadFileList()
+}
+
+// ── 드래그앤드롭 처리 ─────────────────────────────────────────────────
+function txHandleDrop(e) {
+  e.preventDefault()
+  document.getElementById('txDropZone').classList.remove('border-blue-500','bg-blue-50')
+  const file = e.dataTransfer.files[0]
+  if (file) txProcessFile(file)
+}
+
+function txHandleFileSelect(e) {
+  const file = e.target.files[0]
+  if (file) txProcessFile(file)
+}
+
+// 선택된 파일을 상태에 저장 + 드롭존 업데이트
+function txProcessFile(file) {
+  TXState.selectedFile = file
+  const zone = document.getElementById('txDropZone')
+  if (zone) {
+    zone.innerHTML = `
+      <i class="fas fa-file-excel text-4xl text-green-400 mb-3"></i>
+      <div class="text-gray-700 font-medium">${file.name}</div>
+      <div class="text-xs text-gray-400 mt-1">${(file.size/1024).toFixed(1)} KB · ${file.type || '알 수 없는 형식'}</div>
+      <button onclick="TXState.selectedFile=null;txRenderUploadTab(document.getElementById('txTabContent'))"
+        class="mt-2 text-xs text-red-400 hover:text-red-600">파일 제거</button>`
+  }
+  // 파일명에서 업체명 자동 추출 시도
+  const vendorInput = document.getElementById('txVendorName')
+  if (vendorInput && !vendorInput.value) {
+    const vendors = ['삼성웰스토리','웰스토리','아워홈','이산유통','푸드힐','CJ프레시웨이']
+    for (const v of vendors) {
+      if (file.name.includes(v)) { vendorInput.value = v; break }
+    }
+  }
+}
+
+// ── 실제 업로드 ───────────────────────────────────────────────────────
+async function txUploadFile() {
+  const file = TXState.selectedFile
+  if (!file) { txShowMsg('txUploadMsg', 'error', '파일을 먼저 선택해주세요.'); return }
+
+  const vendorName  = document.getElementById('txVendorName').value.trim()
+  const docYear     = +document.getElementById('txDocYear').value
+  const docMonth    = +document.getElementById('txDocMonth').value
+  const skipRows    = +document.getElementById('txSkipRows').value || 1
+  const colMap = {
+    item_name: +document.getElementById('colItemName').value,
+    qty:       +document.getElementById('colQty').value,
+    unit:      +document.getElementById('colUnit').value,
+    unit_price:+document.getElementById('colPrice').value,
+    amount:    +document.getElementById('colAmount').value,
+    tax_type:  +document.getElementById('colTax').value
+  }
+
+  const btn = document.getElementById('txUploadBtn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 파싱 중...'
+  txShowMsg('txUploadMsg', 'info', '파일을 읽는 중입니다...')
+
+  try {
+    // 파일 읽기 + 파싱 (클라이언트 사이드)
+    let parsedRows = []
+    const ext = file.name.split('.').pop().toLowerCase()
+
+    if (['xlsx','xls','csv'].includes(ext)) {
+      parsedRows = await txParseExcel(file, colMap, skipRows)
+    } else if (ext === 'pdf') {
+      parsedRows = await txParsePDF(file, colMap, skipRows)
+    } else {
+      throw new Error('지원하지 않는 파일 형식입니다.')
+    }
+
+    if (parsedRows.length === 0) throw new Error('파싱된 데이터가 없습니다. 컬럼 매핑을 확인해주세요.')
+
+    txShowMsg('txUploadMsg', 'info', `${parsedRows.length}개 항목 파싱 완료. 서버 저장 중...`)
+
+    // 서버 전송
+    const res = await axios.post('/api/transaction/upload', {
+      file_name: file.name,
+      file_type: ext,
+      file_size: file.size,
+      vendor_name: vendorName,
+      document_year: docYear,
+      document_month: docMonth,
+      parsed_rows: parsedRows
+    }, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+
+    if (res.data.ok) {
+      txShowMsg('txUploadMsg', 'success', `✅ 저장 완료! ${res.data.row_count}개 품목이 등록됐습니다.`)
+      TXState.selectedFile = null
+      TXState.currentFileId = res.data.file_id
+      txLoadFileList()
+      // 3초 후 데이터 확인 탭으로 자동 이동
+      setTimeout(() => txSwitchTab('preview'), 2000)
+    } else {
+      throw new Error(res.data.error || '저장 실패')
+    }
+  } catch(e) {
+    txShowMsg('txUploadMsg', 'error', '오류: ' + (e.response?.data?.error || e.message))
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-upload"></i> 업로드 및 파싱'
+  }
+}
+
+// ── Excel 파싱 (XLSX 라이브러리 사용) ────────────────────────────────
+async function txParseExcel(file, colMap, skipRows) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result)
+        const wb = XLSX.read(data, { type: 'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+        const parsed = []
+        for (let i = skipRows; i < rows.length; i++) {
+          const row = rows[i]
+          if (!row || row.length === 0) continue
+          const itemName = String(row[colMap.item_name] || '').trim()
+          if (!itemName) continue
+
+          const qty        = parseFloat(String(row[colMap.qty] || '0').replace(/[^0-9.-]/g,'')) || 0
+          const unit       = String(row[colMap.unit] || '').trim()
+          const unit_price = parseInt(String(row[colMap.unit_price] || '0').replace(/[^0-9]/g,'')) || 0
+          const amount     = parseInt(String(row[colMap.amount] || '0').replace(/[^0-9]/g,'')) || Math.round(qty * unit_price)
+          const tax_raw    = String(row[colMap.tax_type] || '').trim()
+          const tax_type   = txNormalizeTax(tax_raw)
+
+          parsed.push({ item_name: itemName, quantity: qty, unit, unit_price, amount, tax_type, raw: JSON.stringify(row) })
+        }
+        resolve(parsed)
+      } catch(err) { reject(err) }
+    }
+    reader.onerror = () => reject(new Error('파일 읽기 실패'))
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+// ── PDF 텍스트 파싱 (기본 패턴 매칭) ─────────────────────────────────
+async function txParsePDF(file, colMap, skipRows) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      try {
+        // PDF.js 동적 로드
+        if (!window.pdfjsLib) {
+          await new Promise((res, rej) => {
+            const s = document.createElement('script')
+            s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js'
+            s.onload = res; s.onerror = rej
+            document.head.appendChild(s)
+          })
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js'
+        }
+        const pdf = await window.pdfjsLib.getDocument({ data: e.target.result }).promise
+        let fullText = ''
+        for (let p = 1; p <= pdf.numPages; p++) {
+          const page = await pdf.getPage(p)
+          const tc = await page.getTextContent()
+          fullText += tc.items.map(i => i.str).join(' ') + '\n'
+        }
+        // 텍스트에서 품목 행 추출 (숫자 패턴 기반)
+        const lines = fullText.split('\n').slice(skipRows)
+        const parsed = []
+        for (const line of lines) {
+          const m = line.match(/([가-힣a-zA-Z\s\(\)]+)\s+([\d.]+)\s*([가-힣a-zA-Z]*)\s+([\d,]+)\s+([\d,]+)/)
+          if (!m) continue
+          const item_name = m[1].trim()
+          if (!item_name || item_name.length < 2) continue
+          const qty        = parseFloat(m[2]) || 0
+          const unit       = m[3] || ''
+          const unit_price = parseInt(m[4].replace(/,/g,'')) || 0
+          const amount     = parseInt(m[5].replace(/,/g,'')) || Math.round(qty * unit_price)
+          parsed.push({ item_name, quantity: qty, unit, unit_price, amount, tax_type: 'taxable', raw: line })
+        }
+        resolve(parsed)
+      } catch(err) { reject(err) }
+    }
+    reader.onerror = () => reject(new Error('PDF 읽기 실패'))
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+function txNormalizeTax(raw) {
+  const s = String(raw).toLowerCase().trim()
+  if (s.includes('면세') || s === '0' || s === 'free') return 'nontaxable'
+  if (s.includes('영세') || s.includes('exempt')) return 'exempt'
+  return 'taxable'
+}
+
+// ── 파일 목록 로드 ────────────────────────────────────────────────────
+async function txLoadFileList() {
+  const el = document.getElementById('txFileList')
+  if (!el) return
+  try {
+    const res = await axios.get(`/api/transaction/files?year=${TXState.year}&month=${TXState.month}`,
+      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    const files = res.data.data || []
+
+    if (files.length === 0) {
+      el.innerHTML = `<div class="text-center text-gray-400 py-8 text-sm">
+        <i class="fas fa-inbox text-3xl mb-2"></i><br>
+        ${TXState.year}년 ${TXState.month}월 업로드 파일 없음
+      </div>`
+      return
+    }
+
+    el.innerHTML = files.map(f => `
+      <div class="flex items-center justify-between p-3 rounded-xl border border-gray-100 hover:bg-gray-50 transition">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
+            f.file_type==='xlsx'||f.file_type==='xls' ? 'bg-green-100' :
+            f.file_type==='pdf' ? 'bg-red-100' : 'bg-blue-100'}">
+            <i class="fas ${f.file_type==='pdf'?'fa-file-pdf text-red-500':'fa-file-excel text-green-600'} text-sm"></i>
+          </div>
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-gray-700 truncate">${f.file_name}</div>
+            <div class="text-xs text-gray-400">${f.vendor_name||'업체 미지정'} · ${f.document_year}년 ${f.document_month}월 · ${(f.row_count||0)}개 항목</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0 ml-2">
+          <span class="text-xs px-2 py-0.5 rounded-full font-medium ${
+            f.parse_status==='completed' ? 'bg-green-100 text-green-700' :
+            f.parse_status==='failed'    ? 'bg-red-100 text-red-600' :
+            'bg-yellow-100 text-yellow-600'}">
+            ${f.parse_status==='completed'?'완료':f.parse_status==='failed'?'실패':'처리중'}
+          </span>
+          <button onclick="txViewFile(${f.id},'${(f.vendor_name||'').replace(/'/g,"\\'")}',${f.document_year},${f.document_month})"
+            class="text-xs text-blue-500 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50">
+            <i class="fas fa-eye"></i>
+          </button>
+          <button onclick="txDeleteFile(${f.id})"
+            class="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>`).join('')
+  } catch(e) {
+    el.innerHTML = `<div class="text-center text-red-400 py-6 text-sm">불러오기 실패: ${e.message}</div>`
+  }
+}
+
+// ── 파일 클릭 → preview 탭으로 ───────────────────────────────────────
+async function txViewFile(fileId, vendor, year, month) {
+  TXState.currentFileId = fileId
+  TXState.year = year; TXState.month = month
+  txSwitchTab('preview')
+}
+
+// ── 파일 삭제 ─────────────────────────────────────────────────────────
+async function txDeleteFile(fileId) {
+  if (!confirm('이 파일과 모든 품목 데이터를 삭제하시겠습니까?')) return
+  try {
+    await axios.delete(`/api/transaction/files/${fileId}`,
+      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    txLoadFileList()
+    showToast('삭제됐습니다.', 'success')
+  } catch(e) {
+    showToast('삭제 실패: ' + e.message, 'error')
+  }
+}
+
+// ════════════════════════════════════════
+// TAB 2: 데이터 확인 (미리보기/수정)
+// ════════════════════════════════════════
+async function txRenderPreviewTab(container) {
+  container.innerHTML = `
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <h3 class="font-bold text-gray-700 flex items-center gap-2">
+        <i class="fas fa-table text-blue-500"></i> 파싱 데이터 확인 및 수정
+        ${TXState.currentFileId ? `<span class="text-xs text-gray-400">파일 ID: ${TXState.currentFileId}</span>` : ''}
+      </h3>
+      <div class="flex items-center gap-2">
+        <input id="txPreviewSearch" type="text" placeholder="품목명 검색..."
+          class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-400 focus:outline-none w-40"
+          oninput="txFilterPreview(this.value)">
+        <button onclick="txLoadPreview()" class="text-sm bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 flex items-center gap-1.5">
+          <i class="fas fa-sync-alt text-xs"></i> 새로고침
+        </button>
+      </div>
+    </div>
+    <div id="txPreviewTable" class="overflow-x-auto">
+      <div class="text-center text-gray-400 py-10 text-sm">
+        <i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>데이터 불러오는 중...
+      </div>
+    </div>
+  </div>`
+
+  if (TXState.currentFileId) {
+    await txLoadPreview()
+  } else {
+    document.getElementById('txPreviewTable').innerHTML = `
+      <div class="text-center text-gray-400 py-10">
+        <i class="fas fa-arrow-left text-2xl mb-2"></i><br>
+        <p class="text-sm">파일 업로드 탭에서 파일을 선택해주세요.</p>
+        <button onclick="txSwitchTab('upload')" class="mt-3 text-sm text-blue-500 hover:text-blue-700">
+          업로드 탭으로 이동 →
+        </button>
+      </div>`
+  }
+}
+
+async function txLoadPreview() {
+  if (!TXState.currentFileId) return
+  const el = document.getElementById('txPreviewTable')
+  if (!el) return
+  try {
+    const res = await axios.get(`/api/transaction/files/${TXState.currentFileId}/items`,
+      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    TXState.previewItems = res.data.data || []
+    txRenderPreviewTable(TXState.previewItems)
+  } catch(e) {
+    el.innerHTML = `<div class="text-red-400 text-sm py-4">불러오기 실패: ${e.message}</div>`
+  }
+}
+
+function txFilterPreview(q) {
+  const filtered = q
+    ? TXState.previewItems.filter(r => (r.item_name||'').includes(q) || (r.item_name_normalized||'').includes(q))
+    : TXState.previewItems
+  txRenderPreviewTable(filtered)
+}
+
+function txRenderPreviewTable(items) {
+  const el = document.getElementById('txPreviewTable')
+  if (!el) return
+  if (!items.length) {
+    el.innerHTML = '<div class="text-center text-gray-400 py-8 text-sm">데이터가 없습니다.</div>'
+    return
+  }
+
+  const catOptions = TXState.categories.map(c =>
+    `<option value="${c.id}">${c.name}</option>`).join('')
+  const taxTotal   = items.filter(i=>i.tax_type==='taxable').reduce((s,i)=>s+(i.amount||0),0)
+  const nonTaxTotal= items.filter(i=>i.tax_type==='nontaxable').reduce((s,i)=>s+(i.amount||0),0)
+  const total      = items.reduce((s,i)=>s+(i.amount||0),0)
+
+  el.innerHTML = `
+  <!-- 요약 -->
+  <div class="grid grid-cols-3 gap-3 mb-4">
+    <div class="bg-blue-50 rounded-lg p-3 text-center">
+      <div class="text-xs text-blue-500 mb-1">총 품목 수</div>
+      <div class="text-lg font-bold text-blue-700">${items.length}개</div>
+    </div>
+    <div class="bg-green-50 rounded-lg p-3 text-center">
+      <div class="text-xs text-green-500 mb-1">총 금액</div>
+      <div class="text-lg font-bold text-green-700">${total.toLocaleString()}원</div>
+    </div>
+    <div class="bg-purple-50 rounded-lg p-3 text-center">
+      <div class="text-xs text-purple-500 mb-1">과세 / 면세</div>
+      <div class="text-sm font-bold text-purple-700">${taxTotal.toLocaleString()} / ${nonTaxTotal.toLocaleString()}</div>
+    </div>
+  </div>
+
+  <!-- 테이블 -->
+  <table class="w-full text-xs border-collapse">
+    <thead>
+      <tr class="bg-gray-50">
+        <th class="text-left px-3 py-2 text-gray-500 font-medium border-b">품목명</th>
+        <th class="text-left px-3 py-2 text-gray-500 font-medium border-b">카테고리</th>
+        <th class="text-right px-3 py-2 text-gray-500 font-medium border-b">수량</th>
+        <th class="text-right px-3 py-2 text-gray-500 font-medium border-b">단가</th>
+        <th class="text-right px-3 py-2 text-gray-500 font-medium border-b">금액</th>
+        <th class="text-center px-3 py-2 text-gray-500 font-medium border-b">과세</th>
+        <th class="text-center px-3 py-2 text-gray-500 font-medium border-b">검증</th>
+      </tr>
+    </thead>
+    <tbody id="txPreviewBody">
+      ${items.map((item,idx) => `
+        <tr class="border-b border-gray-50 hover:bg-gray-50 transition ${item.is_verified?'':'bg-yellow-50/30'}" id="txRow-${item.id}">
+          <td class="px-3 py-2">
+            <input class="text-xs border border-gray-200 rounded px-1.5 py-1 w-full focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
+              value="${item.item_name||''}" id="txName-${item.id}">
+          </td>
+          <td class="px-3 py-2">
+            <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white" id="txCat-${item.id}">
+              <option value="">미분류</option>${catOptions}
+            </select>
+          </td>
+          <td class="px-3 py-2">
+            <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-16 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
+              value="${item.quantity||0}" id="txQty-${item.id}">
+          </td>
+          <td class="px-3 py-2">
+            <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-20 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
+              value="${item.unit_price||0}" id="txPrice-${item.id}">
+          </td>
+          <td class="px-3 py-2 text-right font-medium text-gray-700">${(item.amount||0).toLocaleString()}</td>
+          <td class="px-3 py-2 text-center">
+            <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white" id="txTax-${item.id}">
+              <option value="taxable" ${item.tax_type==='taxable'?'selected':''}>과세</option>
+              <option value="nontaxable" ${item.tax_type==='nontaxable'?'selected':''}>면세</option>
+              <option value="exempt" ${item.tax_type==='exempt'?'selected':''}>영세</option>
+            </select>
+          </td>
+          <td class="px-3 py-2 text-center">
+            <button onclick="txSaveItem(${item.id})"
+              class="text-xs ${item.is_verified?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'} px-2 py-1 rounded hover:opacity-80 transition">
+              ${item.is_verified?'✓ 완료':'저장'}
+            </button>
+          </td>
+        </tr>`).join('')}
+    </tbody>
+  </table>`
+
+  // 카테고리 select 초기값 세팅
+  items.forEach(item => {
+    const sel = document.getElementById(`txCat-${item.id}`)
+    if (sel && item.category_id) sel.value = item.category_id
+  })
+}
+
+// ── 품목 저장 ─────────────────────────────────────────────────────────
+async function txSaveItem(itemId) {
+  try {
+    await axios.put(`/api/transaction/items/${itemId}`, {
+      item_name:   document.getElementById(`txName-${itemId}`)?.value || '',
+      category_id: document.getElementById(`txCat-${itemId}`)?.value || null,
+      quantity:    +document.getElementById(`txQty-${itemId}`)?.value || 0,
+      unit_price:  +document.getElementById(`txPrice-${itemId}`)?.value || 0,
+      tax_type:    document.getElementById(`txTax-${itemId}`)?.value || 'taxable'
+    }, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+
+    const btn = document.querySelector(`#txRow-${itemId} button`)
+    if (btn) { btn.className = 'text-xs bg-green-100 text-green-600 px-2 py-1 rounded'; btn.textContent = '✓ 완료' }
+    document.getElementById(`txRow-${itemId}`)?.classList.remove('bg-yellow-50/30')
+  } catch(e) {
+    showToast('저장 실패: ' + e.message, 'error')
+  }
+}
+
+// ════════════════════════════════════════
+// TAB 3: 월별 분석
+// ════════════════════════════════════════
+async function txRenderMonthlyTab(container) {
+  container.innerHTML = `
+  <div id="txMonthlyContent">
+    <div class="text-center text-gray-400 py-16">
+      <i class="fas fa-spinner fa-spin text-3xl mb-3"></i><br>분석 데이터 불러오는 중...
+    </div>
+  </div>`
+  await txLoadMonthlyAnalysis()
+}
+
+async function txLoadMonthlyAnalysis() {
+  const el = document.getElementById('txMonthlyContent')
+  if (!el) return
+  try {
+    const res = await axios.get(`/api/transaction/analysis/monthly?year=${TXState.year}&month=${TXState.month}`,
+      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    const d = res.data
+    if (!d.ok) throw new Error(d.error)
+
+    const tot = d.totals || {}
+    const prevTotal = d.prev_total || 0
+    const changePct = prevTotal > 0 ? ((tot.total_amount - prevTotal) / prevTotal * 100).toFixed(1) : null
+
+    el.innerHTML = `
+    <div class="space-y-4">
+      <!-- 상단 KPI 카드 -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${[
+          { label:'총 지출', val: (tot.total_amount||0).toLocaleString()+'원', icon:'fa-won-sign', color:'blue',
+            sub: changePct ? `전월 대비 ${changePct>0?'+':''}${changePct}%` : '전월 데이터 없음' },
+          { label:'과세 금액', val: (tot.taxable_amount||0).toLocaleString()+'원', icon:'fa-receipt', color:'green',
+            sub: tot.total_amount ? `${Math.round((tot.taxable_amount||0)/(tot.total_amount||1)*100)}%` : '' },
+          { label:'면세 금액', val: (tot.nontaxable_amount||0).toLocaleString()+'원', icon:'fa-tag', color:'purple',
+            sub: tot.total_amount ? `${Math.round((tot.nontaxable_amount||0)/(tot.total_amount||1)*100)}%` : '' },
+          { label:'거래 업체 수', val: (tot.vendor_count||0)+'개사', icon:'fa-truck', color:'orange',
+            sub: `품목 ${tot.item_count||0}개` }
+        ].map(k => `
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <div class="w-8 h-8 rounded-lg bg-${k.color}-100 flex items-center justify-center">
+                <i class="fas ${k.icon} text-${k.color}-500 text-sm"></i>
+              </div>
+              <span class="text-xs text-gray-500">${k.label}</span>
+            </div>
+            <div class="text-lg font-bold text-gray-800">${k.val}</div>
+            <div class="text-xs text-gray-400 mt-0.5">${k.sub}</div>
+          </div>`).join('')}
+      </div>
+
+      <!-- AI 알림 -->
+      ${d.alerts && d.alerts.length > 0 ? `
+      <div class="bg-white rounded-xl shadow-sm border border-orange-200 p-4">
+        <h4 class="font-bold text-gray-700 mb-3 flex items-center gap-2">
+          <i class="fas fa-robot text-orange-500"></i> AI 분석 알림
+        </h4>
+        <div class="space-y-2">
+          ${d.alerts.map(a => `
+            <div class="flex items-start gap-3 p-3 rounded-lg ${a.level==='critical'?'bg-red-50 border border-red-200':a.level==='warning'?'bg-yellow-50 border border-yellow-200':'bg-gray-50'}">
+              <i class="fas ${a.level==='critical'?'fa-exclamation-circle text-red-500':'fa-exclamation-triangle text-yellow-500'} mt-0.5"></i>
+              <div>
+                <div class="text-sm font-medium text-gray-700">${a.title}</div>
+                ${a.items ? `<div class="text-xs text-gray-500 mt-1">${a.items.map(i =>
+                  a.type==='price_rise' ? `${i.item}: ${i.change_pct>0?'+':''}${i.change_pct}% (${(i.prev||0).toLocaleString()}→${(i.current||0).toLocaleString()}원)` :
+                  a.type==='qty_surge'  ? `${i.item}: ${i.ratio}배 증가` : i.item
+                ).join(', ')}</div>` : ''}
+                ${a.vendor ? `<div class="text-xs text-gray-500 mt-1">${a.vendor} · 집중도 ${a.ratio}%</div>` : ''}
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>` : `
+      <div class="bg-green-50 border border-green-200 rounded-xl p-3 flex items-center gap-2 text-sm text-green-700">
+        <i class="fas fa-check-circle"></i> 이상 징후가 감지되지 않았습니다.
+      </div>`}
+
+      <!-- 차트 행: 카테고리 파이 + 업체별 바 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <h4 class="font-bold text-gray-600 mb-3 text-sm">카테고리별 지출</h4>
+          <div style="height:220px;position:relative"><canvas id="txCatChart"></canvas></div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+          <h4 class="font-bold text-gray-600 mb-3 text-sm">업체별 지출 TOP10</h4>
+          <div style="height:220px;position:relative"><canvas id="txVendorChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- 트렌드 차트 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h4 class="font-bold text-gray-600 mb-3 text-sm">최근 6개월 지출 추이</h4>
+        <div style="height:180px;position:relative"><canvas id="txTrendChart"></canvas></div>
+      </div>
+
+      <!-- 상위 품목 테이블 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <h4 class="font-bold text-gray-600 mb-3 text-sm">상위 지출 품목 TOP10</h4>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead><tr class="bg-gray-50">
+              <th class="text-left px-3 py-2 text-gray-500 border-b">품목명</th>
+              <th class="text-left px-3 py-2 text-gray-500 border-b">업체</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">총 수량</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">평균 단가</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">총 금액</th>
+            </tr></thead>
+            <tbody>
+              ${(d.top_items||[]).map((item,i) => `
+                <tr class="border-b border-gray-50 hover:bg-gray-50">
+                  <td class="px-3 py-2 font-medium text-gray-700">
+                    <span class="inline-flex items-center justify-center w-5 h-5 rounded-full text-xs mr-1.5 ${i<3?'bg-blue-100 text-blue-600':'bg-gray-100 text-gray-500'}">${i+1}</span>
+                    ${item.item_name}
+                  </td>
+                  <td class="px-3 py-2 text-gray-500">${item.vendor_name||'-'}</td>
+                  <td class="px-3 py-2 text-right">${(item.total_qty||0).toLocaleString()}</td>
+                  <td class="px-3 py-2 text-right">${(item.avg_price||0).toLocaleString()}원</td>
+                  <td class="px-3 py-2 text-right font-semibold text-gray-700">${(item.total||0).toLocaleString()}원</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          ${!(d.top_items||[]).length ? '<div class="text-center text-gray-400 py-6 text-xs">데이터 없음</div>' : ''}
+        </div>
+      </div>
+    </div>`
+
+    // 차트 렌더링
+    setTimeout(() => {
+      txRenderCategoryChart(d.by_category || [])
+      txRenderVendorChart(d.by_vendor || [])
+      txRenderTrendChart(d.trend || [])
+    }, 50)
+
+  } catch(e) {
+    el.innerHTML = `
+    <div class="bg-white rounded-xl p-8 text-center text-gray-400">
+      <i class="fas fa-inbox text-4xl mb-3"></i>
+      <p class="text-sm">${TXState.year}년 ${TXState.month}월 데이터가 없습니다.</p>
+      <p class="text-xs mt-1 text-gray-300">${e.message}</p>
+      <button onclick="txSwitchTab('upload')" class="mt-4 text-sm text-blue-500 hover:text-blue-700">
+        파일 업로드 →
+      </button>
+    </div>`
+  }
+}
+
+// ── 차트 그리기 ───────────────────────────────────────────────────────
+function txRenderCategoryChart(data) {
+  const canvas = document.getElementById('txCatChart')
+  if (!canvas || !data.length) return
+  const ctx = canvas.getContext('2d')
+  TXState.charts.cat = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: data.map(d => d.category_name || '미분류'),
+      datasets: [{ data: data.map(d => d.total||0),
+        backgroundColor: data.map(d => d.color || '#94a3b8'),
+        borderWidth: 2, borderColor: '#fff' }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${(ctx.raw||0).toLocaleString()}원` } }
+      }
+    }
+  })
+}
+
+function txRenderVendorChart(data) {
+  const canvas = document.getElementById('txVendorChart')
+  if (!canvas || !data.length) return
+  const ctx = canvas.getContext('2d')
+  TXState.charts.vendor = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => d.vendor_name),
+      datasets: [{ label: '지출금액', data: data.map(d => d.total||0),
+        backgroundColor: 'rgba(59,130,246,0.7)', borderColor: '#3b82f6',
+        borderWidth: 1, borderRadius: 4 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ` ${(ctx.raw||0).toLocaleString()}원` } } },
+      scales: { x: { ticks: { callback: v => `${Math.round(v/10000)}만`, font: { size: 10 } } },
+                y: { ticks: { font: { size: 10 } } } }
+    }
+  })
+}
+
+function txRenderTrendChart(data) {
+  const canvas = document.getElementById('txTrendChart')
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  TXState.charts.trend = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.map(d => `${d.y}/${String(d.m).padStart(2,'0')}`),
+      datasets: [{ label: '월 지출', data: data.map(d => d.total||0),
+        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
+        fill: true, tension: 0.4, pointRadius: 4, pointBackgroundColor: '#3b82f6' }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ` ${(ctx.raw||0).toLocaleString()}원` } } },
+      scales: {
+        y: { ticks: { callback: v => `${Math.round(v/10000)}만`, font: { size: 10 } }, beginAtZero: true },
+        x: { ticks: { font: { size: 10 } } }
+      }
+    }
+  })
+}
+
+// ════════════════════════════════════════
+// TAB 4: 발주 교차 분석
+// ════════════════════════════════════════
+async function txRenderCrossTab(container) {
+  container.innerHTML = `
+  <div id="txCrossContent">
+    <div class="text-center text-gray-400 py-16">
+      <i class="fas fa-spinner fa-spin text-3xl mb-3"></i><br>교차 분석 중...
+    </div>
+  </div>`
+  await txLoadCrossAnalysis()
+}
+
+async function txLoadCrossAnalysis() {
+  const el = document.getElementById('txCrossContent')
+  if (!el) return
+  try {
+    const res = await axios.get(`/api/transaction/cross-analysis?year=${TXState.year}&month=${TXState.month}`,
+      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    const d = res.data
+    if (!d.ok) throw new Error(d.error)
+
+    const s = d.summary || {}
+    const items = d.discrepancies || []
+
+    el.innerHTML = `
+    <div class="space-y-4">
+      <!-- 요약 -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${[
+          { label:'발주 총액',    val: (s.total_order_amount||0).toLocaleString()+'원',   icon:'fa-shopping-cart', color:'blue' },
+          { label:'명세서 총액',  val: (s.total_invoice_amount||0).toLocaleString()+'원', icon:'fa-file-invoice',  color:'green' },
+          { label:'차이 항목',    val: (s.warning_items||0)+'건',                         icon:'fa-exclamation-triangle', color:'yellow' },
+          { label:'심각 항목',    val: (s.critical_items||0)+'건',                        icon:'fa-times-circle',  color:'red' }
+        ].map(k => `
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <div class="w-8 h-8 rounded-lg bg-${k.color}-100 flex items-center justify-center">
+                <i class="fas ${k.icon} text-${k.color}-500 text-sm"></i>
+              </div>
+              <span class="text-xs text-gray-500">${k.label}</span>
+            </div>
+            <div class="text-lg font-bold text-gray-800">${k.val}</div>
+          </div>`).join('')}
+      </div>
+
+      <!-- 교차 분석 안내 -->
+      <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-700 flex items-start gap-2">
+        <i class="fas fa-info-circle mt-0.5"></i>
+        <div>발주 데이터와 거래명세서를 품목명 · 업체별로 매핑하여 수량 및 단가 차이를 분석합니다.
+        수량 차이 ±20% 이상 또는 단가 차이 ±10% 이상 시 경고가 표시됩니다.</div>
+      </div>
+
+      <!-- 교차 분석 테이블 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="font-bold text-gray-700 text-sm">발주 vs 명세서 상세 비교</h4>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 bg-red-100 text-red-600 rounded-full">● 심각</span>
+            <span class="px-2 py-0.5 bg-yellow-100 text-yellow-600 rounded-full">● 경고</span>
+            <span class="px-2 py-0.5 bg-green-100 text-green-600 rounded-full">● 정상</span>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead><tr class="bg-gray-50">
+              <th class="text-left px-3 py-2 text-gray-500 border-b">품목명</th>
+              <th class="text-left px-3 py-2 text-gray-500 border-b">업체</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">발주수량</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">명세서수량</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">수량차이</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">발주단가</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">명세서단가</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">단가차이</th>
+              <th class="text-center px-3 py-2 text-gray-500 border-b">상태</th>
+            </tr></thead>
+            <tbody>
+              ${items.length === 0 ? `
+                <tr><td colspan="9" class="text-center text-gray-400 py-8">
+                  발주 데이터 또는 명세서 데이터가 없습니다.
+                </td></tr>` :
+              items.map(item => `
+                <tr class="border-b border-gray-50 hover:bg-gray-50 ${
+                  item.alert_level==='critical'?'bg-red-50/40':
+                  item.alert_level==='warning' ?'bg-yellow-50/40':''}">
+                  <td class="px-3 py-2 font-medium text-gray-700">${item.item_name}</td>
+                  <td class="px-3 py-2 text-gray-500 text-xs">${item.vendor_name||'-'}</td>
+                  <td class="px-3 py-2 text-right">${(item.ordered_qty||0).toLocaleString()}</td>
+                  <td class="px-3 py-2 text-right">${(item.invoice_qty||0).toLocaleString()}</td>
+                  <td class="px-3 py-2 text-right font-medium ${item.qty_diff>0?'text-red-600':item.qty_diff<0?'text-blue-600':'text-gray-500'}">
+                    ${item.qty_diff>0?'+':''}${(item.qty_diff||0).toFixed(1)}
+                    ${item.qty_diff_pct ? `<span class="text-gray-400">(${item.qty_diff_pct}%)</span>` : ''}
+                  </td>
+                  <td class="px-3 py-2 text-right">${(item.ordered_price||0).toLocaleString()}</td>
+                  <td class="px-3 py-2 text-right">${(item.invoice_price||0).toLocaleString()}</td>
+                  <td class="px-3 py-2 text-right font-medium ${item.price_diff>0?'text-red-600':item.price_diff<0?'text-blue-600':'text-gray-500'}">
+                    ${item.price_diff>0?'+':''}${(item.price_diff||0).toLocaleString()}
+                    ${item.price_diff_pct ? `<span class="text-gray-400">(${item.price_diff_pct}%)</span>` : ''}
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <span class="px-2 py-0.5 rounded-full text-xs font-medium ${
+                      item.alert_level==='critical'?'bg-red-100 text-red-600':
+                      item.alert_level==='warning' ?'bg-yellow-100 text-yellow-600':
+                      'bg-green-100 text-green-600'}">
+                      ${item.alert_level==='critical'?'심각':item.alert_level==='warning'?'경고':'정상'}
+                    </span>
+                    ${item.alert_memo ? `<div class="text-gray-400 text-xs mt-0.5">${item.alert_memo}</div>` : ''}
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`
+  } catch(e) {
+    el.innerHTML = `
+    <div class="bg-white rounded-xl p-8 text-center text-gray-400">
+      <i class="fas fa-exchange-alt text-4xl mb-3"></i>
+      <p class="text-sm">${TXState.year}년 ${TXState.month}월 교차 분석 데이터가 없습니다.</p>
+      <p class="text-xs mt-1 text-gray-300">${e.message}</p>
+    </div>`
+  }
+}
+
+// ── 공통 UI 헬퍼 ─────────────────────────────────────────────────────
+function txShowMsg(id, type, msg) {
+  const el = document.getElementById(id)
+  if (!el) return
+  const styles = {
+    success: 'bg-green-50 border border-green-200 text-green-700',
+    error:   'bg-red-50 border border-red-200 text-red-600',
+    info:    'bg-blue-50 border border-blue-200 text-blue-700'
+  }
+  el.className = `${styles[type]||styles.info} rounded-lg p-3 text-sm`
+  el.textContent = msg
+  el.classList.remove('hidden')
+}
+
+async function txLoadDashboard() {
+  TXState.year  = +document.getElementById('txYear').value
+  TXState.month = +document.getElementById('txMonth').value
+  txSwitchTab(TXState.tab)
 }

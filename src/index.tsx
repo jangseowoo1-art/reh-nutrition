@@ -13,6 +13,7 @@ import scheduleRoute from './routes/schedule'
 import adminRoute from './routes/admin'
 import cardExpensesRoute from './routes/card_expenses'
 import ceoDashboardRoute from './routes/ceo-dashboard'
+import transactionRoute from './routes/transaction'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -49,6 +50,7 @@ app.route('/api/settings', settingsRoute)
 app.route('/api/schedule', scheduleRoute)
 app.route('/api/card-expenses', cardExpensesRoute)
 app.route('/api/ceo-dashboard', ceoDashboardRoute)
+app.route('/api/transaction', transactionRoute)
 
 // ── 관리자 전용 API ───────────────────────────────────────────────
 app.use('/api/admin/*', async (c, next) => {
@@ -74,6 +76,7 @@ app.get('/holiday-manage', (c) => { c.header('Cache-Control','no-store'); return
 app.get('/ceo-dashboard', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 app.get('/expense-doc', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 app.get('/ingredient-prices', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/transaction-analysis', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 
 // ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
 app.notFound((c) => c.json({ error: 'Not Found' }, 404))
