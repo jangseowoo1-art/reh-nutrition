@@ -12110,7 +12110,7 @@ async function renderReport(selectedHospitalId = null) {
         ${sub?`<div style="font-size:9.5px;color:#4b5563;margin-top:4px;font-weight:500">${sub}</div>`:''}
       </div>`
 
-    const totalPages = (rptCardExpenses&&rptCardExpenses.length>0)?'12':'11'
+    const totalPages = '14'
 
     // ══ PAGE 1: 표지 (PDF 샘플 스타일: 흰 배경 + 검은 텍스트) ══
     const slide1 = `
@@ -12452,105 +12452,7 @@ async function renderReport(selectedHospitalId = null) {
       ${AIBox(waterAnalysis, waterWarn, '#064e3b','#f0fdf4')}
     </div>`
 
-    // ══ PAGE 7: 월별 식수 추이 (카테고리별 세분화) ══════════════════
-    // 카테고리 목록 구성 (항암, 요양 등 + 직원 + 보호자)
-    const p7Cats = rptAnnualCats.length > 0 ? rptAnnualCats : []
-    // 카테고리별 색상
-    const p7CatColors = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#ef4444','#0891b2','#ec4899','#64748b']
-    const p7StaffColor = '#6366f1'
-    const p7GuardColor = '#f97316'
-    // 각 카테고리의 월별 식수 배열 구성 (12개월)
-    const p7CatData = p7Cats.map((cat, ci) => ({
-      name: cat.category_name,
-      key: `cat_${cat.category_key}`,
-      color: p7CatColors[ci % p7CatColors.length],
-      values: Array.from({length:12}, (_,i) => {
-        const mStr = String(i+1)
-        return (rptMonthCatMeals[mStr]?.[`cat_${cat.category_key}`]) || 0
-      })
-    }))
-    const p7StaffData = Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.staff) || 0)
-    const p7GuardData = Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.guardian) || 0)
-    // 총 식수 (카테고리 + 직원 + 보호자)
-    const p7TotalData = Array.from({length:12}, (_,i) => {
-      const catSum = p7CatData.reduce((s,c) => s + c.values[i], 0)
-      return catSum + p7StaffData[i] + p7GuardData[i]
-    })
-    // 전월 대비 분석 (현재 월 기준)
-    const p7CurIdx  = reportMonth - 1
-    const p7PrevIdx = reportMonth - 2
-    const hasPrevP7 = p7PrevIdx >= 0 && p7TotalData[p7PrevIdx] > 0
-    const p7Changes = hasPrevP7 ? [
-      ...p7CatData.map(cat => {
-        const diff = cat.values[p7CurIdx] - cat.values[p7PrevIdx]
-        return { name: cat.name, cur: cat.values[p7CurIdx], prev: cat.values[p7PrevIdx], diff, color: diff>0?'#16a34a':diff<0?'#dc2626':'#6b7280' }
-      }),
-      { name:'직원', cur:p7StaffData[p7CurIdx], prev:p7StaffData[p7PrevIdx], diff:p7StaffData[p7CurIdx]-p7StaffData[p7PrevIdx], color:(p7StaffData[p7CurIdx]-p7StaffData[p7PrevIdx])>0?'#16a34a':(p7StaffData[p7CurIdx]-p7StaffData[p7PrevIdx])<0?'#dc2626':'#6b7280' },
-      { name:'보호자', cur:p7GuardData[p7CurIdx], prev:p7GuardData[p7PrevIdx], diff:p7GuardData[p7CurIdx]-p7GuardData[p7PrevIdx], color:(p7GuardData[p7CurIdx]-p7GuardData[p7PrevIdx])>0?'#16a34a':(p7GuardData[p7CurIdx]-p7GuardData[p7PrevIdx])<0?'#dc2626':'#6b7280' }
-    ] : []
-    const p7AnalysisParts = p7Changes.filter(c=>c.diff!==0).map(c=>`전월 대비 ${c.name} 식수 ${Math.abs(c.diff)}명 ${c.diff>0?'증가':'감소'}`)
-    const mthAnalysis = p7TotalData.some(v=>v>0)
-      ? (p7AnalysisParts.length>0 ? p7AnalysisParts.join(', ') + '했습니다.' : `${reportMonth}월 총 식수 ${fmt(p7TotalData[p7CurIdx])}명으로 전월과 유사한 수준입니다.`)
-      : '연간 식수 데이터를 분석합니다.'
-    const mthWarn = (() => {
-      const totalDiff = hasPrevP7 ? p7TotalData[p7CurIdx] - p7TotalData[p7PrevIdx] : 0
-      const totalPct  = hasPrevP7 && p7TotalData[p7PrevIdx] > 0 ? (totalDiff / p7TotalData[p7PrevIdx] * 100) : 0
-      return Math.abs(totalPct) > 20 ? `⚠ 총 식수 변동률이 ${Math.abs(totalPct.toFixed(1))}%로 평균 대비 이상 급변입니다.` : null
-    })()
-    // 누적 막대 + 월별 현황표에 표시할 최근 6개월 (또는 데이터 있는 월) 추출
-    const p7ActiveMonths = Array.from({length:12},(_,i)=>i).filter(i=>p7TotalData[i]>0)
-    const slide7 = `
-    <div class="report-slide rpt-report-page">
-      ${SH(7,'월별 식수 추이','Monthly Meal Trend')}
-      <!-- 누적 막대그래프 -->
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
-        <div style="font-size:11px;font-weight:700;color:#1f2937;margin-bottom:8px">월별 카테고리별 식수 (누적 막대)</div>
-        <div id="rptMonthlyMealChart" style="width:100%;height:240px"></div>
-      </div>
-      <!-- 전월 대비 변화 카드 -->
-      ${p7Changes.filter(c=>c.cur>0||c.prev>0).length>0?`
-      <div style="margin-bottom:8px;flex-shrink:0">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:6px">전월 대비 변화 (${reportMonth-1}월 → ${reportMonth}월)</div>
-        <div style="display:grid;grid-template-columns:repeat(${Math.min(p7Changes.filter(c=>c.cur>0||c.prev>0).length,4)},1fr);gap:6px">
-          ${p7Changes.filter(c=>c.cur>0||c.prev>0).map(c=>`
-            <div style="background:${c.diff>0?'#f0fdf4':c.diff<0?'#fef2f2':'#f9fafb'};border-radius:8px;padding:8px 10px;border-left:3px solid ${c.color};text-align:center">
-              <div style="font-size:10px;color:#374151;font-weight:700;margin-bottom:4px">${c.name}</div>
-              <div style="font-size:16px;font-weight:800;color:${c.color}">${c.cur>0?c.cur.toLocaleString():'0'}<span style="font-size:10px;font-weight:500;margin-left:1px">명</span></div>
-              <div style="font-size:10px;color:${c.color};font-weight:600;margin-top:2px">${c.diff>0?'▲+':c.diff<0?'▼':''}${c.diff!==0?Math.abs(c.diff).toLocaleString()+'명':'-'}</div>
-            </div>`).join('')}
-        </div>
-      </div>`:``}
-      <!-- 월별 현황 표 -->
-      <div style="flex-shrink:0">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:5px">월별 카테고리별 식수 현황표</div>
-        <div style="overflow-x:auto">
-          <table style="width:100%;border-collapse:collapse;font-size:9.5px">
-            <thead>
-              <tr style="background:#1f2937;color:white">
-                <th style="padding:5px 8px;text-align:left;font-weight:700;white-space:nowrap">구분</th>
-                ${p7ActiveMonths.map(i=>`<th style="padding:5px 5px;text-align:center;font-weight:700">${i+1}월</th>`).join('')}
-              </tr>
-            </thead>
-            <tbody>
-              ${[...p7CatData.filter(c=>c.values.some(v=>v>0)), {name:'직원',color:p7StaffColor,values:p7StaffData}, {name:'보호자',color:p7GuardColor,values:p7GuardData}].map((row,ri)=>`
-              <tr style="background:${ri%2===0?'#f9fafb':'white'}">
-                <td style="padding:5px 8px;font-weight:700;color:${row.color};white-space:nowrap">
-                  <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${row.color};margin-right:4px;vertical-align:middle"></span>${row.name}
-                </td>
-                ${p7ActiveMonths.map(i=>`<td style="padding:5px 5px;text-align:center;color:${i===p7CurIdx?'#1d4ed8':'#374151'};font-weight:${i===p7CurIdx?'700':'500'}">${row.values[i]>0?row.values[i].toLocaleString():'—'}</td>`).join('')}
-              </tr>`).join('')}
-              <tr style="background:#f0fdf4;font-weight:700;border-top:2px solid #d1fae5">
-                <td style="padding:5px 8px;color:#064e3b;font-weight:700">합계</td>
-                ${p7ActiveMonths.map(i=>`<td style="padding:5px 5px;text-align:center;color:${i===p7CurIdx?'#064e3b':'#1f2937'};font-weight:700">${p7TotalData[i]>0?p7TotalData[i].toLocaleString():'—'}</td>`).join('')}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      ${AIBox(mthAnalysis, mthWarn, '#0891b2','#ecfeff')}
-    </div>`
-
-    // ══ PAGE 8: 식단가 분석 ══════════════════════════════════════
+    // ══ PAGE 7: 월별 식단가 추이 ══════════════════════════════════
     const mthPrices = Array.from({length:12},(_,i)=>{
       const row=(rptMonthlySettings||[]).find(r=>parseInt(r.month)===i+1)
       return row?parseInt(row.meal_price||row.mealPrice||0):0
@@ -12559,246 +12461,306 @@ async function renderReport(selectedHospitalId = null) {
       const row=(rptMonthlyUsed||[]).find(r=>parseInt(r.month)===i+1)
       return row?parseInt(row.total_used||row.totalUsed||0):0
     })
-    const prevMealPrice = rptPrevMonth.mealPriceTotal||rptPrevMonth.targetMealPrice||0
-    const priceDiff = targetPrice>0?mealPrice-targetPrice:0
-    const priceDiffPct = targetPrice>0?(priceDiff/targetPrice*100).toFixed(1):'0'
-    const priceAnalysis = targetPrice>0
-      ?`현재 식단가(${fmt(mealPrice)}원)는 목표(${fmt(targetPrice)}원) 대비 ${priceDiff>0?`${priceDiffPct}% 초과`:`${Math.abs(parseFloat(priceDiffPct))}% 여유`} 상태입니다.`
-      :`현재 평균 식단가는 ${fmt(mealPrice)}원입니다.`
-    const priceWarn = priceDiff>0&&parseFloat(priceDiffPct)>=10?`⚠ 식단가 상승 위험 구간입니다. 목표 대비 ${priceDiffPct}% 초과로 원가 절감이 필요합니다.`:null
+    const mthMealsArr = Array.from({length:12},(_,i)=>{
+      const row=(rptMonthlyMeals||[]).find(r=>parseInt(r.month)===i+1)
+      return row?parseInt(row.total_meals||row.total_patient||0):0
+    })
+    const mthActualPrices = Array.from({length:12},(_,i)=>{
+      const used=mthUsed[i], meals=mthMealsArr[i]
+      return used>0&&meals>0?Math.round(used/meals):0
+    })
+    const p7ActiveMonthsPx = Array.from({length:12},(_,i)=>i).filter(i=>mthActualPrices[i]>0||mthPrices[i]>0)
+    const avgActualPrice = mthActualPrices.filter(v=>v>0).reduce((s,v,_,a)=>s+v/a.length,0)||0
+    const maxPx = Math.max(...mthActualPrices.filter(v=>v>0), ...mthPrices.filter(v=>v>0), 1)
+    const priceTrend = mthActualPrices.filter(v=>v>0)
+    const px7Analysis = priceTrend.length>=2
+      ? `평균 식단가 ${fmt(Math.round(avgActualPrice))}원. ${reportMonth}월 ${fmt(mthActualPrices[reportMonth-1])}원으로 ${mthActualPrices[reportMonth-1]>=mthActualPrices[reportMonth-2]&&reportMonth>1?'전월 대비 상승':'안정적인 수준'}입니다.`
+      : `현재 ${reportMonth}월 식단가: ${fmt(mthActualPrices[reportMonth-1]||mealPrice)}원`
+    const px7Warn = targetPrice>0&&mthActualPrices[reportMonth-1]>targetPrice*1.1?`⚠ 식단가가 목표(${fmt(targetPrice)}원) 대비 10% 이상 초과합니다.`:null
+    const slide7 = `
+    <div class="report-slide rpt-report-page">
+      ${SH(7,'월별 식단가 추이','Monthly Meal Price Trend')}
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">2026년 월별 평균 식단가 추이 (실선=실제, 점선=목표)</div>
+        <div id="rptMealPriceTrendChart" style="width:100%;height:280px"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
+        ${KPI('현재 식단가',`${fmt(mthActualPrices[reportMonth-1]||mealPrice)}원`,'이번 달','#7c3aed','#faf5ff','🍱')}
+        ${KPI('목표 식단가',targetPrice>0?`${fmt(targetPrice)}원`:'미설정','설정값','#1d4ed8','#eff6ff','🎯')}
+        ${KPI('연간 평균',`${fmt(Math.round(avgActualPrice))}원`,'1~현재월 평균','#064e3b','#f0fdf4','📊')}
+        ${KPI('전월 식단가',mthActualPrices[reportMonth-2]>0?`${fmt(mthActualPrices[reportMonth-2])}원`:'—','전월','#d97706','#fffbeb','📅')}
+      </div>
+      ${AIBox(px7Analysis, px7Warn, '#7c3aed','#faf5ff')}
+    </div>`
+
+    // ══ PAGE 8: 월별 업체별 발주 금액 추이 ══════════════════════════
+    // 연간 업체별 월별 데이터 (annualData에서 추출)
+    const p8VendorMonthly = (() => {
+      const vendors8 = annualData?.vendorMonthly || []
+      if (vendors8.length > 0) return vendors8
+      // fallback: rptOrders 기반으로 현재 월만 표시
+      return rptOrders.slice(0,5).map(v=>({ vendor_name:v.vendor, monthly:Array.from({length:12},(_,i)=>i===reportMonth-1?v.totalAmount:0) }))
+    })()
+    const p8Colors = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#ef4444','#0891b2','#ec4899','#64748b']
+    const p8TopVendors = p8VendorMonthly.slice(0,5)
+    const p8MonthTotals = Array.from({length:12},(_,i)=>p8TopVendors.reduce((s,v)=>s+(v.monthly?.[i]||0),0))
+    const p8ActiveMonths = Array.from({length:12},(_,i)=>i).filter(i=>p8MonthTotals[i]>0)
+    const p8CurTotal = p8MonthTotals[reportMonth-1]
+    const p8PrevTotal = reportMonth>1?p8MonthTotals[reportMonth-2]:0
+    const p8Diff = p8PrevTotal>0?Math.round((p8CurTotal-p8PrevTotal)/p8PrevTotal*100):0
+    const p8Analysis = p8TopVendors.length>0
+      ? `${reportMonth}월 총 발주 ${fmtMan(p8CurTotal)}원. ${p8TopVendors[0]?.vendor_name||''}이(가) 최대 비중입니다.${p8Diff!==0?` 전월 대비 ${p8Diff>0?'+':''}${p8Diff}%.`:''}`
+      : '업체별 월별 발주 데이터를 누적 중입니다.'
+    const p8Warn = p8TopVendors.length>0&&p8CurTotal>0&&(p8TopVendors[0]?.monthly?.[reportMonth-1]||0)/p8CurTotal>0.6
+      ? `⚠ ${p8TopVendors[0]?.vendor_name||'1위 업체'} 발주 집중도 ${Math.round((p8TopVendors[0]?.monthly?.[reportMonth-1]||0)/p8CurTotal*100)}% — 의존도가 높습니다.`
+      : null
     const slide8 = `
     <div class="report-slide rpt-report-page">
-      ${SH(8,'식단가 분석','Meal Price Analysis')}
-      <!-- 라인 차트 + 목표선 -->
-      <div style="background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px">
-        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">월별 식단가 추이 (각 월 값 표시, 빨간선=목표)</div>
-        <div id="rptMealPriceChart" style="width:100%;height:260px"></div>
+      ${SH(8,'월별 업체별 발주 금액 추이','Monthly Vendor Order Trend')}
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">2026년 업체별 발주 금액 (누적 막대)</div>
+        <div id="rptVendorMonthlyChart" style="width:100%;height:280px"></div>
       </div>
-      <!-- Bullet Chart + KPI 카드 -->
-      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:10px;margin-bottom:8px;flex-shrink:0">
-        <!-- Bullet Chart (Horizontal Bar) -->
-        <div style="background:#f8fafc;border-radius:10px;padding:12px;border:1px solid #e2e8f0">
-          <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:10px">목표 대비 현재 식단가</div>
-          <div id="rptBulletChart" style="width:100%;height:100px"></div>
-        </div>
-        <!-- 단가 KPI -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-          ${[
-            {label:'현재 식단가',val:`${fmt(mealPrice)}원`,col:'#7c3aed',bg:'#faf5ff'},
-            {label:'목표 식단가',val:targetPrice>0?`${fmt(targetPrice)}원`:'미설정',col:'#1d4ed8',bg:'#eff6ff'},
-            {label:'전월 식단가',val:prevMealPrice>0?`${fmt(prevMealPrice)}원`:'—',col:'#374151',bg:'#f9fafb'},
-            {label:'차이',val:priceDiff!==0?`${priceDiff>0?'+':''}${fmt(priceDiff)}원`:'—',col:priceDiff>0?'#dc2626':'#16a34a',bg:priceDiff>0?'#fef2f2':'#f0fdf4'},
-          ].map(c=>KPI(c.label,c.val,'',c.col,c.bg)).join('')}
-        </div>
+      <div style="display:grid;grid-template-columns:repeat(${Math.min(p8TopVendors.length||3,5)},1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
+        ${(p8TopVendors.length>0?p8TopVendors:rptOrders.slice(0,3)).map((v,i)=>`
+          <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border-left:4px solid ${p8Colors[i]};position:relative;overflow:hidden">
+            <div style="font-size:9px;color:#374151;font-weight:700;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.vendor_name||v.vendor||'업체'+(i+1)}</div>
+            <div style="font-size:17px;font-weight:900;color:${p8Colors[i]};line-height:1.1">${fmtMan(v.monthly?.[reportMonth-1]||v.totalAmount||0)}원</div>
+            <div style="font-size:9px;color:#6b7280;margin-top:3px">${reportMonth}월 발주</div>
+          </div>`).join('')}
       </div>
-      ${AIBox(priceAnalysis, priceWarn, '#7c3aed','#faf5ff')}
+      ${AIBox(p8Analysis, p8Warn, '#3b82f6','#eff6ff')}
     </div>`
 
-    // ══ PAGE 9: 예산 소진 분석 ══════════════════════════════════
-    const depDate     = rptDepletion.budgetDepletionDate||null
-    const depStatus   = rptDepletion.budgetDepletionStatus||'no_data'
-    const depDaysLeft = rptDepletion.budgetDepletionDaysLeft
-    const depRemain   = rptDepletion.remaining||(totalBudget-usedAmount)
-    const isEarlyData = elapsedDays<5
-    const burnAnalysis = depStatus==='no_data'?'발주 데이터가 누적되면 예산 소진 예상일이 자동 계산됩니다.'
-      :depStatus==='exceeded'?'이미 예산이 초과된 상태입니다. 즉시 지출 중단이 필요합니다.'
-      :depDate?`현재 추세 기준 예산 소진 예상일은 ${depDate}입니다. ${isEarlyData?'(초기 데이터 기준 예측값)':''}`
-      :'예산 소진 위험이 없습니다.'
-    const burnWarn = depStatus==='warning'?`⚠ 예산이 월말(${daysInMonth}일) 이전 소진될 위험이 있습니다. 지출 속도 조정이 필요합니다.`
-      :depStatus==='exceeded'?'⚠ 예산 초과 상태입니다!':null
-    // Budget Burn 진행률 계산
-    const burnPct = totalBudget>0?Math.min(Math.round(usedAmount/totalBudget*100),100):0
+    // ══ PAGE 9: 월별 총 발주 금액 추이 ══════════════════════════════
+    const p9MonthlyTotals = Array.from({length:12},(_,i)=>{
+      const row=(rptMonthlyUsed||[]).find(r=>parseInt(r.month)===i+1)
+      return row?parseInt(row.total_used||row.totalUsed||0):0
+    })
+    const p9ActiveMonths = Array.from({length:12},(_,i)=>i).filter(i=>p9MonthlyTotals[i]>0)
+    const p9CurAmt = p9MonthlyTotals[reportMonth-1]
+    const p9PrevAmt = reportMonth>1?p9MonthlyTotals[reportMonth-2]:0
+    const p9Diff = p9PrevAmt>0?Math.round((p9CurAmt-p9PrevAmt)/p9PrevAmt*100):0
+    const p9Avg = p9ActiveMonths.length>0?Math.round(p9ActiveMonths.reduce((s,i)=>s+p9MonthlyTotals[i],0)/p9ActiveMonths.length):0
+    const p9Max = Math.max(...p9MonthlyTotals.filter(v=>v>0), 1)
+    const p9MaxMonth = p9MonthlyTotals.indexOf(p9Max)+1
+    const p9Analysis = p9ActiveMonths.length>0
+      ? `${reportMonth}월 발주 총액 ${fmtMan(p9CurAmt)}원.${p9Diff!==0?` 전월 대비 ${p9Diff>0?'+':''}${p9Diff}%.`:''} 연평균 ${fmtMan(p9Avg)}원 대비 ${p9CurAmt>=p9Avg?'높은':'낮은'} 수준입니다.`
+      : '월별 총 발주 추이 데이터를 누적 중입니다.'
+    const p9Warn = p9Diff>20?`⚠ 전월 대비 발주액이 ${p9Diff}% 급증했습니다. 원인 파악이 필요합니다.`
+      :p9Diff<-20?`⚠ 전월 대비 발주액이 ${Math.abs(p9Diff)}% 급감했습니다. 운영 현황을 확인하세요.`:null
     const slide9 = `
     <div class="report-slide rpt-report-page">
-      ${SH(9,'예산 소진 분석','Budget Burn Analysis')}
-      <!-- 메인: Budget Burn Chart + 소진예상일 카드 -->
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
-        <div style="background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
-          <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">예산 소진 추이 (Budget Burn Down)</div>
-          <div id="rptBudgetBurnChart" style="width:100%;flex:1;min-height:260px"></div>
-          ${isEarlyData?`<div style="font-size:9px;color:#9ca3af;text-align:center;margin-top:4px;font-style:italic">* 초기 데이터 기준 예측값 (${elapsedDays}일 경과)</div>`:''}
-        </div>
-        <!-- 소진 예상 정보 패널 -->
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <!-- 소진 예상일 강조 박스 -->
-          <div style="background:${depStatus==='warning'||depStatus==='exceeded'?'#fef2f2':'#f0fdf4'};border-radius:12px;padding:16px;border:2px solid ${depStatus==='warning'||depStatus==='exceeded'?'#dc2626':'#064e3b'};text-align:center">
-            <div style="font-size:9px;color:#374151;margin-bottom:6px;font-weight:700">예산 소진 예상일</div>
-            <div style="font-size:${depDate?'22px':'14px'};font-weight:900;color:${depStatus==='warning'||depStatus==='exceeded'?'#dc2626':'#064e3b'};line-height:1.2">
-              ${depDate||'데이터 없음'}
-            </div>
-            ${depDaysLeft!=null?`<div style="font-size:10px;color:#374151;font-weight:600;margin-top:4px">약 ${depDaysLeft}일 후</div>`:''}
-            ${isEarlyData?`<div style="font-size:9px;color:#9ca3af;margin-top:4px">현재 추세 기준 예측값</div>`:''}
-          </div>
-          <!-- KPI 박스들 -->
-          ${[
-            {label:'총 예산',val:`${fmtMan(totalBudget)}원`,col:'#064e3b',bg:'#f0fdf4'},
-            {label:'집행 금액',val:`${fmtMan(usedAmount)}원 (${burnPct}%)`,col:'#1d4ed8',bg:'#eff6ff'},
-            {label:'잔여 예산',val:`${fmtMan(Math.abs(depRemain))}원`,col:depRemain<0?'#dc2626':'#16a34a',bg:depRemain<0?'#fef2f2':'#f0fdf4'},
-            {label:'일평균 사용액',val:`${fmtMan(dailyAvg)}원`,col:'#d97706',bg:'#fffbeb'},
-          ].map(c=>KPI(c.label,c.val,'',c.col,c.bg)).join('')}
-        </div>
+      ${SH(9,'월별 총 발주 금액 추이','Monthly Total Order Trend')}
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">2026년 월별 총 발주 금액 추이</div>
+        <div id="rptMonthlyTotalChart" style="width:100%;height:280px"></div>
       </div>
-      <!-- 소진 프로그레스 -->
-      <div style="background:#f8fafc;border-radius:10px;padding:10px 16px;border:1px solid #e2e8f0;margin-bottom:8px;flex-shrink:0">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <span style="font-size:10px;font-weight:700;color:#374151">예산 소진율</span>
-          <span style="font-size:16px;font-weight:900;color:${tc(burnPct)}">${burnPct}%</span>
-        </div>
-        <div style="background:#e5e7eb;border-radius:99px;height:14px;overflow:hidden;position:relative">
-          <div style="height:100%;width:${burnPct}%;background:${tc(burnPct)};border-radius:99px;transition:width 0.3s"></div>
-          <div style="position:absolute;top:0;left:80%;height:100%;width:2px;background:#374151;opacity:0.3"></div>
-          <div style="position:absolute;top:0;left:90%;height:100%;width:2px;background:#374151;opacity:0.3"></div>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-top:4px">
-          <span style="font-size:9px;color:#4b5563;font-weight:600">0%</span>
-          <span style="font-size:9px;color:#d97706;font-weight:700">80% 경고</span>
-          <span style="font-size:9px;color:#dc2626;font-weight:700">90% 위험</span>
-          <span style="font-size:9px;color:#4b5563;font-weight:600">100%</span>
-        </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
+        ${KPI(`${reportMonth}월 발주액`,`${fmtMan(p9CurAmt)}원`,'이번 달','#064e3b','#f0fdf4','💰')}
+        ${KPI('전월 발주액',p9PrevAmt>0?`${fmtMan(p9PrevAmt)}원`:'—','전월','#374151','#f9fafb','📅')}
+        ${KPI('연평균 발주액',`${fmtMan(p9Avg)}원`,'1~현재월','#1d4ed8','#eff6ff','📊')}
+        ${KPI('최대 발주월',`${p9MaxMonth}월`,`${fmtMan(p9Max)}원`,'#d97706','#fffbeb','🏆')}
       </div>
-      ${AIBox(burnAnalysis, burnWarn, '#d97706','#fffbeb')}
+      ${AIBox(p9Analysis, p9Warn, '#064e3b','#f0fdf4')}
     </div>`
 
-    // ══ PAGE 10: 법인카드 사용 (조건부) ══════════════════════════
-    const slide10 = rptCardExpenses && rptCardExpenses.length > 0 ? `
+    // ══ PAGE 10: 월별 1일-말일 발주 금액 추이 ════════════════════════
+    const p10DailyLabels = dailyLabels
+    const p10DailyValues = dailyValues
+    const p10NonZeroDays = p10DailyValues.filter(v=>v>0)
+    const p10Avg = p10NonZeroDays.length>0?Math.round(p10NonZeroDays.reduce((s,v)=>s+v,0)/p10NonZeroDays.length):0
+    const p10Max = Math.max(...p10DailyValues,1)
+    const p10MaxDay = p10DailyValues.indexOf(p10Max)+1
+    const p10Total = p10DailyValues.reduce((s,v)=>s+v,0)
+    const p10SpikeDay = rptDailyAll.find(d=>d.amount>p10Avg*2)
+    const p10Analysis = p10NonZeroDays.length>0
+      ? `${reportMonth}월 일별 발주 현황. 총 ${p10DailyLabels.length}일 중 ${p10NonZeroDays.length}일 발주. 일평균 ${fmtMan(p10Avg)}원, 최대 ${p10MaxDay}일(${fmtMan(p10Max)}원)입니다.`
+      : '일별 발주 데이터가 없습니다.'
+    const p10Warn = p10SpikeDay?`⚠ ${p10SpikeDay.day}일 발주(${fmtMan(p10SpikeDay.amount)}원)가 일평균 대비 급증했습니다.`:null
+    const slide10 = `
     <div class="report-slide rpt-report-page">
-      ${SH(10,'법인카드 사용 분석','Corporate Card')}
-      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
-        <!-- 테이블: 사용 품목/진행 용도/비고 포함 -->
-        <div style="display:flex;flex-direction:column">
-          <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:6px;padding-bottom:5px;border-bottom:2px solid #064e3b">법인카드 상세 내역</div>
-          <div style="flex:1;overflow:hidden">
-            <table style="width:100%;border-collapse:collapse;font-size:9.5px">
-              <thead>
-                <tr style="background:#064e3b;color:white">
-                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">날짜</th>
-                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">결제업체</th>
-                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">사용 품목</th>
-                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">진행 용도</th>
-                  <th style="padding:5px 6px;text-align:right;white-space:nowrap">금액</th>
-                  <th style="padding:5px 6px;text-align:left;white-space:nowrap">비고</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${rptCardExpenses.slice(0,12).map((e,i)=>`
-                  <tr style="border-bottom:1px solid #f1f5f9;${i%2?'background:#f8fafc':''}">
-                    <td style="padding:4px 6px;color:#6b7280;white-space:nowrap">${(e.expense_date||'').split('T')[0].slice(5)}</td>
-                    <td style="padding:4px 6px;font-weight:600;color:#1f2937;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.vendor_name||'')}">
-                      ${e.vendor_name||e.description||'-'}
-                    </td>
-                    <td style="padding:4px 6px;color:#374151;font-weight:600;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.item_name||'')}">
-                      ${e.item_name||'<span style="color:#9ca3af">-</span>'}
-                    </td>
-                    <td style="padding:4px 6px;color:#4b5563;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.purpose||'')}">
-                      ${e.purpose||'<span style="color:#9ca3af">-</span>'}
-                    </td>
-                    <td style="padding:4px 6px;text-align:right;font-weight:700;color:#064e3b;white-space:nowrap">${(e.amount||0).toLocaleString()}원</td>
-                    <td style="padding:4px 6px;color:#9ca3af;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.memo||'')}">
-                      ${e.memo||''}
-                    </td>
-                  </tr>`).join('')}
-                <tr style="background:#f0fdf4;border-top:2px solid #064e3b">
-                  <td colspan="4" style="padding:5px 6px;font-weight:800;color:#064e3b">합  계</td>
-                  <td style="padding:5px 6px;text-align:right;font-weight:800;color:#064e3b">${rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0).toLocaleString()}원</td>
-                  <td></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <!-- Pie 차트 -->
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:2px">품목별 비중</div>
-          <div id="rptCardPieChart" style="width:100%;height:160px"></div>
-          <!-- 품목별 카드 -->
-          ${rptCardBySubtype.map((sb,i)=>`
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:#f8fafc;border-radius:6px;border-left:3px solid ${['#064e3b','#1d4ed8','#7c3aed','#d97706'][i%4]}">
-              <span style="font-size:10px;font-weight:600;color:#374151">${sb.label}</span>
-              <span style="font-size:10px;font-weight:700;color:#064e3b">${sb.total.toLocaleString()}원</span>
-            </div>`).join('')}
+      ${SH(10,`${reportMonth}월 일별 발주 금액 추이`,'Daily Order Trend')}
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">${reportYear}년 ${reportMonth}월 1일~말일 일별 발주 금액</div>
+        <div id="rptDailyOrderChart" style="width:100%;height:280px"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
+        ${KPI('월 총 발주액',`${fmtMan(p10Total)}원`,'이번 달 합계','#064e3b','#f0fdf4','💰')}
+        ${KPI('발주 일수',`${p10NonZeroDays.length}일`,`전체 ${daysInMonth}일 중`,'#1d4ed8','#eff6ff','📅')}
+        ${KPI('일평균 발주',`${fmtMan(p10Avg)}원`,'발주일 기준','#7c3aed','#faf5ff','📊')}
+        ${KPI('최대 발주일',`${p10MaxDay}일`,`${fmtMan(p10Max)}원`,'#d97706','#fffbeb','🏆')}
+      </div>
+      ${AIBox(p10Analysis, p10Warn, '#d97706','#fffbeb')}
+    </div>`
+
+    // ══ PAGE 11: 월별 식수 추이 분석 ══════════════════════════════════
+    const p11Cats = rptAnnualCats.length > 0 ? rptAnnualCats : []
+    const p11CatColors = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#ef4444','#0891b2','#ec4899','#64748b']
+    const p11StaffColor = '#6366f1'
+    const p11GuardColor = '#f97316'
+    const p11CatData = p11Cats.map((cat, ci) => ({
+      name: cat.category_name,
+      key: `cat_${cat.category_key}`,
+      color: p11CatColors[ci % p11CatColors.length],
+      values: Array.from({length:12}, (_,i) => {
+        const mStr = String(i+1)
+        return (rptMonthCatMeals[mStr]?.[`cat_${cat.category_key}`]) || 0
+      })
+    }))
+    const p11StaffData = Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.staff) || 0)
+    const p11GuardData = Array.from({length:12}, (_,i) => (rptMonthCatMeals[String(i+1)]?.guardian) || 0)
+    const p11TotalData = Array.from({length:12}, (_,i) => {
+      const catSum = p11CatData.reduce((s,c) => s + c.values[i], 0)
+      return catSum + p11StaffData[i] + p11GuardData[i]
+    })
+    const p11CurIdx  = reportMonth - 1
+    const p11PrevIdx = reportMonth - 2
+    const hasPrevP11 = p11PrevIdx >= 0 && p11TotalData[p11PrevIdx] > 0
+    const p11Changes = hasPrevP11 ? [
+      ...p11CatData.map(cat => {
+        const diff = cat.values[p11CurIdx] - cat.values[p11PrevIdx]
+        return { name: cat.name, cur: cat.values[p11CurIdx], prev: cat.values[p11PrevIdx], diff, color: diff>0?'#16a34a':diff<0?'#dc2626':'#6b7280' }
+      }),
+      { name:'직원', cur:p11StaffData[p11CurIdx], prev:p11StaffData[p11PrevIdx], diff:p11StaffData[p11CurIdx]-p11StaffData[p11PrevIdx], color:(p11StaffData[p11CurIdx]-p11StaffData[p11PrevIdx])>0?'#16a34a':(p11StaffData[p11CurIdx]-p11StaffData[p11PrevIdx])<0?'#dc2626':'#6b7280' },
+      { name:'보호자', cur:p11GuardData[p11CurIdx], prev:p11GuardData[p11PrevIdx], diff:p11GuardData[p11CurIdx]-p11GuardData[p11PrevIdx], color:(p11GuardData[p11CurIdx]-p11GuardData[p11PrevIdx])>0?'#16a34a':(p11GuardData[p11CurIdx]-p11GuardData[p11PrevIdx])<0?'#dc2626':'#6b7280' }
+    ] : []
+    const p11AnalysisParts = p11Changes.filter(c=>c.diff!==0).map(c=>`전월 대비 ${c.name} 식수 ${Math.abs(c.diff)}명 ${c.diff>0?'증가':'감소'}`)
+    const p11Analysis = p11TotalData.some(v=>v>0)
+      ? (p11AnalysisParts.length>0 ? p11AnalysisParts.join(', ') + '했습니다.' : `${reportMonth}월 총 식수 ${fmt(p11TotalData[p11CurIdx])}명으로 전월과 유사한 수준입니다.`)
+      : '연간 식수 데이터를 분석합니다.'
+    const p11Warn = (() => {
+      const totalDiff = hasPrevP11 ? p11TotalData[p11CurIdx] - p11TotalData[p11PrevIdx] : 0
+      const totalPct  = hasPrevP11 && p11TotalData[p11PrevIdx] > 0 ? (totalDiff / p11TotalData[p11PrevIdx] * 100) : 0
+      return Math.abs(totalPct) > 20 ? `⚠ 총 식수 변동률이 ${Math.abs(totalPct).toFixed(1)}%로 평균 대비 이상 급변입니다.` : null
+    })()
+    const p11ActiveMonths = Array.from({length:12},(_,i)=>i).filter(i=>p11TotalData[i]>0)
+    // 현재 월 식수 KPI
+    const p11CurCats = rptCatMeals.length>0?rptCatMeals:[
+      {name:'직원',count:ms.total_staff||0},{name:'보호자',count:ms.total_guardian||0}
+    ]
+    const slide11 = `
+    <div class="report-slide rpt-report-page">
+      ${SH(11,'월별 식수 추이 분석','Monthly Meal Count Trend')}
+      <div style="display:grid;grid-template-columns:1fr;gap:10px;flex:1;min-height:0;margin-bottom:10px">
+        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;min-height:0">
+          <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">2026년 월별 카테고리별 식수 추이 (누적 막대)</div>
+          <div id="rptMonthlyMealChart" style="width:100%;height:240px"></div>
         </div>
       </div>
-      ${AIBox(
-        `법인카드 총 사용액 ${fmt(rptCardExpenses.reduce((s,e)=>s+(e.amount||0),0))}원이며, ${rptCardBySubtype.length>0?rptCardBySubtype.sort((a,b)=>b.total-a.total)[0]?.label||'':''}이(가) 가장 큰 비중을 차지합니다.`,
-        rptCardBySubtype.some(s=>s.label==='기타'&&s.total>rptCardExpenses.reduce((sum,e)=>sum+(e.amount||0),0)*0.3)?'⚠ 기타 지출 비중이 높습니다. 세부 내역 확인이 필요합니다.':null,
-        '#064e3b','#f0fdf4'
-      )}
-    </div>` : ''
+      <div style="display:grid;grid-template-columns:repeat(${Math.min(p11CurCats.filter(c=>c.count>0).length||2,4)},1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
+        ${p11CurCats.filter(c=>c.count>0).slice(0,4).map((c,i)=>`
+          <div style="background:${['#f0fdf4','#eff6ff','#faf5ff','#fffbeb'][i%4]};border-radius:10px;padding:10px 12px;border-left:4px solid ${p11CatColors[i]||p11StaffColor};position:relative;overflow:hidden">
+            <div style="font-size:9px;color:#374151;font-weight:700;margin-bottom:3px">${c.name}</div>
+            <div style="font-size:20px;font-weight:900;color:${p11CatColors[i]||p11StaffColor};line-height:1.1">${c.count.toLocaleString()}<span style="font-size:11px;font-weight:600;margin-left:2px">명</span></div>
+            <div style="font-size:9px;color:#6b7280;margin-top:2px">${reportMonth}월 합계</div>
+          </div>`).join('')}
+      </div>
+      ${AIBox(p11Analysis, p11Warn, '#0891b2','#ecfeff')}
+    </div>`
 
-    // ══ PAGE 11 (또는 10): 종합 평가 ══════════════════════════════
-    const finalPg = rptCardExpenses&&rptCardExpenses.length>0?'11':'10'
+    // ══ PAGE 12: 월별 잔반 분석 ══════════════════════════════════════
+    const rptFoodWaste = annualData?.foodWasteMonthly || []
+    const p12WasteKg = Array.from({length:12},(_,i)=>{
+      const row=rptFoodWaste.find(r=>parseInt(r.month)===i+1)
+      return row?parseFloat(row.total_kg||row.totalKg||0):0
+    })
+    const p12WasteCost = Array.from({length:12},(_,i)=>{
+      const row=rptFoodWaste.find(r=>parseInt(r.month)===i+1)
+      return row?parseInt(row.total_cost||row.totalCost||0):0
+    })
+    const p12ActiveMonths = Array.from({length:12},(_,i)=>i).filter(i=>p12WasteKg[i]>0||p12WasteCost[i]>0)
+    const p12CurKg = p12WasteKg[reportMonth-1]
+    const p12CurCost = p12WasteCost[reportMonth-1]
+    const p12PrevKg = reportMonth>1?p12WasteKg[reportMonth-2]:0
+    const p12AvgKg = p12ActiveMonths.length>0?p12ActiveMonths.reduce((s,i)=>s+p12WasteKg[i],0)/p12ActiveMonths.length:0
+    const p12KgDiff = p12PrevKg>0?Math.round((p12CurKg-p12PrevKg)/p12PrevKg*100):0
+    const hasWasteData = p12ActiveMonths.length>0||p12CurKg>0
+    const p12Analysis = hasWasteData
+      ? `${reportMonth}월 잔반량 ${p12CurKg.toFixed(1)}kg, 비용 ${fmt(p12CurCost)}원.${p12KgDiff!==0?` 전월 대비 ${p12KgDiff>0?'+':''}${p12KgDiff}%.`:''} 연평균 ${p12AvgKg.toFixed(1)}kg 대비 ${p12CurKg>=p12AvgKg?'높은':'낮은'} 수준입니다.`
+      : '잔반 데이터를 입력하면 월별 추이를 분석합니다.'
+    const p12Warn = p12CurKg>0&&p12AvgKg>0&&p12CurKg>p12AvgKg*1.3?`⚠ 이번 달 잔반량이 평균 대비 30% 이상 많습니다. 식단 조정을 검토하세요.`:null
+    const slide12 = `
+    <div class="report-slide rpt-report-page">
+      ${SH(12,'월별 잔반 분석','Monthly Food Waste Analysis')}
+      ${hasWasteData ? `
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+        <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:6px">2026년 월별 잔반량(kg) 및 비용 추이</div>
+        <div id="rptFoodWasteChart" style="width:100%;height:260px"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
+        ${KPI(`${reportMonth}월 잔반량`,`${p12CurKg.toFixed(1)}kg`,'이번 달','#f59e0b','#fffbeb','♻️')}
+        ${KPI('잔반 비용',p12CurCost>0?`${fmt(p12CurCost)}원`:'—','이번 달','#ef4444','#fef2f2','💸')}
+        ${KPI('전월 잔반량',p12PrevKg>0?`${p12PrevKg.toFixed(1)}kg`:'—','전월','#374151','#f9fafb','📅')}
+        ${KPI('연평균 잔반',`${p12AvgKg.toFixed(1)}kg`,'1~현재월','#6b7280','#f3f4f6','📊')}
+      </div>` : `
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
+        <div style="font-size:48px">♻️</div>
+        <div style="font-size:14px;font-weight:700;color:#374151">잔반 데이터 없음</div>
+        <div style="font-size:11px;color:#9ca3af;text-align:center">대시보드 > 잔반 기록에서 데이터를 입력하면<br>월별 잔반 추이를 분석합니다.</div>
+      </div>`}
+      ${AIBox(p12Analysis, p12Warn, '#f59e0b','#fffbeb')}
+    </div>`
+
+    // ══ PAGE 13: 종합 운영 점수 ══════════════════════════════════════
     const scoreItems = [
       {label:'예산 관리',val:progress>=80&&progress<=90?95:progress>=70&&progress<80?75:progress>=90?80:55,icon:'📊',desc:`${progress}% 달성`},
       {label:'식단가 관리',val:targetPrice>0?(mealPrice<=targetPrice?90:mealPrice<=targetPrice*1.05?75:mealPrice<=targetPrice*1.1?60:45):70,icon:'🍱',desc:mealPrice>0?`${fmt(mealPrice)}원`:'—'},
       {label:'발주 관리',val:topVendorRatio<40?90:topVendorRatio<60?70:50,icon:'📦',desc:`업체 ${rptOrders.length}개`},
       {label:'식수 안정성',val:totalMeals>0?80:50,icon:'👥',desc:`${fmt(totalMeals)}명`},
+      {label:'잔반 관리',val:p12CurKg>0&&p12AvgKg>0?(p12CurKg<=p12AvgKg?90:p12CurKg<=p12AvgKg*1.2?70:50):60,icon:'♻️',desc:p12CurKg>0?`${p12CurKg.toFixed(1)}kg`:'데이터없음'},
     ]
     const overallScore = Math.round(scoreItems.reduce((s,i)=>s+i.val,0)/scoreItems.length)
-    const finalAnalysis = rptAutoAnalysis.length>1?rptAutoAnalysis.slice(0,2).join(' ')
+    const scoreAnalysis = rptAutoAnalysis.length>1?rptAutoAnalysis.slice(0,2).join(' ')
       :`이번 달 운영 종합 점수는 ${overallScore}점입니다. ${overallScore>=80?'전반적으로 안정적인 운영이 이루어지고 있습니다.':'개선이 필요한 항목을 중점 관리하세요.'}`
-    const finalWarn = aiWarnings.length>0?aiWarnings[0].text:null
-    const nextMealPrice = nextSettingsData?.settings?.meal_price||0
-    const slideEnd = `
+    const scoreWarn = aiWarnings.length>0?aiWarnings[0].text:null
+    const slide13 = `
     <div class="report-slide rpt-report-page">
-      ${SH(finalPg,'종합 평가 및 다음 달 목표','Overall Evaluation')}
+      ${SH(13,'종합 운영 점수','Overall Operation Score')}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
-        <!-- 종합 점수 -->
+        <!-- 레이더 차트 -->
         <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
             <div style="font-size:11px;font-weight:800;color:#064e3b">종합 운영 점수</div>
-            <div style="font-size:30px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:14px">점</span></div>
+            <div style="font-size:32px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:14px">점</span></div>
           </div>
-          <div id="rptScoreChart" style="width:100%;height:180px;margin-bottom:6px"></div>
+          <div id="rptScoreChart" style="width:100%;height:200px;margin-bottom:8px"></div>
           ${scoreItems.map(item=>`
-            <div style="margin-bottom:7px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
-                <span style="font-size:11px;font-weight:600;color:#374151">${item.icon} ${item.label}</span>
+            <div style="margin-bottom:6px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+                <span style="font-size:10px;font-weight:600;color:#374151">${item.icon} ${item.label}</span>
                 <div style="text-align:right">
-                  <span style="font-size:13px;font-weight:900;color:${tc(item.val)}">${item.val}점</span>
+                  <span style="font-size:12px;font-weight:900;color:${tc(item.val)}">${item.val}점</span>
                   <span style="font-size:9px;color:#9ca3af;margin-left:4px">${item.desc}</span>
                 </div>
               </div>
-              <div style="background:#e5e7eb;border-radius:99px;height:7px;overflow:hidden">
+              <div style="background:#e5e7eb;border-radius:99px;height:6px;overflow:hidden">
                 <div style="height:100%;width:${item.val}%;background:${tc(item.val)};border-radius:99px"></div>
               </div>
             </div>`).join('')}
         </div>
-        <!-- 다음 달 목표 + 서명 -->
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="background:#ecfdf5;border-radius:12px;padding:14px;border:1px solid #6ee7b7;flex:1">
-            <div style="font-size:11px;font-weight:800;color:#064e3b;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #064e3b">
-              <span style="background:#064e3b;color:white;padding:2px 8px;border-radius:10px;font-size:9px;margin-right:6px">다음 달 목표</span>
-              ${nextMonth}월 운영 계획
-            </div>
-            ${[
-              {icon:'💰',title:'예산 집행률 목표',text:'80~90% 범위 내 집행 유지'},
-              {icon:'🍱',title:'식단가 목표',text:`${nextMealPrice>0?fmt(nextMealPrice)+'원 수준 유지':(fmt(mealPrice||0)+'원 기준 관리')}`},
-              {icon:'📦',title:'발주 관리',text:'업체별 단가 재협상 및 다양화'},
-              {icon:'✅',title:'식단 품질',text:'영양 균형 및 다양성 강화'},
-            ].map(g=>`
-              <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.7);border-radius:8px">
-                <span style="font-size:16px;flex-shrink:0">${g.icon}</span>
-                <div>
-                  <div style="font-size:10px;font-weight:700;color:#064e3b;margin-bottom:1px">${g.title}</div>
-                  <div style="font-size:10px;color:#065f46">${g.text}</div>
-                </div>
-              </div>`).join('')}
-          </div>
-          <!-- AI 경고 요약 -->
+        <!-- AI 경고 요약 + 서명란 -->
+        <div style="display:flex;flex-direction:column;gap:10px">
           ${aiWarnings.length>0?`
-          <div style="background:#fef2f2;border-radius:10px;padding:10px 12px;border-left:4px solid #dc2626;flex-shrink:0">
-            <div style="font-size:10px;font-weight:800;color:#dc2626;margin-bottom:5px">△ AI 자동 경고 요약</div>
-            ${aiWarnings.slice(0,3).map(w=>`<div style="font-size:9.5px;color:#991b1b;margin-bottom:3px">• ${w.text}</div>`).join('')}
+          <div style="background:#fef2f2;border-radius:12px;padding:14px;border:1px solid #fca5a5;flex-shrink:0">
+            <div style="font-size:10px;font-weight:800;color:#dc2626;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+              <span style="background:#dc2626;color:white;padding:2px 10px;border-radius:10px;font-size:9px">△ AI 경고 요약</span>
+            </div>
+            ${aiWarnings.slice(0,4).map(w=>`
+              <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding:6px 8px;background:rgba(255,255,255,0.6);border-radius:6px;border-left:3px solid ${w.color||'#dc2626'}">
+                <span style="font-size:14px;flex-shrink:0">${w.icon||'⚠️'}</span>
+                <div style="font-size:10px;color:#7f1d1d;line-height:1.5">${w.text}</div>
+              </div>`).join('')}
           </div>`:''}
           <!-- 서명란 -->
-          <div style="background:#f8fafc;border-radius:10px;padding:10px;border:1px solid #e5e7eb;flex-shrink:0">
+          <div style="background:#f8fafc;border-radius:10px;padding:12px;border:1px solid #e5e7eb;margin-top:auto">
             <div style="display:flex;justify-content:space-between;align-items:flex-end">
               <div style="font-size:9px;color:#9ca3af;line-height:1.6">
                 <div>본 보고서는 Re&amp;H 급식 운영 관리 시스템에 의해 자동 생성되었습니다.</div>
                 <div>보고 기간: ${reportYear}년 ${reportMonth}월 | 작성일: ${new Date().toLocaleDateString('ko-KR')}</div>
               </div>
-              <div style="text-align:center;padding:10px 24px;border:1px solid #e5e7eb;border-radius:8px;min-width:140px;background:white">
-                <div style="font-size:9px;color:#9ca3af;margin-bottom:14px">영양사 서명 확인</div>
+              <div style="text-align:center;padding:10px 20px;border:1px solid #e5e7eb;border-radius:8px;min-width:120px;background:white">
+                <div style="font-size:9px;color:#9ca3af;margin-bottom:10px">영양사 서명 확인</div>
                 <div style="font-size:11px;font-weight:700;color:#1f2937">${hospitalName}</div>
                 <div style="font-size:10px;color:#6b7280;margin-top:2px">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
                 <div style="font-size:11px;color:#374151;margin-top:8px;letter-spacing:4px">(인)</div>
@@ -12807,10 +12769,67 @@ async function renderReport(selectedHospitalId = null) {
           </div>
         </div>
       </div>
-      ${AIBox(finalAnalysis, finalWarn, '#064e3b','#f0fdf4')}
+      ${AIBox(scoreAnalysis, scoreWarn, '#064e3b','#f0fdf4')}
     </div>`
 
-    return slide1+slide2+slide3+slide4+slide5+slide6+slide7+slide8+slide9+slide10+slideEnd
+    // ══ PAGE 14: 다음 달 운영 전략 ══════════════════════════════════
+    const nextMealPrice = nextSettingsData?.settings?.meal_price||0
+    const slide14 = `
+    <div class="report-slide rpt-report-page">
+      ${SH(14,'다음 달 운영 전략','Next Month Strategy')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
+        <!-- 다음 달 목표 -->
+        <div style="background:#ecfdf5;border-radius:12px;padding:16px;border:1px solid #6ee7b7;display:flex;flex-direction:column">
+          <div style="font-size:12px;font-weight:800;color:#064e3b;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
+            <span style="background:#064e3b;color:white;padding:3px 12px;border-radius:10px;font-size:10px">다음 달 목표</span>
+            ${nextMonth}월 운영 계획
+          </div>
+          ${[
+            {icon:'💰',title:'예산 집행률 목표',text:'80~90% 범위 내 집행 유지',color:'#064e3b',bg:'rgba(255,255,255,0.8)'},
+            {icon:'🍱',title:'식단가 목표',text:`${nextMealPrice>0?fmt(nextMealPrice)+'원 수준 유지':(fmt(mealPrice||0)+'원 기준 관리')}`,color:'#7c3aed',bg:'rgba(255,255,255,0.8)'},
+            {icon:'📦',title:'발주 구조 개선',text:'업체별 단가 재협상 및 의존도 분산',color:'#1d4ed8',bg:'rgba(255,255,255,0.8)'},
+            {icon:'✅',title:'식단 품질 향상',text:'영양 균형 및 다양성 강화',color:'#d97706',bg:'rgba(255,255,255,0.8)'},
+            {icon:'♻️',title:'잔반 감소 목표',text:'전월 대비 10% 감소 목표',color:'#f59e0b',bg:'rgba(255,255,255,0.8)'},
+          ].map(g=>`
+            <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;padding:10px;background:${g.bg};border-radius:8px;border-left:3px solid ${g.color}">
+              <span style="font-size:20px;flex-shrink:0">${g.icon}</span>
+              <div>
+                <div style="font-size:11px;font-weight:700;color:${g.color};margin-bottom:2px">${g.title}</div>
+                <div style="font-size:10px;color:#065f46">${g.text}</div>
+              </div>
+            </div>`).join('')}
+        </div>
+        <!-- 이번 달 핵심 지표 요약 + KPI -->
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1">
+            <div style="font-size:11px;font-weight:800;color:#1f2937;margin-bottom:10px">${reportMonth}월 핵심 성과 요약</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              ${KPI('예산 집행률',`${progress}%`,`목표 80~90%`,tc(progress),'#f8fafc','📊')}
+              ${KPI('평균 식단가',`${fmt(mealPrice)}원`,targetPrice>0?`목표 ${fmt(targetPrice)}원`:'—','#7c3aed','#faf5ff','🍱')}
+              ${KPI('총 발주액',`${fmtMan(usedAmount)}원`,`${reportMonth}월 합계`,'#064e3b','#f0fdf4','💰')}
+              ${KPI('총 식수',`${fmt(totalMeals)}명`,`${reportMonth}월 합계`,'#0891b2','#ecfeff','👥')}
+            </div>
+          </div>
+          <!-- 다음 달 중점 관리 포인트 -->
+          ${aiWarnings.length>0?`
+          <div style="background:#fffbeb;border-radius:10px;padding:12px;border-left:4px solid #d97706;flex-shrink:0">
+            <div style="font-size:10px;font-weight:800;color:#d97706;margin-bottom:6px">⚠ 다음 달 중점 관리 포인트</div>
+            ${aiWarnings.slice(0,3).map(w=>`<div style="font-size:9.5px;color:#92400e;margin-bottom:3px;display:flex;align-items:flex-start;gap:4px"><span>${w.icon||'•'}</span><span>${w.text}</span></div>`).join('')}
+          </div>`:
+          `<div style="background:#f0fdf4;border-radius:10px;padding:12px;border-left:4px solid #064e3b;flex-shrink:0">
+            <div style="font-size:10px;font-weight:800;color:#064e3b;margin-bottom:6px">✅ 이번 달 운영 현황 양호</div>
+            <div style="font-size:9.5px;color:#065f46">주요 지표가 목표 범위 내에서 관리되고 있습니다. 다음 달도 현재 수준을 유지하세요.</div>
+          </div>`}
+        </div>
+      </div>
+      ${AIBox(
+        `${reportMonth}월 운영을 바탕으로 ${nextMonth}월 목표를 설정했습니다. 예산 집행률 ${progress}%, 식단가 ${fmt(mealPrice)}원 기준으로 다음 달 계획을 수립하세요.`,
+        aiWarnings.length>1?aiWarnings[1].text:null,
+        '#064e3b','#f0fdf4'
+      )}
+    </div>`
+
+    return slide1+slide2+slide3+slide4+slide5+slide6+slide7+slide8+slide9+slide10+slide11+slide12+slide13+slide14
 
   })()}
 
@@ -13580,16 +13599,17 @@ async function renderReport(selectedHospitalId = null) {
     ;(()=>{
       const progress = _prog
       const topVR = _used>0&&rptOrders.length>0?Math.round((rptOrders[0]?.totalAmount||0)/_used*100):0
-      const sItems = [
+      const sItemsFull = [
         {label:'예산 관리',val:progress>=80&&progress<=90?95:progress>=70&&progress<80?75:progress>=90?80:55},
         {label:'식단가 관리',val:_tp>0?(_mp<=_tp?90:_mp<=_tp*1.05?75:_mp<=_tp*1.1?60:45):70},
         {label:'발주 관리',val:topVR<40?90:topVR<60?70:50},
-        {label:'식수 안정성',val:(_s.totalPatients||0)>0?80:50}
+        {label:'식수 안정성',val:(_s.totalPatients||0)>0?80:50},
+        {label:'잔반 관리',val:60}
       ]
       SC('rptScoreChart',{
         type:'radar',
-        data:{labels:sItems.map(s=>s.label),datasets:[{
-          label:'운영 점수',data:sItems.map(s=>s.val),
+        data:{labels:sItemsFull.map(s=>s.label),datasets:[{
+          label:'운영 점수',data:sItemsFull.map(s=>s.val),
           backgroundColor:'rgba(6,78,59,0.15)',borderColor:'#064e3b',borderWidth:2,
           pointBackgroundColor:'#064e3b',pointRadius:4,fill:true
         }]},
@@ -13599,6 +13619,134 @@ async function renderReport(selectedHospitalId = null) {
             pointLabels:{font:{size:9.5,weight:'bold'}},grid:{color:'rgba(0,0,0,0.08)'}}}
         }
       })
+    })()
+
+    // ── PAGE 7: 월별 식단가 추이 차트 ─────────────────────────────
+    ;(()=>{
+      const mUsed2 = Array(12).fill(0); (annualData?.monthly||[]).forEach(m=>{ mUsed2[parseInt(m.month)-1]=m.total_used||0 })
+      const mMeals2= Array(12).fill(0); (annualData?.mealMonthly||[]).forEach(m=>{ mMeals2[parseInt(m.month)-1]=(m.total_meals||m.total_patient||0) })
+      const mTgt2  = Array(12).fill(0); (annualData?.settings||[]).forEach(m=>{ mTgt2[m.month-1]=m.meal_price||0 })
+      const mActual= Array(12).fill(null).map((_,i)=>mUsed2[i]>0&&mMeals2[i]>0?Math.round(mUsed2[i]/mMeals2[i]):null)
+      const months12 = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
+      SC('rptMealPriceTrendChart',{
+        type:'line',
+        data:{labels:months12, datasets:[
+          {label:'실제 식단가',data:mActual,borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,0.1)',
+           borderWidth:2.5,pointRadius:4,pointBackgroundColor:'#7c3aed',fill:true,tension:0.3,spanGaps:true},
+          {label:'목표 식단가',data:mTgt2.map(v=>v>0?v:null),borderColor:'#dc2626',backgroundColor:'transparent',
+           borderWidth:2,borderDash:[6,4],pointRadius:3,pointBackgroundColor:'#dc2626',fill:false,spanGaps:true}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:true,position:'top',labels:{font:{size:10},boxWidth:14}}},
+          scales:{x:{ticks:{font:{size:9}},grid:{display:false}},
+                  y:{ticks:{font:{size:9},callback:v=>v.toLocaleString()+'원'},grid:{color:'rgba(0,0,0,0.05)'}}}
+        }
+      },[ptLabelPlugin])
+    })()
+
+    // ── PAGE 8: 월별 업체별 발주 금액 추이 (stacked bar) ──────────
+    ;(()=>{
+      const vMonthly = annualData?.vendorMonthly || []
+      const months12b = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
+      const vColors = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#ef4444']
+      if (vMonthly.length > 0) {
+        SC('rptVendorMonthlyChart',{
+          type:'bar',
+          data:{labels:months12b, datasets:vMonthly.slice(0,5).map((v,i)=>({
+            label:v.vendor_name||('업체'+(i+1)),
+            data:v.monthly||Array(12).fill(0),
+            backgroundColor:vColors[i]+'cc',borderRadius:3,borderSkipped:false,stack:'v'
+          }))},
+          options:{responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:true,position:'top',labels:{font:{size:9},boxWidth:12}}},
+            scales:{x:{stacked:true,ticks:{font:{size:9}},grid:{display:false}},
+                    y:{stacked:true,ticks:{font:{size:9},callback:v=>(v/10000).toFixed(0)+'만'},grid:{color:'rgba(0,0,0,0.05)'}}}
+          }
+        })
+      } else {
+        const mUsedFall = Array(12).fill(0); (annualData?.monthly||[]).forEach(m=>{ mUsedFall[parseInt(m.month)-1]=m.total_used||0 })
+        SC('rptVendorMonthlyChart',{
+          type:'bar',
+          data:{labels:months12b, datasets:[{label:'총 발주액',data:mUsedFall,backgroundColor:'#3b82f6cc',borderRadius:3}]},
+          options:{responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:true,position:'top',labels:{font:{size:9}}}},
+            scales:{x:{ticks:{font:{size:9}},grid:{display:false}},
+                    y:{ticks:{font:{size:9},callback:v=>(v/10000).toFixed(0)+'만'},grid:{color:'rgba(0,0,0,0.05)'}}}
+          }
+        })
+      }
+    })()
+
+    // ── PAGE 9: 월별 총 발주 금액 추이 ────────────────────────────
+    ;(()=>{
+      const mUsed3 = Array(12).fill(0); (annualData?.monthly||[]).forEach(m=>{ mUsed3[parseInt(m.month)-1]=m.total_used||0 })
+      const months12c = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
+      const barColors3 = mUsed3.map((_,i)=>i===reportMonth-1?'#064e3b':'#10b981aa')
+      SC('rptMonthlyTotalChart',{
+        type:'bar',
+        data:{labels:months12c, datasets:[
+          {label:'월별 발주액',data:mUsed3,backgroundColor:barColors3,borderRadius:4,yAxisID:'y',order:2},
+          {label:'추이선',data:mUsed3.map(v=>v>0?v:null),borderColor:'#1d4ed8',borderWidth:2,
+           type:'line',pointRadius:4,pointBackgroundColor:'#1d4ed8',fill:false,
+           yAxisID:'y',order:1,spanGaps:true,tension:0.3}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:true,position:'top',labels:{font:{size:9},boxWidth:12}},_showBarLabels:true},
+          scales:{x:{ticks:{font:{size:9}},grid:{display:false}},
+                  y:{ticks:{font:{size:9},callback:v=>(v/10000).toFixed(0)+'만'},grid:{color:'rgba(0,0,0,0.05)'}}}
+        }
+      },[barLabelPlugin,ptLabelPlugin])
+    })()
+
+    // ── PAGE 10: 일별 발주 금액 bar ──────────────────────────────
+    ;(()=>{
+      const dCnt2 = _days
+      const dLabels2 = Array.from({length:dCnt2},(_,i)=>`${i+1}`)
+      const dailyMap2 = {}
+      ;(summaryData?.dailyOrders||[]).forEach(d=>{ const day=parseInt(d.order_date.split('-')[2]); dailyMap2[day]=(dailyMap2[day]||0)+d.daily_total })
+      const dVals2 = Array.from({length:dCnt2},(_,i)=>dailyMap2[i+1]||0)
+      const dAvg2 = dVals2.filter(v=>v>0).reduce((s,v,_,a)=>s+v/a.length,0)||0
+      const dColors2 = dVals2.map(v=>v>dAvg2*1.5?'#dc2626':v>0?'#3b82f6':'#e5e7eb')
+      SC('rptDailyOrderChart',{
+        type:'bar',
+        data:{labels:dLabels2, datasets:[
+          {label:'일별 발주액',data:dVals2,backgroundColor:dColors2,borderRadius:3},
+          {label:'일평균',data:Array(dCnt2).fill(dAvg2>0?Math.round(dAvg2):null),borderColor:'#d97706',
+           borderWidth:2,borderDash:[5,4],type:'line',pointRadius:0,fill:false,order:0}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:true,position:'top',labels:{font:{size:9},boxWidth:12}}},
+          scales:{x:{ticks:{font:{size:8},maxRotation:0},grid:{display:false}},
+                  y:{ticks:{font:{size:9},callback:v=>(v/10000).toFixed(0)+'만'},grid:{color:'rgba(0,0,0,0.05)'}}}
+        }
+      })
+    })()
+
+    // ── PAGE 12: 잔반 분석 차트 (dual-axis) ──────────────────────
+    ;(()=>{
+      const fwData = annualData?.foodWasteMonthly || []
+      if (fwData.length === 0) return
+      const months12d = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
+      const fwKg   = Array(12).fill(0); fwData.forEach(r=>{ fwKg[parseInt(r.month)-1]=parseFloat(r.total_kg||r.totalKg||0) })
+      const fwCost = Array(12).fill(0); fwData.forEach(r=>{ fwCost[parseInt(r.month)-1]=parseInt(r.total_cost||r.totalCost||0) })
+      SC('rptFoodWasteChart',{
+        type:'bar',
+        data:{labels:months12d, datasets:[
+          {label:'잔반량(kg)',data:fwKg.map(v=>v>0?v:null),backgroundColor:'rgba(245,158,11,0.7)',
+           borderRadius:4,yAxisID:'y',order:2},
+          {label:'잔반비용',data:fwCost.map(v=>v>0?v:null),borderColor:'#f97316',borderWidth:2.5,
+           type:'line',pointRadius:4,pointBackgroundColor:'#f97316',fill:false,
+           yAxisID:'y1',order:1,spanGaps:true,tension:0.3}
+        ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:true,position:'top',labels:{font:{size:9},boxWidth:12}}},
+          scales:{
+            x:{ticks:{font:{size:9}},grid:{display:false}},
+            y:{position:'left',ticks:{font:{size:9},callback:v=>v+'kg'},grid:{color:'rgba(0,0,0,0.05)'}},
+            y1:{position:'right',ticks:{font:{size:9},callback:v=>(v/10000).toFixed(0)+'만원'},grid:{drawOnChartArea:false}}
+          }
+        }
+      },[barLabelPlugin,ptLabelPlugin])
     })()
 
   } catch(chartErr) {
