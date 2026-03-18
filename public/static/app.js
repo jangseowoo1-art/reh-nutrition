@@ -11994,9 +11994,6 @@ async function renderReport(selectedHospitalId = null) {
       <button onclick="printReportA4()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
         <i class="fas fa-print mr-1"></i>인쇄하기
       </button>
-      <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-primary btn-sm">
-        <i class="fas fa-file-pdf mr-1"></i>PDF 저장
-      </button>
       <button onclick="exportReportPPT('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-secondary btn-sm">
         <i class="fas fa-file-powerpoint mr-1"></i>PPT
       </button>
@@ -13913,7 +13910,14 @@ window.jumpPrintPage = function(idx) {
 }
 
 async function exportReportPPT(hospitalName, year, month) {
-  showToast('PPT 생성 중... 잠시 기다려주세요', 'warning')
+  const reportBody = document.getElementById('reportBody')
+  if (!reportBody) { showToast('보고서를 먼저 불러오세요', 'warning'); return }
+
+  const slides = reportBody.querySelectorAll('.report-slide')
+  if (slides.length === 0) { showToast('슬라이드가 없습니다', 'warning'); return }
+
+  showToast(`PPT 생성 중... (${slides.length}페이지 캡처 중)`, 'warning')
+
   // pptxgenjs CDN 동적 로드
   if (!window.PptxGenJS) {
     await new Promise((resolve, reject) => {
@@ -13923,61 +13927,94 @@ async function exportReportPPT(hospitalName, year, month) {
       document.head.appendChild(s)
     })
   }
+
+  // html2canvas CDN 동적 로드
+  if (!window.html2canvas) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
+      s.onload = resolve; s.onerror = reject
+      document.head.appendChild(s)
+    })
+  }
+
   const pptx = new window.PptxGenJS()
-  pptx.layout = 'LAYOUT_WIDE'
+  // A4 가로(297×210mm) 비율에 맞게 레이아웃 설정
+  pptx.defineLayout({ name: 'A4_LAND', width: 13.33, height: 7.5 })
+  pptx.layout = 'A4_LAND'
 
-  // 고화질 캔버스 데이터 미리 추출
-  const chartIds = ['rpt-vendorChart','rpt-dailyChart','rpt-mealMonthChart','rpt-mealPriceChart','rpt-annualMpChart','rpt-annualMealChart','rpt-annualVendorPie','rpt-annualBudgetPct','rpt-annualWaste']
-  const chartData = {}
-  chartIds.forEach(id => {
-    const el = document.getElementById(id)
-    chartData[id] = el ? canvasToHiResPng(el) : null
-  })
+  // 렌더링용 임시 컨테이너 (인쇄 미리보기와 동일한 방식)
+  const tmpContainer = document.createElement('div')
+  tmpContainer.style.cssText = 'position:absolute;top:-19999px;left:0;width:960px;background:white;visibility:hidden;z-index:-1'
+  document.body.appendChild(tmpContainer)
 
-  // 슬라이드 1: 표지
-  const s1 = pptx.addSlide()
-  s1.background = { color: '166534' }
-  s1.addShape(pptx.ShapeType.rect, { x:2, y:1.2, w:9, h:5, fill:{ color:'14532D', transparency:60 }, line:{ color:'FFFFFF', width:1 } })
-  s1.addText(`${hospitalName}`, { x:1, y:1.5, w:11, h:1, fontSize:36, bold:true, color:'FFFFFF', align:'center' })
-  s1.addText('급식 운영 월간 보고서', { x:1, y:2.7, w:11, h:0.7, fontSize:22, color:'CCFFCC', align:'center' })
-  s1.addText(`${year}년 ${month}월`, { x:1, y:3.6, w:11, h:0.8, fontSize:28, bold:true, color:'FFFFFF', align:'center' })
-  s1.addText(`작성일: ${new Date().toLocaleDateString('ko-KR')}`, { x:1, y:5.2, w:11, h:0.4, fontSize:13, color:'AAFFAA', align:'center' })
+  for (let i = 0; i < slides.length; i++) {
+    showToast(`PPT 생성 중... (${i+1}/${slides.length}페이지)`, 'warning')
 
-  // 슬라이드 2: 예산 요약 + 내용 요약칸
-  addChartSlideWithSummary(pptx, `${year}년 ${month}월 예산 요약 — 업체별 발주금액`, '166534', chartData['rpt-vendorChart'], '📊 예산 요약')
+    const origSlide = slides[i]
+    const clone = origSlide.cloneNode(true)
+    const isCover = i === 0
 
-  // 슬라이드 3: 일별 매입금액 + 내용 요약칸
-  addChartSlideWithSummary(pptx, `${year}년 ${month}월 일별 매입금액`, '166534', chartData['rpt-dailyChart'], '📅 일별 매입 요약')
+    clone.style.cssText = [
+      'margin:0', 'padding:20px', 'border-radius:0', 'box-shadow:none',
+      'display:block', 'width:960px', 'box-sizing:border-box',
+      isCover ? '' : 'background:white'
+    ].filter(Boolean).join(';')
 
-  // 슬라이드 4: 식수 현황 + 내용 요약칸
-  addChartSlideWithSummary(pptx, `${year}년 ${month}월 식수 현황 월별 추이`, '0F766E', chartData['rpt-mealMonthChart'], '🍽️ 식수 현황 요약')
+    // canvas → 고화질 PNG img 교체
+    const origCanvases = origSlide.querySelectorAll('canvas')
+    const cloneCanvases = clone.querySelectorAll('canvas')
+    origCanvases.forEach((origC, ci) => {
+      try {
+        const imgEl = document.createElement('img')
+        imgEl.src = canvasToHiResPng(origC) || origC.toDataURL('image/png')
+        const parentH = origC.closest('[style*="height"]')?.offsetHeight || origC.offsetHeight || 0
+        const minH = Math.max(parentH, 160)
+        imgEl.style.cssText = `width:100%;max-width:100%;height:auto;min-height:${minH}px;display:block`
+        if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
+      } catch(e) {}
+    })
 
-  // 슬라이드 5: 식단가 분석 + 내용 요약칸
-  addChartSlideWithSummary(pptx, `${year}년 ${month}월 식단가 월별 비교`, '1D4ED8', chartData['rpt-mealPriceChart'], '💰 식단가 분석 요약')
+    tmpContainer.innerHTML = ''
+    tmpContainer.appendChild(clone)
 
-  // 슬라이드 6: 연간 식단가 3종 추이 + 내용 요약칸
-  addChartSlideWithSummary(pptx, `${year}년 연간 식단가 3종 추이`, '1D4ED8', chartData['rpt-annualMpChart'], '📈 연간 식단가 추이 요약')
+    // 렌더링 대기
+    await new Promise(r => setTimeout(r, 300))
 
-  // 슬라이드 7: 연간 식수 구성 + 업체별 파이 (나란히) + 내용 요약칸
-  const s7 = pptx.addSlide()
-  s7.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:0.7, fill:{ color:'0F766E' } })
-  s7.addText(`${year}년 연간 식수 구성 & 업체별 발주 비중`, { x:0.4, y:0.1, w:12.2, h:0.5, fontSize:20, bold:true, color:'FFFFFF' })
-  if (chartData['rpt-annualMealChart']) s7.addImage({ data: chartData['rpt-annualMealChart'], x:0.4, y:0.85, w:6.0, h:4.0 })
-  if (chartData['rpt-annualVendorPie']) s7.addImage({ data: chartData['rpt-annualVendorPie'], x:6.6, y:0.85, w:6.0, h:4.0 })
-  s7.addShape(pptx.ShapeType.rect, { x:0.4, y:5.0, w:12.2, h:1.8, fill:{ color:'F9FAFB' }, line:{ color:'D1D5DB', width:1 } })
-  s7.addText('🥘 식수구성 & 업체 비중 요약', { x:0.5, y:5.05, w:6, h:0.3, fontSize:10, bold:true, color:'374151' })
+    // html2canvas로 슬라이드 캡처
+    let imgData = null
+    try {
+      tmpContainer.style.visibility = 'visible'
+      const canvas = await window.html2canvas(clone, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: isCover ? null : '#ffffff',
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: 960
+      })
+      tmpContainer.style.visibility = 'hidden'
+      imgData = canvas.toDataURL('image/png')
+    } catch(e) {
+      console.warn(`슬라이드 ${i+1} 캡처 실패:`, e)
+      tmpContainer.style.visibility = 'hidden'
+    }
 
-  // 슬라이드 8: 예산 달성률 + 잔반 추이 (나란히) + 내용 요약칸
-  const s8 = pptx.addSlide()
-  s8.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:0.7, fill:{ color:'15803D' } })
-  s8.addText(`${year}년 예산 달성률 & 잔반 추이`, { x:0.4, y:0.1, w:12.2, h:0.5, fontSize:20, bold:true, color:'FFFFFF' })
-  if (chartData['rpt-annualBudgetPct']) s8.addImage({ data: chartData['rpt-annualBudgetPct'], x:0.4, y:0.85, w:6.0, h:4.0 })
-  if (chartData['rpt-annualWaste']) s8.addImage({ data: chartData['rpt-annualWaste'], x:6.6, y:0.85, w:6.0, h:4.0 })
-  s8.addShape(pptx.ShapeType.rect, { x:0.4, y:5.0, w:12.2, h:1.8, fill:{ color:'F9FAFB' }, line:{ color:'D1D5DB', width:1 } })
-  s8.addText('📉 예산달성률 & 잔반 요약', { x:0.5, y:5.05, w:6, h:0.3, fontSize:10, bold:true, color:'374151' })
+    // PPT 슬라이드에 이미지 삽입
+    const slide = pptx.addSlide()
+    if (imgData) {
+      slide.addImage({ data: imgData, x: 0, y: 0, w: '100%', h: '100%' })
+    } else {
+      slide.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:'100%', fill:{ color:'F3F4F6' } })
+      slide.addText(`페이지 ${i+1} 캡처 실패`, { x:1, y:3, w:11, h:1, fontSize:18, color:'9CA3AF', align:'center' })
+    }
+  }
 
-  pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
-  showToast('PPT 다운로드 완료! (고화질)', 'success')
+  tmpContainer.remove()
+
+  await pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
+  showToast(`PPT 저장 완료! (${slides.length}페이지)`, 'success')
 }
 
 // ══════════════════════════════════════════════════════════════════
