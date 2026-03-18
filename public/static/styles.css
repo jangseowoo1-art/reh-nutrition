@@ -610,12 +610,12 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 /* 화면에서 보이는 보고서 페이지 (rpt-report-page) */
 .rpt-report-page {
   background: white;
-  padding: 20px 24px 32px 24px;
+  padding: 20px 24px 20px 24px;
   position: relative;
   border-radius: 12px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   display: flex;
   flex-direction: column;
   gap: 0;
