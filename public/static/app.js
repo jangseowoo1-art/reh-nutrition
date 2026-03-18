@@ -15972,8 +15972,14 @@ function renderCeoKpi(d) {
 
   const catPrices = d.mealPriceByCategory || {}
   const catItems = Object.entries(catPrices)
-    .filter(([,v]) => v && v.avgPrice > 0)
-    .map(([k,v]) => ({ key: k, label: v.targetPrice > 0 ? `${k === 'cancer' ? '항암' : k === 'nursing' ? '요양' : k} 식단가` : `${k} 식단가`, color: k==='cancer'?'#7c3aed':k==='nursing'?'#0891b2':'#059669', price: v.avgPrice || 0 }))
+    .filter(([,v]) => v && (v.avgPrice > 0 || v.targetPrice > 0))
+    .map(([k,v]) => ({
+      key: k,
+      label: v.label || (k === 'cancer' ? '항암' : k === 'nursing' ? '요양' : k) + ' 식단가',
+      color: k==='cancer'?'#7c3aed':k==='nursing'?'#0891b2':'#059669',
+      price: v.avgPrice || 0,
+      targetPrice: v.targetPrice || 0
+    }))
 
   const cards = [
     { icon:'fa-hospital',      color:'#4f46e5', label:'운영 병원',     value:`${d.hospitalCount||0}개`,          sub:'' },
@@ -16004,12 +16010,16 @@ function renderCeoKpi(d) {
     <div class="bg-white rounded-xl border border-gray-100 p-4 col-span-full">
       <div class="text-xs font-bold text-gray-600 mb-3"><i class="fas fa-utensils text-purple-400 mr-1"></i>케어유형별 평균 식단가</div>
       <div class="flex gap-4 flex-wrap">
-        ${catItems.map(c => `
-          <div class="text-center">
+        ${catItems.map(c => {
+          const tpct = c.targetPrice > 0 && c.price > 0 ? Math.round(c.price/c.targetPrice*100) : null
+          const tColor = tpct === null ? '' : tpct>=110 ? '#dc2626' : tpct>=105 ? '#f59e0b' : '#059669'
+          return `
+          <div class="text-center px-3">
             <div class="text-xs text-gray-400 mb-1">${c.label}</div>
             <div class="text-base font-bold" style="color:${c.color}">${fmtKo(c.price)}원</div>
-          </div>
-        `).join('<div class="w-px bg-gray-200"></div>')}
+            ${c.targetPrice > 0 ? `<div class="text-xs" style="color:${tColor}">목표 ${fmtKo(c.targetPrice)}원${tpct!==null?` (${tpct}%)`:''}</div>` : ''}
+          </div>`
+        }).join('<div class="w-px bg-gray-200 self-stretch"></div>')}
       </div>
     </div>
   ` : ''
@@ -16050,7 +16060,7 @@ function renderCeoHospitalCards(hospitals) {
 
     const budgetPct  = h.budgetPct || 0
     const barColor   = budgetPct>=90?'#ef4444':budgetPct>=80?'#f59e0b':'#4f46e5'
-    const mpPct      = (h.target||0) > 0 ? Math.round((h.mealPrice||0)/(h.target)*100) : null
+    const mpPct      = (h.targetMealPrice||0) > 0 ? Math.round((h.mealPrice||0)/(h.targetMealPrice)*100) : (h.mpPct || null)
     const mpColor    = mpPct===null?'#9ca3af':mpPct>=110?'#dc2626':mpPct>=105?'#f59e0b':'#059669'
 
     const catMpHtml  = Object.entries(h.mealPriceByCategory||{})
@@ -16095,13 +16105,13 @@ function renderCeoHospitalCards(hospitals) {
         <!-- 식단가 -->
         <div class="flex items-center justify-between text-xs mb-1">
           <span class="text-gray-500">전체 식단가</span>
-          <span class="font-bold" style="color:${mpColor}">${fmtKo(h.mealPrice)}원 ${mpPct!==null?`<span class="text-gray-400">(목표${mpPct}%)</span>`:''}</span>
+          <span class="font-bold" style="color:${mpColor}">${fmtKo(h.mealPrice)}원 ${mpPct!==null?`<span class="text-gray-400">(목표${mpPct}%)</span>`:''} <span class="text-gray-400 font-normal">${fmtKo(h.totalMeals)}식</span></span>
         </div>
         ${catMpHtml ? `<div class="text-xs flex flex-wrap gap-2 mb-1">${catMpHtml}</div>` : ''}
 
         <!-- 기타 지표 -->
         <div class="flex gap-3 text-xs text-gray-500 mt-1">
-          <span><i class="fas fa-users mr-0.5"></i>${fmtKo(h.meals)}식</span>
+          <span><i class="fas fa-users mr-0.5"></i>총 ${fmtKo(h.totalMeals)}식</span>
           <span><i class="fas fa-shopping-cart mr-0.5"></i>오늘 ${fmtMan(h.todayOrder)}원</span>
           ${h.pendingInspections>0?`<span class="text-yellow-600"><i class="fas fa-clipboard mr-0.5"></i>검수${h.pendingInspections}건</span>`:''}
           ${h.vendorConcentration>=40?`<span class="text-orange-500"><i class="fas fa-store mr-0.5"></i>집중도${h.vendorConcentration}%</span>`:''}
@@ -16207,45 +16217,63 @@ function renderCeoCharts(graphsData, hospitals) {
     })
   }
 
-  // 그래프 2: 케어유형별 평균 식단가 (막대)
+  // 그래프 2: 케어유형별 평균 식단가 (막대 + 목표선)
   const ctx2 = document.getElementById('ceoChart2')
   if (ctx2 && graphsData.graph2) {
-    // graph2는 {catKey: {avgPrice, label}} 구조
-    const g2entries = Object.entries(graphsData.graph2).filter(([,v]) => v && v.avgPrice > 0)
-    const labels2 = g2entries.map(([,v]) => v.label || v)
-    const values2 = g2entries.map(([,v]) => v.avgPrice || v)
-    window._ceoChart2 = new Chart(ctx2, {
-      type: 'bar',
-      data: {
-        labels: labels2,
-        datasets: [{ label: '평균 식단가(원)', data: values2, backgroundColor: ['#a78bfa','#67e8f9','#6ee7b7','#fde68a','#fca5a5'], borderRadius: 4 }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: ctx => `${ctx.raw.toLocaleString()}원` } }
+    // graph2는 {catKey: {avgPrice, label, targetPrice}} 구조
+    const g2entries = Object.entries(graphsData.graph2).filter(([,v]) => v && (v.avgPrice > 0 || v.targetPrice > 0))
+    if (g2entries.length === 0) {
+      const p = document.createElement('p')
+      p.style = 'text-align:center;color:#9ca3af;font-size:11px;padding:20px'
+      p.textContent = '식수 데이터 없음 (daily_meals 미입력)'
+      ctx2.parentNode.replaceChild(p, ctx2)
+    } else {
+      const labels2  = g2entries.map(([,v]) => v.label || v)
+      const values2  = g2entries.map(([,v]) => v.avgPrice || 0)
+      const targets2 = g2entries.map(([,v]) => v.targetPrice || null)
+      const bgColors2 = g2entries.map(([,v]) => {
+        if (!v.targetPrice || !v.avgPrice) return '#a78bfa'
+        return v.avgPrice >= v.targetPrice * 1.1 ? '#fca5a5' : v.avgPrice >= v.targetPrice * 1.05 ? '#fde68a' : '#a78bfa'
+      })
+      window._ceoChart2 = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: labels2,
+          datasets: [
+            { label: '평균 식단가(원)', data: values2, backgroundColor: bgColors2, borderRadius: 4 },
+            { label: '목표 식단가', data: targets2, type: 'line', borderColor: '#94a3b8', borderDash: [4,3], borderWidth: 1.5, pointRadius: 3, fill: false }
+          ]
         },
-        scales: {
-          y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 10 } } },
-          x: { ticks: { font: { size: 10 } } }
-        },
-        animation: {
-          onComplete: function() {
-            const chart = this
-            const ctx = chart.ctx
-            ctx.font = 'bold 10px sans-serif'
-            ctx.fillStyle = '#374151'
-            ctx.textAlign = 'center'
-            chart.data.datasets[0].data.forEach((val, i) => {
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { labels: { font: { size: 9 }, boxWidth: 10 } },
+            tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.raw||0).toLocaleString()}원` } }
+          },
+          scales: {
+            y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 10 } } },
+            x: { ticks: { font: { size: 10 } } }
+          },
+          animation: {
+            onComplete: function() {
+              const chart = this
+              const ctx = chart.ctx
+              ctx.font = 'bold 10px sans-serif'
+              ctx.textAlign = 'center'
               const meta = chart.getDatasetMeta(0)
-              const bar  = meta.data[i]
-              ctx.fillText(`${Math.round(val/1000)}천`, bar.x, bar.y - 4)
-            })
+              meta.data.forEach((bar, i) => {
+                const val = chart.data.datasets[0].data[i]
+                const tgt = chart.data.datasets[1].data[i]
+                if (val > 0) {
+                  ctx.fillStyle = tgt && val >= tgt * 1.1 ? '#dc2626' : '#374151'
+                  ctx.fillText(`${val.toLocaleString()}원`, bar.x, bar.y - 4)
+                }
+              })
+            }
           }
         }
-      }
-    })
+      })
+    }
   }
 
   // 그래프 3: 병원별 식단가 비교
@@ -16289,7 +16317,7 @@ function renderCeoCharts(graphsData, hospitals) {
             const meta0 = chart.getDatasetMeta(0)
             meta0.data.forEach((bar, i) => {
               const val = chart.data.datasets[0].data[i]
-              if (val > 0) ctx.fillText(`${Math.round(val/1000)}천`, bar.x, bar.y - 4)
+              if (val > 0) ctx.fillText(`${val.toLocaleString()}원`, bar.x, bar.y - 4)
             })
           }
         }
