@@ -13634,10 +13634,8 @@ async function renderReport(selectedHospitalId = null) {
 function canvasToHiResPng(canvas) {
   if (!canvas) return null
   try {
-    // offsetWidth/offsetHeight는 DOM에 없을 때 0이 될 수 있음 → 실제 픽셀 크기로 폴백
     const srcW = (canvas.offsetWidth  > 0 ? canvas.offsetWidth  : canvas.width)  || 300
     const srcH = (canvas.offsetHeight > 0 ? canvas.offsetHeight : canvas.height) || 200
-    // 4배 해상도로 offscreen canvas 생성
     const scale = 4
     const off = document.createElement('canvas')
     off.width  = srcW * scale
@@ -13645,7 +13643,6 @@ function canvasToHiResPng(canvas) {
     const ctx2 = off.getContext('2d')
     ctx2.imageSmoothingEnabled = true
     ctx2.imageSmoothingQuality = 'high'
-    // 흰 배경 채우기 (투명 배경 방지)
     ctx2.fillStyle = '#ffffff'
     ctx2.fillRect(0, 0, off.width, off.height)
     ctx2.scale(scale, scale)
@@ -13656,104 +13653,133 @@ function canvasToHiResPng(canvas) {
   }
 }
 
-// PPT 슬라이드에 그래프 + 내용 요약 칸 추가 헬퍼
-function addChartSlideWithSummary(pptx, title, titleColor, canvasData, summaryLabel) {
-  const slide = pptx.addSlide()
-  // 상단 헤더 배경
-  slide.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:0.7, fill:{ color: titleColor || '166534' } })
-  slide.addText(title, { x:0.4, y:0.1, w:12.2, h:0.5, fontSize:20, bold:true, color:'FFFFFF' })
-  // 그래프 이미지 (고화질)
-  if (canvasData) {
-    slide.addImage({ data: canvasData, x:0.4, y:0.85, w:12.2, h:4.0 })
-  } else {
-    slide.addShape(pptx.ShapeType.rect, { x:0.4, y:0.85, w:12.2, h:4.0, fill:{ color:'F3F4F6' }, line:{ color:'D1D5DB', width:1 } })
-    slide.addText('차트 데이터 없음', { x:0.4, y:2.5, w:12.2, h:0.5, fontSize:14, color:'9CA3AF', align:'center' })
+// ══════════════════════════════════════════════════════════════════
+//  보고서 슬라이드 캡처 시스템
+//  - html2canvas로 화면에 렌더링된 원본 슬라이드를 직접 캡처
+//  - 캡처 결과를 window._rptImgCache에 저장하여 미리보기/인쇄/PPT 재사용
+//  - 각 슬라이드의 실제 높이 비율을 보존하여 짤림/늘어남 방지
+// ══════════════════════════════════════════════════════════════════
+
+// html2canvas CDN 로드 (공통)
+async function _loadHtml2Canvas() {
+  if (window.html2canvas) return
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
+    s.onload = resolve; s.onerror = reject
+    document.head.appendChild(s)
+  })
+}
+
+// PptxGenJS CDN 로드 (공통)
+async function _loadPptxGenJS() {
+  if (window.PptxGenJS) return
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js'
+    s.onload = resolve; s.onerror = reject
+    document.head.appendChild(s)
+  })
+}
+
+// 슬라이드 캡처 캐시: { imgData, naturalW, naturalH }[]
+window._rptImgCache = []
+window._rptImgCacheKey = ''  // 마지막 캡처한 병원+년월 키
+
+/**
+ * 보고서 슬라이드 전체를 html2canvas로 직접 캡처하여 캐시에 저장
+ * @param {NodeList|Array} slides - .report-slide 요소들
+ * @param {Function} onProgress - (current, total) 진행 콜백
+ */
+async function _captureAllSlides(slides, onProgress) {
+  await _loadHtml2Canvas()
+  const cache = []
+
+  for (let i = 0; i < slides.length; i++) {
+    if (onProgress) onProgress(i + 1, slides.length)
+
+    const slide = slides[i]
+    const isCover = i === 0
+
+    // 원본 슬라이드의 실제 화면상 크기 측정
+    const rect = slide.getBoundingClientRect()
+    const slideW = rect.width  || slide.offsetWidth  || 960
+    const slideH = rect.height || slide.offsetHeight || 600
+
+    let imgData = null
+    let capturedW = slideW
+    let capturedH = slideH
+
+    try {
+      const cvs = await window.html2canvas(slide, {
+        scale: 2,                          // 2배 → 충분한 화질 + 속도 균형
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: isCover ? null : '#ffffff',
+        scrollX: -window.scrollX,
+        scrollY: -window.scrollY,
+        windowWidth:  document.documentElement.scrollWidth,
+        windowHeight: document.documentElement.scrollHeight,
+        x: rect.left + window.scrollX,
+        y: rect.top  + window.scrollY,
+        width:  slideW,
+        height: slideH,
+        logging: false
+      })
+      imgData    = cvs.toDataURL('image/png', 1.0)
+      capturedW  = cvs.width  / 2   // scale=2이므로 실제 px은 절반
+      capturedH  = cvs.height / 2
+    } catch(e) {
+      console.warn(`슬라이드 ${i+1} 캡처 실패:`, e)
+    }
+
+    cache.push({ imgData, naturalW: capturedW, naturalH: capturedH })
   }
-  // 내용 요약 칸
-  const summaryY = 5.0
-  slide.addShape(pptx.ShapeType.rect, { x:0.4, y:summaryY, w:12.2, h:1.8, fill:{ color:'F9FAFB' }, line:{ color:'D1D5DB', width:1 } })
-  slide.addText(summaryLabel || '내용 요약', { x:0.5, y:summaryY+0.05, w:3, h:0.3, fontSize:10, bold:true, color:'374151' })
-  slide.addText('', { x:0.5, y:summaryY+0.35, w:12.0, h:1.35, fontSize:11, color:'6B7280',
-    placeholder: true, isTextBox: true })
-  return slide
+  return cache
 }
 
 // ── A4 문서형 인쇄 함수 ────────────────────────────────────────
-// window.print() 대신 이 함수를 사용:
-// 1. reportBody의 각 .report-slide를 독립 print-page div로 복제
-// 2. #printLayer에 담아 body에 추가
-// 3. window.print() 호출 → CSS @media print에서 #printLayer만 표시
-// 4. 인쇄 완료 후 #printLayer 제거
-window.printReportA4 = function() {
+// 각 슬라이드를 html2canvas로 직접 캡처한 이미지를 printLayer에 삽입
+// → 화면에 보이는 것과 100% 동일하게 출력, 짤림/늘어남 없음
+window.printReportA4 = async function() {
   const reportBody = document.getElementById('reportBody')
   if (!reportBody) { showToast('보고서를 먼저 불러오세요', 'warning'); return }
+
+  const slides = reportBody.querySelectorAll('.report-slide')
+  if (slides.length === 0) { showToast('출력할 슬라이드가 없습니다', 'warning'); return }
+
+  showToast('인쇄 준비 중... 잠시 기다려주세요', 'warning')
+
+  // 캡처
+  const cache = await _captureAllSlides(Array.from(slides), (cur, tot) => {
+    showToast(`인쇄 준비 중... (${cur}/${tot}페이지)`, 'warning')
+  })
 
   // 기존 printLayer 제거
   const existing = document.getElementById('printLayer')
   if (existing) existing.remove()
 
-  const slides = reportBody.querySelectorAll('.report-slide')
-  if (slides.length === 0) { showToast('출력할 슬라이드가 없습니다', 'warning'); return }
-
-  // printLayer 생성
   const layer = document.createElement('div')
   layer.id = 'printLayer'
   layer.setAttribute('aria-hidden', 'true')
 
-  slides.forEach((slide, idx) => {
+  cache.forEach(({ imgData, naturalW, naturalH }, idx) => {
     const page = document.createElement('div')
     page.className = 'print-page'
+    // 이미지 비율을 100% 유지하여 짤림 방지
+    // print-page는 @media print에서 page-break-after:always
+    page.style.cssText = 'width:100%;margin:0;padding:0;box-sizing:border-box;position:relative;'
 
-    const clone = slide.cloneNode(true)
-
-    if (idx === 0) {
-      // 표지: gradient 배경 유지, 패딩 없이 꽉 채우기
-      clone.style.cssText = [
-        'width:100%', 'height:100%', 'min-height:210mm',
-        'margin:0', 'padding:0', 'border-radius:0',
-        'box-shadow:none', 'overflow:hidden', 'box-sizing:border-box',
-        'display:flex', 'flex-direction:column'
-      ].join(';')
+    if (imgData) {
+      const img = document.createElement('img')
+      img.src = imgData
+      // 가로 100% + 비율 유지(height:auto) → 절대 짤리지 않음
+      img.style.cssText = 'width:100%;height:auto;display:block;max-width:100%;'
+      page.appendChild(img)
     } else {
-      // 일반 페이지: 흰 배경, overflow visible로 잘림 방지
-      clone.style.cssText = [
-        'width:100%', 'margin:0', 'padding:0',
-        'border-radius:0', 'box-shadow:none',
-        'border:none', 'background:white',
-        'display:flex', 'flex-direction:column',
-        'overflow:visible'  // 잘림 방지
-      ].join(';')
+      page.style.background = '#f9fafb'
+      page.innerHTML = `<div style="padding:40px;text-align:center;color:#9ca3af;font-size:14px;">페이지 ${idx+1} 캡처 실패</div>`
     }
-
-    // canvas → 고화질 PNG 이미지로 교체 (원본 크기 최대한 보존)
-    const origCanvases = slide.querySelectorAll('canvas')
-    const cloneCanvases = clone.querySelectorAll('canvas')
-    origCanvases.forEach((origC, ci) => {
-      try {
-        const imgData = canvasToHiResPng(origC)
-        if (!imgData) return
-        const imgEl = document.createElement('img')
-        imgEl.src = imgData
-        // offsetHeight 폴백: canvas 자체 height 사용
-        const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : origC.height
-        const parentH = origC.closest('[style*="height"]')?.offsetHeight || srcH || 0
-        const minH = Math.max(parentH, 160)  // 최소 160px
-        imgEl.style.cssText = [
-          'width:100%',
-          'max-width:100%',
-          'height:auto',
-          'display:block',
-          'object-fit:contain',
-          `min-height:${minH}px`
-        ].join(';')
-        if (cloneCanvases[ci]) {
-          cloneCanvases[ci].replaceWith(imgEl)
-        }
-      } catch(e) { console.warn('canvas 변환 실패', e) }
-    })
-
-    page.style.position = 'relative'
-    page.appendChild(clone)
     layer.appendChild(page)
   })
 
@@ -13772,17 +13798,42 @@ window.printReportA4 = function() {
 }
 
 // ── 인쇄 미리보기 모달 ─────────────────────────────────────────
-window.showPrintPreview = function() {
-  // 기존 미리보기 모달 제거
+window.showPrintPreview = async function() {
   const existing = document.getElementById('printPreviewModal')
   if (existing) existing.remove()
 
   const reportBody = document.getElementById('reportBody')
   if (!reportBody) { showToast('보고서를 먼저 불러오세요', 'warning'); return }
 
-  // 슬라이드 목록 수집
-  const slides = reportBody.querySelectorAll('.report-slide')
+  const slides = Array.from(reportBody.querySelectorAll('.report-slide'))
   const totalPages = slides.length
+
+  // 로딩 모달 먼저 표시
+  const loadingModal = document.createElement('div')
+  loadingModal.id = 'printPreviewModal'
+  loadingModal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;'
+  loadingModal.innerHTML = `
+    <div style="background:#1f2937;border-radius:16px;padding:40px 60px;text-align:center;color:white;">
+      <i class="fas fa-spinner fa-spin" style="font-size:32px;color:#60a5fa;margin-bottom:16px;display:block"></i>
+      <div style="font-size:16px;font-weight:700;margin-bottom:8px">미리보기 준비 중...</div>
+      <div id="ppLoadingText" style="font-size:13px;color:#9ca3af">슬라이드 캡처 중 (0/${totalPages})</div>
+      <div style="margin-top:16px;background:#374151;border-radius:99px;height:6px;width:240px;overflow:hidden">
+        <div id="ppLoadingBar" style="height:100%;width:0%;background:#3b82f6;border-radius:99px;transition:width 0.3s"></div>
+      </div>
+    </div>
+  `
+  document.body.appendChild(loadingModal)
+
+  // 전체 캡처
+  const cache = await _captureAllSlides(slides, (cur, tot) => {
+    const txt = document.getElementById('ppLoadingText')
+    const bar = document.getElementById('ppLoadingBar')
+    if (txt) txt.textContent = `슬라이드 캡처 중 (${cur}/${tot})`
+    if (bar) bar.style.width = `${Math.round(cur/tot*100)}%`
+  })
+
+  // 로딩 모달 제거 후 미리보기 모달 생성
+  loadingModal.remove()
 
   const modal = document.createElement('div')
   modal.id = 'printPreviewModal'
@@ -13795,11 +13846,11 @@ window.showPrintPreview = function() {
         <span id="ppPageInfo" style="font-size:12px;color:#9ca3af">페이지 1 / ${totalPages}</span>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
-        <button onclick="document.getElementById('printPreviewModal').remove()" 
+        <button onclick="document.getElementById('printPreviewModal').remove()"
           style="background:#374151;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">
           <i class="fas fa-times mr-1"></i>닫기
         </button>
-        <button onclick="document.getElementById('printPreviewModal').remove(); printReportA4()" 
+        <button onclick="document.getElementById('printPreviewModal').remove(); printReportA4()"
           style="background:#3b82f6;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
           <i class="fas fa-print mr-1"></i>인쇄/PDF저장
         </button>
@@ -13807,25 +13858,25 @@ window.showPrintPreview = function() {
     </div>
     <!-- 페이지 네비게이션 -->
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:8px;background:#111827;flex-shrink:0;">
-      <button id="ppPrevBtn" onclick="changePrintPage(-1)" 
+      <button id="ppPrevBtn" onclick="changePrintPage(-1)"
         style="background:#374151;color:white;border:none;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:12px;">
         <i class="fas fa-chevron-left mr-1"></i>이전
       </button>
-      <div id="ppPageDots" style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center;max-width:600px;">
-        ${Array.from(slides).map((_,i) => 
-          `<button onclick="jumpPrintPage(${i})" id="ppDot-${i}" 
+      <div id="ppPageDots" style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center;max-width:700px;">
+        ${cache.map((_,i) =>
+          `<button onclick="jumpPrintPage(${i})" id="ppDot-${i}"
             style="width:28px;height:28px;border-radius:5px;border:none;cursor:pointer;font-size:10px;font-weight:700;
             background:${i===0?'#3b82f6':'#374151'};color:white;transition:all 0.2s;">${i+1}</button>`
         ).join('')}
       </div>
-      <button id="ppNextBtn" onclick="changePrintPage(1)" 
+      <button id="ppNextBtn" onclick="changePrintPage(1)"
         style="background:#374151;color:white;border:none;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:12px;">
         다음<i class="fas fa-chevron-right ml-1"></i>
       </button>
     </div>
     <!-- 슬라이드 미리보기 영역 -->
     <div style="flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:20px;background:#374151;">
-      <div id="ppSlideContainer" style="background:white;box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:8px;overflow:hidden;width:100%;max-width:960px;min-height:400px;">
+      <div id="ppSlideContainer" style="box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:8px;overflow:hidden;width:100%;max-width:960px;background:white;">
       </div>
     </div>
     <!-- 안내 문구 -->
@@ -13836,67 +13887,48 @@ window.showPrintPreview = function() {
   `
   document.body.appendChild(modal)
 
-  // 현재 페이지 전역 변수
+  // 캐시를 전역에 저장 (페이지 이동 시 재사용)
+  window._ppImgCache  = cache
   window._ppCurrentPage = 0
-  window._ppSlides = Array.from(slides)
-  window._ppTotal = totalPages
-  renderPrintPreviewPage(0)
+  window._ppTotal       = totalPages
+
+  _renderCachedPreviewPage(0)
 }
 
-window._ppCurrentPage = 0
-window._ppSlides = []
-window._ppTotal = 0
-
-function renderPrintPreviewPage(idx) {
+function _renderCachedPreviewPage(idx) {
   const container = document.getElementById('ppSlideContainer')
-  const pageInfo = document.getElementById('ppPageInfo')
-  if (!container || !window._ppSlides[idx]) return
+  const pageInfo  = document.getElementById('ppPageInfo')
+  const cache     = window._ppImgCache || []
+  if (!container || !cache[idx]) return
 
-  // 슬라이드 복제 + canvas → img 교체 (실제 인쇄와 동일)
-  const origSlide = window._ppSlides[idx]
-  const clone = origSlide.cloneNode(true)
-  // 표지(idx===0)는 gradient 배경 유지, 나머지는 white
-  const isCover = idx === 0
-  const origBg = origSlide.style.background || origSlide.style.backgroundImage || ''
-  clone.style.cssText = `margin:0!important;border-radius:0!important;box-shadow:none!important;padding:20px!important;display:block!important;width:100%!important;box-sizing:border-box!important;${isCover ? '' : 'background:white!important;'}`
+  const { imgData, naturalW, naturalH } = cache[idx]
 
-  // canvas → img (인쇄 결과와 동일하게, 크기 최대 보존)
-  const origCanvases = origSlide.querySelectorAll('canvas')
-  const cloneCanvases = clone.querySelectorAll('canvas')
-  origCanvases.forEach((origC, ci) => {
-    try {
-      const imgEl = document.createElement('img')
-      imgEl.src = canvasToHiResPng(origC) || origC.toDataURL('image/png')
-      // offsetHeight가 0이면 canvas 자체 height로 폴백
-      const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : origC.height
-      const parentH = origC.closest('[style*="height"]')?.offsetHeight || srcH || 0
-      const minH = Math.max(parentH, 160)
-      imgEl.style.cssText = `width:100%;max-width:100%;height:auto;min-height:${minH}px;display:block`
-      if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
-    } catch(e) {}
-  })
-
-  // A4 landscape 비율 컨테이너 (297:210 = 1.414:1)
   container.innerHTML = ''
-  container.style.cssText = 'background:white;box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:8px;overflow:hidden;width:100%;max-width:960px;min-height:400px;position:relative'
-  container.appendChild(clone)
+  // 컨테이너 너비에 맞게 비율 유지 (height:auto)
+  if (imgData) {
+    const img = document.createElement('img')
+    img.src = imgData
+    img.style.cssText = 'width:100%;height:auto;display:block;border-radius:8px;'
+    container.appendChild(img)
+  } else {
+    container.innerHTML = `<div style="padding:60px;text-align:center;color:#9ca3af;font-size:14px;">페이지 ${idx+1} 캡처 실패</div>`
+  }
 
-  // 페이지 번호 표시
+  // 페이지 번호 배지
   const pgBadge = document.createElement('div')
-  pgBadge.style.cssText = 'position:absolute;bottom:8px;right:12px;font-size:10px;color:#9ca3af;pointer-events:none'
+  pgBadge.style.cssText = 'text-align:right;padding:6px 12px;font-size:10px;color:#9ca3af;background:#f9fafb;border-top:1px solid #e5e7eb;'
   pgBadge.textContent = `${idx+1} / ${window._ppTotal}`
   container.appendChild(pgBadge)
 
-  // 페이지 정보 업데이트
   if (pageInfo) pageInfo.textContent = `페이지 ${idx+1} / ${window._ppTotal}`
 
-  // 점(dot) 버튼 상태 업데이트
-  window._ppSlides.forEach((_,i) => {
+  // dot 버튼 상태
+  cache.forEach((_,i) => {
     const dot = document.getElementById(`ppDot-${i}`)
     if (dot) dot.style.background = i===idx ? '#3b82f6' : '#374151'
   })
 
-  // 이전/다음 버튼 활성화
+  // 이전/다음 버튼
   const prev = document.getElementById('ppPrevBtn')
   const next = document.getElementById('ppNextBtn')
   if (prev) prev.style.opacity = idx===0 ? '0.4' : '1'
@@ -13904,130 +13936,68 @@ function renderPrintPreviewPage(idx) {
 }
 
 window.changePrintPage = function(dir) {
-  const newIdx = window._ppCurrentPage + dir
-  if (newIdx < 0 || newIdx >= window._ppTotal) return
+  const newIdx = (window._ppCurrentPage || 0) + dir
+  if (newIdx < 0 || newIdx >= (window._ppTotal || 0)) return
   window._ppCurrentPage = newIdx
-  renderPrintPreviewPage(newIdx)
+  _renderCachedPreviewPage(newIdx)
 }
 
 window.jumpPrintPage = function(idx) {
   window._ppCurrentPage = idx
-  renderPrintPreviewPage(idx)
+  _renderCachedPreviewPage(idx)
 }
 
+// ── PPT 저장 ─────────────────────────────────────────────────────
+// 각 슬라이드를 html2canvas로 캡처 → 실제 비율로 PPT 슬라이드 크기 동적 설정
 async function exportReportPPT(hospitalName, year, month) {
   const reportBody = document.getElementById('reportBody')
   if (!reportBody) { showToast('보고서를 먼저 불러오세요', 'warning'); return }
 
-  const slides = reportBody.querySelectorAll('.report-slide')
+  const slides = Array.from(reportBody.querySelectorAll('.report-slide'))
   if (slides.length === 0) { showToast('슬라이드가 없습니다', 'warning'); return }
 
   showToast(`PPT 생성 중... (${slides.length}페이지 캡처 중)`, 'warning')
 
-  // pptxgenjs CDN 동적 로드
-  if (!window.PptxGenJS) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script')
-      s.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js'
-      s.onload = resolve; s.onerror = reject
-      document.head.appendChild(s)
-    })
-  }
+  await _loadPptxGenJS()
 
-  // html2canvas CDN 동적 로드
-  if (!window.html2canvas) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script')
-      s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
-      s.onload = resolve; s.onerror = reject
-      document.head.appendChild(s)
-    })
-  }
+  // 전체 슬라이드 캡처
+  const cache = await _captureAllSlides(slides, (cur, tot) => {
+    showToast(`PPT 생성 중... (${cur}/${tot}페이지 캡처)`, 'warning')
+  })
 
-  // A4 가로 비율: 297×210mm → PPT 단위(인치) 10×7.08
-  // 너무 넓으면 내용이 퍼지므로 실제 A4 가로 비율로 고정
-  const PPT_W = 10.0
-  const PPT_H = 7.08
+  showToast('PPT 파일 생성 중...', 'warning')
+
+  // PPT 레이아웃: 화면 비율 기준 (16:9 와이드스크린 기본)
+  // 각 슬라이드의 실제 캡처 비율을 계산해 슬라이드 높이를 동적 조정
+  const PPT_BASE_W = 25.4  // cm (≒ 10인치)
+
   const pptx = new window.PptxGenJS()
-  pptx.defineLayout({ name: 'A4_LAND', width: PPT_W, height: PPT_H })
-  pptx.layout = 'A4_LAND'
 
-  // 캡처 폭: A4 가로(297mm) ≒ 794px @ 96dpi
-  const CAPTURE_W = 794
+  for (let i = 0; i < cache.length; i++) {
+    const { imgData, naturalW, naturalH } = cache[i]
 
-  // 렌더링용 임시 컨테이너
-  const tmpContainer = document.createElement('div')
-  tmpContainer.style.cssText = `position:absolute;top:-19999px;left:0;width:${CAPTURE_W}px;background:white;visibility:hidden;z-index:-1;overflow:hidden`
-  document.body.appendChild(tmpContainer)
-
-  for (let i = 0; i < slides.length; i++) {
-    showToast(`PPT 생성 중... (${i+1}/${slides.length}페이지)`, 'warning')
-
-    const origSlide = slides[i]
-    const clone = origSlide.cloneNode(true)
-    const isCover = i === 0
-
-    clone.style.cssText = [
-      'margin:0', `padding:16px`, 'border-radius:0', 'box-shadow:none',
-      `display:block`, `width:${CAPTURE_W}px`, 'box-sizing:border-box',
-      'overflow:hidden',
-      isCover ? '' : 'background:white'
-    ].filter(Boolean).join(';')
-
-    // canvas → 고화질 PNG img 교체
-    const origCanvases = origSlide.querySelectorAll('canvas')
-    const cloneCanvases = clone.querySelectorAll('canvas')
-    origCanvases.forEach((origC, ci) => {
-      try {
-        const imgEl = document.createElement('img')
-        imgEl.src = canvasToHiResPng(origC) || origC.toDataURL('image/png')
-        // offsetHeight 폴백
-        const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : origC.height
-        const parentH = origC.closest('[style*="height"]')?.offsetHeight || srcH || 0
-        const minH = Math.max(parentH, 120)
-        imgEl.style.cssText = `width:100%;max-width:100%;height:auto;min-height:${minH}px;display:block`
-        if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
-      } catch(e) {}
-    })
-
-    tmpContainer.innerHTML = ''
-    tmpContainer.appendChild(clone)
-
-    // 렌더링 대기 (이미지 로드 포함)
-    await new Promise(r => setTimeout(r, 400))
-
-    // html2canvas로 슬라이드 캡처 (scale:3 → 고화질)
-    let imgData = null
-    try {
-      tmpContainer.style.visibility = 'visible'
-      const canvas = await window.html2canvas(clone, {
-        scale: 3,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: isCover ? null : '#ffffff',
-        scrollX: 0,
-        scrollY: 0,
-        windowWidth: CAPTURE_W,
-        width: CAPTURE_W
-      })
-      tmpContainer.style.visibility = 'hidden'
-      imgData = canvas.toDataURL('image/png')
-    } catch(e) {
-      console.warn(`슬라이드 ${i+1} 캡처 실패:`, e)
-      tmpContainer.style.visibility = 'hidden'
+    if (!imgData || !naturalW || !naturalH) {
+      // 캡처 실패한 슬라이드: 빈 슬라이드 추가
+      pptx.defineLayout({ name: `SLIDE_${i}`, width: PPT_BASE_W / 2.54, height: (PPT_BASE_W / 2.54) * 0.5625 })
+      pptx.layout = `SLIDE_${i}`
+      const s = pptx.addSlide()
+      s.addText(`페이지 ${i+1} 캡처 실패`, { x:1, y:2, w:8, h:1, fontSize:16, color:'9CA3AF', align:'center' })
+      continue
     }
 
-    // PPT 슬라이드에 이미지 삽입
+    // 실제 비율 계산 (naturalH / naturalW)
+    const ratio  = naturalH / naturalW
+    const slideW = PPT_BASE_W / 2.54          // 인치
+    const slideH = slideW * ratio             // 비율 유지
+
+    // 슬라이드마다 레이아웃 동적 정의
+    const layoutName = `SLIDE_${i}`
+    pptx.defineLayout({ name: layoutName, width: slideW, height: slideH })
+    pptx.layout = layoutName
+
     const slide = pptx.addSlide()
-    if (imgData) {
-      slide.addImage({ data: imgData, x: 0, y: 0, w: '100%', h: '100%' })
-    } else {
-      slide.addShape(pptx.ShapeType.rect, { x:0, y:0, w:'100%', h:'100%', fill:{ color:'F3F4F6' } })
-      slide.addText(`페이지 ${i+1} 캡처 실패`, { x:1, y:3, w:11, h:1, fontSize:18, color:'9CA3AF', align:'center' })
-    }
+    slide.addImage({ data: imgData, x: 0, y: 0, w: slideW, h: slideH })
   }
-
-  tmpContainer.remove()
 
   await pptx.writeFile({ fileName: `${hospitalName}_${year}년${month}월_보고서.pptx` })
   showToast(`PPT 저장 완료! (${slides.length}페이지)`, 'success')

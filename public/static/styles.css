@@ -634,41 +634,25 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 #printLayer {
   display: none;
 }
+/* 화면 미표시 상태에서 각 페이지 기본 스타일 */
 #printLayer .print-page {
-  width: 277mm;
-  margin: 0 auto;             /* 중앙 정렬 */
-  min-height: 190mm;
-  padding: 5mm 7mm 6mm 7mm;  /* 여백 줄여 차트 공간 확보 */
+  width: 100%;
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
-  overflow: visible;
   background: white;
   position: relative;
   page-break-after: always;
   page-break-inside: avoid;
-  display: flex;
-  flex-direction: column;
-}
-/* 표지는 패딩 없이 전체 페이지 꽉 채우기 */
-#printLayer .print-page:first-child {
-  padding: 0;
-  height: 210mm;
-  min-height: 210mm;
-  overflow: hidden;
 }
 #printLayer .print-page:last-child { page-break-after: avoid; }
 
-/* 인쇄 레이어 내 rpt-report-page는 고정 레이아웃으로 */
-#printLayer .print-page .rpt-report-page,
-#printLayer .print-page .report-slide {
-  border: none !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-  margin: 0 !important;
-  padding: 14px 18px 8px 18px !important;  /* 패딩 축소 → 차트 공간 ↑ */
-  background: transparent !important;
-  display: flex !important;
-  flex-direction: column !important;
-  flex: 1 !important;
+/* 이미지 기반 출력: 비율 100% 유지, 절대 짤리지 않음 */
+#printLayer .print-page img {
+  width: 100%;
+  height: auto;
+  display: block;
+  max-width: 100%;
 }
 
 @media print {
@@ -677,99 +661,50 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     margin: 0;
   }
 
-  /* 화면 요소 모두 숨김 */
+  /* 화면 요소 모두 숨김, printLayer만 표시 */
   body > *:not(#printLayer) { display: none !important; }
   .no-print { display: none !important; }
 
-  /* 인쇄 레이어만 표시 */
   #printLayer {
     display: block !important;
     position: static !important;
     width: 100% !important;
     background: white !important;
   }
+
+  /* 각 페이지: 이미지 비율 그대로, 짤림 없음 */
   #printLayer .print-page {
-    display: flex !important;
-    flex-direction: column !important;
-    width: 267mm !important;           /* 90% 크기: 297mm × 0.9 ≈ 267mm */
-    margin: 0 auto !important;         /* 좌우 중앙 정렬 */
-    min-height: 185mm !important;
-    padding: 5mm 7mm 5mm 7mm !important;  /* 여백 최소화 → 차트 크게 */
+    display: block !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
     page-break-after: always !important;
     page-break-inside: avoid !important;
     break-after: page !important;
     break-inside: avoid !important;
-    overflow: visible !important;
+    overflow: hidden !important;
     box-sizing: border-box !important;
     background: white !important;
-  }
-  /* 표지: 여백 없이 꽉 채우기 */
-  #printLayer .print-page:first-child {
-    padding: 0 !important;
-    height: 210mm !important;
-    overflow: hidden !important;
-  }
-  #printLayer .print-page:first-child .report-slide {
-    width: 100% !important;
-    height: 210mm !important;
-    min-height: 210mm !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    flex: 1;
   }
   #printLayer .print-page:last-child {
     page-break-after: avoid !important;
     break-after: avoid !important;
   }
 
-  /* 인쇄 시 rpt-report-page: 패딩 최소화하여 차트 최대 크기 확보 */
-  #printLayer .print-page .rpt-report-page,
-  #printLayer .print-page .report-slide {
-    padding: 12px 16px 6px 16px !important;
-    background: transparent !important;
-    border: none !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    margin: 0 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 !important;
-    overflow: visible !important;
-  }
-  /* 인쇄 시 print-page 자체는 overflow visible (잘림 방지) */
-  #printLayer .print-page {
-    overflow: visible !important;
+  /* 이미지 색상 보정 */
+  #printLayer .print-page img {
+    width: 100% !important;
+    height: auto !important;
+    display: block !important;
+    max-width: 100% !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
-  /* 인쇄용 공통 스타일 */
   #printLayer * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
     color-adjust: exact !important;
-  }
-  /* 인쇄 시 차트 이미지 크기 최대화 */
-  #printLayer canvas,
-  #printLayer img[src^='data:image'] {
-    max-width: 100% !important;
-    width: 100% !important;
-    height: auto !important;
-    display: block !important;
-    min-height: 180px !important;  /* 차트 최소 높이 보장 */
-  }
-  #printLayer table {
-    font-size: 9.5px !important;
-    width: 100% !important;
-  }
-  #printLayer th, #printLayer td {
-    padding: 3px 5px !important;
-  }
-  /* 인쇄 시 분석 박스 배경색 보존 */
-  #printLayer [style*="background:#f0fdf4"],
-  #printLayer [style*="background:#eff6ff"],
-  #printLayer [style*="background:#faf5ff"],
-  #printLayer [style*="background:#fef3c7"],
-  #printLayer [style*="background:#fef2f2"] {
-    print-color-adjust: exact !important;
   }
 }
 
