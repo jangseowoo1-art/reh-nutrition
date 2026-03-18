@@ -12730,35 +12730,36 @@ async function renderReport(selectedHospitalId = null) {
       :`이번 달 운영 종합 점수는 ${overallScore}점입니다. ${overallScore>=80?'전반적으로 안정적인 운영이 이루어지고 있습니다.':'개선이 필요한 항목을 중점 관리하세요.'}`
     const scoreWarn = aiWarnings.length>0?aiWarnings[0].text:null
     const slide13 = `
-    <div class="report-slide rpt-report-page">
+    <div class="report-slide rpt-report-page" style="display:flex;flex-direction:column;gap:0">
       ${SH(13,'종합 운영 점수','Overall Operation Score')}
-      <!-- 상단: 레이더 차트(왼) + AI경고/서명(오) -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:28px;flex-shrink:0;margin-bottom:16px">
-        <!-- 레이더 차트 단독 카드 -->
-        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <!-- 행1: 레이더 차트(왼) + AI경고요약+서명(오) - 충분한 높이 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;flex:1;min-height:0;margin-bottom:12px;overflow:hidden">
+        <!-- 왼쪽: 레이더 차트 카드 -->
+        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column;overflow:hidden">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0">
             <div style="font-size:15px;font-weight:800;color:#064e3b">종합 운영 점수</div>
-            <div style="font-size:30px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:13px">점</span></div>
+            <div style="font-size:28px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:13px">점</span></div>
           </div>
-          <div id="rptScoreChart" style="width:100%;height:220px"></div>
+          <!-- 레이더 차트: 남은 공간 전부 사용 -->
+          <div id="rptScoreChart" style="width:100%;flex:1;min-height:0;position:relative"></div>
         </div>
-        <!-- AI 경고 요약 + 서명란 -->
-        <div style="display:flex;flex-direction:column;gap:12px">
+        <!-- 오른쪽: AI 경고 요약 + 서명란 -->
+        <div style="display:flex;flex-direction:column;gap:10px;overflow:hidden">
           ${aiWarnings.length>0?`
-          <div style="background:#fef2f2;border-radius:12px;padding:14px;border:1px solid #fca5a5;flex:1;display:flex;flex-direction:column">
-            <div style="font-size:12px;font-weight:800;color:#dc2626;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <div style="background:#fef2f2;border-radius:12px;padding:14px;border:1px solid #fca5a5;flex:1;display:flex;flex-direction:column;overflow:hidden">
+            <div style="font-size:12px;font-weight:800;color:#dc2626;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-shrink:0">
               <span style="background:#dc2626;color:white;padding:3px 12px;border-radius:10px;font-size:10px">△ AI 경고 요약</span>
             </div>
-            <div style="display:flex;flex-direction:column;justify-content:center;flex:1;gap:6px">
+            <div style="display:flex;flex-direction:column;gap:6px;flex:1;overflow:hidden;justify-content:center">
               ${aiWarnings.slice(0,4).map(w=>`
-                <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:rgba(255,255,255,0.7);border-radius:8px;border-left:3px solid ${w.color||'#dc2626'}">
-                  <span style="font-size:15px;flex-shrink:0">${w.icon||'⚠️'}</span>
-                  <div style="font-size:12px;color:#7f1d1d;line-height:1.5">${w.text}</div>
+                <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:rgba(255,255,255,0.7);border-radius:8px;border-left:3px solid ${w.color||'#dc2626'};flex-shrink:0">
+                  <span style="font-size:14px;flex-shrink:0">${w.icon||'⚠️'}</span>
+                  <div style="font-size:12px;color:#7f1d1d;line-height:1.4">${w.text}</div>
                 </div>`).join('')}
             </div>
           </div>`:`
           <div style="background:#f0fdf4;border-radius:12px;padding:14px;border:1px solid #6ee7b7;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
-            <div style="font-size:36px;margin-bottom:6px">✅</div>
+            <div style="font-size:32px;margin-bottom:6px">✅</div>
             <div style="font-size:14px;font-weight:700;color:#065f46;text-align:center">이번 달 경고 없음</div>
             <div style="font-size:12px;color:#047857;margin-top:4px;text-align:center">안정적인 운영이 이루어지고 있습니다</div>
           </div>`}
@@ -12769,44 +12770,44 @@ async function renderReport(selectedHospitalId = null) {
                 <div>본 보고서는 Re&amp;H 급식 운영 관리 시스템에 의해 자동 생성되었습니다.</div>
                 <div>보고 기간: ${reportYear}년 ${reportMonth}월 | 작성일: ${new Date().toLocaleDateString('ko-KR')}</div>
               </div>
-              <div style="text-align:center;padding:8px 16px;border:1px solid #e5e7eb;border-radius:8px;min-width:110px;background:white;flex-shrink:0">
-                <div style="font-size:11px;color:#9ca3af;margin-bottom:8px">영양사 서명 확인</div>
+              <div style="text-align:center;padding:8px 16px;border:1px solid #e5e7eb;border-radius:8px;min-width:100px;background:white;flex-shrink:0">
+                <div style="font-size:10px;color:#9ca3af;margin-bottom:6px">영양사 서명 확인</div>
                 <div style="font-size:11px;font-weight:700;color:#1f2937">${hospitalName}</div>
-                <div style="font-size:12px;color:#6b7280;margin-top:3px">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
+                <div style="font-size:11px;color:#6b7280;margin-top:3px">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
                 <div style="font-size:11px;color:#374151;margin-top:6px;letter-spacing:4px">(인)</div>
               </div>
             </div>
           </div>
         </div>
       </div>
-      <!-- 중단: 점수 항목 막대 (5개 가로 배치) -->
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex-shrink:0;margin-bottom:14px">
+      <!-- 행2: 5개 점수 카드 (고정 높이, flex-shrink:0) -->
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;flex-shrink:0;margin-bottom:10px">
         ${scoreItems.map(item=>`
           <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border:1px solid #e2e8f0;border-top:3px solid ${tc(item.val)}">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-              <span style="font-size:16px">${item.icon}</span>
-              <span style="font-size:12px;font-weight:600;color:#374151">${item.label}</span>
+            <div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">
+              <span style="font-size:14px">${item.icon}</span>
+              <span style="font-size:11px;font-weight:600;color:#374151">${item.label}</span>
             </div>
-            <div style="font-size:22px;font-weight:900;color:${tc(item.val)};margin-bottom:4px">${item.val}<span style="font-size:11px">점</span></div>
-            <div style="font-size:11px;color:#6b7280;margin-bottom:6px">${item.desc}</div>
-            <div style="background:#e5e7eb;border-radius:99px;height:6px;overflow:hidden">
+            <div style="font-size:20px;font-weight:900;color:${tc(item.val)};margin-bottom:3px">${item.val}<span style="font-size:10px">점</span></div>
+            <div style="font-size:10px;color:#6b7280;margin-bottom:5px">${item.desc}</div>
+            <div style="background:#e5e7eb;border-radius:99px;height:5px;overflow:hidden">
               <div style="height:100%;width:${item.val}%;background:${tc(item.val)};border-radius:99px"></div>
             </div>
           </div>`).join('')}
       </div>
-      <!-- 하단: AI 분석/경고 -->
-      <div style="display:grid;grid-template-columns:1fr${scoreWarn?' 1fr':''};gap:16px;flex-shrink:0">
-        <div style="background:#f0fdf4;border:1px solid #064e3b30;border-left:5px solid #064e3b;border-radius:10px;padding:11px 16px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <!-- 행3: AI 분석/경고 (고정 높이, flex-shrink:0) -->
+      <div style="display:grid;grid-template-columns:1fr${scoreWarn?' 1fr':''};gap:14px;flex-shrink:0">
+        <div style="background:#f0fdf4;border:1px solid #064e3b30;border-left:5px solid #064e3b;border-radius:10px;padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px">
             <span style="background:#064e3b;color:white;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">AI 분석</span>
           </div>
-          <div style="font-size:12px;color:#1e3a5f;line-height:1.7;font-weight:500">${scoreAnalysis}</div>
+          <div style="font-size:12px;color:#1e3a5f;line-height:1.6;font-weight:500">${scoreAnalysis}</div>
         </div>
-        ${scoreWarn?`<div style="background:#fef2f2;border:1px solid #dc262630;border-left:5px solid #dc2626;border-radius:10px;padding:11px 16px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+        ${scoreWarn?`<div style="background:#fef2f2;border:1px solid #dc262630;border-left:5px solid #dc2626;border-radius:10px;padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px">
             <span style="background:#dc2626;color:white;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">AI 경고</span>
           </div>
-          <div style="font-size:12px;color:#7f1d1d;line-height:1.7;font-weight:500">${scoreWarn}</div>
+          <div style="font-size:12px;color:#7f1d1d;line-height:1.6;font-weight:500">${scoreWarn}</div>
         </div>`:''}
       </div>
     </div>`
@@ -13645,6 +13646,20 @@ async function renderReport(selectedHospitalId = null) {
         {label:'식수 안정성',val:(_s.totalPatients||0)>0?80:50},
         {label:'잔반 관리',val:60}
       ]
+      // rptScoreChart: flex:1 컨테이너 높이 계산 후 차트 렌더
+      ;(()=>{
+        const scoreEl = document.getElementById('rptScoreChart')
+        if (scoreEl) {
+          const parentCard = scoreEl.parentElement
+          if (parentCard && parentCard.offsetHeight > 0) {
+            const titleEl = parentCard.querySelector('div')
+            const titleH = titleEl ? titleEl.offsetHeight + 16 : 48
+            const chartH = Math.max(180, parentCard.offsetHeight - titleH - 28)
+            scoreEl.style.height = chartH + 'px'
+            scoreEl.style.flex = 'none'
+          }
+        }
+      })()
       SC('rptScoreChart',{
         type:'radar',
         data:{labels:sItemsFull.map(s=>s.label),datasets:[{
