@@ -408,10 +408,27 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 .border-green-primary { border-color: #16a34a; }
 
 /* ══════════════════════════════════════════
-   보고서 슬라이드
+   보고서 슬라이드 (16:9 고정 비율, 1920×1080 기준)
 ══════════════════════════════════════════ */
-.report-slide { page-break-inside: avoid; }
-.report-slide-title { font-size: 18px; font-weight: 700; color: #1f2937; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid #dcfce7; }
+.report-slide {
+  page-break-inside: avoid;
+  /* 16:9 고정 비율 - 1920×1080 기준 */
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: unset;
+  overflow: hidden;
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: white;
+  /* 화면 표시용 스타일 */
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  margin-bottom: 24px;
+}
+.report-slide-title { font-size: 24px; font-weight: 700; color: #1f2937; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid #dcfce7; }
 
 /* ══════════════════════════════════════════
    모바일 반응형 (@media max-width: 768px)
@@ -610,15 +627,14 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 /* 화면에서 보이는 보고서 페이지 (rpt-report-page) */
 .rpt-report-page {
   background: white;
-  padding: 20px 24px 20px 24px;
+  padding: 28px 40px 28px 40px;
   position: relative;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-  margin-bottom: 20px;
   display: flex;
   flex-direction: column;
   gap: 0;
+  /* 콘텐츠가 16:9 슬라이드 내부를 균형있게 채우도록 */
+  flex: 1;
+  overflow: hidden;
 }
 
 /* 보고서 본문 헤더 (SECTION 배지 영역) */
