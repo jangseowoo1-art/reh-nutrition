@@ -1477,7 +1477,7 @@ async function renderDashboard() {
         <div style="width:1px;background:#f3f4f6;align-self:stretch;flex-shrink:0"></div>
 
         <!-- 오른쪽: 상세 분석 -->
-        <div id="vendorPieDetailContent" style="flex:1;min-width:0;overflow-y:auto;max-height:340px"></div>
+        <div id="vendorPieDetailContent" style="flex:1;min-width:0"></div>
       </div>
     </div>
   </div>`
@@ -1636,25 +1636,6 @@ async function renderDashboard() {
     const { totalUsed, cats, top3, overBudget, noOrder, totalTaxable, totalExempt, totalVat } = _vendorAnalysis
 
     detailEl.innerHTML = `
-      <!-- 과세/면세 분류 요약 -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">
-        <div style="background:#f0fdf4;border-radius:6px;padding:5px;text-align:center">
-          <div style="font-size:8px;color:#6b7280;margin-bottom:1px">과세</div>
-          <div style="font-size:11px;font-weight:700;color:#16a34a">${fmtMan(totalTaxable)}</div>
-          <div style="font-size:8px;color:#9ca3af">${totalUsed>0?((totalTaxable/totalUsed)*100).toFixed(1):0}%</div>
-        </div>
-        <div style="background:#fffbeb;border-radius:6px;padding:5px;text-align:center">
-          <div style="font-size:8px;color:#6b7280;margin-bottom:1px">면세</div>
-          <div style="font-size:11px;font-weight:700;color:#d97706">${fmtMan(totalExempt)}</div>
-          <div style="font-size:8px;color:#9ca3af">${totalUsed>0?((totalExempt/totalUsed)*100).toFixed(1):0}%</div>
-        </div>
-        <div style="background:#f5f3ff;border-radius:6px;padding:5px;text-align:center">
-          <div style="font-size:8px;color:#6b7280;margin-bottom:1px">부가세</div>
-          <div style="font-size:11px;font-weight:700;color:#7c3aed">${fmtMan(totalVat)}</div>
-          <div style="font-size:8px;color:#9ca3af">${totalUsed>0?((totalVat/totalUsed)*100).toFixed(1):0}%</div>
-        </div>
-      </div>
-
       <!-- TOP 3 업체 -->
       ${top3.length > 0 ? `
       <div style="margin-bottom:8px">
