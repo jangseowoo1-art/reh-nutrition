@@ -13687,47 +13687,86 @@ window._rptImgCache = []
 window._rptImgCacheKey = ''  // 마지막 캡처한 병원+년월 키
 
 /**
- * 보고서 슬라이드 전체를 html2canvas로 직접 캡처하여 캐시에 저장
- * @param {NodeList|Array} slides - .report-slide 요소들
- * @param {Function} onProgress - (current, total) 진행 콜백
+ * 보고서 슬라이드 전체를 html2canvas로 캡처하여 캐시에 저장
+ * ─ 핵심: x/y 좌표 방식 X → 슬라이드를 offscreen 컨테이너에 복사 후 캡처
+ *         (뷰포트 밖이어도 100% 캡처 성공)
  */
 async function _captureAllSlides(slides, onProgress) {
   await _loadHtml2Canvas()
   const cache = []
 
+  // offscreen 캡처 컨테이너 (화면 밖, 고정 너비)
+  const SNAP_W = 1200  // 충분히 넓은 캡처 너비
+  const snapWrap = document.createElement('div')
+  snapWrap.style.cssText = [
+    'position:fixed',
+    'top:0', 'left:-9999px',
+    `width:${SNAP_W}px`,
+    'z-index:-1',
+    'pointer-events:none',
+    'overflow:visible',
+    'background:white'
+  ].join(';')
+  document.body.appendChild(snapWrap)
+
   for (let i = 0; i < slides.length; i++) {
     if (onProgress) onProgress(i + 1, slides.length)
 
-    const slide = slides[i]
-    const isCover = i === 0
+    const slide    = slides[i]
+    const isCover  = i === 0
 
-    // 원본 슬라이드의 실제 화면상 크기 측정
-    const rect = slide.getBoundingClientRect()
-    const slideW = rect.width  || slide.offsetWidth  || 960
-    const slideH = rect.height || slide.offsetHeight || 600
+    // 슬라이드를 offscreen 컨테이너에 복제
+    const clone = slide.cloneNode(true)
+    clone.style.cssText = [
+      `width:${SNAP_W}px`,
+      'margin:0', 'padding:0',
+      'border-radius:0', 'box-shadow:none',
+      'box-sizing:border-box',
+      'overflow:visible',
+      isCover ? '' : 'background:white'
+    ].filter(Boolean).join(';')
 
-    let imgData = null
-    let capturedW = slideW
-    let capturedH = slideH
+    // canvas → 고화질 img 교체 (원본 canvas 데이터 사용)
+    const origCanvases  = slide.querySelectorAll('canvas')
+    const cloneCanvases = clone.querySelectorAll('canvas')
+    origCanvases.forEach((origC, ci) => {
+      try {
+        const imgEl = document.createElement('img')
+        imgEl.src = canvasToHiResPng(origC) || origC.toDataURL('image/png')
+        const srcH = origC.offsetHeight > 0 ? origC.offsetHeight : (origC.height || 200)
+        imgEl.style.cssText = `width:100%;height:auto;min-height:${srcH}px;display:block;`
+        if (cloneCanvases[ci]) cloneCanvases[ci].replaceWith(imgEl)
+      } catch(e) {}
+    })
+
+    snapWrap.innerHTML = ''
+    snapWrap.appendChild(clone)
+
+    // 이미지 로드 대기 + 레이아웃 안정화
+    await new Promise(r => setTimeout(r, 200))
+
+    const snapH = clone.scrollHeight || clone.offsetHeight || 600
+
+    let imgData   = null
+    let capturedW = SNAP_W
+    let capturedH = snapH
 
     try {
-      const cvs = await window.html2canvas(slide, {
-        scale: 2,                          // 2배 → 충분한 화질 + 속도 균형
-        useCORS: true,
-        allowTaint: true,
+      const cvs = await window.html2canvas(clone, {
+        scale:           2,
+        useCORS:         true,
+        allowTaint:      true,
         backgroundColor: isCover ? null : '#ffffff',
-        scrollX: -window.scrollX,
-        scrollY: -window.scrollY,
-        windowWidth:  document.documentElement.scrollWidth,
-        windowHeight: document.documentElement.scrollHeight,
-        x: rect.left + window.scrollX,
-        y: rect.top  + window.scrollY,
-        width:  slideW,
-        height: slideH,
-        logging: false
+        scrollX:         0,
+        scrollY:         0,
+        windowWidth:     SNAP_W,
+        windowHeight:    snapH,
+        width:           SNAP_W,
+        height:          snapH,
+        logging:         false
       })
       imgData    = cvs.toDataURL('image/png', 1.0)
-      capturedW  = cvs.width  / 2   // scale=2이므로 실제 px은 절반
+      capturedW  = cvs.width  / 2
       capturedH  = cvs.height / 2
     } catch(e) {
       console.warn(`슬라이드 ${i+1} 캡처 실패:`, e)
@@ -13735,6 +13774,8 @@ async function _captureAllSlides(slides, onProgress) {
 
     cache.push({ imgData, naturalW: capturedW, naturalH: capturedH })
   }
+
+  snapWrap.remove()
   return cache
 }
 
