@@ -15132,6 +15132,9 @@ async function renderExpenseDoc() {
         <span class="font-semibold">${year}년 ${month}월 법인카드 지출결의서</span>
       </div>
       <div class="ml-auto flex gap-2">
+        <button onclick="openAddExpenseModal()" class="btn btn-primary btn-sm no-print">
+          <i class="fas fa-plus mr-1"></i>지출 입력
+        </button>
         <button onclick="window.print()" class="btn btn-secondary btn-sm">
           <i class="fas fa-print mr-1"></i>인쇄/PDF
         </button>
@@ -15195,13 +15198,13 @@ async function renderExpenseDoc() {
               <tr style="background:#f3e8ff">
                 <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">No.</th>
                 <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">사용일자</th>
-                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">결제수단</th>
-                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">구분</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">지출유형</th>
                 <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">업체명</th>
                 <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">사용품목</th>
-                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">용도</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">진행용도</th>
                 <th class="border border-purple-200 px-2 py-2 text-right text-purple-800 font-bold">금액</th>
-                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">메모</th>
+                <th class="border border-purple-200 px-2 py-2 text-left text-purple-800 font-bold">비고</th>
+                <th class="border border-purple-200 px-2 py-2 text-center text-purple-800 font-bold no-print">관리</th>
               </tr>
             </thead>
             <tbody>
@@ -15210,31 +15213,32 @@ async function renderExpenseDoc() {
                 <td class="border border-purple-100 px-2 py-1.5 text-gray-400">${i+1}</td>
                 <td class="border border-purple-100 px-2 py-1.5">${e.expense_date}</td>
                 <td class="border border-purple-100 px-2 py-1.5">
-                  <span class="inline-flex items-center gap-1 text-purple-700 font-medium"><i class="fas fa-credit-card text-purple-400" style="font-size:9px"></i>법인카드</span>
-                </td>
-                <td class="border border-purple-100 px-2 py-1.5">
-                  <span class="inline-block px-1.5 py-0.5 rounded font-semibold text-purple-700" style="background:#f3e8ff;font-size:10px">${{food:'식재료',supplies:'소모품',online:'온라인',other:'기타'}[e.card_subtype]||'기타'}</span>
+                  <span class="inline-block px-1.5 py-0.5 rounded font-semibold text-purple-700" style="background:#f3e8ff;font-size:10px">${e.expense_type||'법인카드'}</span>
                 </td>
                 <td class="border border-purple-100 px-2 py-1.5 font-medium">${e.vendor_name||e.card_vendor_name||''}</td>
                 <td class="border border-purple-100 px-2 py-1.5">${e.item_name||''}</td>
                 <td class="border border-purple-100 px-2 py-1.5">${e.purpose||''}</td>
                 <td class="border border-purple-100 px-2 py-1.5 text-right font-bold text-purple-700">${(e.amount||0).toLocaleString()}</td>
                 <td class="border border-purple-100 px-2 py-1.5 text-gray-400">${e.memo||''}</td>
+                <td class="border border-purple-100 px-2 py-1.5 text-center no-print">
+                  <button onclick="editExpenseItem(${e.id})" class="text-xs text-indigo-500 hover:text-indigo-700 mr-1"><i class="fas fa-edit"></i></button>
+                  <button onclick="deleteExpenseItem(${e.id})" class="text-xs text-red-400 hover:text-red-600"><i class="fas fa-trash"></i></button>
+                </td>
               </tr>`).join('')}
             </tbody>
             <tfoot>
               <tr style="background:#ede9fe">
-                <td colspan="7" class="border border-purple-200 px-2 py-2 text-right font-bold text-purple-800">합  계</td>
+                <td colspan="6" class="border border-purple-200 px-2 py-2 text-right font-bold text-purple-800">합  계</td>
                 <td class="border border-purple-200 px-2 py-2 text-right font-bold text-purple-800 text-sm">${monthTotal.toLocaleString()}</td>
-                <td class="border border-purple-200 px-2 py-2"></td>
+                <td colspan="2" class="border border-purple-200 px-2 py-2"></td>
               </tr>
             </tfoot>
           </table>
         </div>` : `
         <div class="text-center py-8 text-gray-400">
           <i class="fas fa-credit-card text-3xl mb-3 text-gray-200"></i>
-          <div class="font-semibold">이번 달 법인카드 사용 내역이 없습니다</div>
-          <div class="text-sm mt-1">발주 입력 화면에서 법인카드 업체 셀을 클릭하여 입력하세요</div>
+          <div class="font-semibold">이번 달 지출 내역이 없습니다</div>
+          <div class="text-sm mt-1">+ 지출 입력 버튼으로 새 내역을 추가하세요</div>
         </div>`}
 
         <!-- 결재란 -->
@@ -15248,6 +15252,143 @@ async function renderExpenseDoc() {
       </div>
     </div>
   </div>`
+}
+
+// ── 지출결의서 직접 입력 기능 ────────────────────────────────
+// 지출결의서에 직접 새 항목 추가하는 API (card_expenses POST)
+async function saveExpenseDirectly(data) {
+  const year = App.currentYear
+  const month = App.currentMonth
+  const mm = String(month).padStart(2, '0')
+  const expDate = data.expenseDate || `${year}-${mm}-${new Date().getDate().toString().padStart(2,'0')}`
+
+  // card_expenses에 직접 INSERT (vendor_id=0 직접 입력형)
+  const res = await api('POST', '/api/card-expenses/direct', {
+    expense_date: expDate,
+    vendor_name:  data.vendorName || '',
+    item_name:    data.itemName   || '',
+    purpose:      data.purpose    || '',
+    amount:       parseInt(data.amount) || 0,
+    memo:         data.memo       || '',
+    expense_type: data.expenseType || '법인카드'
+  })
+  return res
+}
+
+window.openAddExpenseModal = function(editData) {
+  const year  = App.currentYear
+  const month = App.currentMonth
+  const mm    = String(month).padStart(2, '0')
+  const today = `${year}-${mm}-${new Date().getDate().toString().padStart(2,'0')}`
+  const EXPENSE_TYPES = ['법인카드','현장구매','추가발주','소모품','기타']
+
+  const isEdit = !!editData?.id
+  const modal = document.createElement('div')
+  modal.id = 'addExpenseModal'
+  modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold text-gray-800"><i class="fas fa-plus-circle text-purple-500 mr-1"></i>${isEdit ? '지출 내역 수정' : '지출 내역 입력'}</h3>
+        <button onclick="document.getElementById('addExpenseModal').remove()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500 mb-1 block">사용일자 *</label>
+            <input type="date" id="expInput_date" value="${editData?.expense_date||today}" max="${year}-${mm}-31" min="${year}-${mm}-01" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 mb-1 block">지출 유형 *</label>
+            <select id="expInput_type" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+              ${EXPENSE_TYPES.map(t => `<option value="${t}" ${(editData?.expense_type||'법인카드')===t?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">업체명 *</label>
+          <input type="text" id="expInput_vendor" value="${editData?.vendor_name||''}" placeholder="업체명을 입력하세요" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">사용품목 *</label>
+          <input type="text" id="expInput_item" value="${editData?.item_name||''}" placeholder="구입 품목을 입력하세요" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">진행 용도 *</label>
+          <input type="text" id="expInput_purpose" value="${editData?.purpose||''}" placeholder="예: 환자식 재료 구입" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">금액 *</label>
+          <input type="number" id="expInput_amount" value="${editData?.amount||''}" placeholder="금액 입력 (원)" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">비고</label>
+          <input type="text" id="expInput_memo" value="${editData?.memo||''}" placeholder="추가 메모 (선택)" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button onclick="document.getElementById('addExpenseModal').remove()" class="text-sm text-gray-500 hover:text-gray-700 px-4 py-2 rounded-lg border border-gray-200">취소</button>
+        <button onclick="submitExpenseForm(${isEdit ? editData.id : 'null'})" class="text-sm bg-purple-600 text-white px-5 py-2 rounded-lg hover:bg-purple-700 font-semibold">
+          <i class="fas fa-save mr-1"></i>${isEdit ? '수정' : '저장'}
+        </button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+}
+
+window.submitExpenseForm = async function(editId) {
+  const expDate    = document.getElementById('expInput_date')?.value
+  const expType    = document.getElementById('expInput_type')?.value
+  const vendorName = document.getElementById('expInput_vendor')?.value?.trim()
+  const itemName   = document.getElementById('expInput_item')?.value?.trim()
+  const purpose    = document.getElementById('expInput_purpose')?.value?.trim()
+  const amount     = parseInt(document.getElementById('expInput_amount')?.value || '0')
+  const memo       = document.getElementById('expInput_memo')?.value?.trim()
+
+  if (!expDate || !vendorName || !itemName || !purpose || !amount) {
+    showToast('필수 항목을 모두 입력해주세요', 'error')
+    return
+  }
+
+  const body = { expense_date: expDate, expense_type: expType, vendor_name: vendorName,
+                 item_name: itemName, purpose, amount, memo }
+
+  let res
+  if (editId) {
+    res = await api('PUT', `/api/card-expenses/direct/${editId}`, body)
+  } else {
+    res = await api('POST', '/api/card-expenses/direct', body)
+  }
+
+  if (res?.success || res?.id) {
+    showToast(editId ? '지출 내역이 수정되었습니다' : '지출 내역이 저장되었습니다', 'success')
+    document.getElementById('addExpenseModal')?.remove()
+    renderExpenseDoc()
+  } else {
+    showToast(res?.error || '저장 실패', 'error')
+  }
+}
+
+window.editExpenseItem = async function(id) {
+  const year  = App.currentYear
+  const month = App.currentMonth
+  const mm    = String(month).padStart(2, '0')
+  const data  = await api('GET', `/api/card-expenses/monthly/${year}/${month}`)
+  const item  = (data?.expenses || []).find(e => e.id === id)
+  if (!item) { showToast('항목을 찾을 수 없습니다', 'error'); return }
+  openAddExpenseModal(item)
+}
+
+window.deleteExpenseItem = async function(id) {
+  if (!confirm('이 지출 내역을 삭제하시겠습니까?')) return
+  const res = await api('DELETE', `/api/card-expenses/direct/${id}`)
+  if (res?.success) {
+    showToast('삭제되었습니다', 'success')
+    renderExpenseDoc()
+  } else {
+    showToast(res?.error || '삭제 실패', 'error')
+  }
 }
 
 window.exportExpenseDocExcel = async function() {
@@ -15628,6 +15769,7 @@ window._ceoFilter = {
   year: new Date().getFullYear(),
   month: new Date().getMonth() + 1,
   hospitalType: '',
+  operationType: '',
   careType: '',
   bedSize: '',
   hospitalId: ''
@@ -15639,68 +15781,107 @@ async function renderCeoDashboard() {
   if (!content) return
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // care_type 목록 로드
-  let careTypes = []
-  try { careTypes = await api('GET', '/api/ceo-dashboard/care-types') } catch(e) {}
+  try {
+    console.log('[CEO] 1. 시작')
+    // care_type 목록 로드
+    let careTypes = []
+    try { careTypes = await api('GET', '/api/ceo-dashboard/care-types') } catch(e) {}
+    if (!Array.isArray(careTypes)) careTypes = []
+    console.log('[CEO] 2. careTypes:', careTypes.length)
 
-  // 병원 목록 (필터용)
-  let allHospitals = []
-  try { allHospitals = (await api('GET', '/api/admin/hospitals')) || [] } catch(e) {}
+    // 병원 목록 (필터용)
+    let allHospitals = []
+    try { allHospitals = (await api('GET', '/api/admin/hospitals')) || [] } catch(e) {}
+    if (!Array.isArray(allHospitals)) allHospitals = []
+    console.log('[CEO] 3. allHospitals:', allHospitals.length)
 
-  const f = window._ceoFilter
-  const qs = new URLSearchParams({
-    ...(f.hospitalType && { hospital_type: f.hospitalType }),
-    ...(f.careType     && { care_type:     f.careType }),
-    ...(f.bedSize      && { bed_size:      f.bedSize }),
-    ...(f.hospitalId   && { hospital_id:   f.hospitalId })
-  }).toString()
-  const qsStr = qs ? `?${qs}` : ''
+    if (!window._ceoFilter) {
+      const now = new Date()
+      window._ceoFilter = { year: now.getFullYear(), month: now.getMonth()+1, hospitalType:'', operationType:'', careType:'', bedSize:'', hospitalId:'' }
+    }
+    const f = window._ceoFilter
+    const qs = new URLSearchParams(Object.fromEntries(
+      Object.entries({ hospital_type: f.hospitalType, operation_type: f.operationType, care_type: f.careType, bed_size: f.bedSize, hospital_id: f.hospitalId }).filter(([,v]) => v)
+    )).toString()
+    const qsStr = qs ? `?${qs}` : ''
+    console.log('[CEO] 4. API 호출 시작')
 
-  // 병렬 API 호출
-  const [kpiData, hospitalsData, graphsData, alertsData, expensesData] = await Promise.all([
-    api('GET', `/api/ceo-dashboard/kpi/${f.year}/${f.month}${qsStr}`).catch(() => null),
-    api('GET', `/api/ceo-dashboard/hospitals/${f.year}/${f.month}${qsStr}`).catch(() => []),
-    api('GET', `/api/ceo-dashboard/graphs/${f.year}/${f.month}`).catch(() => null),
-    api('GET', `/api/ceo-dashboard/alerts/${f.year}/${f.month}`).catch(() => null),
-    api('GET', `/api/ceo-dashboard/expenses/${f.year}/${f.month}${qsStr}`).catch(() => [])
-  ])
+    // 병렬 API 호출
+    const [kpiData, hospitalsData, graphsData, alertsData, expensesData] = await Promise.all([
+      api('GET', `/api/ceo-dashboard/kpi/${f.year}/${f.month}${qsStr}`).catch(() => null),
+      api('GET', `/api/ceo-dashboard/hospitals/${f.year}/${f.month}${qsStr}`).catch(() => []),
+      api('GET', `/api/ceo-dashboard/graphs/${f.year}/${f.month}`).catch(() => null),
+      api('GET', `/api/ceo-dashboard/alerts/${f.year}/${f.month}`).catch(() => null),
+      api('GET', `/api/ceo-dashboard/expenses/${f.year}/${f.month}${qsStr}`).catch(() => [])
+    ])
+    console.log('[CEO] 5. API 완료 kpi:', !!kpiData, 'hospitals:', Array.isArray(hospitalsData)?hospitalsData.length:'err', 'graphs:', !!graphsData, 'alerts:', !!alertsData, 'expenses:', Array.isArray(expensesData)?expensesData.length:'err')
 
-  content.innerHTML = `
-    <!-- 상단 필터 바 -->
-    <div id="ceoFilterBar" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-5 sticky top-0 z-10">
-      ${renderCeoFilterBar(f, careTypes, allHospitals)}
-    </div>
+    const safeHospitals = Array.isArray(hospitalsData) ? hospitalsData : []
+    const safeExpenses  = Array.isArray(expensesData)  ? expensesData  : []
 
-    <!-- KPI 카드 8개 -->
-    <div id="ceoKpiSection" class="mb-5">
-      ${renderCeoKpi(kpiData)}
-    </div>
+    console.log('[CEO] 6. HTML 렌더링 시작')
+    const filterBarHtml = renderCeoFilterBar(f, careTypes, allHospitals)
+    console.log('[CEO] 6a. filterBar OK')
+    const kpiHtml = renderCeoKpi(kpiData)
+    console.log('[CEO] 6b. KPI OK')
+    const hospitalCardsHtml = renderCeoHospitalCards(safeHospitals)
+    console.log('[CEO] 6c. HospitalCards OK')
+    const graphSectionHtml = renderCeoGraphSection()
+    console.log('[CEO] 6d. GraphSection OK')
+    const alertsHtml = renderCeoAlerts(alertsData)
+    console.log('[CEO] 6e. Alerts OK')
+    const expensesHtml = renderCeoExpenses(safeExpenses, f)
+    console.log('[CEO] 6f. Expenses OK')
 
-    <!-- 병원 운영 상태 카드 -->
-    <div id="ceoHospitalCards" class="mb-5">
-      ${renderCeoHospitalCards(hospitalsData || [])}
-    </div>
+    content.innerHTML = `
+      <!-- 상단 필터 바 -->
+      <div id="ceoFilterBar" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-5 sticky top-0 z-10">
+        ${filterBarHtml}
+      </div>
 
-    <!-- 비교 그래프 4종 -->
-    <div id="ceoGraphSection" class="mb-5">
-      ${renderCeoGraphSection()}
-    </div>
+      <!-- KPI 카드 8개 -->
+      <div id="ceoKpiSection" class="mb-5">
+        ${kpiHtml}
+      </div>
 
-    <!-- AI 경고 + 인사이트 -->
-    <div id="ceoAlertsSection" class="mb-5">
-      ${renderCeoAlerts(alertsData)}
-    </div>
+      <!-- 병원 운영 상태 카드 -->
+      <div id="ceoHospitalCards" class="mb-5">
+        ${hospitalCardsHtml}
+      </div>
 
-    <!-- 지출 사용내역 조회 -->
-    <div id="ceoExpensesSection">
-      ${renderCeoExpenses(expensesData || [], f)}
-    </div>
-  `
+      <!-- 비교 그래프 4종 -->
+      <div id="ceoGraphSection" class="mb-5">
+        ${graphSectionHtml}
+      </div>
 
-  // 차트 렌더 (DOM 완성 후)
-  requestAnimationFrame(() => {
-    renderCeoCharts(graphsData, hospitalsData || [])
-  })
+      <!-- AI 경고 + 인사이트 -->
+      <div id="ceoAlertsSection" class="mb-5">
+        ${alertsHtml}
+      </div>
+
+      <!-- 지출 사용내역 조회 -->
+      <div id="ceoExpensesSection">
+        ${expensesHtml}
+      </div>
+    `
+    console.log('[CEO] 7. innerHTML 설정 완료')
+
+    // 차트 렌더 (DOM 완성 후)
+    requestAnimationFrame(() => {
+      renderCeoCharts(graphsData, safeHospitals)
+      console.log('[CEO] 8. 차트 렌더 완료')
+    })
+  } catch(err) {
+    console.error('[CeoDashboard] 렌더링 오류:', err)
+    content.innerHTML = `
+      <div class="bg-white rounded-2xl border border-red-100 p-8 text-center">
+        <i class="fas fa-exclamation-triangle text-red-400 text-2xl mb-3"></i>
+        <p class="text-sm text-red-600 font-bold mb-1">경영 대시보드 로딩 실패</p>
+        <p class="text-xs text-gray-400 mb-4">${err?.message || String(err)}</p>
+        <button onclick="renderCeoDashboard()" class="text-xs bg-indigo-500 text-white rounded-lg px-4 py-2 hover:bg-indigo-600">다시 시도</button>
+      </div>
+    `
+  }
 }
 
 // ── 필터 바 ────────────────────────────────────────────────
@@ -15729,9 +15910,16 @@ function renderCeoFilterBar(f, careTypes, hospitals) {
         ).join('')}
       </select>
 
-      <!-- 운영 유형 (care_type) -->
+      <!-- 운영 방식 (operation_type: 직영/위탁) -->
+      <select id="ceoFilterOperationType" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+        <option value="">전체 운영방식</option>
+        <option value="direct"    ${f.operationType==='direct'    ?'selected':''}>직영</option>
+        <option value="consigned" ${f.operationType==='consigned' ?'selected':''}>위탁</option>
+      </select>
+
+      <!-- 케어 유형 (care_type) -->
       <select id="ceoFilterCareType" onchange="ceoFilterChange()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
-        <option value="">전체 운영유형</option>
+        <option value="">전체 케어유형</option>
         ${(careTypes.length > 0 ? careTypes : Object.entries(CEO_CARE_TYPE_LABELS).map(([code,label_ko]) => ({code,label_ko}))).map(ct =>
           `<option value="${ct.code}" ${f.careType===ct.code?'selected':''}>${ct.label_ko}</option>`
         ).join('')}
@@ -15761,17 +15949,18 @@ function renderCeoFilterBar(f, careTypes, hospitals) {
 
 window.ceoFilterChange = function() {
   const f = window._ceoFilter
-  f.year        = parseInt(document.getElementById('ceoFilterYear')?.value    || f.year)
-  f.month       = parseInt(document.getElementById('ceoFilterMonth')?.value   || f.month)
-  f.hospitalType = document.getElementById('ceoFilterHospType')?.value  || ''
-  f.careType    = document.getElementById('ceoFilterCareType')?.value   || ''
-  f.bedSize     = document.getElementById('ceoFilterBedSize')?.value    || ''
-  f.hospitalId  = document.getElementById('ceoFilterHospital')?.value   || ''
+  f.year          = parseInt(document.getElementById('ceoFilterYear')?.value         || f.year)
+  f.month         = parseInt(document.getElementById('ceoFilterMonth')?.value        || f.month)
+  f.hospitalType  = document.getElementById('ceoFilterHospType')?.value      || ''
+  f.operationType = document.getElementById('ceoFilterOperationType')?.value || ''
+  f.careType      = document.getElementById('ceoFilterCareType')?.value      || ''
+  f.bedSize       = document.getElementById('ceoFilterBedSize')?.value       || ''
+  f.hospitalId    = document.getElementById('ceoFilterHospital')?.value      || ''
   renderCeoDashboard()
 }
 window.ceoFilterReset = function() {
   const now = new Date()
-  window._ceoFilter = { year: now.getFullYear(), month: now.getMonth()+1, hospitalType:'', careType:'', bedSize:'', hospitalId:'' }
+  window._ceoFilter = { year: now.getFullYear(), month: now.getMonth()+1, hospitalType:'', operationType:'', careType:'', bedSize:'', hospitalId:'' }
   renderCeoDashboard()
 }
 
@@ -15782,11 +15971,9 @@ function renderCeoKpi(d) {
   const fmtKo = v => (v||0).toLocaleString()
 
   const catPrices = d.mealPriceByCategory || {}
-  const catItems = [
-    { key:'oncology',     label:'항암 식단가', color:'#7c3aed' },
-    { key:'nursing_care', label:'요양 식단가', color:'#0891b2' },
-    { key:'rehab',        label:'재활 식단가', color:'#059669' }
-  ].filter(c => (catPrices[c.key] || 0) > 0)
+  const catItems = Object.entries(catPrices)
+    .filter(([,v]) => v && v.avgPrice > 0)
+    .map(([k,v]) => ({ key: k, label: v.targetPrice > 0 ? `${k === 'cancer' ? '항암' : k === 'nursing' ? '요양' : k} 식단가` : `${k} 식단가`, color: k==='cancer'?'#7c3aed':k==='nursing'?'#0891b2':'#059669', price: v.avgPrice || 0 }))
 
   const cards = [
     { icon:'fa-hospital',      color:'#4f46e5', label:'운영 병원',     value:`${d.hospitalCount||0}개`,          sub:'' },
@@ -15815,12 +16002,12 @@ function renderCeoKpi(d) {
 
   const catCardsHtml = catItems.length > 0 ? `
     <div class="bg-white rounded-xl border border-gray-100 p-4 col-span-full">
-      <div class="text-xs font-bold text-gray-600 mb-3"><i class="fas fa-fork text-purple-400 mr-1"></i>케어유형별 평균 식단가</div>
+      <div class="text-xs font-bold text-gray-600 mb-3"><i class="fas fa-utensils text-purple-400 mr-1"></i>케어유형별 평균 식단가</div>
       <div class="flex gap-4 flex-wrap">
         ${catItems.map(c => `
           <div class="text-center">
             <div class="text-xs text-gray-400 mb-1">${c.label}</div>
-            <div class="text-base font-bold" style="color:${c.color}">${fmtKo(catPrices[c.key])}원</div>
+            <div class="text-base font-bold" style="color:${c.color}">${fmtKo(c.price)}원</div>
           </div>
         `).join('<div class="w-px bg-gray-200"></div>')}
       </div>
@@ -15867,8 +16054,12 @@ function renderCeoHospitalCards(hospitals) {
     const mpColor    = mpPct===null?'#9ca3af':mpPct>=110?'#dc2626':mpPct>=105?'#f59e0b':'#059669'
 
     const catMpHtml  = Object.entries(h.mealPriceByCategory||{})
-      .filter(([,v]) => v > 0)
-      .map(([k,v]) => `<span class="text-xs text-gray-500">${ceoCareLabel(k)} <b>${fmtKo(v)}원</b></span>`)
+      .filter(([,v]) => v && v.price > 0)
+      .map(([k,v]) => {
+        const tpct = v.targetPrice > 0 ? Math.round(v.price/v.targetPrice*100) : null
+        const col = tpct !== null ? (tpct>=110?'color:#dc2626':tpct>=105?'color:#f59e0b':'color:#059669') : ''
+        return `<span class="text-xs text-gray-500">${v.name||k} <b style="${col}">${fmtKo(v.price)}원</b>${tpct!==null?`<span class="text-gray-400">(목표${tpct}%)</span>`:''}</span>`
+      })
       .join(' · ')
 
     const alertHtml  = h.alerts?.length
@@ -15959,7 +16150,8 @@ function renderCeoGraphSection() {
           <canvas id="ceoChart3" height="160"></canvas>
         </div>
         <div>
-          <div class="text-xs font-bold text-gray-600 mb-2">④ 식수 vs 발주금액 (발주 적정성)</div>
+          <div class="text-xs font-bold text-gray-600 mb-1">④ 식수 vs 발주금액 (발주 적정성)</div>
+          <div class="text-xs text-gray-400 mb-2">X축: 월 총 식수(식), Y축: 월 총 발주금액(원) — 점이 위에 있을수록 발주 단가가 높음</div>
           <canvas id="ceoChart4" height="160"></canvas>
         </div>
       </div>
@@ -15992,8 +16184,25 @@ function renderCeoCharts(graphsData, hospitals) {
       },
       options: {
         indexAxis: 'y', responsive: true,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw}%` } } },
-        scales: { x: { max: 100, ticks: { callback: v => `${v}%`, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw}%` } },
+          datalabels: { display: false }
+        },
+        scales: { x: { max: 100, ticks: { callback: v => `${v}%`, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } },
+        animation: {
+          onComplete: function() {
+            const chart = this
+            const ctx = chart.ctx
+            ctx.font = 'bold 10px sans-serif'
+            ctx.fillStyle = '#374151'
+            chart.data.datasets[0].data.forEach((val, i) => {
+              const meta = chart.getDatasetMeta(0)
+              const bar  = meta.data[i]
+              ctx.fillText(`${val}%`, bar.x + 4, bar.y + 4)
+            })
+          }
+        }
       }
     })
   }
@@ -16001,19 +16210,40 @@ function renderCeoCharts(graphsData, hospitals) {
   // 그래프 2: 케어유형별 평균 식단가 (막대)
   const ctx2 = document.getElementById('ceoChart2')
   if (ctx2 && graphsData.graph2) {
-    const careOrder = ['oncology','nursing_care','rehab']
-    const labels = careOrder.filter(k => graphsData.graph2[k] > 0).map(ceoCareLabel)
-    const values = careOrder.filter(k => graphsData.graph2[k] > 0).map(k => graphsData.graph2[k])
+    // graph2는 {catKey: {avgPrice, label}} 구조
+    const g2entries = Object.entries(graphsData.graph2).filter(([,v]) => v && v.avgPrice > 0)
+    const labels2 = g2entries.map(([,v]) => v.label || v)
+    const values2 = g2entries.map(([,v]) => v.avgPrice || v)
     window._ceoChart2 = new Chart(ctx2, {
       type: 'bar',
       data: {
-        labels,
-        datasets: [{ label: '평균 식단가(원)', data: values, backgroundColor: ['#a78bfa','#67e8f9','#6ee7b7'], borderRadius: 4 }]
+        labels: labels2,
+        datasets: [{ label: '평균 식단가(원)', data: values2, backgroundColor: ['#a78bfa','#67e8f9','#6ee7b7','#fde68a','#fca5a5'], borderRadius: 4 }]
       },
       options: {
         responsive: true,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw.toLocaleString()}원` } } },
-        scales: { y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } }
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw.toLocaleString()}원` } }
+        },
+        scales: {
+          y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 10 } } },
+          x: { ticks: { font: { size: 10 } } }
+        },
+        animation: {
+          onComplete: function() {
+            const chart = this
+            const ctx = chart.ctx
+            ctx.font = 'bold 10px sans-serif'
+            ctx.fillStyle = '#374151'
+            ctx.textAlign = 'center'
+            chart.data.datasets[0].data.forEach((val, i) => {
+              const meta = chart.getDatasetMeta(0)
+              const bar  = meta.data[i]
+              ctx.fillText(`${Math.round(val/1000)}천`, bar.x, bar.y - 4)
+            })
+          }
+        }
       }
     })
   }
@@ -16041,8 +16271,28 @@ function renderCeoCharts(graphsData, hospitals) {
       },
       options: {
         responsive: true,
-        plugins: { legend: { labels: { font: { size: 9 }, boxWidth: 10 } }, tooltip: { callbacks: { label: ctx => `${ctx.raw?.toLocaleString()}원` } } },
-        scales: { y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 9 } } }, x: { ticks: { font: { size: 9 }, maxRotation: 30 } } }
+        plugins: {
+          legend: { labels: { font: { size: 9 }, boxWidth: 10 } },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw?.toLocaleString()}원` } }
+        },
+        scales: {
+          y: { ticks: { callback: v => `${Math.round(v/1000)}천`, font: { size: 9 } } },
+          x: { ticks: { font: { size: 9 }, maxRotation: 30 } }
+        },
+        animation: {
+          onComplete: function() {
+            const chart = this
+            const ctx = chart.ctx
+            ctx.font = 'bold 9px sans-serif'
+            ctx.fillStyle = '#374151'
+            ctx.textAlign = 'center'
+            const meta0 = chart.getDatasetMeta(0)
+            meta0.data.forEach((bar, i) => {
+              const val = chart.data.datasets[0].data[i]
+              if (val > 0) ctx.fillText(`${Math.round(val/1000)}천`, bar.x, bar.y - 4)
+            })
+          }
+        }
       }
     })
   }

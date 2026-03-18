@@ -38,7 +38,7 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json()
   const {
-    name, address, hospital_type,
+    name, address, hospital_type, care_type,
     licensed_beds, avg_inpatients, staff_count, main_specialty,
     operation_type, consignment_company, meals_per_day,
     current_meal_price, target_meal_price, supply_method,
@@ -47,19 +47,20 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
 
   // hospitals 테이블 업데이트
   await c.env.DB.prepare(`UPDATE hospitals SET name=?, address=? WHERE id=?`)
-    .bind(name, address, id).run()
+    .bind(name || '', address || '', id).run()
 
-  // hospital_info upsert
+  // hospital_info upsert (care_type 포함)
   await c.env.DB.prepare(`
     INSERT INTO hospital_info (
-      hospital_id, hospital_type, address, licensed_beds, avg_inpatients,
+      hospital_id, hospital_type, care_type, address, licensed_beds, avg_inpatients,
       staff_count, main_specialty, operation_type, consignment_company,
       meals_per_day, current_meal_price, target_meal_price, supply_method,
       annual_budget, dietitian_name, dietitian_phone, admin_memo,
       current_year, current_month, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2026,3,CURRENT_TIMESTAMP)
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2026,3,CURRENT_TIMESTAMP)
     ON CONFLICT(hospital_id) DO UPDATE SET
-      hospital_type=excluded.hospital_type, address=excluded.address,
+      hospital_type=excluded.hospital_type, care_type=excluded.care_type,
+      address=excluded.address,
       licensed_beds=excluded.licensed_beds, avg_inpatients=excluded.avg_inpatients,
       staff_count=excluded.staff_count, main_specialty=excluded.main_specialty,
       operation_type=excluded.operation_type, consignment_company=excluded.consignment_company,
@@ -69,10 +70,13 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
       dietitian_phone=excluded.dietitian_phone, admin_memo=excluded.admin_memo,
       updated_at=CURRENT_TIMESTAMP
   `).bind(
-    id, hospital_type, address, licensed_beds||0, avg_inpatients||0,
-    staff_count||0, main_specialty||'', operation_type, care_type||'general', consignment_company||'',
-    meals_per_day||3, current_meal_price||0, target_meal_price||0, supply_method,
-    annual_budget||0, dietitian_name||'', dietitian_phone||'', admin_memo||''
+    id, hospital_type || 'general', care_type || 'general',
+    address || '', licensed_beds || 0, avg_inpatients || 0,
+    staff_count || 0, main_specialty || '', operation_type || 'direct',
+    consignment_company || '',
+    meals_per_day || 3, current_meal_price || 0, target_meal_price || 0,
+    supply_method || 'direct',
+    annual_budget || 0, dietitian_name || '', dietitian_phone || '', admin_memo || ''
   ).run()
 
   return c.json({ success: true })

@@ -18,11 +18,14 @@ cardExpenses.get('/monthly/:year/:month', async (c) => {
     ORDER BY sort_order
   `).bind(hospitalId).all<any>()
 
-  // 이 달의 지출 내역 전체
+  // 이 달의 지출 내역 전체 (vendor_id=0인 직접입력 항목도 포함)
   const expenses = await c.env.DB.prepare(`
-    SELECT ce.*, v.name as vendor_display_name, v.card_subtype
+    SELECT ce.*,
+           COALESCE(v.name, ce.vendor_name) as vendor_display_name,
+           v.card_subtype,
+           COALESCE(ce.expense_type, '법인카드') AS expense_type
     FROM card_expenses ce
-    JOIN vendors v ON ce.vendor_id = v.id
+    LEFT JOIN vendors v ON ce.vendor_id = v.id AND v.id > 0
     WHERE ce.hospital_id = ? AND ce.expense_date LIKE ?
     ORDER BY ce.expense_date DESC, ce.id DESC
   `).bind(hospitalId, `${prefix}%`).all<any>()
@@ -106,11 +109,13 @@ cardExpenses.post('/save', async (c) => {
       await c.env.DB.prepare(`
         UPDATE card_expenses SET
           vendor_name=?, item_name=?, purpose=?, amount=?, memo=?,
+          expense_type=?,
           updated_at=CURRENT_TIMESTAMP
         WHERE id = ? AND hospital_id = ?
       `).bind(
         item.vendorName, item.itemName, item.purpose,
         item.amount, item.memo || null,
+        item.expenseType || '법인카드',
         item.id, hospitalId
       ).run()
       savedIds.push(item.id)
@@ -118,12 +123,13 @@ cardExpenses.post('/save', async (c) => {
       // 신규 삽입
       const r = await c.env.DB.prepare(`
         INSERT INTO card_expenses
-          (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo, expense_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         hospitalId, vendorId, date,
         item.vendorName, item.itemName, item.purpose,
-        item.amount, item.memo || null
+        item.amount, item.memo || null,
+        item.expenseType || '법인카드'
       ).run()
       if (r.meta?.last_row_id) savedIds.push(r.meta.last_row_id as number)
     }
@@ -221,6 +227,74 @@ cardExpenses.get('/admin/:hospitalId/:year/:month', async (c) => {
   `).bind(hospitalId, `${prefix}%`).all<any>()
 
   return c.json({ expenses: expenses.results || [] })
+})
+
+// ── 지출결의서 직접 입력 (영양사 페이지에서) ────────────────────
+cardExpenses.post('/direct', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const body = await c.req.json()
+  const { expense_date, vendor_name, item_name, purpose, amount, memo, expense_type } = body
+
+  if (!expense_date || !vendor_name || !item_name || !purpose || !amount) {
+    return c.json({ error: '필수 항목 누락' }, 400)
+  }
+
+  const r = await c.env.DB.prepare(`
+    INSERT INTO card_expenses
+      (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo, expense_type)
+    VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    hospitalId, expense_date, vendor_name, item_name, purpose,
+    parseInt(amount), memo || null, expense_type || '법인카드'
+  ).run()
+
+  return c.json({ success: true, id: r.meta?.last_row_id })
+})
+
+// ── 지출결의서 직접 수정 ────────────────────────────────────────
+cardExpenses.put('/direct/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const { id } = c.req.param()
+  const body = await c.req.json()
+  const { expense_date, vendor_name, item_name, purpose, amount, memo, expense_type } = body
+
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM card_expenses WHERE id = ? AND hospital_id = ?`
+  ).bind(id, hospitalId).first<any>()
+  if (!existing) return c.json({ error: 'not found' }, 404)
+
+  await c.env.DB.prepare(`
+    UPDATE card_expenses SET
+      expense_date=?, vendor_name=?, item_name=?, purpose=?, amount=?,
+      memo=?, expense_type=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id = ? AND hospital_id = ?
+  `).bind(
+    expense_date, vendor_name, item_name, purpose,
+    parseInt(amount), memo || null, expense_type || '법인카드',
+    id, hospitalId
+  ).run()
+
+  return c.json({ success: true })
+})
+
+// ── 지출결의서 직접 삭제 ────────────────────────────────────────
+cardExpenses.delete('/direct/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const { id } = c.req.param()
+
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM card_expenses WHERE id = ? AND hospital_id = ?`
+  ).bind(id, hospitalId).first<any>()
+  if (!existing) return c.json({ error: 'not found' }, 404)
+
+  await c.env.DB.prepare(
+    `DELETE FROM card_expenses WHERE id = ? AND hospital_id = ?`
+  ).bind(id, hospitalId).run()
+
+  return c.json({ success: true })
 })
 
 export default cardExpenses

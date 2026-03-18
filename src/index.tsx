@@ -60,17 +60,20 @@ app.route('/api/admin', adminRoute)
 
 // ── 페이지 라우트 ─────────────────────────────────────────────────
 app.get('/login', (c) => c.html(getLoginPage()))
-app.get('/', (c) => c.html(getAppShell()))
-app.get('/dashboard', (c) => c.html(getAppShell()))
-app.get('/orders', (c) => c.html(getAppShell()))
-app.get('/meals', (c) => c.html(getAppShell()))
-app.get('/schedule', (c) => c.html(getAppShell()))
-app.get('/analysis', (c) => c.html(getAppShell()))
-app.get('/settings', (c) => c.html(getAppShell()))
-app.get('/admin', (c) => c.html(getAppShell()))
-app.get('/report', (c) => c.html(getAppShell()))
-app.get('/hospital-manage', (c) => c.html(getAppShell()))
-app.get('/holiday-manage', (c) => c.html(getAppShell()))
+app.get('/', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/dashboard', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/orders', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/meals', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/schedule', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/analysis', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/settings', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/admin', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/report', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/hospital-manage', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/holiday-manage', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/ceo-dashboard', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/expense-doc', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/ingredient-prices', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 
 // ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
 app.notFound((c) => c.json({ error: 'Not Found' }, 404))
@@ -225,7 +228,7 @@ function getAppShell(): string {
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<link rel="stylesheet" href="/static/styles.css?v=20260317f">
+<link rel="stylesheet" href="/static/styles.css?v=20260318b">
 </head>
 <body class="bg-gray-50">
 
@@ -328,7 +331,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260317f"></script>
+<script src="/static/app.js?v=20260318b"></script>
 </body>
 </html>`
 }

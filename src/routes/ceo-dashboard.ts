@@ -13,8 +13,28 @@ function ymRange(year: number, month: number) {
   return { start, end }
 }
 
+// 필터 WHERE 절 빌더 (공통)
+function buildHospitalFilter(
+  hospitalType: string, operationType: string, careType: string,
+  bedSize: string, hospitalId: string
+): { conds: string[]; args: any[] } {
+  const conds: string[] = ['1=1']
+  const args: any[]     = []
+
+  if (hospitalType)  { conds.push('COALESCE(hi.hospital_type,\'general\') = ?');  args.push(hospitalType) }
+  if (operationType) { conds.push('COALESCE(hi.operation_type,\'direct\') = ?');  args.push(operationType) }
+  if (careType)      { conds.push('COALESCE(hi.care_type,\'general\') = ?');      args.push(careType) }
+  if (hospitalId)    { conds.push('h.id = ?');                                     args.push(parseInt(hospitalId)) }
+  if (bedSize) {
+    if      (bedSize === 'under30')  conds.push('COALESCE(hi.licensed_beds,0) <= 30')
+    else if (bedSize === '31to60')   conds.push('COALESCE(hi.licensed_beds,0) BETWEEN 31 AND 60')
+    else if (bedSize === '61to100')  conds.push('COALESCE(hi.licensed_beds,0) BETWEEN 61 AND 100')
+    else if (bedSize === 'over100')  conds.push('COALESCE(hi.licensed_beds,0) > 100')
+  }
+  return { conds, args }
+}
+
 // ─── 1. care_type 코드 목록 ──────────────────────────────────
-// GET /api/ceo-dashboard/care-types
 app.get('/care-types', async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT code, label_ko, sort_order FROM care_type_codes WHERE is_active=1 ORDER BY sort_order`
@@ -23,33 +43,20 @@ app.get('/care-types', async (c) => {
 })
 
 // ─── 2. KPI 집계 ─────────────────────────────────────────────
-// GET /api/ceo-dashboard/kpi/:year/:month?hospital_type=&care_type=&bed_size=&hospital_id=
 app.get('/kpi/:year/:month', async (c) => {
   const year  = parseInt(c.req.param('year'))
   const month = parseInt(c.req.param('month'))
   const { start, end } = ymRange(year, month)
 
-  const hospitalType = c.req.query('hospital_type') || ''
-  const careType     = c.req.query('care_type')     || ''
-  const bedSize      = c.req.query('bed_size')      || ''
-  const hospitalId   = c.req.query('hospital_id')   || ''
+  const hospitalType  = c.req.query('hospital_type')   || ''
+  const operationType = c.req.query('operation_type')  || ''
+  const careType      = c.req.query('care_type')       || ''
+  const bedSize       = c.req.query('bed_size')        || ''
+  const hospitalId    = c.req.query('hospital_id')     || ''
 
-  // 필터 조건 빌드
-  const conds: string[] = ['h.id IS NOT NULL']
-  const args: any[]     = []
-
-  if (hospitalType) { conds.push('hi.hospital_type = ?'); args.push(hospitalType) }
-  if (careType)     { conds.push('hi.care_type = ?');     args.push(careType) }
-  if (hospitalId)   { conds.push('h.id = ?');             args.push(parseInt(hospitalId)) }
-  if (bedSize) {
-    if      (bedSize === 'under30')  { conds.push('COALESCE(hi.licensed_beds,0) <= 30') }
-    else if (bedSize === '31to60')   { conds.push('COALESCE(hi.licensed_beds,0) BETWEEN 31 AND 60') }
-    else if (bedSize === '61to100')  { conds.push('COALESCE(hi.licensed_beds,0) BETWEEN 61 AND 100') }
-    else if (bedSize === 'over100')  { conds.push('COALESCE(hi.licensed_beds,0) > 100') }
-  }
+  const { conds, args } = buildHospitalFilter(hospitalType, operationType, careType, bedSize, hospitalId)
   const where = conds.join(' AND ')
 
-  // 필터된 병원 목록
   const hospsR = await c.env.DB.prepare(
     `SELECT h.id, h.name FROM hospitals h
      LEFT JOIN hospital_info hi ON hi.hospital_id = h.id
@@ -57,6 +64,7 @@ app.get('/kpi/:year/:month', async (c) => {
   ).bind(...args).all()
   const hosps = hospsR.results as any[]
   const hids  = hosps.map((h: any) => h.id)
+
   if (hids.length === 0) {
     return c.json({ hospitalCount: 0, totalBudget: 0, totalUsed: 0, avgBudgetPct: 0,
                     avgMealPrice: 0, dangerBudgetCount: 0, dangerMealCount: 0,
@@ -65,13 +73,13 @@ app.get('/kpi/:year/:month', async (c) => {
 
   const ph = hids.map(() => '?').join(',')
 
-  // 예산 집계
+  // 예산 설정
   const budgetR = await c.env.DB.prepare(
-    `SELECT hospital_id, total_budget FROM monthly_settings
+    `SELECT hospital_id, total_budget, meal_price FROM monthly_settings
      WHERE year=? AND month=? AND hospital_id IN (${ph})`
   ).bind(year, month, ...hids).all()
-  const budgetMap: Record<number, number> = {}
-  ;(budgetR.results as any[]).forEach((r: any) => { budgetMap[r.hospital_id] = r.total_budget || 0 })
+  const budgetMap: Record<number, any> = {}
+  ;(budgetR.results as any[]).forEach((r: any) => { budgetMap[r.hospital_id] = r })
 
   // 발주 집계
   const orderR = await c.env.DB.prepare(
@@ -83,10 +91,14 @@ app.get('/kpi/:year/:month', async (c) => {
   const orderMap: Record<number, number> = {}
   ;(orderR.results as any[]).forEach((r: any) => { orderMap[r.hospital_id] = r.used || 0 })
 
-  // 식수 집계 (전체 + 카테고리별)
+  // 총 식수 집계
   const mealR = await c.env.DB.prepare(
     `SELECT hospital_id,
-            SUM(patient_count + COALESCE(staff_count,0) + COALESCE(guardian_count,0)) AS total_meals
+            SUM(
+              COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0)+
+              COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0)+
+              COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0)
+            ) AS total_meals
      FROM daily_meals
      WHERE meal_date BETWEEN ? AND ? AND hospital_id IN (${ph})
      GROUP BY hospital_id`
@@ -94,54 +106,66 @@ app.get('/kpi/:year/:month', async (c) => {
   const mealMap: Record<number, number> = {}
   ;(mealR.results as any[]).forEach((r: any) => { mealMap[r.hospital_id] = r.total_meals || 0 })
 
-  // 카테고리별 식수
+  // 카테고리별 식단가: daily_orders의 patient_category_id → hospital_patient_categories.category_key
+  const catOrdR = await c.env.DB.prepare(
+    `SELECT do.hospital_id, hpc.category_key, SUM(do.total_amount) AS amt
+     FROM daily_orders do
+     JOIN hospital_patient_categories hpc ON hpc.id = do.patient_category_id
+     WHERE do.order_date BETWEEN ? AND ? AND do.hospital_id IN (${ph})
+       AND do.patient_category_id IS NOT NULL
+     GROUP BY do.hospital_id, hpc.category_key`
+  ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
+
+  // 카테고리별 식수: daily_meals의 custom_data JSON에서 cat_xxx 키 합산
+  // → 전체 식수에서 비율로 추정 (단순화)
+  const catOrdMap: Record<string, number> = {}
+  ;(catOrdR.results as any[]).forEach((r: any) => {
+    catOrdMap[`${r.hospital_id}__${r.category_key}`] = r.amt || 0
+  })
+
+  // 카테고리별 식수 (custom_data JSON 파싱은 SQLite에서 어려우므로, 발주 기준 추정)
   const catMealR = await c.env.DB.prepare(
-    `SELECT dc.hospital_id, pc.care_type AS cat_care, SUM(dc.total_count) AS cnt
-     FROM daily_category_meal_counts dc
-     JOIN patient_categories pc ON pc.id = dc.patient_category_id
-     WHERE dc.meal_date BETWEEN ? AND ? AND dc.hospital_id IN (${ph})
-       AND pc.care_type IS NOT NULL
-     GROUP BY dc.hospital_id, pc.care_type`
+    `SELECT do.hospital_id, hpc.category_key, COUNT(DISTINCT do.order_date) AS days,
+            SUM(do.total_amount) AS amt
+     FROM daily_orders do
+     JOIN hospital_patient_categories hpc ON hpc.id = do.patient_category_id
+     WHERE do.order_date BETWEEN ? AND ? AND do.hospital_id IN (${ph})
+       AND do.patient_category_id IS NOT NULL
+     GROUP BY do.hospital_id, hpc.category_key`
   ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
 
-  // 카테고리별 식단가 집계
-  const mealPriceByCategory: Record<string, { totalMeals: number; totalOrders: number; avgPrice: number }> = {}
+  // category_order_settings에서 목표 식단가 가져오기
+  const cosR = await c.env.DB.prepare(
+    `SELECT cos.hospital_id, hpc.category_key, cos.target_meal_price, cos.monthly_budget, cos.working_days, cos.daily_meal_count
+     FROM category_order_settings cos
+     JOIN hospital_patient_categories hpc ON hpc.id = cos.patient_category_id
+     WHERE cos.year=? AND cos.month=? AND cos.hospital_id IN (${ph})`
+  ).bind(year, month, ...hids).all().catch(() => ({ results: [] }))
+  const cosMap: Record<string, any> = {}
+  ;(cosR.results as any[]).forEach((r: any) => {
+    cosMap[`${r.hospital_id}__${r.category_key}`] = r
+  })
+
+  // 카테고리별 평균 식단가 계산
+  const mealPriceByCategory: Record<string, { totalOrders: number; targetPrice: number; avgPrice: number }> = {}
   ;(catMealR.results as any[]).forEach((r: any) => {
-    if (!mealPriceByCategory[r.cat_care]) mealPriceByCategory[r.cat_care] = { totalMeals: 0, totalOrders: 0, avgPrice: 0 }
-    mealPriceByCategory[r.cat_care].totalMeals += r.cnt || 0
-  })
-  // 카테고리별 발주 (patient_category_id 기준)
-  const catOrderR = await c.env.DB.prepare(
-    `SELECT dc.hospital_id, pc.care_type AS cat_care, SUM(dc.total_amount) AS amt
-     FROM daily_category_orders dc
-     JOIN patient_categories pc ON pc.id = dc.patient_category_id
-     WHERE dc.order_date BETWEEN ? AND ? AND dc.hospital_id IN (${ph})
-       AND pc.care_type IS NOT NULL
-     GROUP BY dc.hospital_id, pc.care_type`
-  ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
-  ;(catOrderR.results as any[]).forEach((r: any) => {
-    if (!mealPriceByCategory[r.cat_care]) mealPriceByCategory[r.cat_care] = { totalMeals: 0, totalOrders: 0, avgPrice: 0 }
-    mealPriceByCategory[r.cat_care].totalOrders += r.amt || 0
-  })
-  Object.keys(mealPriceByCategory).forEach(k => {
-    const d = mealPriceByCategory[k]
-    d.avgPrice = d.totalMeals > 0 ? Math.round(d.totalOrders / d.totalMeals) : 0
+    const key = r.category_key
+    const cos = cosMap[`${r.hospital_id}__${key}`]
+    const targetDailyMeals = cos?.daily_meal_count || 0
+    const workingDays = cos?.working_days || 1
+    const estimatedMeals = targetDailyMeals > 0 ? targetDailyMeals * workingDays : (r.days || 1) * 30 // 추정
+    const avgPrice = estimatedMeals > 0 ? Math.round((r.amt || 0) / estimatedMeals) : 0
+    if (!mealPriceByCategory[key]) mealPriceByCategory[key] = { totalOrders: 0, targetPrice: cos?.target_meal_price || 0, avgPrice: 0 }
+    mealPriceByCategory[key].totalOrders += r.amt || 0
+    mealPriceByCategory[key].avgPrice = avgPrice
   })
 
-  // 검수 미완료 (병원별)
+  // 검수 미완료
   const inspR = await c.env.DB.prepare(
     `SELECT DISTINCT hospital_id FROM order_inspections
      WHERE status='pending' AND hospital_id IN (${ph})`
   ).bind(...hids).all().catch(() => ({ results: [] }))
   const pendingInspectCount = (inspR.results as any[]).length
-
-  // 목표 식단가
-  const targetR = await c.env.DB.prepare(
-    `SELECT hospital_id, meal_price FROM monthly_settings
-     WHERE year=? AND month=? AND hospital_id IN (${ph})`
-  ).bind(year, month, ...hids).all()
-  const targetMealMap: Record<number, number> = {}
-  ;(targetR.results as any[]).forEach((r: any) => { targetMealMap[r.hospital_id] = r.meal_price || 0 })
 
   // 집계
   let totalBudget = 0, totalUsed = 0
@@ -150,10 +174,10 @@ app.get('/kpi/:year/:month', async (c) => {
   let dangerBudgetCount = 0, dangerMealCount = 0
 
   hids.forEach((hid: number) => {
-    const budget = budgetMap[hid] || 0
-    const used   = orderMap[hid]  || 0
-    const meals  = mealMap[hid]   || 0
-    const target = targetMealMap[hid] || 0
+    const budget = budgetMap[hid]?.total_budget || 0
+    const used   = orderMap[hid] || 0
+    const meals  = mealMap[hid]  || 0
+    const target = budgetMap[hid]?.meal_price || 0
 
     totalBudget += budget
     totalUsed   += used
@@ -161,7 +185,7 @@ app.get('/kpi/:year/:month', async (c) => {
     if (budget > 0) {
       const pct = used / budget * 100
       budgetPctSum += pct; budgetPctCnt++
-      if (pct >= 90) dangerBudgetCount++
+      if (pct >= 90) dangerBudgetCount++   // ≥90% = 위험
     }
     if (meals > 0) {
       const mp = Math.round(used / meals)
@@ -184,38 +208,28 @@ app.get('/kpi/:year/:month', async (c) => {
 })
 
 // ─── 3. 병원별 운영 상태 카드 데이터 ─────────────────────────
-// GET /api/ceo-dashboard/hospitals/:year/:month?...filters...
 app.get('/hospitals/:year/:month', async (c) => {
   const year  = parseInt(c.req.param('year'))
   const month = parseInt(c.req.param('month'))
   const { start, end } = ymRange(year, month)
   const today = new Date().toISOString().slice(0, 10)
 
-  const hospitalType = c.req.query('hospital_type') || ''
-  const careType     = c.req.query('care_type')     || ''
-  const bedSize      = c.req.query('bed_size')      || ''
-  const hospitalId   = c.req.query('hospital_id')   || ''
+  const hospitalType  = c.req.query('hospital_type')   || ''
+  const operationType = c.req.query('operation_type')  || ''
+  const careType      = c.req.query('care_type')       || ''
+  const bedSize       = c.req.query('bed_size')        || ''
+  const hospitalId    = c.req.query('hospital_id')     || ''
 
-  const conds: string[] = ['1=1']
-  const args: any[]     = []
-  if (hospitalType) { conds.push('hi.hospital_type = ?'); args.push(hospitalType) }
-  if (careType)     { conds.push('hi.care_type = ?');     args.push(careType) }
-  if (hospitalId)   { conds.push('h.id = ?');             args.push(parseInt(hospitalId)) }
-  if (bedSize) {
-    if      (bedSize === 'under30') conds.push('COALESCE(hi.licensed_beds,0) <= 30')
-    else if (bedSize === '31to60')  conds.push('COALESCE(hi.licensed_beds,0) BETWEEN 31 AND 60')
-    else if (bedSize === '61to100') conds.push('COALESCE(hi.licensed_beds,0) BETWEEN 61 AND 100')
-    else if (bedSize === 'over100') conds.push('COALESCE(hi.licensed_beds,0) > 100')
-  }
+  const { conds, args } = buildHospitalFilter(hospitalType, operationType, careType, bedSize, hospitalId)
   const where = conds.join(' AND ')
 
   // 병원 기본 정보
   const hospsR = await c.env.DB.prepare(
     `SELECT h.id, h.name,
-            COALESCE(hi.hospital_type,'general') AS hospital_type,
-            COALESCE(hi.care_type,'general')     AS care_type,
-            COALESCE(hi.licensed_beds,0)         AS licensed_beds,
-            COALESCE(hi.operation_type,'direct') AS operation_type
+            COALESCE(hi.hospital_type,'general')  AS hospital_type,
+            COALESCE(hi.care_type,'general')      AS care_type,
+            COALESCE(hi.licensed_beds,0)          AS licensed_beds,
+            COALESCE(hi.operation_type,'direct')  AS operation_type
      FROM hospitals h
      LEFT JOIN hospital_info hi ON hi.hospital_id = h.id
      WHERE ${where}
@@ -256,14 +270,16 @@ app.get('/hospitals/:year/:month', async (c) => {
   // 총 식수
   const mealR = await c.env.DB.prepare(
     `SELECT hospital_id,
-            SUM(patient_count + COALESCE(staff_count,0) + COALESCE(guardian_count,0)) AS total_meals
+            SUM(COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0)+
+                COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0)+
+                COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0)) AS total_meals
      FROM daily_meals WHERE meal_date BETWEEN ? AND ? AND hospital_id IN (${ph})
      GROUP BY hospital_id`
   ).bind(start, end, ...hids).all()
   const mMap: Record<number, number> = {}
   ;(mealR.results as any[]).forEach((r: any) => { mMap[r.hospital_id] = r.total_meals || 0 })
 
-  // 검수 미완료
+  // 검수 미완료 (건수)
   const inspR = await c.env.DB.prepare(
     `SELECT hospital_id, COUNT(*) AS cnt FROM order_inspections
      WHERE status='pending' AND hospital_id IN (${ph})
@@ -272,7 +288,7 @@ app.get('/hospitals/:year/:month', async (c) => {
   const inspMap: Record<number, number> = {}
   ;(inspR.results as any[]).forEach((r: any) => { inspMap[r.hospital_id] = r.cnt || 0 })
 
-  // 업체별 발주 (집중도 계산용)
+  // 업체별 발주 (집중도 계산)
   const vendorOrdR = await c.env.DB.prepare(
     `SELECT do.hospital_id, do.vendor_id, SUM(do.total_amount) AS amt
      FROM daily_orders do
@@ -285,32 +301,34 @@ app.get('/hospitals/:year/:month', async (c) => {
     vendorMap[r.hospital_id].push({ id: r.vendor_id, amt: r.amt || 0 })
   })
 
-  // 카테고리별 식단가 (patient_categories care_type 기반)
-  const catMealR = await c.env.DB.prepare(
-    `SELECT dc.hospital_id, pc.care_type AS ct, SUM(dc.total_count) AS cnt
-     FROM daily_category_meal_counts dc
-     JOIN patient_categories pc ON pc.id = dc.patient_category_id
-     WHERE dc.meal_date BETWEEN ? AND ? AND dc.hospital_id IN (${ph})
-     GROUP BY dc.hospital_id, pc.care_type`
-  ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
-  const catMealMap: Record<string, number> = {}
-  ;(catMealR.results as any[]).forEach((r: any) => {
-    catMealMap[`${r.hospital_id}__${r.ct}`] = (catMealMap[`${r.hospital_id}__${r.ct}`] || 0) + (r.cnt || 0)
-  })
-
+  // 카테고리별 발주 (patient_category_id 기준)
   const catOrdR = await c.env.DB.prepare(
-    `SELECT dc.hospital_id, pc.care_type AS ct, SUM(dc.total_amount) AS amt
-     FROM daily_category_orders dc
-     JOIN patient_categories pc ON pc.id = dc.patient_category_id
-     WHERE dc.order_date BETWEEN ? AND ? AND dc.hospital_id IN (${ph})
-     GROUP BY dc.hospital_id, pc.care_type`
+    `SELECT do.hospital_id, hpc.category_key, SUM(do.total_amount) AS amt
+     FROM daily_orders do
+     JOIN hospital_patient_categories hpc ON hpc.id = do.patient_category_id
+     WHERE do.order_date BETWEEN ? AND ? AND do.hospital_id IN (${ph})
+       AND do.patient_category_id IS NOT NULL
+     GROUP BY do.hospital_id, hpc.category_key`
   ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
   const catOrdMap: Record<string, number> = {}
   ;(catOrdR.results as any[]).forEach((r: any) => {
-    catOrdMap[`${r.hospital_id}__${r.ct}`] = (catOrdMap[`${r.hospital_id}__${r.ct}`] || 0) + (r.amt || 0)
+    catOrdMap[`${r.hospital_id}__${r.category_key}`] = r.amt || 0
   })
 
-  // 일별 발주 (이상치 계산용)
+  // category_order_settings (카테고리 목표 식단가, 일일 식수)
+  const cosR = await c.env.DB.prepare(
+    `SELECT cos.hospital_id, hpc.category_key, cos.target_meal_price,
+            cos.monthly_budget, cos.working_days, cos.daily_meal_count
+     FROM category_order_settings cos
+     JOIN hospital_patient_categories hpc ON hpc.id = cos.patient_category_id
+     WHERE cos.year=? AND cos.month=? AND cos.hospital_id IN (${ph})`
+  ).bind(year, month, ...hids).all().catch(() => ({ results: [] }))
+  const cosMap: Record<string, any> = {}
+  ;(cosR.results as any[]).forEach((r: any) => {
+    cosMap[`${r.hospital_id}__${r.category_key}`] = r
+  })
+
+  // 일별 발주 (이상치)
   const dailyOrdR = await c.env.DB.prepare(
     `SELECT hospital_id, order_date, SUM(total_amount) AS amt
      FROM daily_orders WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph})
@@ -320,6 +338,17 @@ app.get('/hospitals/:year/:month', async (c) => {
   ;(dailyOrdR.results as any[]).forEach((r: any) => {
     if (!dailyOrdMap[r.hospital_id]) dailyOrdMap[r.hospital_id] = []
     dailyOrdMap[r.hospital_id].push(r.amt || 0)
+  })
+
+  // hospital_patient_categories 목록 (카테고리별 식단가 표시용)
+  const hpcR = await c.env.DB.prepare(
+    `SELECT hospital_id, category_key, category_name FROM hospital_patient_categories
+     WHERE hospital_id IN (${ph}) AND is_active=1`
+  ).bind(...hids).all().catch(() => ({ results: [] }))
+  const hpcMap: Record<number, {key:string; name:string}[]> = {}
+  ;(hpcR.results as any[]).forEach((r: any) => {
+    if (!hpcMap[r.hospital_id]) hpcMap[r.hospital_id] = []
+    hpcMap[r.hospital_id].push({ key: r.category_key, name: r.category_name })
   })
 
   // 조립
@@ -333,27 +362,38 @@ app.get('/hospitals/:year/:month', async (c) => {
     const budgetPct = budget > 0 ? Math.round(used / budget * 100) : 0
     const mealPrice = meals > 0 ? Math.round(used / meals) : 0
 
+    // 카테고리별 식단가 (category_key 기준)
+    const categories = hpcMap[h.id] || []
+    const mealPriceByCategory: Record<string, { name: string; price: number; targetPrice: number; budget: number }> = {}
+    categories.forEach((cat) => {
+      const catOrds = catOrdMap[`${h.id}__${cat.key}`] || 0
+      if (!catOrds) return  // 발주 없으면 스킵
+      const cos = cosMap[`${h.id}__${cat.key}`]
+      const dailyMeals = cos?.daily_meal_count || 0
+      const workingDays = cos?.working_days || 0
+      // daily_meal_count * working_days가 있으면 식수 기반 계산, 없으면 발주액만 표시
+      const estMeals = (dailyMeals > 0 && workingDays > 0) ? dailyMeals * workingDays : 0
+      const catPrice = estMeals > 0 ? Math.round(catOrds / estMeals) : 0
+      mealPriceByCategory[cat.key] = {
+        name: cat.name,
+        price: catPrice,           // 식단가 (식수 기반 계산값, 없으면 0)
+        targetPrice: cos?.target_meal_price || 0,
+        budget: cos?.monthly_budget || 0
+      }
+    })
+
     // 업체 집중도
     const vList = vendorMap[h.id] || []
     const vTotal = vList.reduce((s: number, v: any) => s + v.amt, 0)
     const maxVendor = vList.length > 0 ? vList.reduce((a: any, b: any) => a.amt > b.amt ? a : b) : null
     const vendorConcentration = (vTotal > 0 && maxVendor) ? Math.round(maxVendor.amt / vTotal * 100) : 0
 
-    // 발주 이상치 (오늘 발주가 최근 평균의 2배 이상)
+    // 발주 이상치
     const dailyAmts = dailyOrdMap[h.id] || []
     const avgDaily  = dailyAmts.length > 0 ? dailyAmts.reduce((a: number, b: number) => a + b, 0) / dailyAmts.length : 0
     const orderAnomaly = (today_o > 0 && avgDaily > 0 && today_o >= avgDaily * 2)
 
-    // 카테고리별 식단가
-    const catTypes = ['oncology', 'nursing_care', 'rehab']
-    const mealPriceByCategory: Record<string, number> = {}
-    catTypes.forEach(ct => {
-      const m = catMealMap[`${h.id}__${ct}`] || 0
-      const o = catOrdMap[`${h.id}__${ct}`]  || 0
-      mealPriceByCategory[ct] = m > 0 ? Math.round(o / m) : 0
-    })
-
-    // 경고 수 계산
+    // 경고 계산
     let alertCount = 0
     const alerts: string[] = []
     if (budgetPct >= 90)           { alertCount++; alerts.push(`예산 ${budgetPct}% 소진`) }
@@ -368,7 +408,6 @@ app.get('/hospitals/:year/:month', async (c) => {
     if (pendInsp > 0)              { alertCount++; alerts.push(`검수 미완료 ${pendInsp}건`) }
     if (orderAnomaly)              { alertCount++; alerts.push(`발주 이상치 감지`) }
 
-    // 위험 등급
     const riskLevel = alertCount === 0 ? 'safe' : alertCount === 1 ? 'warn' : 'danger'
 
     return {
@@ -387,13 +426,11 @@ app.get('/hospitals/:year/:month', async (c) => {
 })
 
 // ─── 4. 그래프 데이터 ─────────────────────────────────────────
-// GET /api/ceo-dashboard/graphs/:year/:month
 app.get('/graphs/:year/:month', async (c) => {
   const year  = parseInt(c.req.param('year'))
   const month = parseInt(c.req.param('month'))
   const { start, end } = ymRange(year, month)
 
-  // 모든 병원 기본 정보
   const hospsR = await c.env.DB.prepare(
     `SELECT h.id, h.name,
             COALESCE(hi.hospital_type,'general') AS hospital_type,
@@ -416,40 +453,48 @@ app.get('/graphs/:year/:month', async (c) => {
 
   // 발주
   const ordR = await c.env.DB.prepare(
-    `SELECT hospital_id, SUM(total_amount) AS used FROM daily_orders WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph}) GROUP BY hospital_id`
+    `SELECT hospital_id, SUM(total_amount) AS used FROM daily_orders
+     WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph}) GROUP BY hospital_id`
   ).bind(start, end, ...hids).all()
   const ordMap: Record<number, number> = {}
   ;(ordR.results as any[]).forEach((r: any) => { ordMap[r.hospital_id] = r.used || 0 })
 
   // 식수
   const mealR = await c.env.DB.prepare(
-    `SELECT hospital_id, SUM(patient_count + COALESCE(staff_count,0) + COALESCE(guardian_count,0)) AS total_meals
+    `SELECT hospital_id,
+            SUM(COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0)+
+                COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0)+
+                COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0)) AS total_meals
      FROM daily_meals WHERE meal_date BETWEEN ? AND ? AND hospital_id IN (${ph}) GROUP BY hospital_id`
   ).bind(start, end, ...hids).all()
   const mealMap: Record<number, number> = {}
   ;(mealR.results as any[]).forEach((r: any) => { mealMap[r.hospital_id] = r.total_meals || 0 })
 
-  // 카테고리별 식단가 (그래프2)
-  const catMealR = await c.env.DB.prepare(
-    `SELECT dc.hospital_id, pc.care_type AS ct, SUM(dc.total_count) AS cnt
-     FROM daily_category_meal_counts dc JOIN patient_categories pc ON pc.id=dc.patient_category_id
-     WHERE dc.meal_date BETWEEN ? AND ? AND dc.hospital_id IN (${ph}) AND pc.care_type IS NOT NULL
-     GROUP BY dc.hospital_id, pc.care_type`
+  // 카테고리별 발주 (patient_category_id 기준)
+  const catOrdR = await c.env.DB.prepare(
+    `SELECT do.hospital_id, hpc.category_key, SUM(do.total_amount) AS amt
+     FROM daily_orders do
+     JOIN hospital_patient_categories hpc ON hpc.id = do.patient_category_id
+     WHERE do.order_date BETWEEN ? AND ? AND do.hospital_id IN (${ph})
+       AND do.patient_category_id IS NOT NULL
+     GROUP BY do.hospital_id, hpc.category_key`
   ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
-  const catMMap: Record<string, number> = {}
-  ;(catMealR.results as any[]).forEach((r: any) => {
-    catMMap[`${r.hospital_id}__${r.ct}`] = (catMMap[`${r.hospital_id}__${r.ct}`] || 0) + (r.cnt || 0)
+  const catOrdByKey: Record<string, number> = {}
+  ;(catOrdR.results as any[]).forEach((r: any) => {
+    catOrdByKey[`${r.hospital_id}__${r.category_key}`] = r.amt || 0
   })
 
-  const catOrdR = await c.env.DB.prepare(
-    `SELECT dc.hospital_id, pc.care_type AS ct, SUM(dc.total_amount) AS amt
-     FROM daily_category_orders dc JOIN patient_categories pc ON pc.id=dc.patient_category_id
-     WHERE dc.order_date BETWEEN ? AND ? AND dc.hospital_id IN (${ph}) AND pc.care_type IS NOT NULL
-     GROUP BY dc.hospital_id, pc.care_type`
-  ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
-  const catOMap: Record<string, number> = {}
-  ;(catOrdR.results as any[]).forEach((r: any) => {
-    catOMap[`${r.hospital_id}__${r.ct}`] = (catOMap[`${r.hospital_id}__${r.ct}`] || 0) + (r.amt || 0)
+  // category_order_settings (일일 식수 * 근무일 = 추정 식수)
+  const cosR = await c.env.DB.prepare(
+    `SELECT cos.hospital_id, hpc.category_key, cos.target_meal_price,
+            cos.working_days, cos.daily_meal_count
+     FROM category_order_settings cos
+     JOIN hospital_patient_categories hpc ON hpc.id = cos.patient_category_id
+     WHERE cos.year=? AND cos.month=? AND cos.hospital_id IN (${ph})`
+  ).bind(year, month, ...hids).all().catch(() => ({ results: [] }))
+  const cosMap2: Record<string, any> = {}
+  ;(cosR.results as any[]).forEach((r: any) => {
+    cosMap2[`${r.hospital_id}__${r.category_key}`] = r
   })
 
   // 그래프1: 병원유형별 평균 예산 사용률
@@ -466,23 +511,38 @@ app.get('/graphs/:year/:month', async (c) => {
     type, avgBudgetPct: Math.round(d.pctSum / d.cnt)
   }))
 
-  // 그래프2: care_type별 평균 식단가
-  const careTypes = ['oncology', 'nursing_care', 'rehab']
-  const graph2: Record<string, number> = {}
-  careTypes.forEach(ct => {
-    let total = 0, cnt = 0
+  // 그래프2: 카테고리별 평균 식단가 (category_key 기준)
+  // 모든 카테고리 키 수집
+  const allCatKeys = new Set<string>()
+  ;(catOrdR.results as any[]).forEach((r: any) => allCatKeys.add(r.category_key))
+
+  const graph2: Record<string, { avgPrice: number; label: string }> = {}
+  allCatKeys.forEach(catKey => {
+    let totalPrice = 0, cnt = 0
     hids.forEach((hid: number) => {
-      const m = catMMap[`${hid}__${ct}`] || 0
-      const o = catOMap[`${hid}__${ct}`] || 0
-      if (m > 0) { total += Math.round(o / m); cnt++ }
+      const amt = catOrdByKey[`${hid}__${catKey}`] || 0
+      const cos = cosMap2[`${hid}__${catKey}`]
+      if (!amt || !cos) return
+      const dailyMeals = cos.daily_meal_count || 0
+      const workDays   = cos.working_days || 0
+      const estMeals   = (dailyMeals > 0 && workDays > 0) ? dailyMeals * workDays : 0
+      if (estMeals > 0 && amt > 0) { totalPrice += Math.round(amt / estMeals); cnt++ }
     })
-    graph2[ct] = cnt > 0 ? Math.round(total / cnt) : 0
+    graph2[catKey] = { avgPrice: cnt > 0 ? Math.round(totalPrice / cnt) : 0, label: catKey }
   })
+
+  // graph2에 label 추가 (hospital_patient_categories에서)
+  const hpcAllR = await c.env.DB.prepare(
+    `SELECT DISTINCT category_key, category_name FROM hospital_patient_categories`
+  ).all().catch(() => ({ results: [] }))
+  const catNameMap: Record<string, string> = {}
+  ;(hpcAllR.results as any[]).forEach((r: any) => { catNameMap[r.category_key] = r.category_name })
+  Object.keys(graph2).forEach(k => { graph2[k].label = catNameMap[k] || k })
 
   // 그래프3: 병원별 식단가 비교
   const graph3 = hosps.map((h: any) => {
-    const used  = ordMap[h.id]  || 0
-    const meals = mealMap[h.id] || 0
+    const used   = ordMap[h.id]  || 0
+    const meals  = mealMap[h.id] || 0
     const target = budMap[h.id]?.meal_price || 0
     return {
       id: h.id, name: h.name,
@@ -493,8 +553,8 @@ app.get('/graphs/:year/:month', async (c) => {
 
   // 그래프4: 식수 vs 발주금액 (산점도)
   const graph4 = hosps.map((h: any) => {
-    const meals = mealMap[h.id] || 0
-    const used  = ordMap[h.id]  || 0
+    const meals     = mealMap[h.id] || 0
+    const used      = ordMap[h.id]  || 0
     const mealPrice = meals > 0 ? Math.round(used / meals) : 0
     const target    = budMap[h.id]?.meal_price || 0
     const anomaly   = target > 0 && mealPrice > target * 1.1
@@ -505,7 +565,6 @@ app.get('/graphs/:year/:month', async (c) => {
 })
 
 // ─── 5. AI 경고 & 인사이트 ────────────────────────────────────
-// GET /api/ceo-dashboard/alerts/:year/:month
 app.get('/alerts/:year/:month', async (c) => {
   const year  = parseInt(c.req.param('year'))
   const month = parseInt(c.req.param('month'))
@@ -523,14 +582,12 @@ app.get('/alerts/:year/:month', async (c) => {
   const hNameMap: Record<number, string> = {}
   hosps.forEach((h: any) => { hNameMap[h.id] = h.name })
 
-  // 예산
   const budR = await c.env.DB.prepare(
     `SELECT hospital_id, total_budget, meal_price FROM monthly_settings WHERE year=? AND month=? AND hospital_id IN (${ph})`
   ).bind(year, month, ...hids).all()
   const budMap: Record<number, any> = {}
   ;(budR.results as any[]).forEach((r: any) => { budMap[r.hospital_id] = r })
 
-  // 발주 월합계
   const ordR = await c.env.DB.prepare(
     `SELECT hospital_id, SUM(total_amount) AS used FROM daily_orders
      WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph}) GROUP BY hospital_id`
@@ -538,7 +595,6 @@ app.get('/alerts/:year/:month', async (c) => {
   const ordMap: Record<number, number> = {}
   ;(ordR.results as any[]).forEach((r: any) => { ordMap[r.hospital_id] = r.used || 0 })
 
-  // 일별 발주 (이상치)
   const dailyR = await c.env.DB.prepare(
     `SELECT hospital_id, order_date, SUM(total_amount) AS amt FROM daily_orders
      WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph})
@@ -550,15 +606,16 @@ app.get('/alerts/:year/:month', async (c) => {
     dailyMap[r.hospital_id].push({ date: r.order_date, amt: r.amt || 0 })
   })
 
-  // 식수
   const mealR = await c.env.DB.prepare(
-    `SELECT hospital_id, SUM(patient_count + COALESCE(staff_count,0) + COALESCE(guardian_count,0)) AS total_meals
+    `SELECT hospital_id,
+            SUM(COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0)+
+                COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0)+
+                COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0)) AS total_meals
      FROM daily_meals WHERE meal_date BETWEEN ? AND ? AND hospital_id IN (${ph}) GROUP BY hospital_id`
   ).bind(start, end, ...hids).all()
   const mealMap: Record<number, number> = {}
   ;(mealR.results as any[]).forEach((r: any) => { mealMap[r.hospital_id] = r.total_meals || 0 })
 
-  // 업체 집중도
   const vOrdR = await c.env.DB.prepare(
     `SELECT hospital_id, vendor_id, SUM(total_amount) AS amt FROM daily_orders
      WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph})
@@ -570,37 +627,32 @@ app.get('/alerts/:year/:month', async (c) => {
     vMap[r.hospital_id].push({ id: r.vendor_id, amt: r.amt || 0 })
   })
 
-  // 검수 미완료
   const inspR = await c.env.DB.prepare(
     `SELECT hospital_id, COUNT(*) AS cnt FROM order_inspections WHERE status='pending' AND hospital_id IN (${ph}) GROUP BY hospital_id`
   ).bind(...hids).all().catch(() => ({ results: [] }))
   const inspMap: Record<number, number> = {}
   ;(inspR.results as any[]).forEach((r: any) => { inspMap[r.hospital_id] = r.cnt || 0 })
 
-  // 경고 생성
   const alerts: { level: 'danger' | 'warn' | 'info'; message: string; hospitalId?: number; hospitalName?: string }[] = []
 
   hids.forEach((hid: number) => {
-    const name    = hNameMap[hid]
-    const budget  = budMap[hid]?.total_budget || 0
-    const target  = budMap[hid]?.meal_price   || 0
-    const used    = ordMap[hid]  || 0
-    const meals   = mealMap[hid] || 0
+    const name     = hNameMap[hid]
+    const budget   = budMap[hid]?.total_budget || 0
+    const target   = budMap[hid]?.meal_price   || 0
+    const used     = ordMap[hid]  || 0
+    const meals    = mealMap[hid] || 0
     const mealPrice = meals > 0 ? Math.round(used / meals) : 0
     const budgetPct = budget > 0 ? Math.round(used / budget * 100) : 0
 
-    // 예산 경고
     if (budgetPct >= 90)      alerts.push({ level: 'danger', message: `${name} 예산 소진율 ${budgetPct}% – 위험 수준`, hospitalId: hid, hospitalName: name })
     else if (budgetPct >= 80) alerts.push({ level: 'warn',   message: `${name} 예산 소진율 ${budgetPct}% – 주의 필요`, hospitalId: hid, hospitalName: name })
 
-    // 식단가 경고
     if (target > 0) {
       const mpPct = Math.round(mealPrice / target * 100)
       if (mpPct >= 110)      alerts.push({ level: 'danger', message: `${name} 식단가 목표 대비 ${mpPct}% – 위험 초과`, hospitalId: hid, hospitalName: name })
       else if (mpPct >= 105) alerts.push({ level: 'warn',   message: `${name} 식단가 목표 대비 ${mpPct}% – 주의 수준`, hospitalId: hid, hospitalName: name })
     }
 
-    // 업체 집중도
     const vList  = vMap[hid] || []
     const vTotal = vList.reduce((s: number, v: any) => s + v.amt, 0)
     if (vList.length > 0 && vTotal > 0) {
@@ -610,11 +662,9 @@ app.get('/alerts/:year/:month', async (c) => {
       else if (conc >= 40) alerts.push({ level: 'warn',   message: `${name} 특정 업체 발주 집중도 ${conc}% – 주의`, hospitalId: hid, hospitalName: name })
     }
 
-    // 검수 미완료
     const insp = inspMap[hid] || 0
     if (insp > 0) alerts.push({ level: 'warn', message: `${name} 검수 미완료 ${insp}건 대기 중`, hospitalId: hid, hospitalName: name })
 
-    // 발주 이상치 (최근 평균 대비 2배)
     const dailyAmts = (dailyMap[hid] || []).map((d: any) => d.amt)
     if (dailyAmts.length >= 3) {
       const avg = dailyAmts.slice(0, -1).reduce((a: number, b: number) => a + b, 0) / (dailyAmts.length - 1)
@@ -625,7 +675,6 @@ app.get('/alerts/:year/:month', async (c) => {
     }
   })
 
-  // 인사이트 생성 (데이터 패턴 기반 문장)
   const insights: string[] = []
   const dangerCount = alerts.filter(a => a.level === 'danger').length
   const warnCount   = alerts.filter(a => a.level === 'warn').length
@@ -637,7 +686,6 @@ app.get('/alerts/:year/:month', async (c) => {
     if (warnCount > 0)   insights.push(`주의 경고 ${warnCount}건이 확인됩니다. 추이를 모니터링하세요.`)
   }
 
-  // 예산 소진 빠른 병원
   const highBudgetHosps = hids.filter((hid: number) => {
     const b = budMap[hid]?.total_budget || 0
     const u = ordMap[hid] || 0
@@ -647,7 +695,6 @@ app.get('/alerts/:year/:month', async (c) => {
     insights.push(`${highBudgetHosps.join(', ')} 등 ${highBudgetHosps.length}개 병원은 현재 추세 기준 월말 전 예산 소진 가능성이 있습니다.`)
   }
 
-  // 업체 집중도 높은 병원
   const concHosps = hids.filter((hid: number) => {
     const vList = vMap[hid] || []
     const vTotal = vList.reduce((s: number, v: any) => s + v.amt, 0)
@@ -659,7 +706,6 @@ app.get('/alerts/:year/:month', async (c) => {
     insights.push(`${concHosps.length}개 병원에서 상위 업체 발주 비중이 높게 나타나고 있습니다. 공급처 분산을 검토하세요.`)
   }
 
-  // 전체 평균 식단가 추이
   const mpList = hids.map((hid: number) => {
     const u = ordMap[hid] || 0; const m = mealMap[hid] || 0
     return m > 0 ? Math.round(u / m) : 0
@@ -679,7 +725,6 @@ app.get('/alerts/:year/:month', async (c) => {
     }
   }
 
-  // 검수 미완료 총합
   const totalInsp = Object.values(inspMap).reduce((a: number, b: number) => a + b, 0)
   if (totalInsp > 0) {
     insights.push(`총 ${totalInsp}건의 검수가 미완료 상태입니다. 담당 영양사 확인을 요청하세요.`)
@@ -688,8 +733,7 @@ app.get('/alerts/:year/:month', async (c) => {
   return c.json({ alerts, insights })
 })
 
-// ─── 6. 지출 사용내역 조회 ────────────────────────────────────
-// GET /api/ceo-dashboard/expenses/:year/:month?hospital_id=&expense_type=
+// ─── 6. 지출 사용내역 조회 (CEO 열람용) ──────────────────────
 app.get('/expenses/:year/:month', async (c) => {
   const year  = parseInt(c.req.param('year'))
   const month = parseInt(c.req.param('month'))
@@ -707,8 +751,10 @@ app.get('/expenses/:year/:month', async (c) => {
 
   const rows = await c.env.DB.prepare(
     `SELECT ce.id, ce.expense_date, h.name AS hospital_name,
-            ce.vendor_name, ce.amount, ce.item_name, ce.usage_purpose,
-            COALESCE(ce.expense_type,'법인카드') AS expense_type, ce.memo
+            ce.vendor_name, ce.amount, ce.item_name,
+            ce.purpose AS usage_purpose,
+            COALESCE(ce.expense_type,'법인카드') AS expense_type,
+            ce.memo
      FROM card_expenses ce
      JOIN hospitals h ON h.id = ce.hospital_id
      WHERE ${conds.join(' AND ')}
