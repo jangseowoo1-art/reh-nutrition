@@ -6097,7 +6097,7 @@ function buildMealPricePanel(patientCats, customFields, mealData) {
         ${totalMeals > 0 ? `| 전체 ${fmt(totalMeals)}식 · <strong style="color:#374151">${fmt(totalMealPrice)}원/식</strong>` : ''}
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
       ${rows}
     </div>
     <!-- 가중평균 식단가 요약 + 막대그래프 -->
@@ -12071,7 +12071,7 @@ async function renderReport(selectedHospitalId = null) {
 
     // 공통 섹션 헤더 (PDF 샘플: 진한 다크그린 배경, PAGE 배지, 우상단 병원명/날짜)
     const SH = (pg,title,sub='') => `
-      <div style="display:flex;align-items:center;justify-content:space-between;background:#064e3b;color:white;padding:14px 40px;margin:-28px -40px 20px -40px;flex-shrink:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;background:#064e3b;color:white;padding:16px 60px;margin:0 -60px 28px -60px;flex-shrink:0">
         <div style="display:flex;align-items:center;gap:14px">
           <span style="background:rgba(255,255,255,0.18);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:800;letter-spacing:1.5px">PAGE ${pg}</span>
           <span style="font-size:20px;font-weight:800;letter-spacing:0.5px">${title}</span>
@@ -12086,7 +12086,7 @@ async function renderReport(selectedHospitalId = null) {
 
     // 공통 AI 박스 (PDF 샘플: 분석/경고 나란히, 충분한 패딩)
     const AIBox = (analysis,warn,accentColor='#064e3b',bg='#f0fdf4') => `
-      <div style="display:grid;grid-template-columns:1fr${warn?` 1fr`:''};gap:14px;margin-top:14px;flex-shrink:0">
+      <div style="display:grid;grid-template-columns:1fr${warn?` 1fr`:''};gap:24px;margin-top:20px;flex-shrink:0">
         <div style="background:${bg};border:1px solid ${accentColor}30;border-left:5px solid ${accentColor};border-radius:10px;padding:14px 20px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
             <span style="background:${accentColor};color:white;padding:3px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:0.5px">AI 분석</span>
@@ -12117,7 +12117,7 @@ async function renderReport(selectedHospitalId = null) {
     <div class="report-slide" style="position:relative;background:#ffffff;color:#1a1a1a;padding:0;overflow:hidden;display:flex;flex-direction:column;">
       <!-- 상단 헤더 -->
       <div style="display:flex;justify-content:space-between;align-items:center;padding:20px 40px;border-bottom:1px solid #e5e7eb">
-        <div style="display:flex;align-items:center;gap:10px">
+        <div style="display:flex;align-items:center;gap:16px">
           <div style="width:36px;height:36px;background:#064e3b;border-radius:8px;display:flex;align-items:center;justify-content:center">
             <span style="color:white;font-weight:900;font-size:15px">R</span>
           </div>
@@ -12160,7 +12160,7 @@ async function renderReport(selectedHospitalId = null) {
     <div class="report-slide rpt-report-page">
       ${SH(2,'운영 요약','Budget Overview')}
       <!-- KPI 6개 (PDF 샘플: 3열 2행, 아이콘 우측 상단) -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px;flex-shrink:0">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-bottom:24px;flex-shrink:0">
         ${[
           {label:'총 예산',val:`${fmtMan(totalBudget)}원`,sub:'월 배정 예산',col:'#064e3b',bg:'#f0fdf4',icon:'💰'},
           {label:'집행 금액',val:`${fmtMan(usedAmount)}원`,sub:`달성률 ${progress}%`,col:'#1d4ed8',bg:'#eff6ff',icon:'📊'},
@@ -12171,7 +12171,7 @@ async function renderReport(selectedHospitalId = null) {
         ].map(c=>KPI(c.label,c.val,c.sub,c.col,c.bg,c.icon)).join('')}
       </div>
       <!-- Gauge Chart + 상세 -->
-      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;flex:1;min-height:0">
+      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:28px;flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;align-items:center;background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0">
           <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:6px;width:100%;text-align:center">예산 사용률</div>
           <div id="rptGaugeChart" style="width:100%;flex:1;min-height:200px"></div>
@@ -12179,10 +12179,10 @@ async function renderReport(selectedHospitalId = null) {
             <div style="font-size:12px;color:#4b5563;font-weight:600">목표 범위: 80 ~ 90%</div>
           </div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;flex-direction:column;gap:16px">
           <div style="background:#f8fafc;border-radius:12px;padding:14px 18px;border:1px solid #e2e8f0;flex:1">
             <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">예산 집행 현황</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
               ${[
                 {label:'일평균 사용액',val:`${fmt(dailyAvg||Math.round(usedAmount/Math.max(elapsedDays,1)))}원`,col:'#d97706'},
                 {label:'경과일 / 총일수',val:`${elapsedDays||'—'}일 / ${daysInMonth}일`,col:'#1f2937'},
@@ -12196,7 +12196,7 @@ async function renderReport(selectedHospitalId = null) {
           </div>
           <div style="background:#f8fafc;border-radius:12px;padding:14px 18px;border:1px solid #e2e8f0;flex:1">
             <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">식수 현황 요약</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
               ${[
                 {label:'직원식',val:`${fmt(s.staffCount||rptSummary.staffCount||0)}명`,col:'#d97706'},
                 {label:'보호자식',val:`${fmt(s.guardianCount||0)}명`,col:'#dc2626'},
@@ -12256,7 +12256,7 @@ async function renderReport(selectedHospitalId = null) {
       ${SH(3,'카테고리별 평균 식단가 분석','Category Meal Price')}
       ${hasCatData ? `
       <!-- 바 차트 -->
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px;flex:1">
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;margin-bottom:20px;flex:1">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">카테고리별 식단가 비교 (목표선 포함)</div>
         <div id="rptCatPriceChart" style="width:100%;height:280px"></div>
       </div>
@@ -12285,11 +12285,11 @@ async function renderReport(selectedHospitalId = null) {
       ${targetPrice>0&&hasCatData?`
       <div style="background:#f8fafc;border-radius:10px;padding:10px 14px;border:1px solid #e2e8f0;margin-bottom:8px;flex-shrink:0">
         <div style="font-size:14px;font-weight:700;color:#374151;margin-bottom:10px">목표 식단가(${fmt(targetPrice)}원) 대비 현황</div>
-        <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;flex-direction:column;gap:12px">
           ${catPriceData.filter(c=>c.price>0).map(c=>{
             const pct = Math.round(c.price/targetPrice*100)
             const over = c.price>targetPrice
-            return `<div style="display:flex;align-items:center;gap:10px">
+            return `<div style="display:flex;align-items:center;gap:16px">
               <div style="width:90px;font-size:13px;color:#374151;font-weight:600;flex-shrink:0">${c.name}</div>
               <div style="flex:1;background:#e5e7eb;border-radius:99px;height:10px;overflow:hidden;position:relative">
                 <div style="height:100%;width:${Math.min(pct,120)}%;background:${over?'#dc2626':c.col};border-radius:99px;max-width:100%"></div>
@@ -12320,7 +12320,7 @@ async function renderReport(selectedHospitalId = null) {
     <div class="report-slide rpt-report-page">
       ${SH(4,'일별 매입금액 분석','Daily Purchase')}
       <!-- 차트 -->
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px;flex:1;min-height:0">
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;margin-bottom:20px;flex:1;min-height:0">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">일별 매입금액 추이 (막대+평균선, 빨간색=평균2배초과)</div>
         <div id="rptDailyChart" style="width:100%;height:280px"></div>
       </div>
@@ -12368,14 +12368,14 @@ async function renderReport(selectedHospitalId = null) {
     const slide5 = `
     <div class="report-slide rpt-report-page">
       ${SH(5,'업체별 발주 분석','Vendor Orders')}
-      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:28px;flex:1;min-height:0;margin-bottom:20px">
         <!-- 도넛 차트 -->
         <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
           <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">업체별 발주 비중 (도넛 차트)</div>
           <div id="rptVendorChart" style="width:100%;flex:1;min-height:320px"></div>
         </div>
         <!-- 업체 테이블 -->
-        <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;flex-direction:column;gap:12px">
           <div style="font-size:14px;font-weight:700;color:#1f2937;padding-bottom:8px;border-bottom:2px solid #064e3b">업체별 발주 금액</div>
           <div style="flex:1;overflow:hidden">
             ${(rptOrders||[]).slice(0,8).map((o,i)=>{
@@ -12428,7 +12428,7 @@ async function renderReport(selectedHospitalId = null) {
     const slide6 = `
     <div class="report-slide rpt-report-page">
       ${SH(6,'식수 현황 분석','Meal Count')}
-      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:28px;flex:1;min-height:0;margin-bottom:20px">
         <!-- 가로 바 차트 -->
         <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
           <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">식종별 식수 현황 (명수 레이블 포함)</div>
@@ -12480,7 +12480,7 @@ async function renderReport(selectedHospitalId = null) {
     const slide7 = `
     <div class="report-slide rpt-report-page">
       ${SH(7,'월별 식단가 추이','Monthly Meal Price Trend')}
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+      <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;flex:1;margin-bottom:20px;min-height:0">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">2026년 월별 평균 식단가 추이 (실선=실제, 점선=목표)</div>
         <div id="rptMealPriceTrendChart" style="width:100%;height:280px"></div>
       </div>
@@ -12517,7 +12517,7 @@ async function renderReport(selectedHospitalId = null) {
     const slide8 = `
     <div class="report-slide rpt-report-page">
       ${SH(8,'월별 업체별 발주 금액 추이','Monthly Vendor Order Trend')}
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+      <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;flex:1;margin-bottom:20px;min-height:0">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">2026년 업체별 발주 금액 (누적 막대)</div>
         <div id="rptVendorMonthlyChart" style="width:100%;height:280px"></div>
       </div>
@@ -12552,7 +12552,7 @@ async function renderReport(selectedHospitalId = null) {
     const slide9 = `
     <div class="report-slide rpt-report-page">
       ${SH(9,'월별 총 발주 금액 추이','Monthly Total Order Trend')}
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+      <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;flex:1;margin-bottom:20px;min-height:0">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">2026년 월별 총 발주 금액 추이</div>
         <div id="rptMonthlyTotalChart" style="width:100%;height:280px"></div>
       </div>
@@ -12581,7 +12581,7 @@ async function renderReport(selectedHospitalId = null) {
     const slide10 = `
     <div class="report-slide rpt-report-page">
       ${SH(10,`${reportMonth}월 일별 발주 금액 추이`,'Daily Order Trend')}
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+      <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;flex:1;margin-bottom:20px;min-height:0">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">${reportYear}년 ${reportMonth}월 1일~말일 일별 발주 금액</div>
         <div id="rptDailyOrderChart" style="width:100%;height:280px"></div>
       </div>
@@ -12684,7 +12684,7 @@ async function renderReport(selectedHospitalId = null) {
     <div class="report-slide rpt-report-page">
       ${SH(12,'월별 잔반 분석','Monthly Food Waste Analysis')}
       ${hasWasteData ? `
-      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;margin-bottom:10px;min-height:0">
+      <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;flex:1;margin-bottom:20px;min-height:0">
         <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">2026년 월별 잔반량(kg) 및 비용 추이</div>
         <div id="rptFoodWasteChart" style="width:100%;height:260px"></div>
       </div>
@@ -12717,49 +12717,64 @@ async function renderReport(selectedHospitalId = null) {
     const slide13 = `
     <div class="report-slide rpt-report-page">
       ${SH(13,'종합 운영 점수','Overall Operation Score')}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
-        <!-- 레이더 차트 -->
-        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <div style="font-size:16px;font-weight:800;color:#064e3b">종합 운영 점수</div>
-            <div style="font-size:32px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:14px">점</span></div>
-          </div>
-          <div id="rptScoreChart" style="width:100%;height:200px;margin-bottom:8px"></div>
-          ${scoreItems.map(item=>`
-            <div style="margin-bottom:6px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-                <span style="font-size:13px;font-weight:600;color:#374151">${item.icon} ${item.label}</span>
-                <div style="text-align:right">
-                  <span style="font-size:15px;font-weight:900;color:${tc(item.val)}">${item.val}점</span>
-                  <span style="font-size:11px;color:#9ca3af;margin-left:4px">${item.desc}</span>
-                </div>
-              </div>
-              <div style="background:#e5e7eb;border-radius:99px;height:6px;overflow:hidden">
-                <div style="height:100%;width:${item.val}%;background:${tc(item.val)};border-radius:99px"></div>
-              </div>
-            </div>`).join('')}
-        </div>
-        <!-- AI 경고 요약 + 서명란 -->
-        <div style="display:flex;flex-direction:column;gap:10px">
-          ${aiWarnings.length>0?`
-          <div style="background:#fef2f2;border-radius:12px;padding:14px;border:1px solid #fca5a5;flex-shrink:0">
-            <div style="font-size:13px;font-weight:800;color:#dc2626;margin-bottom:8px;display:flex;align-items:center;gap:6px">
-              <span style="background:#dc2626;color:white;padding:2px 10px;border-radius:10px;font-size:9px">△ AI 경고 요약</span>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;flex:1;min-height:0;margin-bottom:12px">
+        <!-- 왼쪽: 레이더 차트 + 점수 항목 (분리된 두 영역) -->
+        <div style="display:flex;flex-direction:column;gap:0;min-height:0">
+          <!-- 레이더 차트 영역 -->
+          <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex-shrink:0">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <div style="font-size:16px;font-weight:800;color:#064e3b">종합 운영 점수</div>
+              <div style="font-size:32px;font-weight:900;color:${tc(overallScore)}">${overallScore}<span style="font-size:14px">점</span></div>
             </div>
-            ${aiWarnings.slice(0,4).map(w=>`
-              <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding:6px 8px;background:rgba(255,255,255,0.6);border-radius:6px;border-left:3px solid ${w.color||'#dc2626'}">
-                <span style="font-size:14px;flex-shrink:0">${w.icon||'⚠️'}</span>
-                <div style="font-size:13px;color:#7f1d1d;line-height:1.6">${w.text}</div>
+            <div id="rptScoreChart" style="width:100%;height:200px"></div>
+          </div>
+          <!-- 30px 간격: 레이더 차트와 막대 그래프 분리 -->
+          <div style="height:30px;flex-shrink:0"></div>
+          <!-- 점수 항목 막대 그래프 영역 -->
+          <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;min-height:0;overflow:auto">
+            ${scoreItems.map(item=>`
+              <div style="margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                  <span style="font-size:13px;font-weight:600;color:#374151">${item.icon} ${item.label}</span>
+                  <div style="text-align:right">
+                    <span style="font-size:15px;font-weight:900;color:${tc(item.val)}">${item.val}점</span>
+                    <span style="font-size:11px;color:#9ca3af;margin-left:4px">${item.desc}</span>
+                  </div>
+                </div>
+                <div style="background:#e5e7eb;border-radius:99px;height:7px;overflow:hidden">
+                  <div style="height:100%;width:${item.val}%;background:${tc(item.val)};border-radius:99px"></div>
+                </div>
               </div>`).join('')}
-          </div>`:''}
+          </div>
+        </div>
+        <!-- 오른쪽: AI 경고 요약 + 서명란 -->
+        <div style="display:flex;flex-direction:column;gap:16px">
+          ${aiWarnings.length>0?`
+          <div style="background:#fef2f2;border-radius:12px;padding:16px;border:1px solid #fca5a5;flex:1;display:flex;flex-direction:column">
+            <div style="font-size:13px;font-weight:800;color:#dc2626;margin-bottom:10px;display:flex;align-items:center;gap:6px">
+              <span style="background:#dc2626;color:white;padding:3px 12px;border-radius:10px;font-size:10px">△ AI 경고 요약</span>
+            </div>
+            <div style="display:flex;flex-direction:column;justify-content:center;flex:1;gap:8px">
+              ${aiWarnings.slice(0,4).map(w=>`
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:rgba(255,255,255,0.7);border-radius:8px;border-left:3px solid ${w.color||'#dc2626'}">
+                  <span style="font-size:16px;flex-shrink:0">${w.icon||'⚠️'}</span>
+                  <div style="font-size:13px;color:#7f1d1d;line-height:1.5">${w.text}</div>
+                </div>`).join('')}
+            </div>
+          </div>`:`
+          <div style="background:#f0fdf4;border-radius:12px;padding:16px;border:1px solid #6ee7b7;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center">
+            <div style="font-size:40px;margin-bottom:8px">✅</div>
+            <div style="font-size:15px;font-weight:700;color:#065f46;text-align:center">이번 달 경고 없음</div>
+            <div style="font-size:13px;color:#047857;margin-top:6px;text-align:center">안정적인 운영이 이루어지고 있습니다</div>
+          </div>`}
           <!-- 서명란 -->
-          <div style="background:#f8fafc;border-radius:10px;padding:12px;border:1px solid #e5e7eb;margin-top:auto">
-            <div style="display:flex;justify-content:space-between;align-items:flex-end">
+          <div style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid #e5e7eb;flex-shrink:0">
+            <div style="display:flex;justify-content:space-between;align-items:center">
               <div style="font-size:12px;color:#9ca3af;line-height:1.7">
                 <div>본 보고서는 Re&amp;H 급식 운영 관리 시스템에 의해 자동 생성되었습니다.</div>
                 <div>보고 기간: ${reportYear}년 ${reportMonth}월 | 작성일: ${new Date().toLocaleDateString('ko-KR')}</div>
               </div>
-              <div style="text-align:center;padding:10px 20px;border:1px solid #e5e7eb;border-radius:8px;min-width:120px;background:white">
+              <div style="text-align:center;padding:10px 20px;border:1px solid #e5e7eb;border-radius:8px;min-width:120px;background:white;flex-shrink:0">
                 <div style="font-size:12px;color:#9ca3af;margin-bottom:10px">영양사 서명 확인</div>
                 <div style="font-size:11px;font-weight:700;color:#1f2937">${hospitalName}</div>
                 <div style="font-size:13px;color:#6b7280;margin-top:4px">영양사: ${s.nutritionistName||s.nutritionist_name||'(서명)'}</div>
@@ -12777,7 +12792,7 @@ async function renderReport(selectedHospitalId = null) {
     const slide14 = `
     <div class="report-slide rpt-report-page">
       ${SH(14,'다음 달 운영 전략','Next Month Strategy')}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:28px;flex:1;min-height:0;margin-bottom:12px">
         <!-- 다음 달 목표 -->
         <div style="background:#ecfdf5;border-radius:12px;padding:16px;border:1px solid #6ee7b7;display:flex;flex-direction:column">
           <div style="font-size:16px;font-weight:800;color:#064e3b;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #064e3b;display:flex;align-items:center;gap:8px">
@@ -12800,7 +12815,7 @@ async function renderReport(selectedHospitalId = null) {
             </div>`).join('')}
         </div>
         <!-- 이번 달 핵심 지표 요약 + KPI -->
-        <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;flex-direction:column;gap:16px">
           <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1">
             <div style="font-size:15px;font-weight:800;color:#1f2937;margin-bottom:12px">${reportMonth}월 핵심 성과 요약</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -14834,7 +14849,7 @@ async function exportReportPDF(hospitalName, year, month) {
     <div style="space-y:8px">
       ${interp.map(item => `
       <div style="background:#f9fafb;border-left:4px solid ${item.color};border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px">
-        <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="display:flex;align-items:flex-start;gap:16px">
           <span style="font-size:16px;flex-shrink:0">${item.icon}</span>
           <div>
             <span style="font-size:10px;font-weight:700;color:${item.color};background:${item.color}20;padding:2px 6px;border-radius:4px;margin-right:6px">${item.cat}</span>

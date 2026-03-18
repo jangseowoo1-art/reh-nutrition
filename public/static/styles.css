@@ -627,7 +627,9 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 /* 화면에서 보이는 보고서 페이지 (rpt-report-page) */
 .rpt-report-page {
   background: white;
-  padding: 28px 40px 28px 40px;
+  /* 요청 기준: Top/Bottom/Left/Right 60px 여백 */
+  /* SH 헤더가 -60px 마진으로 상단 여백을 채우므로 pt 60px 사용 */
+  padding: 0 60px 60px 60px;
   position: relative;
   display: flex;
   flex-direction: column;
