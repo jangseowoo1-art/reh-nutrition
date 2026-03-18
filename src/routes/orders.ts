@@ -620,9 +620,10 @@ orders.get('/inspection/pending/:year/:month', async (c) => {
     `SELECT d.id, d.order_date, d.total_amount, d.taxable_amount, d.exempt_amount,
             d.is_inspected, d.actual_amount, d.inspection_memo, d.received_date,
             d.inspected_at, d.inspected_by,
-            v.name as vendor_name, v.category, v.tax_type
+            COALESCE(v.name, '미등록 업체(ID:'||d.vendor_id||')') as vendor_name,
+            v.category, v.tax_type
      FROM daily_orders d
-     JOIN vendors v ON d.vendor_id = v.id
+     LEFT JOIN vendors v ON d.vendor_id = v.id
      WHERE d.hospital_id = ?
        AND strftime('%Y', d.order_date) = ?
        AND strftime('%m', d.order_date) = printf('%02d', ?)

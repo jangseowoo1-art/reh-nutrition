@@ -678,10 +678,15 @@ async function renderDashboard() {
             </tr>
           </thead>
           <tbody>
-            ${(inspectionSummary.pendingList || []).slice(0, 5).map((r, idx) => `
+            ${(inspectionSummary.pendingList || []).slice(0, 5).map((r, idx) => {
+              const isUnregistered = !r.vendor_name || r.category == null
+              const vendorDisplay = isUnregistered
+                ? `<span style="color:#dc2626;font-weight:700">⚠️ ${r.vendor_name||'미등록 업체'}</span><br><span style="font-size:9px;color:#ef4444">업체 미등록 발주</span>`
+                : r.vendor_name
+              return `
             <tr style="border-bottom:1px solid #fed7aa;background:${idx%2===0?'#fff7ed':'white'}">
               <td style="padding:5px 8px;color:#6b7280">${r.order_date||''}</td>
-              <td style="padding:5px 8px;font-weight:600;color:#374151">${r.vendor_name||''}</td>
+              <td style="padding:5px 8px;font-weight:600;color:#374151">${vendorDisplay}</td>
               <td style="padding:5px 8px;text-align:right;color:#1d4ed8;font-weight:600">${fmt(r.total_amount||0)}원</td>
               <td style="padding:5px 8px;text-align:center">
                 <span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:600;font-size:10px">⏳ 미검수</span>
@@ -691,7 +696,7 @@ async function renderDashboard() {
                   <i class="fas fa-check"></i> 완료
                 </button>
               </td>
-            </tr>`).join('')}
+            </tr>`}).join('')}
             ${(inspectionSummary.pendingList||[]).length > 5 ? `
             <tr><td colspan="5" style="padding:5px 8px;text-align:center;color:#9ca3af;font-style:italic">+${(inspectionSummary.pendingList||[]).length - 5}건 더... (전체보기 클릭)</td></tr>` : ''}
           </tbody>
@@ -1193,18 +1198,15 @@ async function renderDashboard() {
         const totalBudgetW = activeCats.reduce((s,c) => s + (c.monthBudget||0), 0)
         const totalAmtW = activeCats.reduce((s,c) => s + c.monthAmt, 0)
 
-        // ① 전체 식단가 (예산비중 가중평균, 예산 미설정 시 발주금액 비중 폴백)
-        let dbWeightedCurrent = 0
-        if (isSingleCat) {
-          // 카테고리 1개: 해당 식단가 = 전체 식단가
-          dbWeightedCurrent = catPriceList[0]._dietPrice
-        } else if (totalBudgetW > 0) {
-          // 카테고리 2개+: 예산 비중 가중평균 (핵심 수정)
-          dbWeightedCurrent = Math.round(activeCats.reduce((s,c) => s + c._dietPrice * ((c.monthBudget||0) / totalBudgetW), 0))
-        } else if (totalAmtW > 0) {
-          // 예산 미설정 시: 발주금액 비중 가중평균 폴백
-          dbWeightedCurrent = Math.round(activeCats.reduce((s,c) => s + c._dietPrice * (c.monthAmt / totalAmtW), 0))
-        }
+        // ① 전체 식단가: 서버에서 계산된 총발주÷총식수 (올바른 가중평균)
+        // mealPriceTotal = 총발주금액 / 총식수 (카테고리별 발주+식수 합산)
+        // 예산비중 가중평균(식단가×예산비중)은 잘못된 방식 → 사용 안 함
+        const dbWeightedCurrent = mealPriceTotal || (() => {
+          // mealPriceTotal 없을 때 폴백: 총발주÷총식수 직접 계산
+          const totalO = activeCats.reduce((s,c) => s + (c.monthAmt||0), 0)
+          const totalM = activeCats.reduce((s,c) => s + (c.monthMeals||0), 0)
+          return totalM > 0 ? Math.round(totalO / totalM) : 0
+        })()
 
         // ② 목표 식단가 (예산 비중 가중평균)
         const catsWithTarget = catPriceList.filter(c => c.monthBudget > 0 && c.targetPrice > 0)
@@ -1246,13 +1248,11 @@ async function renderDashboard() {
             </div>
           </div>`
         })() : ''
-        const panelTitle = isSingleCat ? `전체 식단가 (${catPriceList[0]?.category_name||''} 기준)` : '전체 식단가 (예산비중 가중평균)'
+        const panelTitle = isSingleCat ? `전체 식단가 (${catPriceList[0]?.category_name||''} 기준)` : '전체 식단가 (총발주÷총식수 가중평균)'
         const panelIcon  = isSingleCat ? 'fa-utensils' : 'fa-balance-scale'
         const panelDesc  = isSingleCat
           ? `${catPriceList[0]?.category_name||''} 발주금액 ÷ 설정 식수`
-          : (totalBudgetW > 0
-            ? activeCats.map(c => `${c.category_name} ${Math.round(((c.monthBudget||0)/totalBudgetW)*100)}%`).join(' + ') + ' (예산비중)'
-            : activeCats.map(c => `${c.category_name} ${totalAmtW>0?Math.round((c.monthAmt/totalAmtW)*100):0}%`).join(' + ') + ' (발주비중)')
+          : activeCats.map(c => `${c.category_name} ${c.monthMeals||0}식`).join(' + ') + ' (식수비중 가중평균)'
         return `<div class="mt-3 p-3 rounded-xl border" style="background:linear-gradient(135deg,#faf5ff,#f0f9ff);border-color:#c084fc40">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
             <span style="font-size:12px;font-weight:700;color:#7c3aed"><i class="fas ${panelIcon}" style="margin-right:4px"></i>${panelTitle}</span>
