@@ -17177,6 +17177,39 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
   TXState._previewRows = rows
   if (!TXState.colMapping) TXState.colMapping = {}
 
+  // txColMappingSection이 DOM에 없으면 txTabContent 뒤에 동적 생성
+  let section = document.getElementById('txColMappingSection')
+  if (!section) {
+    const tabContent = document.getElementById('txTabContent')
+    if (!tabContent) return
+    const wrapper = document.createElement('div')
+    wrapper.innerHTML = `
+    <div id="txColMappingSection" class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mt-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
+          <i class="fas fa-table text-green-500"></i> 열 매핑
+          <span id="txAutoDetectBadge" class="hidden text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium ml-1">
+            <i class="fas fa-magic mr-0.5"></i>자동감지
+          </span>
+        </h3>
+        <span class="text-xs text-gray-400">드롭다운으로 각 열의 역할을 지정하세요</span>
+      </div>
+      <div id="txColMappingSummary" class="flex flex-wrap gap-1 mb-3"></div>
+      <div class="overflow-x-auto rounded-lg border border-gray-100">
+        <table id="txColMappingTable" class="w-full text-xs border-collapse min-w-max">
+          <thead id="txColMappingHead"></thead>
+          <tbody id="txColMappingBody"></tbody>
+        </table>
+      </div>
+      <div class="mt-2 text-xs text-gray-400 flex items-center gap-1">
+        <i class="fas fa-info-circle"></i> 상위 8행 미리보기 · 색상 열이 선택된 필드
+      </div>
+    </div>`
+    tabContent.appendChild(wrapper.firstElementChild)
+    section = document.getElementById('txColMappingSection')
+  }
+  if (section) section.classList.remove('hidden')
+
   // autoMap으로 초기 매핑 설정
   if (autoMap) {
     TXState.colMapping = {}
@@ -17243,10 +17276,6 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
     }).join('')
     return `<tr class="${ri%2===0?'bg-white':'bg-gray-50/30'}">${cells}</tr>`
   }).join('')
-
-  // 미리보기 섹션 표시
-  const section = document.getElementById('txColMappingSection')
-  if (section) section.classList.remove('hidden')
 
   // 색상 업데이트
   txUpdateTableColors()
@@ -18001,7 +18030,7 @@ async function txLoadPreview() {
     const res = await axios.get(`/api/transaction/files/${TXState.currentFileId}/items`,
       { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
     TXState.previewItems = res.data.data || []
-    txRenderPreviewTable(TXState.previewItems)
+    txRenderParsedItems(TXState.previewItems)
   } catch(e) {
     el.innerHTML = `<div class="text-red-400 text-sm py-4">불러오기 실패: ${e.message}</div>`
   }
@@ -18011,7 +18040,7 @@ function txFilterPreview(q) {
   const filtered = q
     ? TXState.previewItems.filter(r => (r.item_name||'').includes(q) || (r.item_name_normalized||'').includes(q))
     : TXState.previewItems
-  txRenderPreviewTable(filtered)
+  txRenderParsedItems(filtered)
 }
 
 function txRenderParsedItems(items) {
