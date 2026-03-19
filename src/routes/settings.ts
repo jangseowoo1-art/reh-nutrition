@@ -101,11 +101,24 @@ settings.get('/active-month', async (c) => {
   
   // 없으면 현재 날짜 기준
   const now = new Date()
+  const activeYear  = info?.current_year  || now.getFullYear()
+  const activeMonth = info?.current_month || now.getMonth() + 1
+
+  // 승인 완료된 이전 달 목록 조회 (읽기전용 잠금 기준)
+  const approvedRows = await c.env.DB.prepare(
+    `SELECT year, month FROM monthly_closings WHERE hospital_id=? AND status='approved' ORDER BY year DESC, month DESC LIMIT 24`
+  ).bind(user.hospitalId).all<any>()
+
+  const lockedMonths: string[] = (approvedRows.results || []).map(
+    (r: any) => `${r.year}-${String(r.month).padStart(2,'0')}`
+  )
+
   return c.json({
-    year: info?.current_year || now.getFullYear(),
-    month: info?.current_month || now.getMonth() + 1,
+    year: activeYear,
+    month: activeMonth,
     closingStatus: info?.closing_status || 'open',
-    closingRequestedAt: info?.closing_requested_at || null
+    closingRequestedAt: info?.closing_requested_at || null,
+    lockedMonths  // ["2026-02", "2026-01", ...] — 수정 불가 월 목록
   })
 })
 

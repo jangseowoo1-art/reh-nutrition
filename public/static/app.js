@@ -10,7 +10,24 @@ const App = {
   currentYear: new Date().getFullYear(),
   currentMonth: new Date().getMonth() + 1,
   currentPage: '',
-  charts: {}
+  charts: {},
+  lockedMonths: []  // 마감 승인된 읽기전용 월 목록 ["2026-02", ...]
+}
+
+// ── 읽기전용 헬퍼 ────────────────────────────────────────────
+// 관리자는 항상 편집 가능, 영양사는 마감 승인된 달은 읽기전용
+function isReadOnly(year, month) {
+  if (App.role === 'admin') return false
+  const key = `${year}-${String(month).padStart(2,'0')}`
+  return App.lockedMonths.includes(key)
+}
+
+// 읽기전용 배너 HTML (페이지 상단에 표시)
+function readOnlyBanner() {
+  return `<div class="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-4 text-sm text-amber-800">
+    <i class="fas fa-lock text-amber-500"></i>
+    <span><strong>마감 완료된 달</strong>입니다. 데이터를 수정할 수 없습니다. (조회만 가능)</span>
+  </div>`
 }
 
 // 마감 승인 폴링 타이머 ID (전역에 선언해 navigateTo에서 접근 가능)
@@ -53,6 +70,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         App.currentYear = am.year
         App.currentMonth = am.month
       }
+      // 마감 승인된 월 목록 저장 (읽기전용 처리용)
+      if (am?.lockedMonths) App.lockedMonths = am.lockedMonths
     } catch(e) {}
     // heartbeat 시작 (60초마다 현재 페이지 서버에 전달)
     startHeartbeat()
@@ -1425,7 +1444,7 @@ async function renderDashboard() {
           </div>
         </div>
         ${foodWasteData.length > 0 ? (() => {
-          const totalKg = foodWasteData.reduce((s,w)=>s+(w.waste_amount||0),0)
+          const totalL = foodWasteData.reduce((s,w)=>s+(w.waste_amount||0),0)
           const totalCost = foodWasteData.reduce((s,w)=>s+(w.waste_cost||0),0)
           const wasteBudget = data?.settings?.food_waste_budget || 0
           const budgetPct = wasteBudget > 0 ? Math.round(totalCost/wasteBudget*100) : 0
@@ -1435,13 +1454,13 @@ async function renderDashboard() {
             ${foodWasteData.map(w=>`
             <div class="flex items-center justify-between text-xs bg-amber-50 rounded-lg px-3 py-1.5">
               <span class="text-gray-600">${w.week}주차</span>
-              <span class="font-semibold text-amber-700">${(w.waste_amount||0).toFixed(1)}kg</span>
+              <span class="font-semibold text-amber-700">${(w.waste_amount||0).toFixed(1)}L</span>
               ${w.waste_cost>0?`<span class="text-gray-500">${fmtMan(w.waste_cost)}원</span>`:'<span class="text-gray-300">-</span>'}
               ${w.memo?`<span class="text-gray-400 truncate max-w-20">${w.memo}</span>`:''}
             </div>`).join('')}
             <div class="flex items-center justify-between text-xs font-bold bg-amber-100 rounded-lg px-3 py-1.5">
               <span class="text-amber-800">합계</span>
-              <span class="text-amber-800">${totalKg.toFixed(1)}kg</span>
+              <span class="text-amber-800">${totalL.toFixed(1)}L</span>
               <span class="${costOverBudget?'text-red-600':'text-amber-700'}">${fmtMan(totalCost)}원 ${costOverBudget?'🚨':''}</span>
             </div>
             ${wasteBudget > 0 ? `
@@ -1883,7 +1902,11 @@ async function renderOrders() {
     .reduce((s, f) => s + (Number(initMealCustomTotals[f.field_key]) || 0), 0)
   const initTotalMeals = (mealStats.total_staff||0) + (mealStats.total_guardian||0) + initCustomMealSum
 
+  // ── 마감 완료 달 읽기전용 처리 ──
+  const _ordersReadOnly = isReadOnly(App.currentYear, App.currentMonth)
+
   content.innerHTML = `
+  ${_ordersReadOnly ? readOnlyBanner() : ''}
   <!-- ── 식단가 실시간 패널 ── -->
   <div id="mealPricePanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
     <div class="flex items-center justify-between mb-3">
@@ -3197,6 +3220,10 @@ function setupOrdersScrollSync() {
 
 // ── 발주 전체 수동 저장 ────────────────────────────────────────
 window.saveAllOrders = async () => {
+  // 마감 완료 달 읽기전용 체크
+  if (isReadOnly(App.currentYear, App.currentMonth)) {
+    showToast('⛔ 마감 완료된 달은 수정할 수 없습니다.', 'error'); return
+  }
   const inputs = document.querySelectorAll('.order-input')
   if (inputs.length === 0) { showToast('저장할 발주 데이터가 없습니다', 'warning'); return }
 
@@ -3963,7 +3990,7 @@ window.openInspectionModal = async () => {
               <td style="padding:6px 8px;text-align:right">
                 ${r.is_inspected ? `
                   <span class="font-bold ${(r.actual_amount||r.total_amount)!==r.total_amount?'text-orange-600':'text-green-600'}">${fmt(r.actual_amount||r.total_amount)}원</span>
-                  ${r.deduction_amount > 0 ? `<div style="font-size:10px;color:#dc2626">차감: -${fmt(r.deduction_amount)}원</div>` : ''}
+                  ${r.deduction_amount !== 0 && r.deduction_amount != null ? `<div style="font-size:10px;color:${r.deduction_amount>0?'#dc2626':'#16a34a'}">변동: ${r.deduction_amount>0?'-':'+'}${fmt(Math.abs(r.deduction_amount))}원 (${r.deduction_amount>0?'차감':'증액'})</div>` : ''}
                 ` : `
                   <input type="number" id="actual-${r.id}" value="${r.total_amount}"
                     style="width:90px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;text-align:right;font-size:11px">
@@ -4025,7 +4052,7 @@ window.openInspectionModal = async () => {
                     <input type="text" id="issue-item-${r.id}" placeholder="예: 돼지고기 1kg" style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px;box-sizing:border-box">
                   </div>
                   <div>
-                    <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">차감 금액 (원)</label>
+                    <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">변동금액 (원, - 입력 가능)</label>
                     <input type="number" id="issue-deduction-${r.id}" placeholder="0" value="0"
                       oninput="updateActualFromDeduction(${r.id},${r.total_amount})"
                       style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px;box-sizing:border-box">
@@ -4094,10 +4121,12 @@ window.cancelIssueForm = function(orderId) {
   document.getElementById(`issue-form-${orderId}`).style.display = 'none'
 }
 window.updateActualFromDeduction = function(orderId, orderAmount) {
-  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||0)||0
-  const actual = orderAmount - deduction
+  // 변동금액: + 이면 증액, - 이면 차감
+  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||'0')||0
+  const actual = orderAmount - deduction  // 변동금액 차감 (음수면 증액됨)
   const dispEl = document.getElementById(`issue-actual-display-${orderId}`)
-  if (dispEl) dispEl.textContent = fmt(Math.max(0, actual)) + '원'
+  const sign = deduction > 0 ? '차감' : deduction < 0 ? '증액' : ''
+  if (dispEl) dispEl.innerHTML = `<span style="color:${actual<orderAmount?'#dc2626':actual>orderAmount?'#16a34a':'#374151'}">${fmt(actual)}원</span>${sign ? ` <span style="font-size:10px;color:#6b7280">(${sign} ${fmt(Math.abs(deduction))}원)</span>` : ''}`
 }
 
 // #1 이슈 저장
@@ -4105,9 +4134,9 @@ window.saveInspectionIssue = async function(orderId, vendorName, orderAmount) {
   const issueType = document.getElementById(`issue-type-${orderId}`)?.value
   const issueStatus = document.getElementById(`issue-status-${orderId}`)?.value || 'completed_issue'
   const itemName = document.getElementById(`issue-item-${orderId}`)?.value || ''
-  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||0)||0
+  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||'0')||0
   const detail = document.getElementById(`issue-detail-${orderId}`)?.value || ''
-  const actualAmount = Math.max(0, orderAmount - deduction)
+  const actualAmount = orderAmount - deduction  // 변동금액 반영 (음수=증액, 양수=차감)
 
   if (!issueType) { showToast('이슈 유형을 선택하세요', 'error'); return }
 
@@ -5895,7 +5924,11 @@ function renderMealsContent(content, mealData, customFields, patientCats) {
   const allLabels = [...baseLabels, ...customLabels]
   const colCount = allLabels.length + 1  // +1 = 소계
 
+  // ── 마감 완료 달 읽기전용 처리 ──
+  const _mealsReadOnly = isReadOnly(App.currentYear, App.currentMonth)
+
   content.innerHTML = `
+  ${_mealsReadOnly ? readOnlyBanner() : ''}
   <!-- 월 합계 요약 카드 -->
   <div class="flex flex-wrap gap-2 mb-4" id="mealSummaryCards">
     ${buildMealSummaryCards(monthTotal, customFields, grandTotal)}
@@ -5908,8 +5941,8 @@ function renderMealsContent(content, mealData, customFields, patientCats) {
         <p class="text-xs text-gray-400 mt-0.5 hidden md:block">조식/중식/석식 × 식수 카테고리</p>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
-        <button onclick="saveMealBatch()" class="btn btn-success btn-sm">
-          <i class="fas fa-save"></i> 저장
+        <button onclick="saveMealBatch()" class="btn btn-success btn-sm" ${_mealsReadOnly ? 'disabled title="마감 완료 달은 수정 불가"' : ''}>
+          <i class="fas fa-save"></i> ${_mealsReadOnly ? '🔒 저장불가' : '저장'}
         </button>
         <!-- 칸 생성 버튼 제거: 환자군은 관리자에서 설정하면 자동 반영됩니다 -->
       </div>
@@ -6312,6 +6345,9 @@ function buildCustomData(date) {
 }
 
 async function saveMealRow(date) {
+  if (isReadOnly(App.currentYear, App.currentMonth)) {
+    showToast('⛔ 마감 완료된 달은 수정할 수 없습니다.', 'error'); return
+  }
   const g = (k) => getMealVal(k, date)
   await api('POST', '/api/meals/save', {
     mealDate: date,
@@ -6406,6 +6442,9 @@ function updateMealSummaryCards() {
 }
 
 async function saveMealBatch() {
+  if (isReadOnly(App.currentYear, App.currentMonth)) {
+    showToast('⛔ 마감 완료된 달은 수정할 수 없습니다.', 'error'); return
+  }
   const rows = document.querySelectorAll('#mealTableBody tr[data-date]')
   let saved = 0
   const promises = []
@@ -6796,7 +6835,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       </div>
       <!-- ⑤ 연도별 잔반 비교 -->
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-trash text-amber-500 mr-1"></i>연도별 잔반 (kg) 비교</h3>
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-trash text-amber-500 mr-1"></i>연도별 잔반 (L) 비교</h3>
         <canvas id="chart-yrWaste" height="180"></canvas>
       </div>
       <!-- ⑥ 연도별 업체별 비중 파이 -->
@@ -7284,14 +7323,14 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     })
   }
 
-  // ── 연도별 비교 차트 ⑤: 잔반 kg 비교
+  // ── 연도별 비교 차트 ⑤: 잔반 L 비교
   new Chart(document.getElementById('chart-yrWaste'), {
     type:'bar', data:{
       labels: months,
       datasets:[
-        { label:`${curYear}년 잔반(kg)`, data:yr1.waste, backgroundColor:'rgba(245,158,11,0.75)', borderRadius:4 },
-        { label:`${curYear-1}년 잔반(kg)`, data:yr2.waste, backgroundColor:'rgba(245,158,11,0.4)', borderRadius:4 },
-        { label:`${curYear-2}년 잔반(kg)`, data:yr3.waste, backgroundColor:'rgba(209,213,219,0.5)', borderRadius:4 }
+        { label:`${curYear}년 잔반(L)`, data:yr1.waste, backgroundColor:'rgba(245,158,11,0.75)', borderRadius:4 },
+        { label:`${curYear-1}년 잔반(L)`, data:yr2.waste, backgroundColor:'rgba(245,158,11,0.4)', borderRadius:4 },
+        { label:`${curYear-2}년 잔반(L)`, data:yr3.waste, backgroundColor:'rgba(209,213,219,0.5)', borderRadius:4 }
       ]
     },
     options:{responsive:true,
@@ -7442,7 +7481,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     type:'bar', data:{
       labels:months,
       datasets:[
-        { label:'잔반량(kg)', data:wasteKgByMonth, backgroundColor:'rgba(245,158,11,0.7)', borderRadius:4, yAxisID:'y' },
+        { label:'잔반량(L)', data:wasteKgByMonth, backgroundColor:'rgba(245,158,11,0.7)', borderRadius:4, yAxisID:'y' },
         { label:'잔반비용',  data:wasteCostByMonth, type:'line', borderColor:'#f97316', borderWidth:2, pointRadius:4, fill:false, yAxisID:'y1' }
       ]
     },
@@ -7760,6 +7799,7 @@ async function renderSettings() {
 
 // ── 2.8 잔반 입력 모달 (업그레이드: 병원별 단가 설정 + 자동계산) ──
 window.showFoodWasteModal = async function(year, month) {
+  const _ro = isReadOnly(year, month)
   const [existing, summary] = await Promise.all([
     api('GET', `/api/settings/food-waste/${year}/${month}`) || [],
     api('GET', `/api/settings/food-waste-summary/${year}/${month}`).catch(()=>null)
@@ -7787,7 +7827,7 @@ window.showFoodWasteModal = async function(year, month) {
     <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl mb-4">
       <div class="flex items-center gap-3">
         <div class="flex-1">
-          <label class="text-xs font-semibold text-amber-700 mb-1 block"><i class="fas fa-tag mr-1"></i>잔반 처리 단가 (kg당, 원)</label>
+          <label class="text-xs font-semibold text-amber-700 mb-1 block"><i class="fas fa-tag mr-1"></i>잔반 처리 단가 (L당, 원)</label>
           <input type="number" id="fw-unit-price" class="form-input text-sm w-full" min="0" step="100"
             value="${unitPrice||''}" placeholder="예: 500 (0이면 비용 직접 입력)">
         </div>
@@ -7808,7 +7848,7 @@ window.showFoodWasteModal = async function(year, month) {
           <div class="font-semibold text-sm text-gray-700 mb-2">${w}주차</div>
           <div class="grid grid-cols-3 gap-2">
             <div>
-              <label class="text-xs text-gray-500">잔반량(kg)</label>
+              <label class="text-xs text-gray-500">잔반량(L)</label>
               <input type="number" id="fw-amount-${w}" class="form-input text-sm" step="0.1" min="0"
                 value="${d.waste_amount||''}" placeholder="0.0"
                 oninput="autoCalcWasteCost(${w})">
@@ -7829,12 +7869,15 @@ window.showFoodWasteModal = async function(year, month) {
 
     <!-- 합계 -->
     <div class="mt-3 p-3 bg-gray-100 rounded-xl flex justify-between text-sm font-semibold text-gray-700">
-      <span><i class="fas fa-weight text-amber-500 mr-1"></i>총 잔반량: <span id="fw-total-kg">${summary?.totalKg?.toFixed(1)||'0.0'}</span> kg</span>
+      <span><i class="fas fa-weight text-amber-500 mr-1"></i>총 잔반량: <span id="fw-total-kg">${summary?.totalL?.toFixed(1)||'0.0'}</span> L</span>
       <span><i class="fas fa-won-sign text-red-500 mr-1"></i>총 비용: <span id="fw-total-cost">${fmt(summary?.totalCost||0)}</span> 원</span>
     </div>
 
     <div class="flex gap-3 mt-4">
-      <button onclick="saveFoodWaste(${year},${month})" class="btn btn-primary flex-1"><i class="fas fa-save mr-1"></i>저장</button>
+      ${_ro
+        ? `<div class="flex-1 text-center text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2"><i class="fas fa-lock mr-1"></i>마감 완료된 달은 수정할 수 없습니다.</div>`
+        : `<button onclick="saveFoodWaste(${year},${month})" class="btn btn-primary flex-1"><i class="fas fa-save mr-1"></i>저장</button>`
+      }
       <button onclick="document.getElementById('foodWasteModal').remove()" class="btn btn-secondary">취소</button>
     </div>
   </div>`
@@ -7849,14 +7892,14 @@ window.autoCalcWasteCost = function(week) {
   const costEl = document.getElementById(`fw-cost-${week}`)
   if (costEl) costEl.value = Math.round(kg * unitPrice)
   // 합계 업데이트
-  let totalKg = 0, totalCost = 0
+  let totalL = 0, totalCost = 0
   for (let w = 1; w <= 5; w++) {
-    totalKg += parseFloat(document.getElementById(`fw-amount-${w}`)?.value || 0) || 0
+    totalL += parseFloat(document.getElementById(`fw-amount-${w}`)?.value || 0) || 0
     totalCost += parseInt(document.getElementById(`fw-cost-${w}`)?.value || 0) || 0
   }
   const tkEl = document.getElementById('fw-total-kg')
   const tcEl = document.getElementById('fw-total-cost')
-  if (tkEl) tkEl.textContent = totalKg.toFixed(1)
+  if (tkEl) tkEl.textContent = totalL.toFixed(1)
   if (tcEl) tcEl.textContent = fmt(totalCost)
 }
 
@@ -7870,6 +7913,7 @@ window.saveFoodWasteUnitPrice = async function(year, month) {
 }
 
 window.saveFoodWaste = async function(year, month) {
+  if (isReadOnly(year, month)) { showToast('⛔ 마감 완료된 달은 수정할 수 없습니다.', 'error'); return }
   const weeks = [1,2,3,4,5]
   let saved = 0
   for (const w of weeks) {
@@ -9451,7 +9495,7 @@ async function renderAdminDashboard() {
             <span>오늘발주: <strong class="text-gray-700">${fmtMan(h.todayUsed)}원</strong></span>
             <span>·</span>
             <span>이번주: <strong class="text-gray-700">${fmtMan(h.weekUsed)}원</strong></span>
-            ${h.foodWaste.totalWaste > 0 ? `<span>·</span><span>잔반: <strong class="text-amber-600">${h.foodWaste.totalWaste.toFixed(1)}kg</strong></span>` : ''}
+            ${h.foodWaste.totalWaste > 0 ? `<span>·</span><span>잔반: <strong class="text-amber-600">${h.foodWaste.totalWaste.toFixed(1)}L</strong></span>` : ''}
           </div>
 
           <!-- ⑤ 이슈 목록 (접기/펼치기) -->
@@ -10419,7 +10463,7 @@ async function openHospitalDetail(hospitalId) {
             <input id="hb-waste" type="number" class="form-input" value="${s.food_waste_budget||0}">
           </div>
           <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 처리 단가 (원/kg)
+            <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 처리 단가 (원/L)
               <span class="text-amber-500 font-normal ml-1">병원별 설정</span>
             </label>
             <div class="flex gap-2">
@@ -10428,7 +10472,7 @@ async function openHospitalDetail(hospitalId) {
                 <i class="fas fa-save mr-1"></i>저장
               </button>
             </div>
-            <p class="text-xs text-gray-400 mt-1">* 잔반량(kg) × 단가로 비용 자동계산. 0이면 직접 입력.</p>
+            <p class="text-xs text-gray-400 mt-1">* 잔반량(L) × 단가로 비용 자동계산. 0이면 직접 입력.</p>
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">해당월 영업일수 (일)</label>
@@ -10700,9 +10744,9 @@ function renderBudgetVendorRows(vendors) {
       </div>
       <div class="flex items-center justify-between">
         <label class="flex items-center gap-1.5 cursor-pointer">
-          <input type="checkbox" id="autoSyncTotalBudget" checked onchange="syncVendorBudgetTotal()"
+          <input type="checkbox" id="autoSyncTotalBudget" onchange="syncVendorBudgetTotal()"
             style="width:14px;height:14px;accent-color:#16a34a">
-          <span class="text-xs text-green-700 font-medium">업체 합계 → 월 총 목표금액 자동 반영</span>
+          <span class="text-xs text-green-700 font-medium">업체 합계 → 월 총 목표금액 자동 반영 <span style="color:#9ca3af;font-weight:400">(직접 반영 시 버튼 사용)</span></span>
         </label>
         <button onclick="syncVendorBudgetTotal(true)" 
           class="text-xs bg-green-600 text-white px-3 py-1 rounded-lg font-semibold hover:bg-green-700">
@@ -12681,7 +12725,7 @@ async function renderReport(selectedHospitalId = null) {
     const rptFoodWaste = annualData?.foodWasteMonthly || []
     const p12WasteKg = Array.from({length:12},(_,i)=>{
       const row=rptFoodWaste.find(r=>parseInt(r.month)===i+1)
-      return row?parseFloat(row.total_kg||row.totalKg||0):0
+      return row?parseFloat(row.total_kg||row.totalL||0):0
     })
     const p12WasteCost = Array.from({length:12},(_,i)=>{
       const row=rptFoodWaste.find(r=>parseInt(r.month)===i+1)
@@ -12695,7 +12739,7 @@ async function renderReport(selectedHospitalId = null) {
     const p12KgDiff = p12PrevKg>0?Math.round((p12CurKg-p12PrevKg)/p12PrevKg*100):0
     const hasWasteData = p12ActiveMonths.length>0||p12CurKg>0
     const p12Analysis = hasWasteData
-      ? `${reportMonth}월 잔반량 ${p12CurKg.toFixed(1)}kg, 비용 ${fmt(p12CurCost)}원.${p12KgDiff!==0?` 전월 대비 ${p12KgDiff>0?'+':''}${p12KgDiff}%.`:''} 연평균 ${p12AvgKg.toFixed(1)}kg 대비 ${p12CurKg>=p12AvgKg?'높은':'낮은'} 수준입니다.`
+      ? `${reportMonth}월 잔반량 ${p12CurKg.toFixed(1)}L, 비용 ${fmt(p12CurCost)}원.${p12KgDiff!==0?` 전월 대비 ${p12KgDiff>0?'+':''}${p12KgDiff}%.`:''} 연평균 ${p12AvgKg.toFixed(1)}L 대비 ${p12CurKg>=p12AvgKg?'높은':'낮은'} 수준입니다.`
       : '잔반 데이터를 입력하면 월별 추이를 분석합니다.'
     const p12Warn = p12CurKg>0&&p12AvgKg>0&&p12CurKg>p12AvgKg*1.3?`⚠ 이번 달 잔반량이 평균 대비 30% 이상 많습니다. 식단 조정을 검토하세요.`:null
     const slide12 = `
@@ -12703,14 +12747,14 @@ async function renderReport(selectedHospitalId = null) {
       ${SH(12,'월별 잔반 분석','Monthly Food Waste Analysis')}
       ${hasWasteData ? `
       <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;flex:1;margin-bottom:20px;min-height:0">
-        <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">2026년 월별 잔반량(kg) 및 비용 추이</div>
+        <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">2026년 월별 잔반량(L) 및 비용 추이</div>
         <div id="rptFoodWasteChart" style="width:100%;height:260px"></div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;flex-shrink:0">
-        ${KPI(`${reportMonth}월 잔반량`,`${p12CurKg.toFixed(1)}kg`,'이번 달','#f59e0b','#fffbeb','♻️')}
+        ${KPI(`${reportMonth}월 잔반량`,`${p12CurKg.toFixed(1)}L`,'이번 달','#f59e0b','#fffbeb','♻️')}
         ${KPI('잔반 비용',p12CurCost>0?`${fmt(p12CurCost)}원`:'—','이번 달','#ef4444','#fef2f2','💸')}
-        ${KPI('전월 잔반량',p12PrevKg>0?`${p12PrevKg.toFixed(1)}kg`:'—','전월','#374151','#f9fafb','📅')}
-        ${KPI('연평균 잔반',`${p12AvgKg.toFixed(1)}kg`,'1~현재월','#6b7280','#f3f4f6','📊')}
+        ${KPI('전월 잔반량',p12PrevKg>0?`${p12PrevKg.toFixed(1)}L`:'—','전월','#374151','#f9fafb','📅')}
+        ${KPI('연평균 잔반',`${p12AvgKg.toFixed(1)}L`,'1~현재월','#6b7280','#f3f4f6','📊')}
       </div>` : `
       <div style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
         <div style="font-size:48px">♻️</div>
@@ -12726,7 +12770,7 @@ async function renderReport(selectedHospitalId = null) {
       {label:'식단가 관리',val:targetPrice>0?(mealPrice<=targetPrice?90:mealPrice<=targetPrice*1.05?75:mealPrice<=targetPrice*1.1?60:45):70,icon:'🍱',desc:mealPrice>0?`${fmt(mealPrice)}원`:'—'},
       {label:'발주 관리',val:topVendorRatio<40?90:topVendorRatio<60?70:50,icon:'📦',desc:`업체 ${rptOrders.length}개`},
       {label:'식수 안정성',val:totalMeals>0?80:50,icon:'👥',desc:`${fmt(totalMeals)}명`},
-      {label:'잔반 관리',val:p12CurKg>0&&p12AvgKg>0?(p12CurKg<=p12AvgKg?90:p12CurKg<=p12AvgKg*1.2?70:50):60,icon:'♻️',desc:p12CurKg>0?`${p12CurKg.toFixed(1)}kg`:'데이터없음'},
+      {label:'잔반 관리',val:p12CurKg>0&&p12AvgKg>0?(p12CurKg<=p12AvgKg?90:p12CurKg<=p12AvgKg*1.2?70:50):60,icon:'♻️',desc:p12CurKg>0?`${p12CurKg.toFixed(1)}L`:'데이터없음'},
     ]
     const overallScore = Math.round(scoreItems.reduce((s,i)=>s+i.val,0)/scoreItems.length)
     const scoreAnalysis = rptAutoAnalysis.length>1?rptAutoAnalysis.slice(0,2).join(' ')
@@ -13784,12 +13828,12 @@ async function renderReport(selectedHospitalId = null) {
       const fwData = annualData?.foodWasteMonthly || []
       if (fwData.length === 0) return
       const months12d = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
-      const fwKg   = Array(12).fill(0); fwData.forEach(r=>{ fwKg[parseInt(r.month)-1]=parseFloat(r.total_kg||r.totalKg||0) })
+      const fwKg   = Array(12).fill(0); fwData.forEach(r=>{ fwKg[parseInt(r.month)-1]=parseFloat(r.total_kg||r.totalL||0) })
       const fwCost = Array(12).fill(0); fwData.forEach(r=>{ fwCost[parseInt(r.month)-1]=parseInt(r.total_cost||r.totalCost||0) })
       SC('rptFoodWasteChart',{
         type:'bar',
         data:{labels:months12d, datasets:[
-          {label:'잔반량(kg)',data:fwKg.map(v=>v>0?v:null),backgroundColor:'rgba(245,158,11,0.7)',
+          {label:'잔반량(L)',data:fwKg.map(v=>v>0?v:null),backgroundColor:'rgba(245,158,11,0.7)',
            borderRadius:4,yAxisID:'y',order:2},
           {label:'잔반비용',data:fwCost.map(v=>v>0?v:null),borderColor:'#f97316',borderWidth:2.5,
            type:'line',pointRadius:4,pointBackgroundColor:'#f97316',fill:false,
@@ -14696,7 +14740,7 @@ async function exportReportPDF(hospitalName, year, month) {
     options: { responsive: false, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: true } } }
   })
 
-  const totalWasteKg = wasteData?.totalKg || 0
+  const totalWasteKg = wasteData?.totalL || 0
   const totalWasteCost = wasteData?.totalCost || 0
   const wasteWeeks = wasteData?.weeks || []
 
@@ -14720,7 +14764,7 @@ async function exportReportPDF(hospitalName, year, month) {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
           <div style="text-align:center;background:white;border-radius:6px;padding:8px">
             <div style="font-size:10px;color:#92400e">총 잔반량</div>
-            <div style="font-size:18px;font-weight:bold;color:#b45309">${totalWasteKg.toFixed(1)}kg</div>
+            <div style="font-size:18px;font-weight:bold;color:#b45309">${totalWasteKg.toFixed(1)}L</div>
           </div>
           <div style="text-align:center;background:white;border-radius:6px;padding:8px">
             <div style="font-size:10px;color:#92400e">총 비용</div>
@@ -14870,7 +14914,7 @@ async function exportReportPDF(hospitalName, year, month) {
     // 잔반
     if (totalWasteKg > 0) {
       const wastePer = totalMeals > 0 ? (totalWasteKg/totalMeals*1000).toFixed(0) : 0
-      lines.push({ icon:'♻️', cat:'잔반', text: `이번 달 잔반 발생량은 ${totalWasteKg.toFixed(1)}kg, 비용 ${fmtK(totalWasteCost)}원입니다. 식수 1인당 ${wastePer}g 수준입니다.`, color:'#f59e0b' })
+      lines.push({ icon:'♻️', cat:'잔반', text: `이번 달 잔반 발생량은 ${totalWasteKg.toFixed(1)}L, 비용 ${fmtK(totalWasteCost)}원입니다. 식수 1인당 ${wastePer}g 수준입니다.`, color:'#f59e0b' })
     }
 
     return lines
@@ -16851,9 +16895,9 @@ async function txLoadCategories() {
 function txRenderUploadTab(container) {
   container.innerHTML = `
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-    <!-- 업로드 영역 -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-      <h3 class="font-bold text-gray-700 mb-4 flex items-center gap-2">
+    <!-- ① 업로드 영역 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-4">
+      <h3 class="font-bold text-gray-700 flex items-center gap-2">
         <i class="fas fa-cloud-upload-alt text-blue-500"></i> 명세서 파일 업로드
       </h3>
 
@@ -16872,51 +16916,106 @@ function txRenderUploadTab(container) {
       </div>
 
       <!-- 파일 메타 입력 -->
-      <div class="mt-4 space-y-3">
+      <div class="space-y-3">
+        <!-- 관리자 전용: 병원 선택 -->
+        ${App.role === 'admin' ? `
+        <div>
+          <label class="text-xs font-medium text-gray-600 mb-1 block"><i class="fas fa-hospital text-blue-400 mr-1"></i>병원 선택 (관리자)</label>
+          <select id="txHospitalId" class="w-full text-sm border border-blue-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none bg-blue-50">
+            <option value="">로딩 중...</option>
+          </select>
+        </div>` : ''}
+
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="text-xs font-medium text-gray-600 mb-1 block">업체명</label>
             <input id="txVendorName" type="text" placeholder="예: 삼성웰스토리"
-              class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+              class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none"
+              oninput="txOnVendorNameChange(this.value)">
           </div>
           <div>
             <label class="text-xs font-medium text-gray-600 mb-1 block">명세서 년/월</label>
             <div class="flex gap-1">
-              <select id="txDocYear" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+              <select id="txDocYear" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2">
                 ${[2024,2025,2026].map(y=>`<option value="${y}" ${y===TXState.year?'selected':''}>${y}</option>`).join('')}
               </select>
-              <select id="txDocMonth" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+              <select id="txDocMonth" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2">
                 ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===TXState.month?'selected':''}>${m}월</option>`).join('')}
               </select>
             </div>
           </div>
         </div>
 
-        <!-- 컬럼 매핑 (범용 파서) -->
+        <!-- 거래기간 자동인식 결과 -->
+        <div id="txDetectedPeriod" class="hidden bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-700">
+          <i class="fas fa-calendar-check mr-1"></i><span id="txDetectedPeriodText"></span>
+        </div>
+
+        <!-- 업체 템플릿 적용 배너 -->
+        <div id="txTemplateBanner" class="hidden bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-700 flex items-center justify-between">
+          <span><i class="fas fa-magic mr-1"></i><span id="txTemplateBannerText">템플릿 자동 적용됨</span></span>
+          <button onclick="txClearTemplate()" class="text-blue-400 hover:text-blue-600 ml-2"><i class="fas fa-times"></i></button>
+        </div>
+
+        <!-- 컬럼 매핑 테이블 (개선) -->
         <div class="bg-gray-50 rounded-lg p-3">
-          <div class="text-xs font-medium text-gray-600 mb-2">
-            <i class="fas fa-columns mr-1 text-blue-400"></i>컬럼 매핑 (Excel 열 번호 · 0부터 시작)
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs font-medium text-gray-600">
+              <i class="fas fa-columns mr-1 text-blue-400"></i>컬럼 매핑
+            </div>
+            <div class="flex items-center gap-2 text-xs text-gray-400">
+              <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>자동감지</span>
+              <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>수동</span>
+            </div>
           </div>
-          <div class="grid grid-cols-3 gap-2">
-            ${[
-              {id:'colItemName', label:'품목명', def:'0'},
-              {id:'colQty',      label:'수량',   def:'1'},
-              {id:'colUnit',     label:'단위',   def:'2'},
-              {id:'colPrice',    label:'단가',   def:'3'},
-              {id:'colAmount',   label:'금액',   def:'4'},
-              {id:'colTax',      label:'세금구분', def:'5'}
-            ].map(c=>`
-              <div>
-                <label class="text-xs text-gray-500">${c.label}</label>
-                <input id="${c.id}" type="number" min="0" value="${c.def}"
-                  class="w-full text-xs border border-gray-200 rounded px-2 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none mt-0.5">
-              </div>`).join('')}
-          </div>
-          <div class="mt-2 flex items-center gap-2">
-            <label class="text-xs text-gray-500">헤더 행 건너뛰기</label>
-            <input id="txSkipRows" type="number" min="0" max="10" value="1"
+          <!-- 매핑 테이블 -->
+          <table class="w-full text-xs border-collapse">
+            <thead>
+              <tr class="bg-gray-100">
+                <th class="text-left py-1.5 px-2 rounded-tl-lg font-medium text-gray-500">시스템 필드</th>
+                <th class="text-center py-1.5 px-2 font-medium text-gray-500">열 번호<span class="font-normal text-gray-400 ml-1">(0부터)</span></th>
+                <th class="text-center py-1.5 px-2 font-medium text-gray-500">원본 열명</th>
+                <th class="text-center py-1.5 px-2 rounded-tr-lg font-medium text-gray-500">상태</th>
+              </tr>
+            </thead>
+            <tbody id="txColMapTableBody">
+              ${[
+                {id:'colItemName', label:'품목명',   def:'1', icon:'fa-tag',    desc:''},
+                {id:'colQty',      label:'수량',     def:'4', icon:'fa-sort-numeric-up', desc:''},
+                {id:'colUnit',     label:'단위',     def:'3', icon:'fa-ruler',  desc:''},
+                {id:'colPrice',    label:'평균단가', def:'5', icon:'fa-won-sign',desc:''},
+                {id:'colAmount',   label:'금액',     def:'6', icon:'fa-calculator',desc:''},
+                {id:'colTax',      label:'부가세',   def:'7', icon:'fa-percent', desc:''},
+              ].map(c=>`
+              <tr class="border-b border-gray-100 hover:bg-white transition-colors" id="txColRow-${c.id}">
+                <td class="py-1.5 px-2">
+                  <span class="flex items-center gap-1.5 font-medium text-gray-700">
+                    <i class="fas ${c.icon} text-blue-400 w-3"></i>${c.label}
+                  </span>
+                </td>
+                <td class="py-1.5 px-2 text-center">
+                  <input id="${c.id}" type="number" min="0" max="20" value="${c.def}"
+                    class="w-14 text-xs text-center border border-gray-200 rounded px-1.5 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none"
+                    oninput="txMarkColManual('${c.id}')">
+                </td>
+                <td class="py-1.5 px-2 text-center">
+                  <span id="txColOrigName-${c.id}" class="text-gray-400 text-xs italic">—</span>
+                </td>
+                <td class="py-1.5 px-2 text-center">
+                  <span id="txColStatus-${c.id}" class="inline-block w-2 h-2 rounded-full bg-gray-300"></span>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          <!-- 헤더 스킵 -->
+          <div class="mt-2 flex items-center gap-2 pt-2 border-t border-gray-100">
+            <label class="text-xs text-gray-500 font-medium">헤더 행 건너뛰기</label>
+            <input id="txSkipRows" type="number" min="0" max="15" value="1"
               class="w-16 text-xs border border-gray-200 rounded px-2 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none">
             <span class="text-xs text-gray-400">행</span>
+            <span id="txAutoDetectBadge" class="hidden ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
+              <i class="fas fa-magic mr-0.5"></i>자동감지
+            </span>
           </div>
         </div>
 
@@ -16928,25 +17027,324 @@ function txRenderUploadTab(container) {
       <div id="txUploadMsg" class="mt-3 hidden"></div>
     </div>
 
-    <!-- 업로드된 파일 목록 -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="font-bold text-gray-700 flex items-center gap-2">
-          <i class="fas fa-folder-open text-yellow-500"></i> 업로드 파일 목록
-        </h3>
-        <button onclick="txLoadFileList()" class="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1">
-          <i class="fas fa-sync-alt"></i> 새로고침
-        </button>
+    <!-- ② 파일 목록 + 업체 템플릿 관리 -->
+    <div class="space-y-4">
+      <!-- 업체 템플릿 관리 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
+            <i class="fas fa-bookmark text-purple-500"></i> 업체 명세서 템플릿
+          </h3>
+          <button onclick="txShowTemplateForm()" class="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 font-medium">
+            <i class="fas fa-plus mr-1"></i>템플릿 추가
+          </button>
+        </div>
+        <div id="txTemplateList" class="space-y-1.5 max-h-48 overflow-y-auto">
+          <div class="text-center text-gray-300 py-4 text-xs"><i class="fas fa-spinner fa-spin"></i> 로딩 중...</div>
+        </div>
+        <!-- 템플릿 편집 폼 (숨김) -->
+        <div id="txTemplateForm" class="hidden mt-3 p-3 bg-purple-50 border border-purple-200 rounded-xl">
+          <div class="font-semibold text-xs text-purple-700 mb-2"><i class="fas fa-edit mr-1"></i>템플릿 저장</div>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div class="col-span-2">
+              <label class="text-xs text-gray-500">업체명</label>
+              <input id="tplVendorName" type="text" placeholder="예: 삼성웰스토리" class="form-input w-full text-xs mt-0.5">
+            </div>
+            ${[
+              {id:'tplColItemName',label:'품목명 열',def:'1'},
+              {id:'tplColQty',     label:'수량 열',  def:'4'},
+              {id:'tplColUnit',    label:'단위 열',  def:'3'},
+              {id:'tplColPrice',   label:'단가 열',  def:'5'},
+              {id:'tplColAmount',  label:'금액 열',  def:'6'},
+              {id:'tplColTax',     label:'부가세 열',def:'7'},
+              {id:'tplSkipRows',   label:'건너뛰기 행',def:'6'},
+            ].map(f=>`
+            <div>
+              <label class="text-xs text-gray-500">${f.label}</label>
+              <input id="${f.id}" type="number" min="0" value="${f.def}" class="form-input w-full text-xs mt-0.5">
+            </div>`).join('')}
+          </div>
+          <div class="flex items-center gap-2 mb-2">
+            <input type="checkbox" id="tplHasCatRows" class="w-3.5 h-3.5">
+            <label class="text-xs text-gray-600" for="tplHasCatRows">카테고리 행 자동인식 (삼성웰스토리 등)</label>
+          </div>
+          <div class="mb-2">
+            <label class="text-xs text-gray-500">메모</label>
+            <input id="tplNotes" type="text" placeholder="컬럼 구조 설명 등" class="form-input w-full text-xs mt-0.5">
+          </div>
+          <div class="flex gap-2 mt-2">
+            <button onclick="txSaveTemplate()" class="flex-1 bg-purple-600 text-white text-xs py-1.5 rounded-lg hover:bg-purple-700 font-medium">
+              <i class="fas fa-save mr-1"></i>저장
+            </button>
+            <button onclick="document.getElementById('txTemplateForm').classList.add('hidden')" class="px-3 bg-gray-200 text-gray-600 text-xs rounded-lg hover:bg-gray-300">
+              취소
+            </button>
+          </div>
+        </div>
       </div>
-      <div id="txFileList" class="space-y-2 max-h-96 overflow-y-auto">
-        <div class="text-center text-gray-400 py-8 text-sm">
-          <i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>불러오는 중...
+
+      <!-- 업로드된 파일 목록 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
+            <i class="fas fa-folder-open text-yellow-500"></i> 업로드 파일 목록
+          </h3>
+          <button onclick="txLoadFileList()" class="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1">
+            <i class="fas fa-sync-alt"></i> 새로고침
+          </button>
+        </div>
+        <div id="txFileList" class="space-y-2 max-h-72 overflow-y-auto">
+          <div class="text-center text-gray-400 py-8 text-sm">
+            <i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>불러오는 중...
+          </div>
         </div>
       </div>
     </div>
   </div>`
 
   txLoadFileList()
+  txLoadTemplates()
+  if (App.role === 'admin') txLoadHospitalSelector()
+}
+
+
+// ── 관리자 병원 선택 목록 로드 ─────────────────────────────────────────
+// ── 업체 템플릿 관련 함수들 ──────────────────────────────────────────
+
+// 템플릿 목록 로드
+async function txLoadTemplates() {
+  const listEl = document.getElementById('txTemplateList')
+  if (!listEl) return
+  try {
+    const res = await axios.get('/api/transaction/vendor-templates', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+    const templates = res.data.templates || []
+    if (templates.length === 0) {
+      listEl.innerHTML = `<div class="text-center text-gray-300 py-4 text-xs">등록된 템플릿 없음</div>`
+      return
+    }
+    listEl.innerHTML = templates.map(t => `
+    <div class="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-lg hover:bg-purple-50 group">
+      <div class="flex-1 min-w-0">
+        <div class="font-medium text-sm text-gray-700 flex items-center gap-1.5">
+          <i class="fas fa-bookmark text-purple-400 text-xs"></i>${t.vendor_name}
+          ${t.has_category_rows ? '<span class="text-xs bg-green-100 text-green-700 px-1.5 rounded-full">카테고리행</span>' : ''}
+        </div>
+        <div class="text-xs text-gray-400 mt-0.5">품목명:${t.col_item_name} 수량:${t.col_qty} 단가:${t.col_unit_price} 금액:${t.col_amount} | 헤더:${t.skip_rows}행</div>
+        ${t.notes ? `<div class="text-xs text-gray-300 truncate">${t.notes}</div>` : ''}
+      </div>
+      <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+        <button onclick="txApplyTemplate(${JSON.stringify(t).replace(/"/g,'&quot;')})" 
+          class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600">적용</button>
+        <button onclick="txEditTemplate(${JSON.stringify(t).replace(/"/g,'&quot;')})" 
+          class="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-300">수정</button>
+        <button onclick="txDeleteTemplate('${t.vendor_name_normalized}')" 
+          class="text-xs bg-red-100 text-red-600 px-2 py-1 rounded hover:bg-red-200">삭제</button>
+      </div>
+    </div>`).join('')
+  } catch(e) {
+    listEl.innerHTML = `<div class="text-xs text-red-400 py-2">로드 실패</div>`
+  }
+}
+
+// 템플릿 폼 표시
+function txShowTemplateForm(t) {
+  const form = document.getElementById('txTemplateForm')
+  if (!form) return
+  // 현재 업로드 탭의 컬럼 값을 기본값으로 채우기
+  document.getElementById('tplVendorName').value = t?.vendor_name || document.getElementById('txVendorName')?.value || ''
+  document.getElementById('tplColItemName').value = t?.col_item_name ?? document.getElementById('colItemName')?.value ?? 1
+  document.getElementById('tplColQty').value = t?.col_qty ?? document.getElementById('colQty')?.value ?? 4
+  document.getElementById('tplColUnit').value = t?.col_unit ?? document.getElementById('colUnit')?.value ?? 3
+  document.getElementById('tplColPrice').value = t?.col_unit_price ?? document.getElementById('colPrice')?.value ?? 5
+  document.getElementById('tplColAmount').value = t?.col_amount ?? document.getElementById('colAmount')?.value ?? 6
+  document.getElementById('tplColTax').value = t?.col_tax ?? document.getElementById('colTax')?.value ?? 7
+  document.getElementById('tplSkipRows').value = t?.skip_rows ?? document.getElementById('txSkipRows')?.value ?? 6
+  document.getElementById('tplHasCatRows').checked = t?.has_category_rows === 1
+  document.getElementById('tplNotes').value = t?.notes || ''
+  form.classList.remove('hidden')
+}
+
+function txEditTemplate(t) { txShowTemplateForm(t) }
+
+// 템플릿 저장
+async function txSaveTemplate() {
+  const body = {
+    vendor_name: document.getElementById('tplVendorName').value.trim(),
+    col_item_name: +document.getElementById('tplColItemName').value,
+    col_qty: +document.getElementById('tplColQty').value,
+    col_unit: +document.getElementById('tplColUnit').value,
+    col_unit_price: +document.getElementById('tplColPrice').value,
+    col_amount: +document.getElementById('tplColAmount').value,
+    col_tax: +document.getElementById('tplColTax').value,
+    skip_rows: +document.getElementById('tplSkipRows').value,
+    has_category_rows: document.getElementById('tplHasCatRows').checked ? 1 : 0,
+    notes: document.getElementById('tplNotes').value
+  }
+  if (!body.vendor_name) { showToast('업체명을 입력하세요', 'error'); return }
+  try {
+    await axios.post('/api/transaction/vendor-templates', body, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+    showToast(`'${body.vendor_name}' 템플릿 저장됨`, 'success')
+    document.getElementById('txTemplateForm').classList.add('hidden')
+    txLoadTemplates()
+  } catch(e) { showToast('저장 실패', 'error') }
+}
+
+// 템플릿 삭제
+async function txDeleteTemplate(normalizedName) {
+  if (!confirm('이 템플릿을 삭제하시겠습니까?')) return
+  try {
+    await axios.delete(`/api/transaction/vendor-templates/${encodeURIComponent(normalizedName)}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+    showToast('템플릿 삭제됨', 'success')
+    txLoadTemplates()
+  } catch(e) { showToast('삭제 실패', 'error') }
+}
+
+// 템플릿 적용 (컬럼 매핑 UI에 반영)
+function txApplyTemplate(t) {
+  const fields = [
+    {domId:'colItemName', val: t.col_item_name},
+    {domId:'colQty',      val: t.col_qty},
+    {domId:'colUnit',     val: t.col_unit},
+    {domId:'colPrice',    val: t.col_unit_price},
+    {domId:'colAmount',   val: t.col_amount},
+    {domId:'colTax',      val: t.col_tax},
+  ]
+  fields.forEach(f => {
+    const el = document.getElementById(f.domId)
+    if (el) {
+      el.value = f.val
+      // 자동감지 상태로 표시
+      const statusEl = document.getElementById(`txColStatus-${f.domId}`)
+      if (statusEl) { statusEl.className = 'inline-block w-2 h-2 rounded-full bg-blue-400' }
+    }
+  })
+  const skipEl = document.getElementById('txSkipRows')
+  if (skipEl) skipEl.value = t.skip_rows
+  const badge = document.getElementById('txAutoDetectBadge')
+  if (badge) badge.classList.remove('hidden')
+  // 배너 표시
+  const banner = document.getElementById('txTemplateBanner')
+  const bannerText = document.getElementById('txTemplateBannerText')
+  if (banner) banner.classList.remove('hidden')
+  if (bannerText) bannerText.textContent = `'${t.vendor_name}' 템플릿 적용됨 — 헤더 ${t.skip_rows}행 건너뜀`
+  TXState._appliedTemplate = t
+  showToast(`'${t.vendor_name}' 템플릿이 적용되었습니다`, 'success')
+}
+
+// 템플릿 초기화
+function txClearTemplate() {
+  TXState._appliedTemplate = null
+  const banner = document.getElementById('txTemplateBanner')
+  if (banner) banner.classList.add('hidden')
+  // 상태 초기화
+  ;['colItemName','colQty','colUnit','colPrice','colAmount','colTax'].forEach(id => {
+    const s = document.getElementById(`txColStatus-${id}`)
+    if (s) s.className = 'inline-block w-2 h-2 rounded-full bg-gray-300'
+    const n = document.getElementById(`txColOrigName-${id}`)
+    if (n) n.textContent = '—'
+  })
+  const badge = document.getElementById('txAutoDetectBadge')
+  if (badge) badge.classList.add('hidden')
+}
+
+// 컬럼 수동 변경 표시
+function txMarkColManual(colId) {
+  const statusEl = document.getElementById(`txColStatus-${colId}`)
+  if (statusEl) statusEl.className = 'inline-block w-2 h-2 rounded-full bg-amber-400'
+  TXState._appliedTemplate = null
+  const banner = document.getElementById('txTemplateBanner')
+  if (banner) banner.classList.add('hidden')
+}
+
+// 업체명 변경 시 템플릿 자동 검색/적용
+async function txOnVendorNameChange(name) {
+  if (!name || name.length < 2) return
+  try {
+    const res = await axios.get(`/api/transaction/vendor-templates/${encodeURIComponent(name)}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+    if (res.data.template) {
+      txApplyTemplate(res.data.template)
+    }
+  } catch(e) {}
+}
+
+// 거래기간 자동인식 (파일 미리보기 데이터에서)
+function txDetectPeriodFromRows(rows) {
+  // 상위 10행에서 거래기간 패턴 검색
+  const periodPattern = /거래기간.*?(\d{4}[\/\-]\d{2}[\/\-]\d{2}).*?~.*?(\d{4}[\/\-]\d{2}[\/\-]\d{2})/
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const rowStr = (rows[i] || []).map(c => String(c || '')).join(' ')
+    const m = rowStr.match(periodPattern)
+    if (m) {
+      const startDate = m[1].replace(/\//g, '-')
+      const endDate = m[2].replace(/\//g, '-')
+      // 년/월 자동 설정
+      const [year, month] = startDate.split('-')
+      const yearEl = document.getElementById('txDocYear')
+      const monthEl = document.getElementById('txDocMonth')
+      if (yearEl) yearEl.value = year
+      if (monthEl) monthEl.value = parseInt(month)
+      // 표시
+      const periodEl = document.getElementById('txDetectedPeriod')
+      const periodText = document.getElementById('txDetectedPeriodText')
+      if (periodEl && periodText) {
+        periodText.textContent = `거래기간: ${startDate} ~ ${endDate} (년/월 자동설정됨)`
+        periodEl.classList.remove('hidden')
+      }
+      return { startDate, endDate, year: parseInt(year), month: parseInt(month) }
+    }
+  }
+  return null
+}
+
+// 삼성웰스토리 카테고리 행 자동인식
+// 카테고리 키워드: 가공식품, 농산물류, 저장식품, 수산/건어물류, 축산물, 소모품 등
+const TX_CATEGORY_KEYWORDS = ['가공식품','농산물류','농산물','저장식품','수산/건어물류','수산건어물','육류','축산물','소모품','위생용품','음료']
+const TX_CATEGORY_MAP = {
+  '가공식품': 'PROCESSED', '농산물류': 'VEGGIE', '농산물': 'VEGGIE',
+  '저장식품': 'GRAIN', '수산/건어물류': 'SEAFOOD', '수산건어물': 'SEAFOOD',
+  '육류': 'MEAT', '축산물': 'MEAT', '소모품': 'SUPPLIES',
+  '위생용품': 'SUPPLIES', '음료': 'PROCESSED'
+}
+
+function txIsCategoryRow(row) {
+  if (!row || !Array.isArray(row)) return null
+  // 행에서 유일하게 의미있는 셀 1개이고 카테고리 키워드를 포함
+  const nonEmpty = row.filter(c => c !== null && c !== undefined && String(c).trim() !== '')
+  if (nonEmpty.length === 1) {
+    const val = String(nonEmpty[0]).trim()
+    for (const kw of TX_CATEGORY_KEYWORDS) {
+      if (val.includes(kw)) return kw
+    }
+  }
+  return null
+}
+
+async function txLoadHospitalSelector() {
+
+  const sel = document.getElementById('txHospitalId')
+  if (!sel) return
+  try {
+    const res = await axios.get('/api/admin/hospitals',
+      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    const hospitals = res.data || []
+    sel.innerHTML = hospitals.map(h =>
+      `<option value="${h.id}">${h.name}</option>`
+    ).join('')
+    // TXState에 저장
+    if (hospitals.length > 0) TXState.selectedHospitalId = hospitals[0].id
+    sel.addEventListener('change', e => { TXState.selectedHospitalId = +e.target.value })
+  } catch(e) {
+    sel.innerHTML = '<option value="1">병원 1 (기본)</option>'
+    TXState.selectedHospitalId = 1
+  }
 }
 
 // ── 드래그앤드롭 처리 ─────────────────────────────────────────────────
@@ -16981,6 +17379,89 @@ function txProcessFile(file) {
     for (const v of vendors) {
       if (file.name.includes(v)) { vendorInput.value = v; break }
     }
+  }
+
+  // ── 엑셀 파일 자동 미리보기 파싱 ────────────────────────────────
+  const ext = file.name.split('.').pop().toLowerCase()
+  if (['xlsx','xls','csv'].includes(ext)) {
+    txPreviewParse(file)
+  }
+}
+
+// ── 파일 선택 즉시 미리보기 파싱 (헤더 자동 감지 결과 표시) ─────────
+async function txPreviewParse(file) {
+  const msgEl = document.getElementById('txUploadMsg')
+  if (msgEl) { msgEl.className = 'mt-3 text-xs text-blue-500'; msgEl.textContent = '⏳ 파일 분석 중...' }
+
+  try {
+    // XLSX 라이브러리 로드 확인
+    if (!window.XLSX) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script')
+        s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+        s.onload = res; s.onerror = rej
+        document.head.appendChild(s)
+      })
+    }
+
+    const data = await file.arrayBuffer()
+    const wb = XLSX.read(new Uint8Array(data), { type: 'array' })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+    const autoDetect = txAutoDetectHeader(rows)
+
+    if (autoDetect) {
+      const autoMap = txAutoMapColumns(autoDetect.headerRow)
+      // 헤더 행 번호를 skipRows에 반영 (헤더 다음 행부터 데이터)
+      const skipInput = document.getElementById('txSkipRows')
+      if (skipInput) skipInput.value = autoDetect.dataStartIndex
+
+      // 컬럼 인덱스 UI 자동 설정 + 상태 표시
+      const setCol = (id, val, origName) => {
+        const el = document.getElementById(id)
+        if (el && val >= 0) el.value = val
+        const statusEl = document.getElementById(`txColStatus-${id}`)
+        if (statusEl) statusEl.className = 'inline-block w-2 h-2 rounded-full bg-green-400'
+        const nameEl = document.getElementById(`txColOrigName-${id}`)
+        if (nameEl) nameEl.textContent = origName || '—'
+      }
+      const hdr = autoDetect.headerRow
+      setCol('colItemName', autoMap.item_name, hdr[autoMap.item_name] || '')
+      setCol('colQty',      autoMap.qty,        hdr[autoMap.qty] || '')
+      setCol('colUnit',     autoMap.unit,       hdr[autoMap.unit] || '')
+      setCol('colPrice',    autoMap.unit_price, hdr[autoMap.unit_price] || '')
+      setCol('colAmount',   autoMap.amount,     hdr[autoMap.amount] || '')
+      // 자동감지 배지 표시
+      const badge = document.getElementById('txAutoDetectBadge')
+      if (badge) badge.classList.remove('hidden')
+      // 거래기간 인식
+      txDetectPeriodFromRows(rows)
+
+      // 예상 데이터 행 수 계산 (소계/합계 제외)
+      let validCount = 0
+      for (let i = autoDetect.dataStartIndex; i < rows.length; i++) {
+        if (!txIsSkipRow(rows[i], autoMap.item_name)) {
+          const itemName = String(rows[i][autoMap.item_name] || '').trim()
+          const qty = parseFloat(String(rows[i][autoMap.qty] || '0').replace(/[^0-9.-]/g,'')) || 0
+          const amount = parseInt(String(rows[i][autoMap.amount] || '0').replace(/[^0-9]/g,'')) || 0
+          if (itemName && (qty > 0 || amount > 0)) validCount++
+        }
+      }
+
+      if (msgEl) {
+        msgEl.className = 'mt-3 text-xs text-green-600 bg-green-50 rounded-lg p-2'
+        msgEl.innerHTML = `✅ <b>자동 분석 완료!</b> 헤더: ${autoDetect.headerRowIndex+1}행 감지 · 유효 품목: <b>${validCount}개</b> 예상<br>
+          <span class="text-gray-500">헤더: [${autoDetect.headerRow.filter(Boolean).slice(0,5).join(', ')}...]</span>`
+      }
+    } else {
+      if (msgEl) {
+        msgEl.className = 'mt-3 text-xs text-yellow-600 bg-yellow-50 rounded-lg p-2'
+        msgEl.innerHTML = '⚠️ 헤더 자동 감지 실패. 컬럼 번호를 직접 설정해주세요.'
+      }
+    }
+  } catch(e) {
+    if (msgEl) { msgEl.className = 'mt-3 text-xs text-gray-400'; msgEl.textContent = '파일 미리보기 불가' }
   }
 }
 
@@ -17025,6 +17506,7 @@ async function txUploadFile() {
     txShowMsg('txUploadMsg', 'info', `${parsedRows.length}개 항목 파싱 완료. 서버 저장 중...`)
 
     // 서버 전송
+    const hospitalId = TXState.selectedHospitalId || null
     const res = await axios.post('/api/transaction/upload', {
       file_name: file.name,
       file_type: ext,
@@ -17032,7 +17514,8 @@ async function txUploadFile() {
       vendor_name: vendorName,
       document_year: docYear,
       document_month: docMonth,
-      parsed_rows: parsedRows
+      parsed_rows: parsedRows,
+      hospital_id: hospitalId
     }, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
 
     if (res.data.ok) {
@@ -17054,6 +17537,72 @@ async function txUploadFile() {
 }
 
 // ── Excel 파싱 (XLSX 라이브러리 사용) ────────────────────────────────
+// ── 엑셀 헤더 행 자동 감지 ──────────────────────────────────────────
+// '품목명', '품목', '상품명', 'item' 등 품목 관련 키워드가 있는 행을 헤더로 인식
+function txAutoDetectHeader(rows) {
+  // 정확한 셀 값 기준으로 헤더 감지 (부분 문자열 매칭 금지)
+  const exactItemCells = ['품목명','상품명','품명','제품명','물품명','item_name','item','name']
+  const qtyKeywords    = ['수량','qty','quantity']
+
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const row = rows[i]
+    if (!row) continue
+    const cells = row.map(c => String(c||'').trim().replace(/\s+/g,'').toLowerCase())
+
+    // 정확히 '품목명' 셀이 존재하고 수량 셀도 있는 경우
+    const hasItemName = cells.some(c => exactItemCells.includes(c))
+    const hasQty      = cells.some(c => qtyKeywords.includes(c))
+
+    if (hasItemName && hasQty) {
+      return { headerRowIndex: i, dataStartIndex: i + 1, headerRow: row }
+    }
+    // '품목코드' 셀이 있는 경우 (이 형식의 표준 거래명세서)
+    if (cells.includes('품목코드') || cells.some(c => c === '품목코드')) {
+      return { headerRowIndex: i, dataStartIndex: i + 1, headerRow: row }
+    }
+  }
+  return null // 자동 감지 실패
+}
+
+// ── 헤더로부터 컬럼 인덱스 자동 매핑 ───────────────────────────────
+function txAutoMapColumns(headerRow) {
+  const map = { item_name: 0, qty: 1, unit: 2, unit_price: 3, amount: 4, tax_type: -1 }
+  headerRow.forEach((cell, idx) => {
+    const t = String(cell||'').replace(/\s/g,'').toLowerCase()
+    if (/품목명|상품명|품명|제품명|물품명/.test(t))    map.item_name  = idx
+    else if (/수량|qty/.test(t))                        map.qty        = idx
+    else if (/단위|unit/.test(t))                       map.unit       = idx
+    else if (/평균단가|단가|unit_price|단가/.test(t))   map.unit_price = idx
+    else if (/금액|amount|합계/.test(t))                map.amount     = idx
+    else if (/부가세|세액|vat|tax/.test(t))             map.tax_type   = idx  // 세액 컬럼 위치 기록
+  })
+  return map
+}
+
+// ── 소계/합계/페이지 행 필터 ────────────────────────────────────────
+function txIsSkipRow(row, itemNameCol) {
+  if (!row || row.length === 0) return true
+  const first  = String(row[0] || '').trim()
+  const second = String(row[1] || '').trim()
+  const itemCell = String(row[itemNameCol] || '').trim()
+  // 소계/합계/페이지 표시 행 제거
+  if (/소계|합계|subtotal|total/i.test(second)) return true
+  if (/소계|합계|subtotal|total/i.test(itemCell)) return true
+  if (/^\d+\/\d+$/.test(first)) return true  // "1/1" 같은 페이지 표시
+  if (first === '' && second === '' && itemCell === '') return true
+  return false
+}
+
+// ── 세금 구분 자동 감지 (부가세 금액으로 판단) ──────────────────────
+function txGuessTaxType(row, taxCol, amountCol) {
+  // 부가세 컬럼이 있으면 그 값으로 판단
+  if (taxCol >= 0) {
+    const vat = parseInt(String(row[taxCol]||'0').replace(/[^0-9]/g,'')) || 0
+    return vat > 0 ? 'taxable' : 'nontaxable'
+  }
+  return 'nontaxable'
+}
+
 async function txParseExcel(file, colMap, skipRows) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -17064,21 +17613,57 @@ async function txParseExcel(file, colMap, skipRows) {
         const ws = wb.Sheets[wb.SheetNames[0]]
         const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
+        // ① 거래기간 자동인식 (상위 10행 스캔)
+        txDetectPeriodFromRows(rows)
+
+        // ② 헤더 자동 감지 시도
+        const autoDetect = txAutoDetectHeader(rows)
+        let effectiveSkip = skipRows
+        let effectiveColMap = { ...colMap }
+        let vatCol = -1
+
+        if (autoDetect) {
+          effectiveSkip = autoDetect.dataStartIndex
+          const autoMap = txAutoMapColumns(autoDetect.headerRow)
+          effectiveColMap = {
+            item_name:  autoMap.item_name,
+            qty:        autoMap.qty,
+            unit:       autoMap.unit,
+            unit_price: autoMap.unit_price,
+            amount:     autoMap.amount,
+            tax_type:   colMap.tax_type  // 사용자 설정 유지
+          }
+          vatCol = autoMap.tax_type  // 부가세 컬럼 인덱스
+        }
+
         const parsed = []
-        for (let i = skipRows; i < rows.length; i++) {
+        let currentCategory = null  // 삼성웰스토리 카테고리 행 추적
+        const hasCatRows = TXState._appliedTemplate?.has_category_rows === 1
+        for (let i = effectiveSkip; i < rows.length; i++) {
           const row = rows[i]
-          if (!row || row.length === 0) continue
-          const itemName = String(row[colMap.item_name] || '').trim()
+          // 카테고리 행 자동인식 (삼성웰스토리 등)
+          if (hasCatRows) {
+            const catKeyword = txIsCategoryRow(row)
+            if (catKeyword) { currentCategory = catKeyword; continue }
+          }
+          // 소계/합계/페이지 행 자동 제거
+          if (txIsSkipRow(row, effectiveColMap.item_name)) continue
+
+          const itemName = String(row[effectiveColMap.item_name] || '').trim()
           if (!itemName) continue
 
-          const qty        = parseFloat(String(row[colMap.qty] || '0').replace(/[^0-9.-]/g,'')) || 0
-          const unit       = String(row[colMap.unit] || '').trim()
-          const unit_price = parseInt(String(row[colMap.unit_price] || '0').replace(/[^0-9]/g,'')) || 0
-          const amount     = parseInt(String(row[colMap.amount] || '0').replace(/[^0-9]/g,'')) || Math.round(qty * unit_price)
-          const tax_raw    = String(row[colMap.tax_type] || '').trim()
-          const tax_type   = txNormalizeTax(tax_raw)
+          const qty        = parseFloat(String(row[effectiveColMap.qty] || '0').replace(/[^0-9.-]/g,'')) || 0
+          const unit       = String(row[effectiveColMap.unit] || '').trim()
+          const unit_price = parseInt(String(row[effectiveColMap.unit_price] || '0').replace(/[^0-9]/g,'')) || 0
+          const amount     = parseInt(String(row[effectiveColMap.amount] || '0').replace(/[^0-9]/g,'')) || Math.round(qty * unit_price)
+          // 세금 구분: 부가세 컬럼 값으로 자동 판단
+          const tax_type   = txGuessTaxType(row, vatCol, effectiveColMap.amount)
 
-          parsed.push({ item_name: itemName, quantity: qty, unit, unit_price, amount, tax_type, raw: JSON.stringify(row) })
+          if (amount <= 0 && qty <= 0) continue  // 금액/수량 모두 0이면 스킵
+
+          parsed.push({ item_name: itemName, quantity: qty, unit, unit_price, amount, tax_type,
+            category_hint: currentCategory || null,  // 카테고리 힌트 전달
+            raw: JSON.stringify(row) })
         }
         resolve(parsed)
       } catch(err) { reject(err) }
@@ -17146,7 +17731,8 @@ async function txLoadFileList() {
   const el = document.getElementById('txFileList')
   if (!el) return
   try {
-    const res = await axios.get(`/api/transaction/files?year=${TXState.year}&month=${TXState.month}`,
+    const hParam = TXState.selectedHospitalId ? `&hospital_id=${TXState.selectedHospitalId}` : ''
+    const res = await axios.get(`/api/transaction/files?year=${TXState.year}&month=${TXState.month}${hParam}`,
       { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
     const files = res.data.data || []
 

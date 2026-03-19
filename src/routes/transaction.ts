@@ -2,6 +2,30 @@ import { Hono } from 'hono'
 
 const txRouter = new Hono<{ Bindings: { DB: D1Database } }>()
 
+// ── 관리자/병원 공통 hospitalId 헬퍼 ──────────────────────────────────
+// 관리자(hospitalId=null)는 body/query의 hospital_id를 우선 사용,
+// 없으면 첫 번째 병원(id=1)을 기본값으로 사용
+async function resolveHospitalId(c: any, bodyHospitalId?: number | null): Promise<number> {
+  const user = (c as any).get('user')
+  const userHospitalId = user?.hospitalId ? Number(user.hospitalId) : null
+
+  // 일반 병원 유저
+  if (userHospitalId && userHospitalId > 0) return userHospitalId
+
+  // 관리자: body/query에서 hospital_id 받음
+  if (bodyHospitalId && bodyHospitalId > 0) return bodyHospitalId
+
+  // 관리자: query string에서 시도
+  const qHid = c.req.query?.('hospital_id')
+  if (qHid && Number(qHid) > 0) return Number(qHid)
+
+  // 최후 fallback: DB에서 첫 번째 병원 ID 조회
+  try {
+    const first = await c.env.DB.prepare(`SELECT id FROM hospitals ORDER BY id LIMIT 1`).first<any>()
+    return first?.id || 1
+  } catch { return 1 }
+}
+
 // ══════════════════════════════════════════════════════════════
 // 거래명세서 분석 시스템 API Routes
 // ── 구조: 파일업로드 → 파싱 → 미리보기/수정 → AI분석 → 보고서연동
@@ -26,8 +50,7 @@ txRouter.get('/categories', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/files', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const year  = c.req.query('year')
     const month = c.req.query('month')
 
@@ -52,16 +75,15 @@ txRouter.get('/files', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.post('/upload', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
-
     const body = await c.req.json()
     const {
       file_name, file_type, file_size,
       file_data,          // Base64 데이터 (클라이언트에서 파싱 후 전송)
       vendor_name, document_year, document_month,
-      parsed_rows         // 클라이언트 파싱 결과 [{item_name,qty,unit,unit_price,amount,tax_type,raw}]
+      parsed_rows,        // 클라이언트 파싱 결과 [{item_name,qty,unit,unit_price,amount,tax_type,raw}]
+      hospital_id: bodyHospitalId
     } = body
+    const hospitalId = await resolveHospitalId(c, bodyHospitalId)
 
     if (!file_name || !file_type) {
       return c.json({ ok: false, error: '파일명과 파일 형식은 필수입니다.' }, 400)
@@ -71,7 +93,7 @@ txRouter.post('/upload', async (c) => {
     }
 
     // 1) 파일 레코드 생성
-    const fileResult = await c.env.DB.prepare(`
+    await c.env.DB.prepare(`
       INSERT INTO transaction_files
         (hospital_id, file_name, file_type, file_size, vendor_name,
          document_year, document_month, parse_status, row_count, created_at, updated_at)
@@ -81,7 +103,12 @@ txRouter.post('/upload', async (c) => {
       document_year, document_month
     ).run()
 
-    const fileId = fileResult.meta.last_row_id
+    // last_row_id 대신 SELECT로 ID 직접 조회 (Wrangler D1 last_row_id=0 버그 우회)
+    const fileRow = await c.env.DB.prepare(
+      `SELECT id FROM transaction_files WHERE hospital_id=? AND file_name=? ORDER BY id DESC LIMIT 1`
+    ).bind(hospitalId, file_name).first<any>()
+    const fileId = fileRow?.id
+    if (!fileId) throw new Error('파일 레코드 ID 조회 실패')
 
     if (!parsed_rows || parsed_rows.length === 0) {
       await c.env.DB.prepare(
@@ -97,7 +124,7 @@ txRouter.post('/upload', async (c) => {
     const taxAmt         = Math.round(taxableAmount * 0.1)
     const nontaxableAmt  = totalAmount - taxableAmount
 
-    const docResult = await c.env.DB.prepare(`
+    await c.env.DB.prepare(`
       INSERT INTO transaction_documents
         (file_id, hospital_id, vendor_name, document_date, document_year, document_month,
          total_amount, taxable_amount, tax_amount, nontaxable_amount, item_count, created_at)
@@ -109,7 +136,12 @@ txRouter.post('/upload', async (c) => {
       totalAmount, taxableAmount, taxAmt, nontaxableAmt, parsed_rows.length
     ).run()
 
-    const docId = docResult.meta.last_row_id
+    // 마찬가지로 문서 ID도 직접 조회
+    const docRow = await c.env.DB.prepare(
+      `SELECT id FROM transaction_documents WHERE file_id=? AND hospital_id=? ORDER BY id DESC LIMIT 1`
+    ).bind(fileId, hospitalId).first<any>()
+    const docId = docRow?.id
+    if (!docId) throw new Error('문서 레코드 ID 조회 실패')
 
     // 3) 품목 카테고리 목록 로드 (자동 분류용)
     const categories = await c.env.DB.prepare(
@@ -165,8 +197,7 @@ txRouter.post('/upload', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/files/:fileId/items', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const fileId = c.req.param('fileId')
 
     const rows = await c.env.DB.prepare(`
@@ -188,8 +219,7 @@ txRouter.get('/files/:fileId/items', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.put('/items/:itemId', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const itemId = c.req.param('itemId')
     const { item_name, category_id, quantity, unit, unit_price, amount, tax_type, memo } = await c.req.json()
 
@@ -220,8 +250,7 @@ txRouter.put('/items/:itemId', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.delete('/files/:fileId', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const fileId = c.req.param('fileId')
 
     // cascade delete: items → documents → file
@@ -243,8 +272,7 @@ txRouter.delete('/files/:fileId', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/analysis/monthly', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const year  = Number(c.req.query('year')  || new Date().getFullYear())
     const month = Number(c.req.query('month') || new Date().getMonth() + 1)
 
@@ -336,8 +364,7 @@ txRouter.get('/analysis/monthly', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/analysis/quarterly', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const year    = Number(c.req.query('year')    || new Date().getFullYear())
     const quarter = Number(c.req.query('quarter') || Math.ceil((new Date().getMonth() + 1) / 3))
 
@@ -387,8 +414,7 @@ txRouter.get('/analysis/quarterly', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/cross-analysis', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const year  = Number(c.req.query('year')  || new Date().getFullYear())
     const month = Number(c.req.query('month') || new Date().getMonth() + 1)
 
@@ -396,43 +422,80 @@ txRouter.get('/cross-analysis', async (c) => {
     const dateStart = `${year}-${mm}-01`
     const dateEnd   = `${year}-${mm}-31`
 
-    // 발주 데이터 (orders → daily_orders + order_items 조인)
-    // 기존 orders 테이블 구조에 맞게 조회
+    // 발주 데이터 (daily_orders + vendors 조인, 업체별 월 합산)
+    // 주의: daily_orders는 품목별 상세가 없으므로 업체+월 단위로 비교
     const orderData = await c.env.DB.prepare(`
       SELECT
-        oi.item_name,
         v.name AS vendor_name,
-        SUM(oi.quantity)   AS ordered_qty,
-        AVG(oi.unit_price) AS ordered_unit_price,
-        SUM(oi.amount)     AS ordered_amount
-      FROM order_items oi
-      JOIN daily_orders d ON oi.order_id = d.id
+        SUM(d.total_amount)   AS ordered_amount,
+        SUM(d.taxable_amount) AS ordered_taxable,
+        COUNT(*)              AS order_count
+      FROM daily_orders d
       JOIN vendors v ON d.vendor_id = v.id
       WHERE d.hospital_id=? AND d.order_date BETWEEN ? AND ?
-      GROUP BY oi.item_name, v.name
+      GROUP BY v.name
+      ORDER BY ordered_amount DESC
     `).bind(hospitalId, dateStart, dateEnd).all<any>()
 
-    // 명세서 데이터
+    // 명세서 데이터 (업체별 합산)
     const invoiceData = await c.env.DB.prepare(`
-      SELECT item_name_normalized AS item_name,
-             vendor_name,
-             SUM(quantity)   AS invoice_qty,
-             AVG(unit_price) AS invoice_unit_price,
-             SUM(amount)     AS invoice_amount
+      SELECT vendor_name,
+             SUM(amount)    AS invoice_amount,
+             SUM(CASE WHEN tax_type='taxable' THEN amount ELSE 0 END) AS invoice_taxable,
+             COUNT(DISTINCT item_name_normalized) AS item_count
       FROM transaction_items
       WHERE hospital_id=? AND document_year=? AND document_month=?
-      GROUP BY item_name_normalized, vendor_name
+      GROUP BY vendor_name
+      ORDER BY invoice_amount DESC
     `).bind(hospitalId, year, month).all<any>()
 
-    // 교차 비교 매핑
-    const discrepancies = buildCrossAnalysis(orderData.results, invoiceData.results)
+    // 업체 단위 교차 비교
+    const orderMap = new Map<string, any>()
+    orderData.results.forEach((o: any) => orderMap.set(o.vendor_name || '', o))
+
+    const discrepancies: any[] = []
+    const allVendors = new Set([
+      ...orderData.results.map((o: any) => o.vendor_name),
+      ...invoiceData.results.map((i: any) => i.vendor_name)
+    ])
+
+    allVendors.forEach(vendor => {
+      const ord = orderMap.get(vendor)
+      const inv = invoiceData.results.find((i: any) => i.vendor_name === vendor)
+      const ordAmt = ord?.ordered_amount || 0
+      const invAmt = inv?.invoice_amount || 0
+      const diff = invAmt - ordAmt
+      const diffRatio = ordAmt > 0 ? Math.abs(diff / ordAmt) : (invAmt > 0 ? 1 : 0)
+
+      let alertLevel = 'normal'
+      if (diffRatio >= 0.1) alertLevel = 'warning'
+      if (diffRatio >= 0.3) alertLevel = 'critical'
+
+      discrepancies.push({
+        vendor_name: vendor,
+        ordered_amount: ordAmt,
+        invoice_amount: invAmt,
+        amount_diff: diff,
+        amount_diff_pct: Math.round(diffRatio * 100),
+        order_count: ord?.order_count || 0,
+        invoice_item_count: inv?.item_count || 0,
+        alert_level: alertLevel,
+        alert_memo: diff > 0
+          ? `명세서가 발주보다 ${diff.toLocaleString()}원 많음`
+          : diff < 0
+            ? `발주가 명세서보다 ${Math.abs(diff).toLocaleString()}원 많음`
+            : ''
+      })
+    })
+
+    discrepancies.sort((a, b) => Math.abs(b.amount_diff) - Math.abs(a.amount_diff))
 
     const summary = {
       total_order_amount:   orderData.results.reduce((s: number, r: any) => s + (r.ordered_amount || 0), 0),
       total_invoice_amount: invoiceData.results.reduce((s: number, r: any) => s + (r.invoice_amount || 0), 0),
-      matched_items:  discrepancies.filter(d => d.alert_level === 'normal').length,
-      warning_items:  discrepancies.filter(d => d.alert_level === 'warning').length,
-      critical_items: discrepancies.filter(d => d.alert_level === 'critical').length
+      matched_vendors:  discrepancies.filter(d => d.alert_level === 'normal').length,
+      warning_vendors:  discrepancies.filter(d => d.alert_level === 'warning').length,
+      critical_vendors: discrepancies.filter(d => d.alert_level === 'critical').length
     }
 
     return c.json({
@@ -449,8 +512,7 @@ txRouter.get('/cross-analysis', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/price-trend', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const itemName = c.req.query('item_name') || ''
 
     if (!itemName) return c.json({ ok: false, error: '품목명을 입력해주세요.' }, 400)
@@ -476,8 +538,7 @@ txRouter.get('/price-trend', async (c) => {
 // ─────────────────────────────────────────────
 txRouter.get('/dashboard', async (c) => {
   try {
-    const user = (c as any).get('user')
-    const hospitalId = Number(user?.hospitalId || 0)
+    const hospitalId = await resolveHospitalId(c)
     const year  = Number(c.req.query('year')  || new Date().getFullYear())
     const month = Number(c.req.query('month') || new Date().getMonth() + 1)
 
@@ -750,4 +811,64 @@ function buildCrossAnalysis(orders: any[], invoices: any[]): any[] {
   })
 }
 
+// ── 업체별 파서 템플릿 API ──────────────────────────────────────────
+
+// GET /vendor-templates  전체 목록
+txRouter.get('/vendor-templates', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM transaction_vendor_templates ORDER BY vendor_name`
+  ).all<any>()
+  return c.json({ ok: true, templates: rows.results || [] })
+})
+
+// GET /vendor-templates/:name  특정 업체 템플릿
+txRouter.get('/vendor-templates/:name', async (c) => {
+  const name = decodeURIComponent(c.req.param('name'))
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM transaction_vendor_templates WHERE vendor_name_normalized=? OR vendor_name LIKE ?`
+  ).bind(name, `%${name}%`).first<any>()
+  return c.json({ ok: true, template: row || null })
+})
+
+// POST /vendor-templates  생성/수정
+txRouter.post('/vendor-templates', async (c) => {
+  const body = await c.req.json()
+  const {
+    vendor_name, col_item_name, col_qty, col_unit, col_unit_price, col_amount,
+    col_tax, skip_rows, has_category_rows, date_pattern, notes
+  } = body
+  if (!vendor_name) return c.json({ error: 'vendor_name 필요' }, 400)
+  const normalized = vendor_name.trim().replace(/\s+/g, '')
+  await c.env.DB.prepare(`
+    INSERT INTO transaction_vendor_templates
+      (vendor_name, vendor_name_normalized, col_item_name, col_qty, col_unit, col_unit_price,
+       col_amount, col_tax, skip_rows, has_category_rows, date_pattern, notes, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(vendor_name_normalized) DO UPDATE SET
+      vendor_name=excluded.vendor_name,
+      col_item_name=excluded.col_item_name, col_qty=excluded.col_qty,
+      col_unit=excluded.col_unit, col_unit_price=excluded.col_unit_price,
+      col_amount=excluded.col_amount, col_tax=excluded.col_tax,
+      skip_rows=excluded.skip_rows, has_category_rows=excluded.has_category_rows,
+      date_pattern=excluded.date_pattern, notes=excluded.notes,
+      updated_at=CURRENT_TIMESTAMP
+  `).bind(
+    vendor_name, normalized,
+    col_item_name ?? 0, col_qty ?? 1, col_unit ?? 2, col_unit_price ?? 3,
+    col_amount ?? 4, col_tax ?? 5, skip_rows ?? 1,
+    has_category_rows ? 1 : 0, date_pattern || null, notes || null
+  ).run()
+  return c.json({ ok: true })
+})
+
+// DELETE /vendor-templates/:name
+txRouter.delete('/vendor-templates/:name', async (c) => {
+  const name = decodeURIComponent(c.req.param('name'))
+  await c.env.DB.prepare(
+    `DELETE FROM transaction_vendor_templates WHERE vendor_name_normalized=?`
+  ).bind(name).run()
+  return c.json({ ok: true })
+})
+
 export default txRouter
+
