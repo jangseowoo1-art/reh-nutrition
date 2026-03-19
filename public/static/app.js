@@ -17065,12 +17065,15 @@ function txRenderUploadTab(container) {
 
 // 컬럼 필드 정의 (색상 포함)
 const TX_FIELDS = [
-  {id:'colItemName', label:'품목명',   color:'bg-blue-100 text-blue-800',   borderColor:'border-blue-300',   headerBg:'bg-blue-50'},
-  {id:'colQty',      label:'수량',     color:'bg-green-100 text-green-800',  borderColor:'border-green-300',  headerBg:'bg-green-50'},
-  {id:'colUnit',     label:'단위',     color:'bg-yellow-100 text-yellow-800',borderColor:'border-yellow-300', headerBg:'bg-yellow-50'},
-  {id:'colPrice',    label:'단가',     color:'bg-orange-100 text-orange-800',borderColor:'border-orange-300', headerBg:'bg-orange-50'},
-  {id:'colAmount',   label:'금액',     color:'bg-red-100 text-red-800',      borderColor:'border-red-300',    headerBg:'bg-red-50'},
-  {id:'colTax',      label:'부가세',   color:'bg-purple-100 text-purple-800',borderColor:'border-purple-300', headerBg:'bg-purple-50'},
+  {id:'colItemCode', label:'품목코드',  color:'bg-gray-100 text-gray-700',    borderColor:'border-gray-400',   headerBg:'bg-gray-50'},
+  {id:'colItemName', label:'품목명',    color:'bg-blue-100 text-blue-800',    borderColor:'border-blue-300',   headerBg:'bg-blue-50'},
+  {id:'colSpec',     label:'규격',      color:'bg-cyan-100 text-cyan-800',    borderColor:'border-cyan-300',   headerBg:'bg-cyan-50'},
+  {id:'colUnit',     label:'단위',      color:'bg-yellow-100 text-yellow-800',borderColor:'border-yellow-300', headerBg:'bg-yellow-50'},
+  {id:'colQty',      label:'수량',      color:'bg-green-100 text-green-800',  borderColor:'border-green-300',  headerBg:'bg-green-50'},
+  {id:'colPrice',    label:'평균단가',  color:'bg-orange-100 text-orange-800',borderColor:'border-orange-300', headerBg:'bg-orange-50'},
+  {id:'colAmount',   label:'금액',      color:'bg-red-100 text-red-800',      borderColor:'border-red-300',    headerBg:'bg-red-50'},
+  {id:'colTax',      label:'부가세',    color:'bg-purple-100 text-purple-800',borderColor:'border-purple-300', headerBg:'bg-purple-50'},
+  {id:'colTotal',    label:'합계',      color:'bg-pink-100 text-pink-800',    borderColor:'border-pink-300',   headerBg:'bg-pink-50'},
 ]
 
 // 현재 매핑 상태 (colIdx → fieldId)
@@ -17141,7 +17144,17 @@ function txUpdateTableColors() {
       el.id = f.id
       document.body.appendChild(el)
     }
-    el.value = (colIdx !== undefined && colIdx >= 0) ? colIdx : (f.id === 'colItemName' ? 1 : f.id === 'colQty' ? 4 : f.id === 'colUnit' ? 3 : f.id === 'colPrice' ? 5 : f.id === 'colAmount' ? 6 : 7)
+    el.value = (colIdx !== undefined && colIdx >= 0) ? colIdx : (
+      f.id === 'colItemCode' ? 0  :
+      f.id === 'colItemName' ? 1  :
+      f.id === 'colSpec'     ? 2  :
+      f.id === 'colUnit'     ? 3  :
+      f.id === 'colQty'      ? 4  :
+      f.id === 'colPrice'    ? 5  :
+      f.id === 'colAmount'   ? 6  :
+      f.id === 'colTax'      ? 7  :
+      f.id === 'colTotal'    ? 8  : -1
+    )
   })
   // skipRows hidden input 동기화
   let skipEl = document.getElementById('txSkipRows')
@@ -17213,12 +17226,15 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
   // autoMap으로 초기 매핑 설정
   if (autoMap) {
     TXState.colMapping = {}
-    if (autoMap.item_name >= 0) TXState.colMapping[autoMap.item_name] = 'colItemName'
-    if (autoMap.qty >= 0) TXState.colMapping[autoMap.qty] = 'colQty'
-    if (autoMap.unit >= 0) TXState.colMapping[autoMap.unit] = 'colUnit'
+    if (autoMap.item_code  >= 0) TXState.colMapping[autoMap.item_code]  = 'colItemCode'
+    if (autoMap.item_name  >= 0) TXState.colMapping[autoMap.item_name]  = 'colItemName'
+    if (autoMap.spec       >= 0) TXState.colMapping[autoMap.spec]       = 'colSpec'
+    if (autoMap.unit       >= 0) TXState.colMapping[autoMap.unit]       = 'colUnit'
+    if (autoMap.qty        >= 0) TXState.colMapping[autoMap.qty]        = 'colQty'
     if (autoMap.unit_price >= 0) TXState.colMapping[autoMap.unit_price] = 'colPrice'
-    if (autoMap.amount >= 0) TXState.colMapping[autoMap.amount] = 'colAmount'
-    if (autoMap.tax_type >= 0) TXState.colMapping[autoMap.tax_type] = 'colTax'
+    if (autoMap.amount     >= 0) TXState.colMapping[autoMap.amount]     = 'colAmount'
+    if (autoMap.tax_type   >= 0) TXState.colMapping[autoMap.tax_type]   = 'colTax'
+    if (autoMap.total      >= 0) TXState.colMapping[autoMap.total]      = 'colTotal'
   }
 
   // 헤더 행 찾기 (skipRows - 1 이 헤더)
@@ -17657,12 +17673,15 @@ async function txUploadFile() {
     fieldToCol[fieldId] = parseInt(colIdx)
   })
   const colMap = {
+    item_code:  fieldToCol['colItemCode'] >= 0 ? fieldToCol['colItemCode'] : -1,
     item_name:  fieldToCol['colItemName'] ?? +document.getElementById('colItemName')?.value ?? 1,
-    qty:        fieldToCol['colQty']      ?? +document.getElementById('colQty')?.value      ?? 4,
+    spec:       fieldToCol['colSpec']     >= 0 ? fieldToCol['colSpec']     : -1,
     unit:       fieldToCol['colUnit']     ?? +document.getElementById('colUnit')?.value     ?? 3,
+    qty:        fieldToCol['colQty']      ?? +document.getElementById('colQty')?.value      ?? 4,
     unit_price: fieldToCol['colPrice']    ?? +document.getElementById('colPrice')?.value    ?? 5,
     amount:     fieldToCol['colAmount']   ?? +document.getElementById('colAmount')?.value   ?? 6,
     tax_type:   fieldToCol['colTax']      ?? +document.getElementById('colTax')?.value      ?? 7,
+    total:      fieldToCol['colTotal']    >= 0 ? fieldToCol['colTotal']    : -1,
   }
 
   const btn = document.getElementById('txUploadBtn')
@@ -17748,15 +17767,18 @@ function txAutoDetectHeader(rows) {
 
 // ── 헤더로부터 컬럼 인덱스 자동 매핑 ───────────────────────────────
 function txAutoMapColumns(headerRow) {
-  const map = { item_name: 0, qty: 1, unit: 2, unit_price: 3, amount: 4, tax_type: -1 }
+  const map = { item_code: -1, item_name: 0, spec: -1, unit: 2, qty: 1, unit_price: 3, amount: 4, tax_type: -1, total: -1 }
   headerRow.forEach((cell, idx) => {
     const t = String(cell||'').replace(/\s/g,'').toLowerCase()
-    if (/품목명|상품명|품명|제품명|물품명/.test(t))    map.item_name  = idx
-    else if (/수량|qty/.test(t))                        map.qty        = idx
-    else if (/단위|unit/.test(t))                       map.unit       = idx
-    else if (/평균단가|단가|unit_price|단가/.test(t))   map.unit_price = idx
-    else if (/금액|amount|합계/.test(t))                map.amount     = idx
-    else if (/부가세|세액|vat|tax/.test(t))             map.tax_type   = idx  // 세액 컬럼 위치 기록
+    if (/품목코드|상품코드|코드|item_code|itemcode/.test(t))    map.item_code  = idx
+    else if (/품목명|상품명|품명|제품명|물품명/.test(t))         map.item_name  = idx
+    else if (/규격|spec|사양/.test(t))                          map.spec       = idx
+    else if (/^단위$|^unit$/.test(t))                           map.unit       = idx
+    else if (/^수량$|^qty$|^quantity$/.test(t))                 map.qty        = idx
+    else if (/평균단가|단가|unit_price/.test(t))                 map.unit_price = idx
+    else if (/^금액$|^amount$/.test(t))                         map.amount     = idx
+    else if (/부가세|세액|vat|tax/.test(t))                     map.tax_type   = idx
+    else if (/^합계$|^total$/.test(t))                          map.total      = idx
   })
   return map
 }
@@ -17807,15 +17829,23 @@ async function txParseExcel(file, colMap, skipRows) {
         if (autoDetect) {
           effectiveSkip = autoDetect.dataStartIndex
           const autoMap = txAutoMapColumns(autoDetect.headerRow)
+          // 사용자가 직접 매핑한 값(colMap)을 우선, 없으면 autoMap 사용
           effectiveColMap = {
-            item_name:  autoMap.item_name,
-            qty:        autoMap.qty,
-            unit:       autoMap.unit,
-            unit_price: autoMap.unit_price,
-            amount:     autoMap.amount,
-            tax_type:   colMap.tax_type  // 사용자 설정 유지
+            item_code:  colMap.item_code  >= 0 ? colMap.item_code  : autoMap.item_code,
+            item_name:  colMap.item_name  >= 0 ? colMap.item_name  : autoMap.item_name,
+            spec:       colMap.spec       >= 0 ? colMap.spec       : autoMap.spec,
+            unit:       colMap.unit       >= 0 ? colMap.unit       : autoMap.unit,
+            qty:        colMap.qty        >= 0 ? colMap.qty        : autoMap.qty,
+            unit_price: colMap.unit_price >= 0 ? colMap.unit_price : autoMap.unit_price,
+            amount:     colMap.amount     >= 0 ? colMap.amount     : autoMap.amount,
+            tax_type:   colMap.tax_type   >= 0 ? colMap.tax_type   : autoMap.tax_type,
+            total:      colMap.total      >= 0 ? colMap.total      : autoMap.total,
           }
-          vatCol = autoMap.tax_type  // 부가세 컬럼 인덱스
+          vatCol = effectiveColMap.tax_type
+        } else {
+          // autoDetect 실패 시 사용자 colMap 그대로 사용
+          effectiveColMap = { ...colMap }
+          vatCol = colMap.tax_type
         }
 
         const parsed = []
@@ -17831,21 +17861,29 @@ async function txParseExcel(file, colMap, skipRows) {
           // 소계/합계/페이지 행 자동 제거
           if (txIsSkipRow(row, effectiveColMap.item_name)) continue
 
-          const itemName = String(row[effectiveColMap.item_name] || '').trim()
+          const itemName   = String(row[effectiveColMap.item_name] || '').trim()
           if (!itemName) continue
 
-          const qty        = parseFloat(String(row[effectiveColMap.qty] || '0').replace(/[^0-9.-]/g,'')) || 0
+          const itemCode   = effectiveColMap.item_code  >= 0 ? String(row[effectiveColMap.item_code]  || '').trim() : ''
+          const spec       = effectiveColMap.spec       >= 0 ? String(row[effectiveColMap.spec]       || '').trim() : ''
+          const qty        = parseFloat(String(row[effectiveColMap.qty]        || '0').replace(/[^0-9.-]/g,'')) || 0
           const unit       = String(row[effectiveColMap.unit] || '').trim()
-          const unit_price = parseInt(String(row[effectiveColMap.unit_price] || '0').replace(/[^0-9]/g,'')) || 0
-          const amount     = parseInt(String(row[effectiveColMap.amount] || '0').replace(/[^0-9]/g,'')) || Math.round(qty * unit_price)
+          const unit_price = parseInt(String(row[effectiveColMap.unit_price]   || '0').replace(/[^0-9]/g,'')) || 0
+          // 금액: 직접 입력 금액 → 없으면 합계 열 → 없으면 qty×단가 계산
+          const rawAmount  = parseInt(String(row[effectiveColMap.amount]       || '0').replace(/[^0-9]/g,'')) || 0
+          const rawTotal   = effectiveColMap.total >= 0 ? parseInt(String(row[effectiveColMap.total] || '0').replace(/[^0-9]/g,'')) || 0 : 0
+          const amount     = rawAmount || rawTotal || Math.round(qty * unit_price)
           // 세금 구분: 부가세 컬럼 값으로 자동 판단
           const tax_type   = txGuessTaxType(row, vatCol, effectiveColMap.amount)
 
           if (amount <= 0 && qty <= 0) continue  // 금액/수량 모두 0이면 스킵
 
-          parsed.push({ item_name: itemName, quantity: qty, unit, unit_price, amount, tax_type,
-            category_hint: currentCategory || null,  // 카테고리 힌트 전달
-            raw: JSON.stringify(row) })
+          parsed.push({
+            item_code, item_name: itemName, spec,
+            quantity: qty, unit, unit_price, amount, tax_type,
+            category_hint: currentCategory || null,
+            raw: JSON.stringify(row)
+          })
         }
         resolve(parsed)
       } catch(err) { reject(err) }
