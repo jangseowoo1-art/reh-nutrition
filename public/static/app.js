@@ -16908,7 +16908,9 @@ function txRenderUploadTab(container) {
           <div id="txDropZone"
             class="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition"
             onclick="document.getElementById('txFileInput').click()"
-            ondragover="e=>e.preventDefault()"
+            ondragover="event.preventDefault()"
+            ondragenter="this.classList.add('border-blue-400','bg-blue-50')"
+            ondragleave="this.classList.remove('border-blue-400','bg-blue-50')"
             ondrop="txHandleDrop(event)">
             <i class="fas fa-file-excel text-4xl text-gray-300 mb-2"></i>
             <div class="text-gray-500 text-sm font-medium">XLSX / XLS / CSV / PDF</div>
@@ -17453,9 +17455,56 @@ async function txLoadHospitalSelector() {
 }
 
 // ── 드래그앤드롭 처리 ─────────────────────────────────────────────────
+// 거래기간 자동인식 (파일 미리보기 데이터에서)
+function txDetectPeriodFromRows(rows) {
+  const periodPattern = /거래기간.*?(\d{4}[\/\-]\d{2}[\/\-]\d{2}).*?~.*?(\d{4}[\/\-]\d{2}[\/\-]\d{2})/
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const rowStr = (rows[i] || []).map(c => String(c || '')).join(' ')
+    const m = rowStr.match(periodPattern)
+    if (m) {
+      const startDate = m[1].replace(/\//g, '-')
+      const endDate   = m[2].replace(/\//g, '-')
+      const [year, month] = startDate.split('-')
+      const yearEl  = document.getElementById('txDocYear')
+      const monthEl = document.getElementById('txDocMonth')
+      if (yearEl)  yearEl.value  = year
+      if (monthEl) monthEl.value = parseInt(month)
+      const periodEl   = document.getElementById('txDetectedPeriod')
+      const periodText = document.getElementById('txDetectedPeriodText')
+      if (periodEl && periodText) {
+        periodText.textContent = `거래기간: ${startDate} ~ ${endDate} (년/월 자동설정됨)`
+        periodEl.classList.remove('hidden')
+      }
+      return { startDate, endDate, year: parseInt(year), month: parseInt(month) }
+    }
+  }
+  return null
+}
+
+// 삼성웰스토리 등 카테고리 행 자동인식
+const TX_CATEGORY_KEYWORDS = ['가공식품','농산물류','농산물','저장식품','수산/건어물류','수산건어물','육류','축산물','소모품','위생용품','음료']
+const TX_CATEGORY_MAP = {
+  '가공식품':'PROCESSED','농산물류':'VEGGIE','농산물':'VEGGIE',
+  '저장식품':'GRAIN','수산/건어물류':'SEAFOOD','수산건어물':'SEAFOOD',
+  '육류':'MEAT','축산물':'MEAT','소모품':'SUPPLIES',
+  '위생용품':'SUPPLIES','음료':'PROCESSED'
+}
+
+function txIsCategoryRow(row) {
+  if (!row || !Array.isArray(row)) return null
+  const nonEmpty = row.filter(c => c !== null && c !== undefined && String(c).trim() !== '')
+  if (nonEmpty.length === 1) {
+    const val = String(nonEmpty[0]).trim()
+    for (const kw of TX_CATEGORY_KEYWORDS) {
+      if (val.includes(kw)) return kw
+    }
+  }
+  return null
+}
+
 function txHandleDrop(e) {
   e.preventDefault()
-  document.getElementById('txDropZone').classList.remove('border-blue-500','bg-blue-50')
+  document.getElementById('txDropZone').classList.remove('border-blue-400','bg-blue-50')
   const file = e.dataTransfer.files[0]
   if (file) txProcessFile(file)
 }
