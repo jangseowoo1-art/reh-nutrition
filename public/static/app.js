@@ -17189,15 +17189,17 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
   if (!rows || rows.length === 0) return
   TXState._previewRows = rows
   if (!TXState.colMapping) TXState.colMapping = {}
+  const safeSkip = (typeof skipRows === 'number' && skipRows >= 1) ? skipRows : 1
 
-  // txColMappingSection이 DOM에 없으면 txTabContent 뒤에 동적 생성
+  // txColMappingSection이 DOM에 없으면 동적 생성
   let section = document.getElementById('txColMappingSection')
   if (!section) {
-    const tabContent = document.getElementById('txTabContent')
-    if (!tabContent) return
-    const wrapper = document.createElement('div')
-    wrapper.innerHTML = `
-    <div id="txColMappingSection" class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mt-4">
+    // 업로드 탭 컨테이너 찾기 (txTabContent 우선, 없으면 body)
+    const tabContent = document.getElementById('txTabContent') || document.getElementById('txUploadBtn')?.closest('.bg-white, .rounded-xl') || document.body
+    const newSection = document.createElement('div')
+    newSection.id = 'txColMappingSection'
+    newSection.className = 'bg-white rounded-xl shadow-sm border border-gray-100 p-5 mt-4'
+    newSection.innerHTML = `
       <div class="flex items-center justify-between mb-3">
         <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
           <i class="fas fa-table text-green-500"></i> 열 매핑
@@ -17216,9 +17218,8 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
       </div>
       <div class="mt-2 text-xs text-gray-400 flex items-center gap-1">
         <i class="fas fa-info-circle"></i> 상위 8행 미리보기 · 색상 열이 선택된 필드
-      </div>
-    </div>`
-    tabContent.appendChild(wrapper.firstElementChild)
+      </div>`
+    tabContent.appendChild(newSection)
     section = document.getElementById('txColMappingSection')
   }
   if (section) section.classList.remove('hidden')
@@ -17237,8 +17238,8 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
     if (autoMap.total      >= 0) TXState.colMapping[autoMap.total]      = 'colTotal'
   }
 
-  // 헤더 행 찾기 (skipRows - 1 이 헤더)
-  const headerRowIdx = Math.max(0, skipRows - 1)
+  // 헤더 행 찾기 (safeSkip - 1 이 헤더)
+  const headerRowIdx = Math.max(0, safeSkip - 1)
   const headerRow = rows[headerRowIdx] || []
   TXState._headerRow = headerRow
 
@@ -17283,8 +17284,8 @@ function txRenderPreviewTable(rows, autoMap, skipRows) {
     <tr>${headerHtml}</tr>
   `
 
-  // 데이터 행 (최대 8행, skipRows 이후부터)
-  const dataRows = rows.slice(skipRows, skipRows + 8)
+  // 데이터 행 (최대 8행, safeSkip 이후부터)
+  const dataRows = rows.slice(safeSkip, safeSkip + 8)
   tbody.innerHTML = dataRows.map((row, ri) => {
     const cells = Array.from({length: colCount}, (_, i) => {
       const val = String((row||[])[i] ?? '').trim()
@@ -17652,7 +17653,10 @@ async function txPreviewParse(file) {
     }
   } catch(e) {
     console.error('txPreviewParse error:', e)
-    if (msgEl) { msgEl.className = 'mt-2 text-xs text-gray-400'; msgEl.textContent = '파일 미리보기 중 오류가 발생했습니다.' }
+    if (msgEl) {
+      msgEl.className = 'mt-2 text-xs text-red-500 bg-red-50 rounded-lg p-2'
+      msgEl.textContent = '⚠️ 파일 분석 오류: ' + e.message
+    }
   }
 }
 
@@ -17667,22 +17671,27 @@ async function txUploadFile() {
   const skipRows    = +document.getElementById('txSkipRows').value || 1
 
   // TXState.colMapping (열번호 → fieldId) 을 colMap (fieldId → 열번호) 으로 변환
+  // 새 UI: TXState.colMapping = { 0: 'colItemCode', 1: 'colItemName', ... }
   const mapping = TXState.colMapping || {}
   const fieldToCol = {}
   Object.entries(mapping).forEach(([colIdx, fieldId]) => {
-    fieldToCol[fieldId] = parseInt(colIdx)
+    if (fieldId) fieldToCol[fieldId] = parseInt(colIdx)
   })
+
+  // TXState.colMapping이 비어있으면 (파일 미선택 후 직접 업로드 시도 등) 기본값 사용
+  const hasMapping = Object.keys(fieldToCol).length > 0
   const colMap = {
-    item_code:  fieldToCol['colItemCode'] >= 0 ? fieldToCol['colItemCode'] : -1,
-    item_name:  fieldToCol['colItemName'] ?? +document.getElementById('colItemName')?.value ?? 1,
-    spec:       fieldToCol['colSpec']     >= 0 ? fieldToCol['colSpec']     : -1,
-    unit:       fieldToCol['colUnit']     ?? +document.getElementById('colUnit')?.value     ?? 3,
-    qty:        fieldToCol['colQty']      ?? +document.getElementById('colQty')?.value      ?? 4,
-    unit_price: fieldToCol['colPrice']    ?? +document.getElementById('colPrice')?.value    ?? 5,
-    amount:     fieldToCol['colAmount']   ?? +document.getElementById('colAmount')?.value   ?? 6,
-    tax_type:   fieldToCol['colTax']      ?? +document.getElementById('colTax')?.value      ?? 7,
-    total:      fieldToCol['colTotal']    >= 0 ? fieldToCol['colTotal']    : -1,
+    item_code:  fieldToCol['colItemCode']  !== undefined ? fieldToCol['colItemCode']  : -1,
+    item_name:  fieldToCol['colItemName']  !== undefined ? fieldToCol['colItemName']  : 1,
+    spec:       fieldToCol['colSpec']      !== undefined ? fieldToCol['colSpec']      : -1,
+    unit:       fieldToCol['colUnit']      !== undefined ? fieldToCol['colUnit']      : 3,
+    qty:        fieldToCol['colQty']       !== undefined ? fieldToCol['colQty']       : 4,
+    unit_price: fieldToCol['colPrice']     !== undefined ? fieldToCol['colPrice']     : 5,
+    amount:     fieldToCol['colAmount']    !== undefined ? fieldToCol['colAmount']    : 6,
+    tax_type:   fieldToCol['colTax']       !== undefined ? fieldToCol['colTax']       : -1,
+    total:      fieldToCol['colTotal']     !== undefined ? fieldToCol['colTotal']     : -1,
   }
+  console.log('[txUploadFile] hasMapping:', hasMapping, 'colMap:', colMap)
 
   const btn = document.getElementById('txUploadBtn')
   btn.disabled = true
@@ -17702,7 +17711,7 @@ async function txUploadFile() {
       throw new Error('지원하지 않는 파일 형식입니다.')
     }
 
-    if (parsedRows.length === 0) throw new Error('파싱된 데이터가 없습니다. 컬럼 매핑을 확인해주세요.')
+    if (parsedRows.length === 0) throw new Error('파싱된 데이터가 없습니다. 열 매핑을 확인하거나 파일을 다시 선택해주세요.')
 
     txShowMsg('txUploadMsg', 'info', `${parsedRows.length}개 항목 파싱 완료. 서버 저장 중...`)
 
@@ -17730,7 +17739,9 @@ async function txUploadFile() {
       throw new Error(res.data.error || '저장 실패')
     }
   } catch(e) {
-    txShowMsg('txUploadMsg', 'error', '오류: ' + (e.response?.data?.error || e.message))
+    console.error('txUploadFile error:', e)
+    const errMsg = e.response?.data?.error || e.message || '알 수 없는 오류'
+    txShowMsg('txUploadMsg', 'error', '오류: ' + errMsg)
   } finally {
     btn.disabled = false
     btn.innerHTML = '<i class="fas fa-upload"></i> 업로드 및 파싱'
@@ -17808,6 +17819,15 @@ function txGuessTaxType(row, taxCol, amountCol) {
 }
 
 async function txParseExcel(file, colMap, skipRows) {
+  // XLSX 라이브러리 로드 확인 (txPreviewParse를 건너뛰고 직접 업로드할 경우 대비)
+  if (!window.XLSX) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+      s.onload = res; s.onerror = () => rej(new Error('XLSX 라이브러리 로딩 실패'))
+      document.head.appendChild(s)
+    })
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -17851,6 +17871,7 @@ async function txParseExcel(file, colMap, skipRows) {
         const parsed = []
         let currentCategory = null  // 삼성웰스토리 카테고리 행 추적
         const hasCatRows = TXState._appliedTemplate?.has_category_rows === 1
+        console.log('[txParseExcel] effectiveColMap:', effectiveColMap, 'effectiveSkip:', effectiveSkip, 'total rows:', rows.length)
         for (let i = effectiveSkip; i < rows.length; i++) {
           const row = rows[i]
           // 카테고리 행 자동인식 (삼성웰스토리 등)
