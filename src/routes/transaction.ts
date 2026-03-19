@@ -864,9 +864,32 @@ txRouter.post('/vendor-templates', async (c) => {
 // DELETE /vendor-templates/:name
 txRouter.delete('/vendor-templates/:name', async (c) => {
   const name = decodeURIComponent(c.req.param('name'))
-  await c.env.DB.prepare(
-    `DELETE FROM transaction_vendor_templates WHERE vendor_name_normalized=?`
-  ).bind(name).run()
+  // ID로 삭제 (숫자인 경우)
+  if (/^\d+$/.test(name)) {
+    await c.env.DB.prepare(`DELETE FROM transaction_vendor_templates WHERE id=?`).bind(parseInt(name)).run()
+  } else {
+    await c.env.DB.prepare(`DELETE FROM transaction_vendor_templates WHERE vendor_name_normalized=?`).bind(name).run()
+  }
+  return c.json({ ok: true })
+})
+
+// PUT /vendor-templates/:id  수정
+txRouter.put('/vendor-templates/:id', async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const body = await c.req.json() as any
+  const normalized = (body.vendor_name || '').replace(/\s+/g, '').toLowerCase()
+  await c.env.DB.prepare(`
+    UPDATE transaction_vendor_templates SET
+      vendor_name=?, vendor_name_normalized=?, skip_rows=?,
+      col_item_name=?, col_qty=?, col_unit=?, col_unit_price=?, col_amount=?, col_tax=?,
+      updated_at=datetime('now')
+    WHERE id=?
+  `).bind(
+    body.vendor_name, normalized, body.skip_rows ?? 1,
+    body.col_item_name ?? 1, body.col_qty ?? 4, body.col_unit ?? 3,
+    body.col_unit_price ?? 5, body.col_amount ?? 6, body.col_tax ?? 7,
+    id
+  ).run()
   return c.json({ ok: true })
 })
 

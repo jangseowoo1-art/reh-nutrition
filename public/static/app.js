@@ -16894,340 +16894,417 @@ async function txLoadCategories() {
 // ════════════════════════════════════════
 function txRenderUploadTab(container) {
   container.innerHTML = `
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-    <!-- ① 업로드 영역 -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-4">
-      <h3 class="font-bold text-gray-700 flex items-center gap-2">
-        <i class="fas fa-cloud-upload-alt text-blue-500"></i> 명세서 파일 업로드
+  <div class="space-y-4">
+    <!-- ① 업로드 & 설정 영역 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      <h3 class="font-bold text-gray-700 flex items-center gap-2 mb-4">
+        <i class="fas fa-file-upload text-blue-500"></i> 거래명세서 업로드
       </h3>
 
-      <!-- 드래그앤드롭 존 -->
-      <div id="txDropZone"
-        class="border-2 border-dashed border-blue-200 rounded-xl p-8 text-center hover:border-blue-400 hover:bg-blue-50 transition-all cursor-pointer"
-        onclick="document.getElementById('txFileInput').click()"
-        ondragover="event.preventDefault();this.classList.add('border-blue-500','bg-blue-50')"
-        ondragleave="this.classList.remove('border-blue-500','bg-blue-50')"
-        ondrop="txHandleDrop(event)">
-        <i class="fas fa-file-upload text-4xl text-blue-300 mb-3"></i>
-        <div class="text-gray-600 font-medium mb-1">파일을 드래그하거나 클릭하여 선택</div>
-        <div class="text-xs text-gray-400">지원 형식: XLSX, XLS, CSV, PDF (텍스트 기반)</div>
-        <input id="txFileInput" type="file" class="hidden" accept=".xlsx,.xls,.csv,.pdf"
-          onchange="txHandleFileSelect(event)">
-      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <!-- 좌: 업로드 존 + 기본 설정 -->
+        <div class="space-y-3">
+          <!-- 드래그앤드롭 존 -->
+          <div id="txDropZone"
+            class="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition"
+            onclick="document.getElementById('txFileInput').click()"
+            ondragover="e=>e.preventDefault()"
+            ondrop="txHandleDrop(event)">
+            <i class="fas fa-file-excel text-4xl text-gray-300 mb-2"></i>
+            <div class="text-gray-500 text-sm font-medium">XLSX / XLS / CSV / PDF</div>
+            <div class="text-xs text-gray-400 mt-1">클릭하거나 파일을 드래그하세요</div>
+            <input id="txFileInput" type="file" accept=".xlsx,.xls,.csv,.pdf" class="hidden" onchange="txHandleFileSelect(event)">
+          </div>
 
-      <!-- 파일 메타 입력 -->
-      <div class="space-y-3">
-        <!-- 관리자 전용: 병원 선택 -->
-        ${App.role === 'admin' ? `
+          <!-- 거래기간 자동인식 결과 -->
+          <div id="txDetectedPeriod" class="hidden bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-700">
+            <i class="fas fa-calendar-check mr-1"></i><span id="txDetectedPeriodText"></span>
+          </div>
+
+          <!-- 템플릿 적용 배너 -->
+          <div id="txTemplateBanner" class="hidden bg-purple-50 border border-purple-200 rounded-lg px-3 py-2 text-xs text-purple-700 flex items-center justify-between">
+            <span><i class="fas fa-magic mr-1"></i><span id="txTemplateBannerText">템플릿 자동 적용됨</span></span>
+            <button onclick="txClearTemplate()" class="text-purple-400 hover:text-purple-600 ml-2"><i class="fas fa-times"></i></button>
+          </div>
+
+          <!-- 업체명 / 년월 / 병원 -->
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-gray-500 font-medium block mb-1">업체명</label>
+              <input id="txVendorName" type="text" placeholder="예: 삼성웰스토리"
+                class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none"
+                oninput="txOnVendorNameChange(this.value)">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 font-medium block mb-1">헤더 행 건너뛰기</label>
+              <input id="txSkipRows" type="number" min="0" max="15" value="1"
+                class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none">
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-gray-500 font-medium block mb-1">년도</label>
+              <input id="txDocYear" type="number" value="${new Date().getFullYear()}"
+                class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 font-medium block mb-1">월</label>
+              <select id="txDocMonth" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none">
+                ${Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===new Date().getMonth()+1?'selected':''}>${i+1}월`).join('')}
+              </select>
+            </div>
+            <div id="txHospitalSel" class="${App.role==='admin'?'':'hidden'}">
+              <label class="text-xs text-gray-500 font-medium block mb-1">병원</label>
+              <select id="txHospitalId" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none"></select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 우: 업체 템플릿 목록 -->
         <div>
-          <label class="text-xs font-medium text-gray-600 mb-1 block"><i class="fas fa-hospital text-blue-400 mr-1"></i>병원 선택 (관리자)</label>
-          <select id="txHospitalId" class="w-full text-sm border border-blue-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none bg-blue-50">
-            <option value="">로딩 중...</option>
-          </select>
-        </div>` : ''}
-
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">업체명</label>
-            <input id="txVendorName" type="text" placeholder="예: 삼성웰스토리"
-              class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 focus:outline-none"
-              oninput="txOnVendorNameChange(this.value)">
-          </div>
-          <div>
-            <label class="text-xs font-medium text-gray-600 mb-1 block">명세서 년/월</label>
-            <div class="flex gap-1">
-              <select id="txDocYear" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2">
-                ${[2024,2025,2026].map(y=>`<option value="${y}" ${y===TXState.year?'selected':''}>${y}</option>`).join('')}
-              </select>
-              <select id="txDocMonth" class="flex-1 text-sm border border-gray-200 rounded-lg px-2 py-2">
-                ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===TXState.month?'selected':''}>${m}월</option>`).join('')}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <!-- 거래기간 자동인식 결과 -->
-        <div id="txDetectedPeriod" class="hidden bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-700">
-          <i class="fas fa-calendar-check mr-1"></i><span id="txDetectedPeriodText"></span>
-        </div>
-
-        <!-- 업체 템플릿 적용 배너 -->
-        <div id="txTemplateBanner" class="hidden bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-700 flex items-center justify-between">
-          <span><i class="fas fa-magic mr-1"></i><span id="txTemplateBannerText">템플릿 자동 적용됨</span></span>
-          <button onclick="txClearTemplate()" class="text-blue-400 hover:text-blue-600 ml-2"><i class="fas fa-times"></i></button>
-        </div>
-
-        <!-- 컬럼 매핑 테이블 (개선) -->
-        <div class="bg-gray-50 rounded-lg p-3">
           <div class="flex items-center justify-between mb-2">
-            <div class="text-xs font-medium text-gray-600">
-              <i class="fas fa-columns mr-1 text-blue-400"></i>컬럼 매핑
-            </div>
-            <div class="flex items-center gap-2 text-xs text-gray-400">
-              <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>자동감지</span>
-              <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>수동</span>
-            </div>
+            <span class="text-xs font-medium text-gray-600"><i class="fas fa-bookmark text-purple-400 mr-1"></i>업체 템플릿</span>
+            <button onclick="txShowTemplateForm()" class="text-xs bg-purple-600 text-white px-2 py-1 rounded-lg hover:bg-purple-700">
+              <i class="fas fa-plus mr-1"></i>추가
+            </button>
           </div>
-          <!-- 매핑 테이블 -->
-          <table class="w-full text-xs border-collapse">
-            <thead>
-              <tr class="bg-gray-100">
-                <th class="text-left py-1.5 px-2 rounded-tl-lg font-medium text-gray-500">시스템 필드</th>
-                <th class="text-center py-1.5 px-2 font-medium text-gray-500">열 번호<span class="font-normal text-gray-400 ml-1">(0부터)</span></th>
-                <th class="text-center py-1.5 px-2 font-medium text-gray-500">원본 열명</th>
-                <th class="text-center py-1.5 px-2 rounded-tr-lg font-medium text-gray-500">상태</th>
-              </tr>
-            </thead>
-            <tbody id="txColMapTableBody">
-              ${[
-                {id:'colItemName', label:'품목명',   def:'1', icon:'fa-tag',    desc:''},
-                {id:'colQty',      label:'수량',     def:'4', icon:'fa-sort-numeric-up', desc:''},
-                {id:'colUnit',     label:'단위',     def:'3', icon:'fa-ruler',  desc:''},
-                {id:'colPrice',    label:'평균단가', def:'5', icon:'fa-won-sign',desc:''},
-                {id:'colAmount',   label:'금액',     def:'6', icon:'fa-calculator',desc:''},
-                {id:'colTax',      label:'부가세',   def:'7', icon:'fa-percent', desc:''},
-              ].map(c=>`
-              <tr class="border-b border-gray-100 hover:bg-white transition-colors" id="txColRow-${c.id}">
-                <td class="py-1.5 px-2">
-                  <span class="flex items-center gap-1.5 font-medium text-gray-700">
-                    <i class="fas ${c.icon} text-blue-400 w-3"></i>${c.label}
-                  </span>
-                </td>
-                <td class="py-1.5 px-2 text-center">
-                  <input id="${c.id}" type="number" min="0" max="20" value="${c.def}"
-                    class="w-14 text-xs text-center border border-gray-200 rounded px-1.5 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none"
-                    oninput="txMarkColManual('${c.id}')">
-                </td>
-                <td class="py-1.5 px-2 text-center">
-                  <span id="txColOrigName-${c.id}" class="text-gray-400 text-xs italic">—</span>
-                </td>
-                <td class="py-1.5 px-2 text-center">
-                  <span id="txColStatus-${c.id}" class="inline-block w-2 h-2 rounded-full bg-gray-300"></span>
-                </td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-          <!-- 헤더 스킵 -->
-          <div class="mt-2 flex items-center gap-2 pt-2 border-t border-gray-100">
-            <label class="text-xs text-gray-500 font-medium">헤더 행 건너뛰기</label>
-            <input id="txSkipRows" type="number" min="0" max="15" value="1"
-              class="w-16 text-xs border border-gray-200 rounded px-2 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none">
-            <span class="text-xs text-gray-400">행</span>
-            <span id="txAutoDetectBadge" class="hidden ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
-              <i class="fas fa-magic mr-0.5"></i>자동감지
-            </span>
-          </div>
+          <div id="txTemplateList" class="space-y-1 max-h-48 overflow-y-auto pr-1"></div>
         </div>
-
-        <button onclick="txUploadFile()" id="txUploadBtn"
-          class="w-full bg-blue-600 text-white font-medium py-2.5 rounded-xl hover:bg-blue-700 transition flex items-center justify-center gap-2">
-          <i class="fas fa-upload"></i> 업로드 및 파싱
-        </button>
       </div>
-      <div id="txUploadMsg" class="mt-3 hidden"></div>
+
+      <!-- 업로드 버튼 -->
+      <button onclick="txUploadFile()" id="txUploadBtn"
+        class="w-full bg-blue-600 text-white font-medium py-2.5 rounded-xl hover:bg-blue-700 transition flex items-center justify-center gap-2">
+        <i class="fas fa-upload"></i> 업로드 및 파싱
+      </button>
+      <div id="txUploadMsg" class="mt-2 hidden"></div>
     </div>
 
-    <!-- ② 파일 목록 + 업체 템플릿 관리 -->
-    <div class="space-y-4">
-      <!-- 업체 템플릿 관리 -->
-      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
-            <i class="fas fa-bookmark text-purple-500"></i> 업체 명세서 템플릿
-          </h3>
-          <button onclick="txShowTemplateForm()" class="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 font-medium">
-            <i class="fas fa-plus mr-1"></i>템플릿 추가
-          </button>
+    <!-- ② 엑셀 미리보기 + 컬럼 매핑 (파일 선택 후 표시) -->
+    <div id="txColMappingSection" class="hidden bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
+          <i class="fas fa-table text-green-500"></i> 열 매핑
+          <span id="txAutoDetectBadge" class="hidden text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium ml-1">
+            <i class="fas fa-magic mr-0.5"></i>자동감지
+          </span>
+        </h3>
+        <span class="text-xs text-gray-400">드롭다운으로 각 열의 역할을 지정하세요</span>
+      </div>
+      <!-- 매핑 요약 칩 -->
+      <div id="txColMappingSummary" class="flex flex-wrap gap-1 mb-3"></div>
+      <!-- 미리보기 테이블 -->
+      <div class="overflow-x-auto rounded-lg border border-gray-100">
+        <table id="txColMappingTable" class="w-full text-xs border-collapse min-w-max">
+          <thead id="txColMappingHead"></thead>
+          <tbody id="txColMappingBody"></tbody>
+        </table>
+      </div>
+      <div class="mt-2 text-xs text-gray-400 flex items-center gap-1">
+        <i class="fas fa-info-circle"></i> 상위 8행 미리보기 · 색상 열이 선택된 필드
+      </div>
+    </div>
+
+    <!-- ③ 업로드된 파일 목록 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
+          <i class="fas fa-history text-indigo-500"></i> 업로드 파일 목록
+        </h3>
+        <button onclick="txLoadFileList()" class="text-xs text-gray-400 hover:text-gray-600">
+          <i class="fas fa-sync-alt"></i>
+        </button>
+      </div>
+      <div id="txFileList"><div class="text-xs text-gray-400 text-center py-4">로딩 중...</div></div>
+    </div>
+
+    <!-- ④ 템플릿 추가/수정 폼 -->
+    <div id="txTemplateForm" class="hidden bg-white rounded-xl shadow-sm border border-purple-100 p-5">
+      <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm mb-4">
+        <i class="fas fa-edit text-purple-500"></i> 템플릿 <span id="txTemplateFormTitle">추가</span>
+      </h3>
+      <input type="hidden" id="txTplId">
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label class="text-xs text-gray-500 font-medium block mb-1">업체명 *</label>
+          <input id="txTplVendor" type="text" placeholder="삼성웰스토리" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-300 focus:outline-none">
         </div>
-        <div id="txTemplateList" class="space-y-1.5 max-h-48 overflow-y-auto">
-          <div class="text-center text-gray-300 py-4 text-xs"><i class="fas fa-spinner fa-spin"></i> 로딩 중...</div>
-        </div>
-        <!-- 템플릿 편집 폼 (숨김) -->
-        <div id="txTemplateForm" class="hidden mt-3 p-3 bg-purple-50 border border-purple-200 rounded-xl">
-          <div class="font-semibold text-xs text-purple-700 mb-2"><i class="fas fa-edit mr-1"></i>템플릿 저장</div>
-          <div class="grid grid-cols-2 gap-2 mb-2">
-            <div class="col-span-2">
-              <label class="text-xs text-gray-500">업체명</label>
-              <input id="tplVendorName" type="text" placeholder="예: 삼성웰스토리" class="form-input w-full text-xs mt-0.5">
-            </div>
-            ${[
-              {id:'tplColItemName',label:'품목명 열',def:'1'},
-              {id:'tplColQty',     label:'수량 열',  def:'4'},
-              {id:'tplColUnit',    label:'단위 열',  def:'3'},
-              {id:'tplColPrice',   label:'단가 열',  def:'5'},
-              {id:'tplColAmount',  label:'금액 열',  def:'6'},
-              {id:'tplColTax',     label:'부가세 열',def:'7'},
-              {id:'tplSkipRows',   label:'건너뛰기 행',def:'6'},
-            ].map(f=>`
-            <div>
-              <label class="text-xs text-gray-500">${f.label}</label>
-              <input id="${f.id}" type="number" min="0" value="${f.def}" class="form-input w-full text-xs mt-0.5">
-            </div>`).join('')}
-          </div>
-          <div class="flex items-center gap-2 mb-2">
-            <input type="checkbox" id="tplHasCatRows" class="w-3.5 h-3.5">
-            <label class="text-xs text-gray-600" for="tplHasCatRows">카테고리 행 자동인식 (삼성웰스토리 등)</label>
-          </div>
-          <div class="mb-2">
-            <label class="text-xs text-gray-500">메모</label>
-            <input id="tplNotes" type="text" placeholder="컬럼 구조 설명 등" class="form-input w-full text-xs mt-0.5">
-          </div>
-          <div class="flex gap-2 mt-2">
-            <button onclick="txSaveTemplate()" class="flex-1 bg-purple-600 text-white text-xs py-1.5 rounded-lg hover:bg-purple-700 font-medium">
-              <i class="fas fa-save mr-1"></i>저장
-            </button>
-            <button onclick="document.getElementById('txTemplateForm').classList.add('hidden')" class="px-3 bg-gray-200 text-gray-600 text-xs rounded-lg hover:bg-gray-300">
-              취소
-            </button>
-          </div>
+        <div>
+          <label class="text-xs text-gray-500 font-medium block mb-1">헤더 건너뛰기</label>
+          <input id="txTplSkip" type="number" value="1" min="0" max="20" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-300 focus:outline-none">
         </div>
       </div>
-
-      <!-- 업로드된 파일 목록 -->
-      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="font-bold text-gray-700 flex items-center gap-2 text-sm">
-            <i class="fas fa-folder-open text-yellow-500"></i> 업로드 파일 목록
-          </h3>
-          <button onclick="txLoadFileList()" class="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1">
-            <i class="fas fa-sync-alt"></i> 새로고침
-          </button>
-        </div>
-        <div id="txFileList" class="space-y-2 max-h-72 overflow-y-auto">
-          <div class="text-center text-gray-400 py-8 text-sm">
-            <i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>불러오는 중...
-          </div>
-        </div>
+      <div class="grid grid-cols-3 gap-2 mb-3">
+        ${[
+          {id:'txTplItemName',label:'품목명 열번호',def:'1'},
+          {id:'txTplQty',     label:'수량 열번호',  def:'4'},
+          {id:'txTplUnit',    label:'단위 열번호',  def:'3'},
+          {id:'txTplPrice',   label:'단가 열번호',  def:'5'},
+          {id:'txTplAmount',  label:'금액 열번호',  def:'6'},
+          {id:'txTplTax',     label:'부가세 열번호', def:'7'},
+        ].map(f=>`
+        <div>
+          <label class="text-xs text-gray-500 font-medium block mb-1">${f.label}</label>
+          <input id="${f.id}" type="number" min="0" max="20" value="${f.def}"
+            class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-300 focus:outline-none">
+        </div>`).join('')}
+      </div>
+      <div class="flex gap-2">
+        <button onclick="txSaveTemplate()" class="flex-1 bg-purple-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-purple-700">저장</button>
+        <button onclick="document.getElementById('txTemplateForm').classList.add('hidden')" class="flex-1 bg-gray-100 text-gray-600 py-2 rounded-lg text-sm font-medium hover:bg-gray-200">취소</button>
       </div>
     </div>
   </div>`
 
   txLoadFileList()
-  txLoadTemplates()
+  txLoadTemplateList()
   if (App.role === 'admin') txLoadHospitalSelector()
 }
 
+// 컬럼 필드 정의 (색상 포함)
+const TX_FIELDS = [
+  {id:'colItemName', label:'품목명',   color:'bg-blue-100 text-blue-800',   borderColor:'border-blue-300',   headerBg:'bg-blue-50'},
+  {id:'colQty',      label:'수량',     color:'bg-green-100 text-green-800',  borderColor:'border-green-300',  headerBg:'bg-green-50'},
+  {id:'colUnit',     label:'단위',     color:'bg-yellow-100 text-yellow-800',borderColor:'border-yellow-300', headerBg:'bg-yellow-50'},
+  {id:'colPrice',    label:'단가',     color:'bg-orange-100 text-orange-800',borderColor:'border-orange-300', headerBg:'bg-orange-50'},
+  {id:'colAmount',   label:'금액',     color:'bg-red-100 text-red-800',      borderColor:'border-red-300',    headerBg:'bg-red-50'},
+  {id:'colTax',      label:'부가세',   color:'bg-purple-100 text-purple-800',borderColor:'border-purple-300', headerBg:'bg-purple-50'},
+]
 
-// ── 관리자 병원 선택 목록 로드 ─────────────────────────────────────────
-// ── 업체 템플릿 관련 함수들 ──────────────────────────────────────────
+// 현재 매핑 상태 (colIdx → fieldId)
+// TXState.colMapping = { 0: 'colItemName', 3: 'colQty', ... }
 
-// 템플릿 목록 로드
-async function txLoadTemplates() {
-  const listEl = document.getElementById('txTemplateList')
-  if (!listEl) return
-  try {
-    const res = await axios.get('/api/transaction/vendor-templates', {
-      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-    })
-    const templates = res.data.templates || []
-    if (templates.length === 0) {
-      listEl.innerHTML = `<div class="text-center text-gray-300 py-4 text-xs">등록된 템플릿 없음</div>`
-      return
-    }
-    listEl.innerHTML = templates.map(t => `
-    <div class="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-lg hover:bg-purple-50 group">
-      <div class="flex-1 min-w-0">
-        <div class="font-medium text-sm text-gray-700 flex items-center gap-1.5">
-          <i class="fas fa-bookmark text-purple-400 text-xs"></i>${t.vendor_name}
-          ${t.has_category_rows ? '<span class="text-xs bg-green-100 text-green-700 px-1.5 rounded-full">카테고리행</span>' : ''}
-        </div>
-        <div class="text-xs text-gray-400 mt-0.5">품목명:${t.col_item_name} 수량:${t.col_qty} 단가:${t.col_unit_price} 금액:${t.col_amount} | 헤더:${t.skip_rows}행</div>
-        ${t.notes ? `<div class="text-xs text-gray-300 truncate">${t.notes}</div>` : ''}
-      </div>
-      <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
-        <button onclick="txApplyTemplate(${JSON.stringify(t).replace(/"/g,'&quot;')})" 
-          class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600">적용</button>
-        <button onclick="txEditTemplate(${JSON.stringify(t).replace(/"/g,'&quot;')})" 
-          class="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-300">수정</button>
-        <button onclick="txDeleteTemplate('${t.vendor_name_normalized}')" 
-          class="text-xs bg-red-100 text-red-600 px-2 py-1 rounded hover:bg-red-200">삭제</button>
-      </div>
-    </div>`).join('')
-  } catch(e) {
-    listEl.innerHTML = `<div class="text-xs text-red-400 py-2">로드 실패</div>`
-  }
-}
+// 테이블 셀 열 색상 업데이트
+function txUpdateTableColors() {
+  const mapping = TXState.colMapping || {}
+  const table = document.getElementById('txColMappingTable')
+  if (!table) return
 
-// 템플릿 폼 표시
-function txShowTemplateForm(t) {
-  const form = document.getElementById('txTemplateForm')
-  if (!form) return
-  // 현재 업로드 탭의 컬럼 값을 기본값으로 채우기
-  document.getElementById('tplVendorName').value = t?.vendor_name || document.getElementById('txVendorName')?.value || ''
-  document.getElementById('tplColItemName').value = t?.col_item_name ?? document.getElementById('colItemName')?.value ?? 1
-  document.getElementById('tplColQty').value = t?.col_qty ?? document.getElementById('colQty')?.value ?? 4
-  document.getElementById('tplColUnit').value = t?.col_unit ?? document.getElementById('colUnit')?.value ?? 3
-  document.getElementById('tplColPrice').value = t?.col_unit_price ?? document.getElementById('colPrice')?.value ?? 5
-  document.getElementById('tplColAmount').value = t?.col_amount ?? document.getElementById('colAmount')?.value ?? 6
-  document.getElementById('tplColTax').value = t?.col_tax ?? document.getElementById('colTax')?.value ?? 7
-  document.getElementById('tplSkipRows').value = t?.skip_rows ?? document.getElementById('txSkipRows')?.value ?? 6
-  document.getElementById('tplHasCatRows').checked = t?.has_category_rows === 1
-  document.getElementById('tplNotes').value = t?.notes || ''
-  form.classList.remove('hidden')
-}
+  // 역방향: fieldId → colIdx
+  const fieldToCol = {}
+  Object.entries(mapping).forEach(([colIdx, fieldId]) => {
+    fieldToCol[fieldId] = parseInt(colIdx)
+  })
 
-function txEditTemplate(t) { txShowTemplateForm(t) }
-
-// 템플릿 저장
-async function txSaveTemplate() {
-  const body = {
-    vendor_name: document.getElementById('tplVendorName').value.trim(),
-    col_item_name: +document.getElementById('tplColItemName').value,
-    col_qty: +document.getElementById('tplColQty').value,
-    col_unit: +document.getElementById('tplColUnit').value,
-    col_unit_price: +document.getElementById('tplColPrice').value,
-    col_amount: +document.getElementById('tplColAmount').value,
-    col_tax: +document.getElementById('tplColTax').value,
-    skip_rows: +document.getElementById('tplSkipRows').value,
-    has_category_rows: document.getElementById('tplHasCatRows').checked ? 1 : 0,
-    notes: document.getElementById('tplNotes').value
-  }
-  if (!body.vendor_name) { showToast('업체명을 입력하세요', 'error'); return }
-  try {
-    await axios.post('/api/transaction/vendor-templates', body, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-    })
-    showToast(`'${body.vendor_name}' 템플릿 저장됨`, 'success')
-    document.getElementById('txTemplateForm').classList.add('hidden')
-    txLoadTemplates()
-  } catch(e) { showToast('저장 실패', 'error') }
-}
-
-// 템플릿 삭제
-async function txDeleteTemplate(normalizedName) {
-  if (!confirm('이 템플릿을 삭제하시겠습니까?')) return
-  try {
-    await axios.delete(`/api/transaction/vendor-templates/${encodeURIComponent(normalizedName)}`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-    })
-    showToast('템플릿 삭제됨', 'success')
-    txLoadTemplates()
-  } catch(e) { showToast('삭제 실패', 'error') }
-}
-
-// 템플릿 적용 (컬럼 매핑 UI에 반영)
-function txApplyTemplate(t) {
-  const fields = [
-    {domId:'colItemName', val: t.col_item_name},
-    {domId:'colQty',      val: t.col_qty},
-    {domId:'colUnit',     val: t.col_unit},
-    {domId:'colPrice',    val: t.col_unit_price},
-    {domId:'colAmount',   val: t.col_amount},
-    {domId:'colTax',      val: t.col_tax},
-  ]
-  fields.forEach(f => {
-    const el = document.getElementById(f.domId)
-    if (el) {
-      el.value = f.val
-      // 자동감지 상태로 표시
-      const statusEl = document.getElementById(`txColStatus-${f.domId}`)
-      if (statusEl) { statusEl.className = 'inline-block w-2 h-2 rounded-full bg-blue-400' }
+  // 헤더 행 색상
+  const ths = table.querySelectorAll('thead th')
+  ths.forEach((th, i) => {
+    const fieldId = mapping[i]
+    th.className = 'px-2 py-1 border border-gray-200 text-center min-w-16 sticky top-0 z-10 '
+    if (fieldId) {
+      const f = TX_FIELDS.find(f => f.id === fieldId)
+      if (f) th.className += f.headerBg + ' border-b-2 ' + f.borderColor
+      else th.className += 'bg-gray-50'
+    } else {
+      th.className += 'bg-gray-50 text-gray-400'
     }
   })
+
+  // 데이터 셀 색상
+  const trs = table.querySelectorAll('tbody tr')
+  trs.forEach(tr => {
+    const tds = tr.querySelectorAll('td')
+    tds.forEach((td, i) => {
+      const fieldId = mapping[i]
+      td.className = 'px-2 py-1 border border-gray-100 text-xs text-center whitespace-nowrap '
+      if (fieldId) {
+        const f = TX_FIELDS.find(f => f.id === fieldId)
+        if (f) td.className += f.headerBg
+        else td.className += 'bg-white'
+      } else {
+        td.className += 'bg-white text-gray-400'
+      }
+    })
+  })
+
+  // 매핑 요약 칩 업데이트
+  const summaryEl = document.getElementById('txColMappingSummary')
+  if (summaryEl) {
+    summaryEl.innerHTML = TX_FIELDS.map(f => {
+      const colIdx = fieldToCol[f.id]
+      if (colIdx === undefined || colIdx < 0) return `<span class="px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-400">${f.label}: 미설정</span>`
+      const headerRow = TXState._headerRow || []
+      const colName = String(headerRow[colIdx] || `열${colIdx}`).trim()
+      return `<span class="px-2 py-0.5 rounded-full text-xs ${f.color} font-medium">${f.label}: ${colName}(${colIdx}열)</span>`
+    }).join('')
+  }
+
+  // hidden input 동기화 (실제 파싱에 사용)
+  TX_FIELDS.forEach(f => {
+    const colIdx = fieldToCol[f.id]
+    let el = document.getElementById(f.id)
+    if (!el) {
+      el = document.createElement('input')
+      el.type = 'hidden'
+      el.id = f.id
+      document.body.appendChild(el)
+    }
+    el.value = (colIdx !== undefined && colIdx >= 0) ? colIdx : (f.id === 'colItemName' ? 1 : f.id === 'colQty' ? 4 : f.id === 'colUnit' ? 3 : f.id === 'colPrice' ? 5 : f.id === 'colAmount' ? 6 : 7)
+  })
+  // skipRows hidden input 동기화
+  let skipEl = document.getElementById('txSkipRows')
+  if (!skipEl) {
+    skipEl = document.createElement('input')
+    skipEl.type = 'hidden'
+    skipEl.id = 'txSkipRows'
+    skipEl.value = '1'
+    document.body.appendChild(skipEl)
+  }
+}
+
+// 드롭다운 변경 핸들러
+function txChangeColMapping(colIdx, fieldId) {
+  if (!TXState.colMapping) TXState.colMapping = {}
+  // 같은 fieldId가 다른 열에 이미 있으면 제거
+  if (fieldId !== '') {
+    Object.keys(TXState.colMapping).forEach(k => {
+      if (TXState.colMapping[k] === fieldId) delete TXState.colMapping[k]
+    })
+  }
+  if (fieldId === '') {
+    delete TXState.colMapping[colIdx]
+  } else {
+    TXState.colMapping[colIdx] = fieldId
+  }
+  txUpdateTableColors()
+}
+
+// 미리보기 테이블 렌더링
+function txRenderPreviewTable(rows, autoMap, skipRows) {
+  if (!rows || rows.length === 0) return
+  TXState._previewRows = rows
+  if (!TXState.colMapping) TXState.colMapping = {}
+
+  // autoMap으로 초기 매핑 설정
+  if (autoMap) {
+    TXState.colMapping = {}
+    if (autoMap.item_name >= 0) TXState.colMapping[autoMap.item_name] = 'colItemName'
+    if (autoMap.qty >= 0) TXState.colMapping[autoMap.qty] = 'colQty'
+    if (autoMap.unit >= 0) TXState.colMapping[autoMap.unit] = 'colUnit'
+    if (autoMap.unit_price >= 0) TXState.colMapping[autoMap.unit_price] = 'colPrice'
+    if (autoMap.amount >= 0) TXState.colMapping[autoMap.amount] = 'colAmount'
+    if (autoMap.tax_type >= 0) TXState.colMapping[autoMap.tax_type] = 'colTax'
+  }
+
+  // 헤더 행 찾기 (skipRows - 1 이 헤더)
+  const headerRowIdx = Math.max(0, skipRows - 1)
+  const headerRow = rows[headerRowIdx] || []
+  TXState._headerRow = headerRow
+
+  // 컬럼 수
+  const colCount = Math.max(...rows.slice(0, Math.min(10, rows.length)).map(r => (r||[]).length), 0)
+
+  const fieldOptions = `
+    <option value="">— 무시 —</option>
+    ${TX_FIELDS.map(f => `<option value="${f.id}">${f.label}</option>`).join('')}
+  `
+
+  // 드롭다운 헤더 행 (매핑 선택)
+  const dropdownHtml = Array.from({length: colCount}, (_, i) => {
+    const currentField = (TXState.colMapping || {})[i] || ''
+    return `<th class="px-2 py-1 border border-gray-200 bg-gray-50 min-w-16">
+      <select class="w-full text-xs border-0 bg-transparent focus:outline-none cursor-pointer font-medium"
+        onchange="txChangeColMapping(${i}, this.value)">
+        ${TX_FIELDS.map(f => `<option value="${f.id}" ${currentField===f.id?'selected':''}>${f.label}</option>`).join('')}
+        <option value="" ${!currentField?'selected':''}>— 무시 —</option>
+      </select>
+    </th>`
+  }).join('')
+
+  // 열 번호 행
+  const colNumHtml = Array.from({length: colCount}, (_, i) =>
+    `<th class="px-2 py-0.5 border border-gray-100 bg-gray-100 text-center text-xs text-gray-400 font-mono">${i}열</th>`
+  ).join('')
+
+  // 헤더 이름 행 (엑셀 헤더)
+  const headerHtml = Array.from({length: colCount}, (_, i) => {
+    const label = String(headerRow[i] || '').trim()
+    return `<th class="px-2 py-1 border border-gray-200 bg-white text-center text-xs font-medium text-gray-700 whitespace-nowrap">${label || '—'}</th>`
+  }).join('')
+
+  const thead = document.getElementById('txColMappingHead')
+  const tbody = document.getElementById('txColMappingBody')
+  if (!thead || !tbody) return
+
+  thead.innerHTML = `
+    <tr>${dropdownHtml}</tr>
+    <tr>${colNumHtml}</tr>
+    <tr>${headerHtml}</tr>
+  `
+
+  // 데이터 행 (최대 8행, skipRows 이후부터)
+  const dataRows = rows.slice(skipRows, skipRows + 8)
+  tbody.innerHTML = dataRows.map((row, ri) => {
+    const cells = Array.from({length: colCount}, (_, i) => {
+      const val = String((row||[])[i] ?? '').trim()
+      return `<td class="px-2 py-1 border border-gray-100 text-xs text-center whitespace-nowrap bg-white">${val || ''}</td>`
+    }).join('')
+    return `<tr class="${ri%2===0?'bg-white':'bg-gray-50/30'}">${cells}</tr>`
+  }).join('')
+
+  // 미리보기 섹션 표시
+  const section = document.getElementById('txColMappingSection')
+  if (section) section.classList.remove('hidden')
+
+  // 색상 업데이트
+  txUpdateTableColors()
+}
+
+// 컬럼 수동 변경 표시 (레거시 호환)
+function txMarkColManual(colId) {
+  const numEl = document.getElementById(colId)
+  if (!numEl) return
+  const val = parseInt(numEl.value)
+  if (isNaN(val) || val < 0) return
+  if (!TXState.colMapping) TXState.colMapping = {}
+  // 역방향 적용
+  const prev = Object.entries(TXState.colMapping).find(([k,v]) => v === colId)
+  if (prev) delete TXState.colMapping[prev[0]]
+  TXState.colMapping[val] = colId
+  txUpdateTableColors()
+}
+
+// 드롭다운 선택 → 숫자 입력 동기화 (레거시 호환)
+function txSelectCol(colId, val) {
+  const numEl = document.getElementById(colId)
+  if (numEl) numEl.value = val
+  txMarkColManual(colId)
+}
+
+// 헤더 드롭다운 생성 (레거시 호환 - 이제 미리보기 테이블이 대신함)
+function txBuildHeaderDropdowns(headerRow) {
+  // 미리보기가 이미 있으면 skip
+}
+
+// 템플릿 적용
+function txApplyTemplate(t) {
+  // colMapping에 템플릿 값 적용
+  TXState.colMapping = {}
+  if (t.col_item_name >= 0) TXState.colMapping[t.col_item_name] = 'colItemName'
+  if (t.col_qty >= 0) TXState.colMapping[t.col_qty] = 'colQty'
+  if (t.col_unit >= 0) TXState.colMapping[t.col_unit] = 'colUnit'
+  if (t.col_unit_price >= 0) TXState.colMapping[t.col_unit_price] = 'colPrice'
+  if (t.col_amount >= 0) TXState.colMapping[t.col_amount] = 'colAmount'
+  if (t.col_tax >= 0) TXState.colMapping[t.col_tax] = 'colTax'
+
   const skipEl = document.getElementById('txSkipRows')
   if (skipEl) skipEl.value = t.skip_rows
-  const badge = document.getElementById('txAutoDetectBadge')
-  if (badge) badge.classList.remove('hidden')
+
+  // hidden input 동기화
+  const fieldMap = {colItemName: t.col_item_name, colQty: t.col_qty, colUnit: t.col_unit, colPrice: t.col_unit_price, colAmount: t.col_amount, colTax: t.col_tax}
+  Object.entries(fieldMap).forEach(([id, val]) => {
+    let el = document.getElementById(id)
+    if (!el) { el = document.createElement('input'); el.type='hidden'; el.id=id; document.body.appendChild(el) }
+    el.value = val
+  })
+
+  // 미리보기 테이블 드롭다운 업데이트
+  if (TXState._previewRows) {
+    txRenderPreviewTable(TXState._previewRows, null, parseInt(skipEl?.value||'1'))
+  } else {
+    txUpdateTableColors()
+  }
+
   // 배너 표시
   const banner = document.getElementById('txTemplateBanner')
   const bannerText = document.getElementById('txTemplateBannerText')
@@ -17242,89 +17319,117 @@ function txClearTemplate() {
   TXState._appliedTemplate = null
   const banner = document.getElementById('txTemplateBanner')
   if (banner) banner.classList.add('hidden')
-  // 상태 초기화
-  ;['colItemName','colQty','colUnit','colPrice','colAmount','colTax'].forEach(id => {
-    const s = document.getElementById(`txColStatus-${id}`)
-    if (s) s.className = 'inline-block w-2 h-2 rounded-full bg-gray-300'
-    const n = document.getElementById(`txColOrigName-${id}`)
-    if (n) n.textContent = '—'
-  })
-  const badge = document.getElementById('txAutoDetectBadge')
-  if (badge) badge.classList.add('hidden')
 }
 
-// 컬럼 수동 변경 표시
-function txMarkColManual(colId) {
-  const statusEl = document.getElementById(`txColStatus-${colId}`)
-  if (statusEl) statusEl.className = 'inline-block w-2 h-2 rounded-full bg-amber-400'
-  TXState._appliedTemplate = null
-  const banner = document.getElementById('txTemplateBanner')
-  if (banner) banner.classList.add('hidden')
-}
 
-// 업체명 변경 시 템플릿 자동 검색/적용
-async function txOnVendorNameChange(name) {
-  if (!name || name.length < 2) return
+// ── 업체 템플릿 CRUD ──────────────────────────────────────────────────
+
+async function txLoadTemplateList() {
+  const listEl = document.getElementById('txTemplateList')
+  if (!listEl) return
   try {
-    const res = await axios.get(`/api/transaction/vendor-templates/${encodeURIComponent(name)}`, {
+    const res = await axios.get('/api/transaction/vendor-templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
     })
-    if (res.data.template) {
-      txApplyTemplate(res.data.template)
+    const templates = res.data || []
+    if (!templates.length) {
+      listEl.innerHTML = '<div class="text-xs text-gray-400 text-center py-3">템플릿 없음<br><span class="text-gray-300">추가 버튼으로 업체별 템플릿을 저장하세요</span></div>'
+      return
     }
-  } catch(e) {}
-}
-
-// 거래기간 자동인식 (파일 미리보기 데이터에서)
-function txDetectPeriodFromRows(rows) {
-  // 상위 10행에서 거래기간 패턴 검색
-  const periodPattern = /거래기간.*?(\d{4}[\/\-]\d{2}[\/\-]\d{2}).*?~.*?(\d{4}[\/\-]\d{2}[\/\-]\d{2})/
-  for (let i = 0; i < Math.min(10, rows.length); i++) {
-    const rowStr = (rows[i] || []).map(c => String(c || '')).join(' ')
-    const m = rowStr.match(periodPattern)
-    if (m) {
-      const startDate = m[1].replace(/\//g, '-')
-      const endDate = m[2].replace(/\//g, '-')
-      // 년/월 자동 설정
-      const [year, month] = startDate.split('-')
-      const yearEl = document.getElementById('txDocYear')
-      const monthEl = document.getElementById('txDocMonth')
-      if (yearEl) yearEl.value = year
-      if (monthEl) monthEl.value = parseInt(month)
-      // 표시
-      const periodEl = document.getElementById('txDetectedPeriod')
-      const periodText = document.getElementById('txDetectedPeriodText')
-      if (periodEl && periodText) {
-        periodText.textContent = `거래기간: ${startDate} ~ ${endDate} (년/월 자동설정됨)`
-        periodEl.classList.remove('hidden')
-      }
-      return { startDate, endDate, year: parseInt(year), month: parseInt(month) }
-    }
+    listEl.innerHTML = templates.map(t => `
+      <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 hover:bg-purple-50 transition group">
+        <button onclick="txApplyTemplate(${JSON.stringify(t).replace(/"/g,'&quot;')})"
+          class="flex-1 text-left text-xs font-medium text-gray-700 hover:text-purple-700 truncate">
+          <i class="fas fa-bookmark text-purple-300 mr-1 group-hover:text-purple-500"></i>${t.vendor_name}
+          <span class="text-gray-400 font-normal ml-1">헤더${t.skip_rows}행 건너뜀</span>
+        </button>
+        <div class="flex gap-1 ml-2 opacity-0 group-hover:opacity-100 transition">
+          <button onclick="txEditTemplate(${JSON.stringify(t).replace(/"/g,'&quot;')})" class="text-xs text-blue-400 hover:text-blue-600 px-1">
+            <i class="fas fa-edit"></i>
+          </button>
+          <button onclick="txDeleteTemplate(${t.id})" class="text-xs text-red-400 hover:text-red-600 px-1">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>`).join('')
+  } catch(e) {
+    listEl.innerHTML = '<div class="text-xs text-red-400 text-center py-2">템플릿 로드 실패</div>'
   }
-  return null
 }
 
-// 삼성웰스토리 카테고리 행 자동인식
-// 카테고리 키워드: 가공식품, 농산물류, 저장식품, 수산/건어물류, 축산물, 소모품 등
-const TX_CATEGORY_KEYWORDS = ['가공식품','농산물류','농산물','저장식품','수산/건어물류','수산건어물','육류','축산물','소모품','위생용품','음료']
-const TX_CATEGORY_MAP = {
-  '가공식품': 'PROCESSED', '농산물류': 'VEGGIE', '농산물': 'VEGGIE',
-  '저장식품': 'GRAIN', '수산/건어물류': 'SEAFOOD', '수산건어물': 'SEAFOOD',
-  '육류': 'MEAT', '축산물': 'MEAT', '소모품': 'SUPPLIES',
-  '위생용품': 'SUPPLIES', '음료': 'PROCESSED'
+function txShowTemplateForm() {
+  document.getElementById('txTplId').value = ''
+  document.getElementById('txTplVendor').value = ''
+  document.getElementById('txTplSkip').value = '1'
+  document.getElementById('txTplItemName').value = '1'
+  document.getElementById('txTplQty').value = '4'
+  document.getElementById('txTplUnit').value = '3'
+  document.getElementById('txTplPrice').value = '5'
+  document.getElementById('txTplAmount').value = '6'
+  document.getElementById('txTplTax').value = '7'
+  document.getElementById('txTemplateFormTitle').textContent = '추가'
+  document.getElementById('txTemplateForm').classList.remove('hidden')
+  document.getElementById('txTemplateForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 
-function txIsCategoryRow(row) {
-  if (!row || !Array.isArray(row)) return null
-  // 행에서 유일하게 의미있는 셀 1개이고 카테고리 키워드를 포함
-  const nonEmpty = row.filter(c => c !== null && c !== undefined && String(c).trim() !== '')
-  if (nonEmpty.length === 1) {
-    const val = String(nonEmpty[0]).trim()
-    for (const kw of TX_CATEGORY_KEYWORDS) {
-      if (val.includes(kw)) return kw
-    }
+function txEditTemplate(t) {
+  document.getElementById('txTplId').value = t.id || ''
+  document.getElementById('txTplVendor').value = t.vendor_name || ''
+  document.getElementById('txTplSkip').value = t.skip_rows ?? 1
+  document.getElementById('txTplItemName').value = t.col_item_name ?? 1
+  document.getElementById('txTplQty').value = t.col_qty ?? 4
+  document.getElementById('txTplUnit').value = t.col_unit ?? 3
+  document.getElementById('txTplPrice').value = t.col_unit_price ?? 5
+  document.getElementById('txTplAmount').value = t.col_amount ?? 6
+  document.getElementById('txTplTax').value = t.col_tax ?? 7
+  document.getElementById('txTemplateFormTitle').textContent = '수정'
+  document.getElementById('txTemplateForm').classList.remove('hidden')
+  document.getElementById('txTemplateForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function txSaveTemplate() {
+  const id = document.getElementById('txTplId').value
+  const vendor_name = document.getElementById('txTplVendor').value.trim()
+  if (!vendor_name) { showToast('업체명을 입력해주세요', 'error'); return }
+  const body = {
+    vendor_name,
+    skip_rows: +document.getElementById('txTplSkip').value || 1,
+    col_item_name: +document.getElementById('txTplItemName').value,
+    col_qty: +document.getElementById('txTplQty').value,
+    col_unit: +document.getElementById('txTplUnit').value,
+    col_unit_price: +document.getElementById('txTplPrice').value,
+    col_amount: +document.getElementById('txTplAmount').value,
+    col_tax: +document.getElementById('txTplTax').value,
   }
-  return null
+  try {
+    if (id) {
+      await axios.put(`/api/transaction/vendor-templates/${id}`, body, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      })
+    } else {
+      await axios.post('/api/transaction/vendor-templates', body, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      })
+    }
+    showToast(`'${vendor_name}' 템플릿 저장 완료`, 'success')
+    document.getElementById('txTemplateForm').classList.add('hidden')
+    txLoadTemplateList()
+  } catch(e) {
+    showToast('템플릿 저장 실패: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+async function txDeleteTemplate(id) {
+  if (!confirm('이 템플릿을 삭제하시겠습니까?')) return
+  try {
+    await axios.delete(`/api/transaction/vendor-templates/${id}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+    showToast('템플릿 삭제 완료', 'success')
+    txLoadTemplateList()
+  } catch(e) {
+    showToast('삭제 실패', 'error')
+  }
 }
 
 async function txLoadHospitalSelector() {
@@ -17391,7 +17496,7 @@ function txProcessFile(file) {
 // ── 파일 선택 즉시 미리보기 파싱 (헤더 자동 감지 결과 표시) ─────────
 async function txPreviewParse(file) {
   const msgEl = document.getElementById('txUploadMsg')
-  if (msgEl) { msgEl.className = 'mt-3 text-xs text-blue-500'; msgEl.textContent = '⏳ 파일 분석 중...' }
+  if (msgEl) { msgEl.classList.remove('hidden'); msgEl.className = 'mt-2 text-xs text-blue-500'; msgEl.textContent = '⏳ 파일 분석 중...' }
 
   try {
     // XLSX 라이브러리 로드 확인
@@ -17409,38 +17514,31 @@ async function txPreviewParse(file) {
     const ws = wb.Sheets[wb.SheetNames[0]]
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
+    // 거래기간 인식 (상위 10행 스캔)
+    txDetectPeriodFromRows(rows)
+
     const autoDetect = txAutoDetectHeader(rows)
+    const skipRows = autoDetect ? autoDetect.dataStartIndex : 1
 
+    // skipRows 입력 업데이트
+    const skipInput = document.getElementById('txSkipRows')
+    if (skipInput) skipInput.value = skipRows
+
+    let autoMap = null
     if (autoDetect) {
-      const autoMap = txAutoMapColumns(autoDetect.headerRow)
-      // 헤더 행 번호를 skipRows에 반영 (헤더 다음 행부터 데이터)
-      const skipInput = document.getElementById('txSkipRows')
-      if (skipInput) skipInput.value = autoDetect.dataStartIndex
-
-      // 컬럼 인덱스 UI 자동 설정 + 상태 표시
-      const setCol = (id, val, origName) => {
-        const el = document.getElementById(id)
-        if (el && val >= 0) el.value = val
-        const statusEl = document.getElementById(`txColStatus-${id}`)
-        if (statusEl) statusEl.className = 'inline-block w-2 h-2 rounded-full bg-green-400'
-        const nameEl = document.getElementById(`txColOrigName-${id}`)
-        if (nameEl) nameEl.textContent = origName || '—'
-      }
-      const hdr = autoDetect.headerRow
-      setCol('colItemName', autoMap.item_name, hdr[autoMap.item_name] || '')
-      setCol('colQty',      autoMap.qty,        hdr[autoMap.qty] || '')
-      setCol('colUnit',     autoMap.unit,       hdr[autoMap.unit] || '')
-      setCol('colPrice',    autoMap.unit_price, hdr[autoMap.unit_price] || '')
-      setCol('colAmount',   autoMap.amount,     hdr[autoMap.amount] || '')
+      autoMap = txAutoMapColumns(autoDetect.headerRow)
       // 자동감지 배지 표시
       const badge = document.getElementById('txAutoDetectBadge')
       if (badge) badge.classList.remove('hidden')
-      // 거래기간 인식
-      txDetectPeriodFromRows(rows)
+    }
 
-      // 예상 데이터 행 수 계산 (소계/합계 제외)
-      let validCount = 0
-      for (let i = autoDetect.dataStartIndex; i < rows.length; i++) {
+    // ★ 새로운 방식: 미리보기 테이블 렌더링 (열 매핑 드롭다운 포함)
+    txRenderPreviewTable(rows, autoMap, skipRows)
+
+    // 예상 유효 품목 수 계산
+    let validCount = 0
+    if (autoDetect && autoMap) {
+      for (let i = skipRows; i < rows.length; i++) {
         if (!txIsSkipRow(rows[i], autoMap.item_name)) {
           const itemName = String(rows[i][autoMap.item_name] || '').trim()
           const qty = parseFloat(String(rows[i][autoMap.qty] || '0').replace(/[^0-9.-]/g,'')) || 0
@@ -17448,20 +17546,19 @@ async function txPreviewParse(file) {
           if (itemName && (qty > 0 || amount > 0)) validCount++
         }
       }
-
       if (msgEl) {
-        msgEl.className = 'mt-3 text-xs text-green-600 bg-green-50 rounded-lg p-2'
-        msgEl.innerHTML = `✅ <b>자동 분석 완료!</b> 헤더: ${autoDetect.headerRowIndex+1}행 감지 · 유효 품목: <b>${validCount}개</b> 예상<br>
-          <span class="text-gray-500">헤더: [${autoDetect.headerRow.filter(Boolean).slice(0,5).join(', ')}...]</span>`
+        msgEl.className = 'mt-2 text-xs text-green-600 bg-green-50 rounded-lg p-2'
+        msgEl.innerHTML = `✅ <b>자동 분석 완료!</b> 헤더 ${autoDetect.headerRowIndex+1}행 감지 · 유효 품목 <b>${validCount}개</b> 예상`
       }
     } else {
       if (msgEl) {
-        msgEl.className = 'mt-3 text-xs text-yellow-600 bg-yellow-50 rounded-lg p-2'
-        msgEl.innerHTML = '⚠️ 헤더 자동 감지 실패. 컬럼 번호를 직접 설정해주세요.'
+        msgEl.className = 'mt-2 text-xs text-yellow-600 bg-yellow-50 rounded-lg p-2'
+        msgEl.innerHTML = '⚠️ 헤더 자동 감지 실패. 아래 테이블에서 각 열의 역할을 직접 지정해주세요.'
       }
     }
   } catch(e) {
-    if (msgEl) { msgEl.className = 'mt-3 text-xs text-gray-400'; msgEl.textContent = '파일 미리보기 불가' }
+    console.error('txPreviewParse error:', e)
+    if (msgEl) { msgEl.className = 'mt-2 text-xs text-gray-400'; msgEl.textContent = '파일 미리보기 중 오류가 발생했습니다.' }
   }
 }
 
@@ -17474,13 +17571,20 @@ async function txUploadFile() {
   const docYear     = +document.getElementById('txDocYear').value
   const docMonth    = +document.getElementById('txDocMonth').value
   const skipRows    = +document.getElementById('txSkipRows').value || 1
+
+  // TXState.colMapping (열번호 → fieldId) 을 colMap (fieldId → 열번호) 으로 변환
+  const mapping = TXState.colMapping || {}
+  const fieldToCol = {}
+  Object.entries(mapping).forEach(([colIdx, fieldId]) => {
+    fieldToCol[fieldId] = parseInt(colIdx)
+  })
   const colMap = {
-    item_name: +document.getElementById('colItemName').value,
-    qty:       +document.getElementById('colQty').value,
-    unit:      +document.getElementById('colUnit').value,
-    unit_price:+document.getElementById('colPrice').value,
-    amount:    +document.getElementById('colAmount').value,
-    tax_type:  +document.getElementById('colTax').value
+    item_name:  fieldToCol['colItemName'] ?? +document.getElementById('colItemName')?.value ?? 1,
+    qty:        fieldToCol['colQty']      ?? +document.getElementById('colQty')?.value      ?? 4,
+    unit:       fieldToCol['colUnit']     ?? +document.getElementById('colUnit')?.value     ?? 3,
+    unit_price: fieldToCol['colPrice']    ?? +document.getElementById('colPrice')?.value    ?? 5,
+    amount:     fieldToCol['colAmount']   ?? +document.getElementById('colAmount')?.value   ?? 6,
+    tax_type:   fieldToCol['colTax']      ?? +document.getElementById('colTax')?.value      ?? 7,
   }
 
   const btn = document.getElementById('txUploadBtn')
@@ -17861,7 +17965,7 @@ function txFilterPreview(q) {
   txRenderPreviewTable(filtered)
 }
 
-function txRenderPreviewTable(items) {
+function txRenderParsedItems(items) {
   const el = document.getElementById('txPreviewTable')
   if (!el) return
   if (!items.length) {
