@@ -17900,7 +17900,7 @@ async function txParseExcel(file, colMap, skipRows) {
           if (amount <= 0 && qty <= 0) continue  // 금액/수량 모두 0이면 스킵
 
           parsed.push({
-            item_code, item_name: itemName, spec,
+            item_code: itemCode, item_name: itemName, spec,
             quantity: qty, unit, unit_price, amount, tax_type,
             category_hint: currentCategory || null,
             raw: JSON.stringify(row)
