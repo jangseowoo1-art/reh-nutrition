@@ -18166,55 +18166,63 @@ function txRenderParsedItems(items) {
   </div>
 
   <!-- 테이블 -->
-  <table class="w-full text-xs border-collapse">
+  <div class="overflow-x-auto">
+  <table class="w-full text-xs border-collapse min-w-max">
     <thead>
-      <tr class="bg-gray-50">
-        <th class="text-left px-3 py-2 text-gray-500 font-medium border-b">품목명</th>
-        <th class="text-left px-3 py-2 text-gray-500 font-medium border-b">카테고리</th>
-        <th class="text-right px-3 py-2 text-gray-500 font-medium border-b">수량</th>
-        <th class="text-right px-3 py-2 text-gray-500 font-medium border-b">단가</th>
-        <th class="text-right px-3 py-2 text-gray-500 font-medium border-b">금액</th>
-        <th class="text-center px-3 py-2 text-gray-500 font-medium border-b">과세</th>
-        <th class="text-center px-3 py-2 text-gray-500 font-medium border-b">검증</th>
+      <tr class="bg-gray-50 sticky top-0 z-10">
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">품목코드</th>
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">품목명</th>
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">규격</th>
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">단위</th>
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">카테고리</th>
+        <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">수량</th>
+        <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">단가</th>
+        <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">금액</th>
+        <th class="text-center px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">과세</th>
+        <th class="text-center px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">저장</th>
       </tr>
     </thead>
     <tbody id="txPreviewBody">
       ${items.map((item,idx) => `
         <tr class="border-b border-gray-50 hover:bg-gray-50 transition ${item.is_verified?'':'bg-yellow-50/30'}" id="txRow-${item.id}">
-          <td class="px-3 py-2">
-            <input class="text-xs border border-gray-200 rounded px-1.5 py-1 w-full focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
-              value="${item.item_name||''}" id="txName-${item.id}">
+          <td class="px-2 py-1.5 text-gray-400 text-xs whitespace-nowrap">${item.item_code||''}</td>
+          <td class="px-2 py-1.5">
+            <input class="text-xs border border-gray-200 rounded px-1.5 py-1 w-36 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
+              value="${(item.item_name||'').replace(/"/g,'&quot;')}" id="txName-${item.id}">
           </td>
-          <td class="px-3 py-2">
+          <td class="px-2 py-1.5 text-gray-500 text-xs whitespace-nowrap max-w-24 truncate" title="${item.spec||''}">${item.spec||''}</td>
+          <td class="px-2 py-1.5 text-gray-500 text-xs whitespace-nowrap">${item.unit||''}</td>
+          <td class="px-2 py-1.5">
             <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white" id="txCat-${item.id}">
               <option value="">미분류</option>${catOptions}
             </select>
           </td>
-          <td class="px-3 py-2">
-            <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-16 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
+          <td class="px-2 py-1.5">
+            <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-14 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
               value="${item.quantity||0}" id="txQty-${item.id}">
           </td>
-          <td class="px-3 py-2">
+          <td class="px-2 py-1.5">
             <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-20 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
               value="${item.unit_price||0}" id="txPrice-${item.id}">
           </td>
-          <td class="px-3 py-2 text-right font-medium text-gray-700">${(item.amount||0).toLocaleString()}</td>
-          <td class="px-3 py-2 text-center">
+          <td class="px-2 py-1.5 text-right font-medium text-gray-700 whitespace-nowrap">${(item.amount||0).toLocaleString()}</td>
+          <td class="px-2 py-1.5 text-center">
             <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white" id="txTax-${item.id}">
               <option value="taxable" ${item.tax_type==='taxable'?'selected':''}>과세</option>
               <option value="nontaxable" ${item.tax_type==='nontaxable'?'selected':''}>면세</option>
               <option value="exempt" ${item.tax_type==='exempt'?'selected':''}>영세</option>
             </select>
           </td>
-          <td class="px-3 py-2 text-center">
+          <td class="px-2 py-1.5 text-center">
             <button onclick="txSaveItem(${item.id})"
-              class="text-xs ${item.is_verified?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'} px-2 py-1 rounded hover:opacity-80 transition">
-              ${item.is_verified?'✓ 완료':'저장'}
+              class="text-xs ${item.is_verified?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'} px-2 py-1 rounded hover:opacity-80 transition whitespace-nowrap">
+              ${item.is_verified?'✓완료':'저장'}
             </button>
           </td>
         </tr>`).join('')}
     </tbody>
-  </table>`
+  </table>
+  </div>`
 
   // 카테고리 select 초기값 세팅
   items.forEach(item => {

@@ -155,6 +155,8 @@ txRouter.post('/upload', async (c) => {
       const itemName = String(row.item_name || '').trim()
       if (!itemName) continue
 
+      const itemCode   = String(row.item_code || '').trim()
+      const spec       = String(row.spec || '').trim()
       const qty        = Number(row.quantity ?? row.qty ?? 0)
       const unitPrice  = Number(row.unit_price ?? 0)
       const amount     = Number(row.amount ?? 0) || Math.round(qty * unitPrice)
@@ -166,14 +168,14 @@ txRouter.post('/upload', async (c) => {
         INSERT INTO transaction_items
           (document_id, file_id, hospital_id, vendor_name,
            document_year, document_month,
-           item_name, item_name_normalized, category_id,
+           item_name, item_name_normalized, item_code, spec, category_id,
            quantity, unit, unit_price, amount, tax_type, tax_amount,
            raw_row, is_verified, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,CURRENT_TIMESTAMP)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,CURRENT_TIMESTAMP)
       `).bind(
         docId, fileId, hospitalId, vendor_name || '',
         document_year, document_month,
-        itemName, normalized, catId,
+        itemName, normalized, itemCode, spec, catId,
         qty, row.unit || '', unitPrice, amount, taxType,
         taxType !== 'nontaxable' ? Math.round(amount / 11) : 0,
         JSON.stringify(row)
