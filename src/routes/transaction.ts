@@ -225,7 +225,8 @@ txRouter.put('/items/:itemId', async (c) => {
     const itemId = c.req.param('itemId')
     const { item_name, category_id, quantity, unit, unit_price, amount, tax_type, memo } = await c.req.json()
 
-    const amt = amount || Math.round((quantity || 0) * (unit_price || 0))
+    const amt     = amount || Math.round((quantity || 0) * (unit_price || 0))
+    const taxAmt  = normalizeTaxType(tax_type) !== 'nontaxable' ? Math.round(amt / 11) : 0
 
     await c.env.DB.prepare(`
       UPDATE transaction_items SET
@@ -237,11 +238,11 @@ txRouter.put('/items/:itemId', async (c) => {
       item_name, normalizeItemName(item_name || ''), category_id || null,
       quantity || 0, unit || '', unit_price || 0, amt,
       normalizeTaxType(tax_type),
-      tax_type !== 'nontaxable' ? Math.round(amt / 11) : 0,
+      taxAmt,
       memo || '', itemId, hospitalId
     ).run()
 
-    return c.json({ ok: true })
+    return c.json({ ok: true, data: { amount: amt, tax_amount: taxAmt } })
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
   }

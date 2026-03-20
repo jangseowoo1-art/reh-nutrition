@@ -18144,56 +18144,75 @@ function txRenderParsedItems(items) {
 
   const catOptions = TXState.categories.map(c =>
     `<option value="${c.id}">${c.name}</option>`).join('')
-  const taxTotal   = items.filter(i=>i.tax_type==='taxable').reduce((s,i)=>s+(i.amount||0),0)
-  const nonTaxTotal= items.filter(i=>i.tax_type==='nontaxable').reduce((s,i)=>s+(i.amount||0),0)
-  const total      = items.reduce((s,i)=>s+(i.amount||0),0)
+
+  // 요약 계산
+  const totalAmt    = items.reduce((s,i)=>s+(i.amount||0),0)
+  const totalTax    = items.reduce((s,i)=>s+(i.tax_amount||0),0)
+  const totalSum    = totalAmt + totalTax  // 합계(금액+부가세)
+  const taxableAmt  = items.filter(i=>i.tax_type==='taxable').reduce((s,i)=>s+(i.amount||0),0)
+  const nonTaxAmt   = items.filter(i=>i.tax_type!=='taxable').reduce((s,i)=>s+(i.amount||0),0)
 
   el.innerHTML = `
-  <!-- 요약 -->
-  <div class="grid grid-cols-3 gap-3 mb-4">
+  <!-- 요약 카드 -->
+  <div class="grid grid-cols-4 gap-3 mb-4">
     <div class="bg-blue-50 rounded-lg p-3 text-center">
       <div class="text-xs text-blue-500 mb-1">총 품목 수</div>
       <div class="text-lg font-bold text-blue-700">${items.length}개</div>
     </div>
     <div class="bg-green-50 rounded-lg p-3 text-center">
-      <div class="text-xs text-green-500 mb-1">총 금액</div>
-      <div class="text-lg font-bold text-green-700">${total.toLocaleString()}원</div>
+      <div class="text-xs text-green-500 mb-1">공급가액</div>
+      <div class="text-base font-bold text-green-700">${totalAmt.toLocaleString()}원</div>
+    </div>
+    <div class="bg-orange-50 rounded-lg p-3 text-center">
+      <div class="text-xs text-orange-500 mb-1">부가세</div>
+      <div class="text-base font-bold text-orange-700">${totalTax.toLocaleString()}원</div>
     </div>
     <div class="bg-purple-50 rounded-lg p-3 text-center">
-      <div class="text-xs text-purple-500 mb-1">과세 / 면세</div>
-      <div class="text-sm font-bold text-purple-700">${taxTotal.toLocaleString()} / ${nonTaxTotal.toLocaleString()}</div>
+      <div class="text-xs text-purple-500 mb-1">합계금액</div>
+      <div class="text-base font-bold text-purple-700">${totalSum.toLocaleString()}원</div>
     </div>
   </div>
+  <div class="text-xs text-gray-400 mb-3 flex gap-4">
+    <span>과세: <span class="font-medium text-gray-600">${taxableAmt.toLocaleString()}원</span></span>
+    <span>면세+영세: <span class="font-medium text-gray-600">${nonTaxAmt.toLocaleString()}원</span></span>
+  </div>
 
-  <!-- 테이블 -->
+  <!-- 테이블: 열 매핑과 동일한 순서 -->
+  <!-- 품목코드 / 품목명 / 규격 / 단위 / 카테고리 / 수량 / 평균단가 / 금액 / 부가세 / 합계 / 과세구분 / 저장 -->
   <div class="overflow-x-auto">
   <table class="w-full text-xs border-collapse min-w-max">
     <thead>
       <tr class="bg-gray-50 sticky top-0 z-10">
         <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">품목코드</th>
-        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">품목명</th>
-        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">규격</th>
-        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">단위</th>
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap min-w-28">품목명</th>
+        <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap max-w-28">규격</th>
+        <th class="text-center px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">단위</th>
         <th class="text-left px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">카테고리</th>
         <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">수량</th>
-        <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">단가</th>
+        <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">평균단가</th>
         <th class="text-right px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">금액</th>
-        <th class="text-center px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">과세</th>
+        <th class="text-right px-2 py-2 text-orange-400 font-medium border-b whitespace-nowrap">부가세</th>
+        <th class="text-right px-2 py-2 text-purple-500 font-medium border-b whitespace-nowrap">합계</th>
+        <th class="text-center px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">과세구분</th>
         <th class="text-center px-2 py-2 text-gray-500 font-medium border-b whitespace-nowrap">저장</th>
       </tr>
     </thead>
     <tbody id="txPreviewBody">
-      ${items.map((item,idx) => `
-        <tr class="border-b border-gray-50 hover:bg-gray-50 transition ${item.is_verified?'':'bg-yellow-50/30'}" id="txRow-${item.id}">
-          <td class="px-2 py-1.5 text-gray-400 text-xs whitespace-nowrap">${item.item_code||''}</td>
+      ${items.map((item) => {
+        const amt      = item.amount || 0
+        const taxAmt   = item.tax_amount || 0
+        const sumAmt   = amt + taxAmt
+        return `
+        <tr class="border-b border-gray-100 hover:bg-blue-50/20 transition ${item.is_verified?'bg-green-50/20':''}" id="txRow-${item.id}">
+          <td class="px-2 py-1.5 text-gray-400 text-xs whitespace-nowrap font-mono">${item.item_code||''}</td>
           <td class="px-2 py-1.5">
-            <input class="text-xs border border-gray-200 rounded px-1.5 py-1 w-36 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
+            <input class="text-xs border border-gray-200 rounded px-1.5 py-1 w-32 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
               value="${(item.item_name||'').replace(/"/g,'&quot;')}" id="txName-${item.id}">
           </td>
-          <td class="px-2 py-1.5 text-gray-500 text-xs whitespace-nowrap max-w-24 truncate" title="${item.spec||''}">${item.spec||''}</td>
-          <td class="px-2 py-1.5 text-gray-500 text-xs whitespace-nowrap">${item.unit||''}</td>
+          <td class="px-2 py-1.5 text-gray-500 text-xs whitespace-nowrap max-w-28 truncate" title="${item.spec||''}">${item.spec||''}</td>
+          <td class="px-2 py-1.5 text-center text-gray-600 text-xs whitespace-nowrap">${item.unit||''}</td>
           <td class="px-2 py-1.5">
-            <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white" id="txCat-${item.id}">
+            <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white min-w-16" id="txCat-${item.id}">
               <option value="">미분류</option>${catOptions}
             </select>
           </td>
@@ -18205,7 +18224,9 @@ function txRenderParsedItems(items) {
             <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-20 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
               value="${item.unit_price||0}" id="txPrice-${item.id}">
           </td>
-          <td class="px-2 py-1.5 text-right font-medium text-gray-700 whitespace-nowrap">${(item.amount||0).toLocaleString()}</td>
+          <td class="px-2 py-1.5 text-right font-medium text-gray-700 whitespace-nowrap">${amt.toLocaleString()}</td>
+          <td class="px-2 py-1.5 text-right text-orange-600 whitespace-nowrap">${taxAmt > 0 ? taxAmt.toLocaleString() : '<span class="text-gray-300">0</span>'}</td>
+          <td class="px-2 py-1.5 text-right font-semibold text-purple-700 whitespace-nowrap">${sumAmt.toLocaleString()}</td>
           <td class="px-2 py-1.5 text-center">
             <select class="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white" id="txTax-${item.id}">
               <option value="taxable" ${item.tax_type==='taxable'?'selected':''}>과세</option>
@@ -18215,11 +18236,12 @@ function txRenderParsedItems(items) {
           </td>
           <td class="px-2 py-1.5 text-center">
             <button onclick="txSaveItem(${item.id})"
-              class="text-xs ${item.is_verified?'bg-green-100 text-green-600':'bg-blue-100 text-blue-600'} px-2 py-1 rounded hover:opacity-80 transition whitespace-nowrap">
+              class="text-xs ${item.is_verified?'bg-green-100 text-green-600 border border-green-200':'bg-blue-100 text-blue-600 border border-blue-200'} px-2 py-1 rounded hover:opacity-80 transition whitespace-nowrap">
               ${item.is_verified?'✓완료':'저장'}
             </button>
           </td>
-        </tr>`).join('')}
+        </tr>`
+      }).join('')}
     </tbody>
   </table>
   </div>`
@@ -18234,17 +18256,41 @@ function txRenderParsedItems(items) {
 // ── 품목 저장 ─────────────────────────────────────────────────────────
 async function txSaveItem(itemId) {
   try {
-    await axios.put(`/api/transaction/items/${itemId}`, {
+    const qty       = +document.getElementById(`txQty-${itemId}`)?.value || 0
+    const unitPrice = +document.getElementById(`txPrice-${itemId}`)?.value || 0
+    const taxType   = document.getElementById(`txTax-${itemId}`)?.value || 'taxable'
+
+    const res = await axios.put(`/api/transaction/items/${itemId}`, {
       item_name:   document.getElementById(`txName-${itemId}`)?.value || '',
       category_id: document.getElementById(`txCat-${itemId}`)?.value || null,
-      quantity:    +document.getElementById(`txQty-${itemId}`)?.value || 0,
-      unit_price:  +document.getElementById(`txPrice-${itemId}`)?.value || 0,
-      tax_type:    document.getElementById(`txTax-${itemId}`)?.value || 'taxable'
+      quantity:    qty,
+      unit_price:  unitPrice,
+      tax_type:    taxType
     }, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
 
+    // 버튼 → 완료 상태
     const btn = document.querySelector(`#txRow-${itemId} button`)
-    if (btn) { btn.className = 'text-xs bg-green-100 text-green-600 px-2 py-1 rounded'; btn.textContent = '✓ 완료' }
-    document.getElementById(`txRow-${itemId}`)?.classList.remove('bg-yellow-50/30')
+    if (btn) {
+      btn.className = 'text-xs bg-green-100 text-green-600 border border-green-200 px-2 py-1 rounded hover:opacity-80 transition whitespace-nowrap'
+      btn.textContent = '✓완료'
+    }
+    const row = document.getElementById(`txRow-${itemId}`)
+    if (row) {
+      row.classList.remove('bg-yellow-50/30')
+      row.classList.add('bg-green-50/20')
+
+      // 부가세·합계 셀 즉시 갱신 (서버 응답값 or 클라이언트 계산)
+      const updItem = res.data?.data
+      const amt      = updItem?.amount     ?? (qty * unitPrice)
+      const taxAmt   = updItem?.tax_amount ?? (taxType === 'taxable' ? Math.round(amt / 11) : 0)
+      const sumAmt   = amt + taxAmt
+      // td 순서: 품목코드(0) 품목명(1) 규격(2) 단위(3) 카테고리(4) 수량(5) 단가(6) 금액(7) 부가세(8) 합계(9)
+      const tds = row.querySelectorAll('td')
+      if (tds[7]) tds[7].textContent = amt.toLocaleString()
+      if (tds[8]) tds[8].innerHTML = taxAmt > 0 ? taxAmt.toLocaleString() : '<span class="text-gray-300">0</span>'
+      if (tds[9]) tds[9].textContent = sumAmt.toLocaleString()
+    }
+    showToast('저장됐습니다.', 'success')
   } catch(e) {
     showToast('저장 실패: ' + e.message, 'error')
   }
