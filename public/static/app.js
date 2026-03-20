@@ -538,12 +538,32 @@ async function renderDashboard() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
+  // ── 관리자: 병원 선택 처리 ──────────────────────────────────────
+  if (App.role === 'admin') {
+    // 아직 선택된 병원이 없으면 첫 번째 병원 자동 선택
+    if (!App.adminHospitalId) {
+      const hList = await api('GET', '/api/admin/hospitals')
+      const hospitals = Array.isArray(hList) ? hList : (hList?.hospitals || hList?.data || [])
+      if (hospitals.length === 0) {
+        content.innerHTML = '<div class="text-gray-400 p-6 text-center"><i class="fas fa-hospital text-4xl mb-3 block"></i>등록된 병원이 없습니다.</div>'
+        return
+      }
+      App.adminHospitalId = hospitals[0].id
+      App._adminHospitals = hospitals
+    }
+  }
+
+  const hqParam = App.role === 'admin' ? `?hospitalId=${App.adminHospitalId}` : ''
+
   const [data, catData, dashCardData] = await Promise.all([
-    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}${hqParam}`),
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}${hqParam}`),
+    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParam}`)
   ])
-  if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+  if (!data || data.error) {
+    content.innerHTML = `<div class="text-red-500 p-6">데이터 로드 실패: ${data?.error || '알 수 없는 오류'}</div>`
+    return
+  }
 
   // 법인카드 집계 (monthly API: vendorTotals.total, expenses 사용)
   const dashCardExpenses = dashCardData?.expenses || []
@@ -647,7 +667,19 @@ async function renderDashboard() {
     inspectionSummary = inspResult?.summary || null
   } catch(e) {}
 
+  // ── 관리자: 병원 선택 드롭다운 HTML ──────────────────────────────
+  const adminHospitalBar = App.role === 'admin' && App._adminHospitals?.length > 0 ? `
+  <div class="mb-4 bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-center gap-3">
+    <i class="fas fa-hospital text-blue-500"></i>
+    <span class="text-sm font-medium text-blue-700">병원 선택:</span>
+    <select onchange="App.adminHospitalId=+this.value; renderDashboard()"
+      class="text-sm border border-blue-200 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-blue-300 focus:outline-none">
+      ${App._adminHospitals.map(h => `<option value="${h.id}" ${h.id==App.adminHospitalId?'selected':''}>${h.name}</option>`).join('')}
+    </select>
+  </div>` : ''
+
   content.innerHTML = `
+  ${adminHospitalBar}
   <!-- 예산 초과 알림 -->
   ${overBudget.length > 0 ? `
   <div class="mb-4 bg-red-50 border border-red-200 rounded-xl p-4">
