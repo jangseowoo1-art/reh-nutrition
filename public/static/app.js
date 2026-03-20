@@ -17926,14 +17926,18 @@ async function txParseExcel(file, colMap, skipRows) {
           const rawAmount  = parseInt(String(row[effectiveColMap.amount]       || '0').replace(/[^0-9]/g,'')) || 0
           const rawTotal   = effectiveColMap.total >= 0 ? parseInt(String(row[effectiveColMap.total] || '0').replace(/[^0-9]/g,'')) || 0 : 0
           const amount     = rawAmount || rawTotal || Math.round(qty * unit_price)
-          // 세금 구분: 부가세 컬럼 값으로 자동 판단
-          const tax_type   = txGuessTaxType(row, vatCol, effectiveColMap.amount)
+          // 부가세 컬럼 원본값 읽기 (파일에 부가세 금액이 있으면 그대로 사용)
+          const rawTaxAmt  = vatCol >= 0 ? (parseInt(String(row[vatCol]||'0').replace(/[^0-9]/g,'')) || 0) : -1
+          // 세금 구분: 부가세 컬럼 값으로 자동 판단 (>0이면 과세)
+          const tax_type   = rawTaxAmt > 0 ? 'taxable' : (rawTaxAmt === 0 ? 'nontaxable' : txGuessTaxType(row, vatCol, effectiveColMap.amount))
 
           if (amount <= 0 && qty <= 0) continue  // 금액/수량 모두 0이면 스킵
 
           parsed.push({
             item_code: itemCode, item_name: itemName, spec,
             quantity: qty, unit, unit_price, amount, tax_type,
+            // 원본 파일의 부가세 값 전송 (-1이면 컬럼 없음, 0이면 면세, >0이면 실제 부가세)
+            tax_amount_raw: rawTaxAmt,
             category_hint: currentCategory || null,
             raw: JSON.stringify(row)
           })

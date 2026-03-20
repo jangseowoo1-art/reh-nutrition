@@ -164,6 +164,22 @@ txRouter.post('/upload', async (c) => {
       const normalized = normalizeItemName(itemName)
       const catId      = guessCategoryId(normalized, catMap)
 
+      // 부가세 계산 우선순위:
+      // 1) 파일 원본에 부가세 컬럼이 있으면 그 값 사용 (tax_amount_raw >= 0)
+      // 2) 없으면 과세 품목에 한해 금액×10% 계산 (삼성웰스토리 방식)
+      // ※ 절대 amount/11 역산 금지 (공급가액 기준 파일에서는 틀림)
+      let taxAmount: number
+      const rawTax = row.tax_amount_raw
+      if (rawTax !== undefined && rawTax !== null && rawTax >= 0) {
+        // 파일 원본 부가세 값 그대로 사용
+        taxAmount = Number(rawTax)
+      } else {
+        // 부가세 컬럼 없음 → 과세면 금액의 10%, 면세/영세면 0
+        taxAmount = taxType !== 'nontaxable' && taxType !== 'exempt'
+          ? Math.round(amount * 0.1)
+          : 0
+      }
+
       await c.env.DB.prepare(`
         INSERT INTO transaction_items
           (document_id, file_id, hospital_id, vendor_name,
@@ -177,7 +193,7 @@ txRouter.post('/upload', async (c) => {
         document_year, document_month,
         itemName, normalized, itemCode, spec, catId,
         qty, row.unit || '', unitPrice, amount, taxType,
-        taxType !== 'nontaxable' ? Math.round(amount / 11) : 0,
+        taxAmount,
         JSON.stringify(row)
       ).run()
       insertCount++
@@ -226,7 +242,11 @@ txRouter.put('/items/:itemId', async (c) => {
     const { item_name, category_id, quantity, unit, unit_price, amount, tax_type, memo } = await c.req.json()
 
     const amt     = amount || Math.round((quantity || 0) * (unit_price || 0))
-    const taxAmt  = normalizeTaxType(tax_type) !== 'nontaxable' ? Math.round(amt / 11) : 0
+    // 수동 수정 시 금액×10% 방식 (삼성웰스토리 등 공급가액 기준)
+    const normalizedTaxType = normalizeTaxType(tax_type)
+    const taxAmt  = normalizedTaxType !== 'nontaxable' && normalizedTaxType !== 'exempt'
+      ? Math.round(amt * 0.1)
+      : 0
 
     await c.env.DB.prepare(`
       UPDATE transaction_items SET
@@ -237,7 +257,7 @@ txRouter.put('/items/:itemId', async (c) => {
     `).bind(
       item_name, normalizeItemName(item_name || ''), category_id || null,
       quantity || 0, unit || '', unit_price || 0, amt,
-      normalizeTaxType(tax_type),
+      normalizedTaxType,
       taxAmt,
       memo || '', itemId, hospitalId
     ).run()
