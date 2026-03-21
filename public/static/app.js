@@ -6055,8 +6055,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         level2Groups.push({
           label: groupLabel,
           count: colCnt,
-          color: '#60a5fa',
-          bg: '#1e3a8a',
+          color: '#1d4ed8',
+          bg: '#dbeafe',
           icon: 'fa-bed',
           type: 'patient_group'
         })
@@ -6064,15 +6064,15 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
     })
     // 비연결 치료식
     if (unlinkedTherapies.length > 0) {
-      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#4ade80', bg:'#14532d', icon:'fa-pills', type:'therapy' })
+      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#15803d', bg:'#dcfce7', icon:'fa-pills', type:'therapy' })
     }
     // 비급여
     if (noncoveredDefs.length > 0) {
-      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#c084fc', bg:'#4a044e', icon:'fa-hand-holding-usd', type:'noncovered' })
+      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#7e22ce', bg:'#f3e8ff', icon:'fa-hand-holding-usd', type:'noncovered' })
     }
     // 직원
     if (staffDefs.length > 0) {
-      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#fbbf24', bg:'#78350f', icon:'fa-user-tie', type:'staff' })
+      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#92400e', bg:'#fef3c7', icon:'fa-user-tie', type:'staff' })
     }
   } else if (useDietGroups === false || !useDietGroups) {
     // dietGroups 없을 때 기본값 처리 (레거시)
@@ -6082,12 +6082,12 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   // ── 마감 완료 달 읽기전용 처리 ──
   const _mealsReadOnly = isReadOnly(App.currentYear, App.currentMonth)
 
-  // 1행 조/중/석/합계 설정 (색상 + 글씨)
+  // 1행 조/중/석/합계 설정 (색상 + 글씨) - 밝은 배경 + 진한 텍스트로 가독성 강화
   const mealSections = [
-    { label:'조  식', border:'#3b82f6', bg:'#1e3a8a', textColor:'#bfdbfe' },
-    { label:'중  식', border:'#22c55e', bg:'#14532d', textColor:'#bbf7d0' },
-    { label:'석  식', border:'#a855f7', bg:'#4a044e', textColor:'#e9d5ff' },
-    { label:'합  계', border:'#94a3b8', bg:'#0f172a', textColor:'#e2e8f0' },
+    { label:'조  식', border:'#2563eb', bg:'#dbeafe', textColor:'#1e3a8a' },
+    { label:'중  식', border:'#16a34a', bg:'#dcfce7', textColor:'#14532d' },
+    { label:'석  식', border:'#9333ea', bg:'#f3e8ff', textColor:'#4a044e' },
+    { label:'합  계', border:'#64748b', bg:'#f1f5f9', textColor:'#0f172a' },
   ]
 
   content.innerHTML = `
@@ -6115,20 +6115,21 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         <thead>
           <!-- 1행: 식사 구분 (조식/중식/석식/합계) - 큰 글씨, 진한 색, 명확한 구분 -->
           <tr>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:30px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:12px;padding:6px 4px">일</th>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:24px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:12px;padding:6px 2px">요</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:30px;border:2px solid #94a3b8;background:#f8fafc;color:#374151;font-size:12px;font-weight:700;padding:6px 4px">일</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:24px;border:2px solid #94a3b8;background:#f8fafc;color:#374151;font-size:12px;font-weight:700;padding:6px 2px">요</th>
             ${mealSections.map((s, si) => {
               const span = si < 3 ? colCount : allLabels.length + 1
               return `<th colspan="${span}" style="
                 border:3px solid ${s.border};
-                border-bottom:2px solid ${s.border};
+                border-bottom:3px solid ${s.border};
                 background:${s.bg};
                 color:${s.textColor};
-                font-size:14px;
-                font-weight:800;
-                padding:7px 4px;
-                letter-spacing:2px;
+                font-size:15px;
+                font-weight:900;
+                padding:9px 4px;
+                letter-spacing:3px;
                 text-align:center;
+                text-shadow:none;
               ">${s.label}</th>`
             }).join('')}
           </tr>
@@ -6141,33 +6142,33 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const isFirst = gi===0
                 const bl = isFirst ? `border-left:3px solid ${sec.border}` : `border-left:2px solid ${g.color}50`
                 return `<th colspan="${g.count}" style="
-                  padding:4px 4px;
+                  padding:5px 4px;
                   ${bl};
-                  border-top:1px solid ${sec.border}40;
-                  border-bottom:2px solid ${sec.border}60;
-                  background:#111827;
+                  border-top:2px solid ${sec.border};
+                  border-bottom:2px solid ${sec.border}80;
+                  background:#f8fafc;
                   color:${g.color};
                   font-size:11px;
-                  font-weight:700;
+                  font-weight:800;
                   white-space:nowrap;
                 "><i class="fas ${g.icon}" style="margin-right:3px;font-size:10px"></i>${g.label}</th>`
               }).join('') + `<th colspan="3" style="
-                padding:4px 3px;
-                border-left:2px solid rgba(255,255,255,0.15);
-                border-top:1px solid ${sec.border}40;
-                border-bottom:2px solid ${sec.border}60;
-                background:#111827;
-                color:#94a3b8;
+                padding:5px 3px;
+                border-left:2px solid #cbd5e1;
+                border-top:2px solid ${sec.border};
+                border-bottom:2px solid ${sec.border}80;
+                background:#f1f5f9;
+                color:#475569;
                 font-size:10px;
-                font-weight:600;
+                font-weight:700;
               ">기본</th>`
               return groupCells + `<th style="
                 border-right:3px solid ${sec.border};
-                border-top:1px solid ${sec.border}40;
-                border-bottom:2px solid ${sec.border}60;
-                background:#111827;
+                border-top:2px solid ${sec.border};
+                border-bottom:2px solid ${sec.border}80;
+                background:#f1f5f9;
                 font-size:9px;
-                color:#475569;
+                color:#64748b;
               "></th>`
             }).join('')}
           </tr>` : ''}
@@ -6183,20 +6184,21 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const fieldObj = isCustom ? effectiveCustomFields[li] : null
                 const isLinkedTherapy = fieldObj?._isLinkedTherapy
                 // 배경: 합계열=짙은 네이비, 연결치료식=짙은 녹색, 일반커스텀=짙은 청색, 기본=어두운 회색
+                // 배경: 합계열=연한 슬레이트, 연결치료식=연한 녹색, 일반커스텀=연한 청색, 기본=흰색
                 const bg = isTot
-                  ? 'background:#0f172a;'
+                  ? 'background:#e2e8f0;'
                   : isLinkedTherapy
-                    ? 'background:#052e16;'
+                    ? 'background:#dcfce7;'
                     : isCustom
-                      ? 'background:#172554;'
-                      : 'background:#1e293b;'
-                const bl = isFirst ? `border-left:3px solid ${sec.border};` : 'border-left:1px solid rgba(255,255,255,0.12);'
-                const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.12)` : ''
+                      ? 'background:#dbeafe;'
+                      : 'background:#f8fafc;'
+                const bl = isFirst ? `border-left:3px solid ${sec.border};` : 'border-left:1px solid #e2e8f0;'
+                const br = isLast ? `;border-right:1px solid #e2e8f0` : ''
                 const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
-                // 텍스트 색: 합계=밝은 회색, 연결치료식=밝은 녹색, 커스텀=밝은 파랑, 기본=회색
-                const textColor = isTot ? 'color:#94a3b8;' : isLinkedTherapy ? 'color:#86efac;' : isCustom ? 'color:#bfdbfe;' : 'color:#cbd5e1;'
-                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};${br}padding:4px 3px;font-size:11px;font-weight:600;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
-              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.2);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};padding:4px 3px;background:${isTot?'#0f172a':'#1e3a8a'};color:#93c5fd;font-size:11px;font-weight:700">합</th>`
+                // 텍스트 색: 합계=진한 슬레이트, 연결치료식=진한 녹색, 커스텀=진한 파랑, 기본=진한 회색
+                const textColor = isTot ? 'color:#334155;' : isLinkedTherapy ? 'color:#15803d;' : isCustom ? 'color:#1d4ed8;' : 'color:#374151;'
+                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border};border-bottom:2px solid ${sec.border};${br}padding:5px 3px;font-size:11px;font-weight:700;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
+              }).join('') + `<th style="border-left:2px solid #94a3b8;border-right:3px solid ${sec.border};border-top:2px solid ${sec.border};border-bottom:2px solid ${sec.border};padding:5px 3px;background:${isTot?'#cbd5e1':'#bfdbfe'};color:${isTot?'#1e293b':'#1e40af'};font-size:11px;font-weight:800">합</th>`
             }).join('')}
           </tr>
         </thead>
