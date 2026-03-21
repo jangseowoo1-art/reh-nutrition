@@ -5930,7 +5930,7 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
 
   const DIET_GROUP_ORDER = ['patient','therapy','noncovered','staff']
   const DIET_GROUP_META_MEAL = {
-    patient:    { name:'환자식',   color:'#2563eb', bg:'#eff6ff', border:'#93c5fd', icon:'fa-user-injured' },
+    patient:    { name:'일반식',   color:'#2563eb', bg:'#eff6ff', border:'#93c5fd', icon:'fa-bed' },
     therapy:    { name:'치료식',   color:'#16a34a', bg:'#f0fdf4', border:'#86efac', icon:'fa-pills' },
     noncovered: { name:'비급여식', color:'#9333ea', bg:'#faf5ff', border:'#d8b4fe', icon:'fa-hand-holding-usd' },
     staff:      { name:'직원식',   color:'#d97706', bg:'#fffbeb', border:'#fcd34d', icon:'fa-user-tie' },
@@ -6019,10 +6019,15 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   })
 
   // 기본 + 커스텀 합계 (커스텀 중 ea 단위는 grandTotal에서 제외)
+  // 비급여식 중 include_in_meal_price=0 인 항목은 식단가 계산(grandTotal)에서 제외
   const customTotalForMeals = effectiveCustomFields
-    .filter(f => f.unit_type !== 'ea')
+    .filter(f => {
+      if (f.unit_type === 'ea') return false  // ea 단위 제외
+      if (f.parent_type === 'noncovered' && !f.include_in_meal_price) return false  // 비급여 미포함 제외
+      return true
+    })
     .reduce((s, f) => s + (monthTotal.custom[f.field_key] || 0), 0)
-  // 총 식수: 비급여 제외, ea 커스텀 필드 제외, 환자 제외(환자군으로 대체)
+  // 총 식수: ea 제외, 비급여 중 포함여부 OFF 제외
   const grandTotal = monthTotal.s + monthTotal.g + customTotalForMeals
 
   // ── 그룹 헤더 구성 ──
@@ -6039,37 +6044,51 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   // 기본(직원/비급/보호) → 기본 그룹
   let level2Groups = []  // { label, count, color, icon }
   if (useDietGroups) {
-    // 환자군별 그룹
+    // 환자군별 그룹 → 레이블: 환자군 이름 그대로 (항암/요양 등)
     patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
-      const colCnt = 1 + therapyItems.length  // 환자군 자체(1) + 연결 치료식
+      const colCnt = 1 + therapyItems.length
       if (colCnt > 0) {
+        // 환자군 이름 + '(일반식)' 표기 → 치료식 연결 있으면 합산 명시
+        const groupLabel = therapyItems.length > 0
+          ? `${groupDef.diet_name}`
+          : `${groupDef.diet_name}`
         level2Groups.push({
-          label: groupDef.diet_name,
+          label: groupLabel,
           count: colCnt,
-          color: '#2563eb',
-          bg: '#1e40af',
-          icon: 'fa-user-injured',
+          color: '#60a5fa',
+          bg: '#1e3a8a',
+          icon: 'fa-bed',
           type: 'patient_group'
         })
       }
     })
     // 비연결 치료식
     if (unlinkedTherapies.length > 0) {
-      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#16a34a', bg:'#14532d', icon:'fa-pills', type:'therapy' })
+      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#4ade80', bg:'#14532d', icon:'fa-pills', type:'therapy' })
     }
     // 비급여
     if (noncoveredDefs.length > 0) {
-      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#9333ea', bg:'#581c87', icon:'fa-hand-holding-usd', type:'noncovered' })
+      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#c084fc', bg:'#4a044e', icon:'fa-hand-holding-usd', type:'noncovered' })
     }
     // 직원
     if (staffDefs.length > 0) {
-      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#d97706', bg:'#78350f', icon:'fa-user-tie', type:'staff' })
+      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#fbbf24', bg:'#78350f', icon:'fa-user-tie', type:'staff' })
     }
+  } else if (useDietGroups === false || !useDietGroups) {
+    // dietGroups 없을 때 기본값 처리 (레거시)
   }
   const hasLevel2 = level2Groups.length > 0
 
   // ── 마감 완료 달 읽기전용 처리 ──
   const _mealsReadOnly = isReadOnly(App.currentYear, App.currentMonth)
+
+  // 1행 조/중/석/합계 설정 (색상 + 글씨)
+  const mealSections = [
+    { label:'조  식', border:'#3b82f6', bg:'#1e3a8a', textColor:'#bfdbfe' },
+    { label:'중  식', border:'#22c55e', bg:'#14532d', textColor:'#bbf7d0' },
+    { label:'석  식', border:'#a855f7', bg:'#4a044e', textColor:'#e9d5ff' },
+    { label:'합  계', border:'#94a3b8', bg:'#0f172a', textColor:'#e2e8f0' },
+  ]
 
   content.innerHTML = `
   ${_mealsReadOnly ? readOnlyBanner() : ''}
@@ -6094,51 +6113,90 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
       <div class="scroll-hint"><i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 식수 입력</div>
       <table class="meal-table w-full" id="mealMainTable" style="font-size:12px;border-collapse:collapse">
         <thead>
-          <!-- 1행: 식사 구분 (조/중/석/합계) -->
+          <!-- 1행: 식사 구분 (조식/중식/석식/합계) - 큰 글씨, 진한 색, 명확한 구분 -->
           <tr>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:28px;border:2px solid #1e5c3a">일</th>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:22px;border:2px solid #1e5c3a">요</th>
-            <th colspan="${colCount}" style="border:2px solid #1d4ed8;border-bottom:1px solid #3b82f6;background:#1e40af">조식</th>
-            <th colspan="${colCount}" style="border:2px solid #166534;border-bottom:1px solid #22c55e;background:#14532d">중식</th>
-            <th colspan="${colCount}" style="border:2px solid #6b21a8;border-bottom:1px solid #a855f7;background:#581c87">석식</th>
-            <th colspan="${allLabels.length + 1}" style="border:2px solid #374151;border-bottom:1px solid #6b7280;background:#0f2942">합계</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:30px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:12px;padding:6px 4px">일</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:24px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:12px;padding:6px 2px">요</th>
+            ${mealSections.map((s, si) => {
+              const span = si < 3 ? colCount : allLabels.length + 1
+              return `<th colspan="${span}" style="
+                border:3px solid ${s.border};
+                border-bottom:2px solid ${s.border};
+                background:${s.bg};
+                color:${s.textColor};
+                font-size:14px;
+                font-weight:800;
+                padding:7px 4px;
+                letter-spacing:2px;
+                text-align:center;
+              ">${s.label}</th>`
+            }).join('')}
           </tr>
           <!-- 2행: 환자군/대분류 그룹 헤더 -->
           ${hasLevel2 ? `
           <tr>
-            ${['bf','l','d','t'].map((_, mi) => {
-              const borderColors = ['#3b82f6','#22c55e','#a855f7','#6b7280']
-              const border = borderColors[mi]
+            ${mealSections.map((sec, mi) => {
               const isTot = mi===3
               const groupCells = level2Groups.map((g, gi) => {
                 const isFirst = gi===0
-                const bl = isFirst ? `border-left:3px solid ${border}` : `border-left:2px solid ${g.color}40`
-                return `<th colspan="${g.count}" style="padding:2px 3px;${bl};border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:${g.color};font-size:9px;white-space:nowrap">
-                  <i class="fas ${g.icon}" style="margin-right:2px"></i>${g.label}
-                </th>`
-              }).join('') + `<th colspan="3" style="padding:2px 3px;border-left:1px solid rgba(255,255,255,0.1);border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:#9ca3af;font-size:9px">기본</th>`
-              return groupCells + `<th style="border-right:${mi<3?`3px solid ${border}`:'2px solid #374151'};border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;font-size:9px;color:#6b7280"></th>`
+                const bl = isFirst ? `border-left:3px solid ${sec.border}` : `border-left:2px solid ${g.color}50`
+                return `<th colspan="${g.count}" style="
+                  padding:4px 4px;
+                  ${bl};
+                  border-top:1px solid ${sec.border}40;
+                  border-bottom:2px solid ${sec.border}60;
+                  background:#111827;
+                  color:${g.color};
+                  font-size:11px;
+                  font-weight:700;
+                  white-space:nowrap;
+                "><i class="fas ${g.icon}" style="margin-right:3px;font-size:10px"></i>${g.label}</th>`
+              }).join('') + `<th colspan="3" style="
+                padding:4px 3px;
+                border-left:2px solid rgba(255,255,255,0.15);
+                border-top:1px solid ${sec.border}40;
+                border-bottom:2px solid ${sec.border}60;
+                background:#111827;
+                color:#94a3b8;
+                font-size:10px;
+                font-weight:600;
+              ">기본</th>`
+              return groupCells + `<th style="
+                border-right:3px solid ${sec.border};
+                border-top:1px solid ${sec.border}40;
+                border-bottom:2px solid ${sec.border}60;
+                background:#111827;
+                font-size:9px;
+                color:#475569;
+              "></th>`
             }).join('')}
           </tr>` : ''}
           <!-- 3행: 개별 항목 헤더 -->
           <tr>
-            ${['bf','l','d','t'].map((prefix, mi) => {
-              const borderColors = ['#3b82f6','#22c55e','#a855f7','#6b7280']
-              const border = borderColors[mi]
+            ${mealSections.map((sec, mi) => {
               const isTot = mi===3
-              return allLabels.map((label, li) => {
+              const sectionLabels = isTot ? allLabels : allLabels
+              return sectionLabels.map((label, li) => {
                 const isFirst = li===0
                 const isLast = li===allLabels.length-1
                 const isCustom = li < customLabels.length
                 const fieldObj = isCustom ? effectiveCustomFields[li] : null
-                // 연결된 치료식은 약간 다른 색으로 구분
                 const isLinkedTherapy = fieldObj?._isLinkedTherapy
-                const bg = isTot ? 'background:#0f2942;' : isLinkedTherapy ? 'background:#0f2d1a;' : isCustom ? 'background:#1a2f4a;' : ''
-                const bl = isFirst ? `border-left:3px solid ${border};` : 'border-left:1px solid rgba(255,255,255,0.15);'
-                const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.15)` : ''
+                // 배경: 합계열=짙은 네이비, 연결치료식=짙은 녹색, 일반커스텀=짙은 청색, 기본=어두운 회색
+                const bg = isTot
+                  ? 'background:#0f172a;'
+                  : isLinkedTherapy
+                    ? 'background:#052e16;'
+                    : isCustom
+                      ? 'background:#172554;'
+                      : 'background:#1e293b;'
+                const bl = isFirst ? `border-left:3px solid ${sec.border};` : 'border-left:1px solid rgba(255,255,255,0.12);'
+                const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.12)` : ''
                 const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
-                return `<th ${titleAttr} style="${bl}border-top:1px solid ${border};border-bottom:1px solid ${border}${br};padding:3px 2px;${bg}font-size:10px;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
-              }).join('') + `<th style="border:1px solid rgba(255,255,255,0.15);border-right:3px solid ${border};padding:3px 2px;background:${isTot?'#0f2942':'#1e3a6e'};color:#93c5fd;font-size:10px">합</th>`
+                // 텍스트 색: 합계=밝은 회색, 연결치료식=밝은 녹색, 커스텀=밝은 파랑, 기본=회색
+                const textColor = isTot ? 'color:#94a3b8;' : isLinkedTherapy ? 'color:#86efac;' : isCustom ? 'color:#bfdbfe;' : 'color:#cbd5e1;'
+                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};${br}padding:4px 3px;font-size:11px;font-weight:600;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
+              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.2);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};padding:4px 3px;background:${isTot?'#0f172a':'#1e3a8a'};color:#93c5fd;font-size:11px;font-weight:700">합</th>`
             }).join('')}
           </tr>
         </thead>
@@ -6670,9 +6728,14 @@ function updateMealRowTotals(date) {
 
 function updateMealSummaryCards() {
   let ts=0, tn=0, tg=0
-  // dietCats 우선
+  // dietCats 우선 (include_in_meal_price, parent_type 포함)
   const cf = (window._mealDietCats||[]).length > 0
-    ? (window._mealDietCats||[]).map(dc => ({ field_key: dc.legacy_field_key || dc.diet_key, unit_type:'meal' }))
+    ? (window._mealDietCats||[]).map(dc => ({
+        field_key: dc.legacy_field_key || dc.diet_key,
+        unit_type: 'meal',
+        parent_type: dc.parent_type,
+        include_in_meal_price: dc.include_in_meal_price || 0,
+      }))
     : (window._mealCustomFields || [])
   const customSums = {}
   const bfSums = {s:0,n:0,g:0}, lSums = {s:0,n:0,g:0}, dSums = {s:0,n:0,g:0}
@@ -6696,7 +6759,11 @@ function updateMealSummaryCards() {
     })
   })
   const customTotalForMeals = cf
-    .filter(f => (f.unit_type||'meal') !== 'ea')
+    .filter(f => {
+      if ((f.unit_type||'meal') === 'ea') return false
+      if (f.parent_type === 'noncovered' && !f.include_in_meal_price) return false
+      return true
+    })
     .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
   const grand = ts+tg+customTotalForMeals
 
