@@ -5969,17 +5969,22 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   })
 
   // ── 테이블 컬럼 순서 구성 ──
-  // 환자군 일반식 → 연결 치료식 → 비연결 치료식 → 비급여 → 직원 → 기본(직원col/비급col/보호col)
+  // 일반식(환자군만) | 치료식(모든 치료식) | 비급여식 | 직원식
+  // ※ 연결치료식도 치료식 열에 표시 (일반식 열에는 환자군만)
   const dietGroups = {}
   DIET_GROUP_ORDER.forEach(t => { dietGroups[t] = [] })
 
   if (useDietGroups) {
-    // 환자군별로 일반식(환자군 자체) + 연결 치료식 순으로
-    patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
+    // 일반식: 환자군만 (치료식은 치료식 열로 분리)
+    patientGroupStructure.forEach(({ groupDef }) => {
       dietGroups['patient'].push(toFieldObj({ ...groupDef, field_name: groupDef.diet_name }))
-      therapyItems.forEach(t => dietGroups['patient'].push({ ...toFieldObj(t), _isLinkedTherapy: true, _linkedGroupName: groupDef.diet_name }))
     })
-    // 비연결 치료식
+    // 치료식: 모든 치료식(연결+비연결) 순서대로
+    // 연결 치료식은 환자군 순서에 맞춰 그룹핑
+    patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
+      therapyItems.forEach(t => dietGroups['therapy'].push({ ...toFieldObj(t), _isLinkedTherapy: true, _linkedGroupName: groupDef.diet_name }))
+    })
+    // 비연결 치료식 추가
     unlinkedTherapies.forEach(t => dietGroups['therapy'].push(toFieldObj(t)))
     // 비급여
     noncoveredDefs.forEach(dc => dietGroups['noncovered'].push(toFieldObj(dc)))
@@ -6028,54 +6033,34 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
     })
     .reduce((s, f) => s + (monthTotal.custom[f.field_key] || 0), 0)
   // 총 식수: ea 제외, 비급여 중 포함여부 OFF 제외
-  const grandTotal = monthTotal.s + monthTotal.g + customTotalForMeals
+  const grandTotal = customTotalForMeals
 
-  // ── 그룹 헤더 구성 ──
-  const baseLabels = ['직원','비급','보호']
+  // ── 컬럼 구성: diet category 기반만, baseLabels(직원/비급/보호) 완전 제거 ──
   const customLabels = effectiveCustomFields.map(f => f.field_name)
-  const allLabels = [...customLabels, ...baseLabels]
+  const allLabels = [...customLabels]   // 기본(직원/비급/보호) 제거
   const colCount = allLabels.length + 1  // +1 = 소계
 
-  // 2행 그룹 헤더: 환자군 구조 사용 시 환자군별 묶기
-  // 환자군 + 연결 치료식 → 하나의 환자군 그룹
-  // 비연결 치료식 → 치료식 그룹
-  // 비급여 → 비급여식 그룹
-  // 직원 → 직원식 그룹
-  // 기본(직원/비급/보호) → 기본 그룹
-  let level2Groups = []  // { label, count, color, icon }
+  // 2행(대분류): 일반식 | 치료식 | 비급여식 | 직원식 | 합
+  // 3행(소분류): 각 대분류 소속 세부항목 (diet category 이름)
+  let level2Groups = []
   if (useDietGroups) {
-    // 환자군별 그룹 → 레이블: 환자군 이름 그대로 (항암/요양 등)
-    patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
-      const colCnt = 1 + therapyItems.length
-      if (colCnt > 0) {
-        // 환자군 이름 + '(일반식)' 표기 → 치료식 연결 있으면 합산 명시
-        const groupLabel = therapyItems.length > 0
-          ? `${groupDef.diet_name}`
-          : `${groupDef.diet_name}`
-        level2Groups.push({
-          label: groupLabel,
-          count: colCnt,
-          color: '#93c5fd',
-          bg: '#1e3a8a',
-          icon: 'fa-bed',
-          type: 'patient_group'
-        })
-      }
-    })
-    // 비연결 치료식
-    if (unlinkedTherapies.length > 0) {
-      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#86efac', bg:'#14532d', icon:'fa-pills', type:'therapy' })
+    // 일반식: 환자군 수 (치료식 분리됨)
+    if (patientGroupStructure.length > 0) {
+      level2Groups.push({ label:'일반식', count: patientGroupStructure.length, color:'#93c5fd', bg:'#1e3a8a', icon:'fa-bed', type:'normal' })
     }
-    // 비급여
+    // 치료식: 모든 치료식 수 (연결+비연결)
+    const allTherapyCount = dietGroups['therapy'].length
+    if (allTherapyCount > 0) {
+      level2Groups.push({ label:'치료식', count: allTherapyCount, color:'#86efac', bg:'#14532d', icon:'fa-pills', type:'therapy' })
+    }
+    // 비급여식
     if (noncoveredDefs.length > 0) {
       level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#d8b4fe', bg:'#4a044e', icon:'fa-hand-holding-usd', type:'noncovered' })
     }
-    // 직원
+    // 직원식
     if (staffDefs.length > 0) {
       level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#fcd34d', bg:'#78350f', icon:'fa-user-tie', type:'staff' })
     }
-  } else if (useDietGroups === false || !useDietGroups) {
-    // dietGroups 없을 때 기본값 처리 (레거시)
   }
   const hasLevel2 = level2Groups.length > 0
 
@@ -6133,7 +6118,7 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
               ">${s.label}</th>`
             }).join('')}
           </tr>
-          <!-- 2행: 환자군/대분류 그룹 헤더 -->
+          <!-- 2행: 대분류 그룹 헤더 (일반식/치료식/비급여식/직원식/합) -->
           ${hasLevel2 ? `
           <tr>
             ${mealSections.map((sec, mi) => {
@@ -6142,63 +6127,61 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const isFirst = gi===0
                 const bl = isFirst ? `border-left:3px solid ${sec.border}` : `border-left:2px solid ${g.color}50`
                 return `<th colspan="${g.count}" style="
-                  padding:5px 4px;
+                  padding:6px 4px;
                   ${bl};
                   border-top:2px solid ${sec.border};
                   border-bottom:2px solid ${sec.border}80;
                   background:#111827;
                   color:${g.color};
-                  font-size:12px;
+                  font-size:13px;
                   font-weight:800;
                   white-space:nowrap;
-                "><i class="fas ${g.icon}" style="margin-right:3px;font-size:10px"></i>${g.label}</th>`
-              }).join('') + `<th colspan="3" style="
-                padding:5px 3px;
-                border-left:2px solid rgba(255,255,255,0.2);
-                border-top:2px solid ${sec.border};
-                border-bottom:2px solid ${sec.border}80;
-                background:#111827;
-                color:#94a3b8;
-                font-size:11px;
-                font-weight:700;
-              ">기본</th>`
+                  text-align:center;
+                "><i class="fas ${g.icon}" style="margin-right:3px;font-size:11px"></i>${g.label}</th>`
+              }).join('')
               return groupCells + `<th style="
+                border-left:2px solid rgba(255,255,255,0.25);
                 border-right:3px solid ${sec.border};
                 border-top:2px solid ${sec.border};
                 border-bottom:2px solid ${sec.border}80;
                 background:#111827;
-                font-size:9px;
-                color:#475569;
-              "></th>`
+                font-size:12px;
+                font-weight:800;
+                color:${isTot ? '#a5b4fc' : '#f8fafc'};
+                text-align:center;
+              ">합</th>`
             }).join('')}
           </tr>` : ''}
-          <!-- 3행: 개별 항목 헤더 -->
+          <!-- 3행: 세부항목 헤더 (환자군명, 치료식명, 비급여항목명, 직원식항목명) -->
           <tr>
             ${mealSections.map((sec, mi) => {
               const isTot = mi===3
-              const sectionLabels = isTot ? allLabels : allLabels
-              return sectionLabels.map((label, li) => {
+              return allLabels.map((label, li) => {
                 const isFirst = li===0
                 const isLast = li===allLabels.length-1
-                const isCustom = li < customLabels.length
-                const fieldObj = isCustom ? effectiveCustomFields[li] : null
+                const fieldObj = effectiveCustomFields[li]
+                const ptype = fieldObj?.parent_type || 'patient'
                 const isLinkedTherapy = fieldObj?._isLinkedTherapy
-                // 배경: 합계열=짙은 네이비, 연결치료식=짙은 녹색, 일반커스텀=짙은 청색, 기본=어두운 회색
-                // 배경: 합계열=지하 네이비, 연결치료식=진한 녹색, 일반커스텀=진한 청색, 기본=어두운 회색
-                const bg = isTot
-                  ? 'background:#0f172a;'
-                  : isLinkedTherapy
-                    ? 'background:#052e16;'
-                    : isCustom
-                      ? 'background:#1e3a5f;'
-                      : 'background:#1e293b;'
-                const bl = isFirst ? `border-left:3px solid ${sec.border};` : 'border-left:1px solid rgba(255,255,255,0.1);'
-                const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.1)` : ''
+                // diet type별 배경색 구분 (3행: 약간 밝게)
+                const bgMap = {
+                  patient:    isTot ? '#0f172a' : '#1e3a8a',
+                  therapy:    isTot ? '#0f172a' : '#14532d',
+                  noncovered: isTot ? '#0f172a' : '#4a044e',
+                  staff:      isTot ? '#0f172a' : '#78350f',
+                }
+                const colorMap = {
+                  patient:    isTot ? '#bfdbfe' : '#bfdbfe',
+                  therapy:    isTot ? '#bbf7d0' : '#bbf7d0',
+                  noncovered: isTot ? '#e9d5ff' : '#e9d5ff',
+                  staff:      isTot ? '#fde68a' : '#fde68a',
+                }
+                const bg = `background:${bgMap[ptype]||bgMap.patient};`
+                const textColor = `color:${colorMap[ptype]||colorMap.patient};`
+                const bl = isFirst ? `border-left:3px solid ${sec.border};` : `border-left:1px solid ${sec.border}40;`
+                const br = isLast ? `;border-right:1px solid ${sec.border}40` : ''
                 const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
-                // 텍스트 색: 합계=연한 파랑, 연결치료식=밝은 녹색, 커스텀=연한 하늘색, 기본=낮은 회색
-                const textColor = isTot ? 'color:#c4b5fd;' : isLinkedTherapy ? 'color:#86efac;' : isCustom ? 'color:#93c5fd;' : 'color:#94a3b8;'
-                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};${br}padding:5px 3px;font-size:11px;font-weight:700;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
-              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.25);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};padding:5px 3px;background:${isTot?'#0f172a':'#1e3a8a'};color:${isTot?'#a5b4fc':'#93c5fd'};font-size:12px;font-weight:800">합</th>`
+                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};${br}padding:6px 3px;font-size:11px;font-weight:700;white-space:nowrap;text-align:center">${isLinkedTherapy?'↳ ':''}${label}</th>`
+              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.25);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};padding:6px 3px;background:${isTot?'#0f172a':'#1e3a8a'};color:#93c5fd;font-size:11px;font-weight:800;text-align:center">합</th>`
             }).join('')}
           </tr>
         </thead>
@@ -6220,51 +6203,34 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
 
 function buildMealSummaryCards(monthTotal, customFields, grandTotal, patientGroupStructure, unlinkedTherapies, noncoveredDefs, staffDefs) {
   const useDiet = (window._mealDietCats||[]).length > 0
+  const dietCats = window._mealDietCats || []
 
   let customCards = []
 
   if (useDiet && patientGroupStructure && patientGroupStructure.length > 0) {
-    // ── 환자군별 그룹 요약 카드 ──
-    // 각 환자군: 일반식 + 연결 치료식 합산 카드 (+ 세부 소형 카드)
-    const pgColors = ['blue','indigo','violet','sky','cyan','teal']
+    // ── 일반식 카드 (환자군별) ──
+    const pgColors = ['blue','indigo','sky','cyan','teal','violet']
     patientGroupStructure.forEach(({ groupDef, therapyItems }, pi) => {
       const color = pgColors[pi % pgColors.length]
       const pgFkey = groupDef.legacy_field_key || groupDef.diet_key
       const pgVal = monthTotal.custom[pgFkey] || 0
+      customCards.push({
+        label: groupDef.diet_name, val: pgVal,
+        color, id: `mealSummary-${pgFkey}`, unit: 'meal', groupType: 'patient'
+      })
+    })
 
-      // 치료식 합산
-      let therapySum = 0
+    // ── 치료식 카드 (연결+비연결 모두) ──
+    // 연결 치료식
+    patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
       therapyItems.forEach(t => {
         const tfkey = t.legacy_field_key || t.diet_key
-        therapySum += (monthTotal.custom[tfkey] || 0)
+        customCards.push({
+          label: t.diet_name, val: monthTotal.custom[tfkey]||0,
+          color: 'green', id: `mealSummary-${tfkey}`, unit: 'meal', small: true,
+          subLabel: `↳${groupDef.diet_name}`, groupType: 'therapy'
+        })
       })
-      const pgTotal = pgVal + therapySum
-
-      if (therapyItems.length > 0) {
-        // 환자군 합산 카드 (일반식 + 치료식)
-        customCards.push({
-          label: groupDef.diet_name,
-          val: pgTotal,
-          color,
-          id: `mealSummary-pg-${pgFkey}`,
-          unit: 'meal',
-          subLabel: therapyItems.length > 0 ? `일반 ${fmt(pgVal)} + 치료 ${fmt(therapySum)}` : null,
-        })
-        // 치료식 세부 카드 (소형)
-        therapyItems.forEach(t => {
-          const tfkey = t.legacy_field_key || t.diet_key
-          customCards.push({
-            label: `↳${t.diet_name}`, val: monthTotal.custom[tfkey]||0,
-            color: 'green', id: `mealSummary-${tfkey}`, unit: 'meal', small: true
-          })
-        })
-      } else {
-        // 단독 환자군 카드
-        customCards.push({
-          label: groupDef.diet_name, val: pgVal,
-          color, id: `mealSummary-${pgFkey}`, unit: 'meal'
-        })
-      }
     })
     // 비연결 치료식
     if (unlinkedTherapies && unlinkedTherapies.length > 0) {
@@ -6272,27 +6238,28 @@ function buildMealSummaryCards(monthTotal, customFields, grandTotal, patientGrou
         const tfkey = t.legacy_field_key || t.diet_key
         customCards.push({
           label: t.diet_name, val: monthTotal.custom[tfkey]||0,
-          color: 'green', id: `mealSummary-${tfkey}`, unit: 'meal'
+          color: 'green', id: `mealSummary-${tfkey}`, unit: 'meal', groupType: 'therapy'
         })
       })
     }
-    // 비급여식
+
+    // ── 비급여식 카드 ──
     if (noncoveredDefs && noncoveredDefs.length > 0) {
       noncoveredDefs.forEach(nc => {
         const nfkey = nc.legacy_field_key || nc.diet_key
         customCards.push({
           label: nc.diet_name, val: monthTotal.custom[nfkey]||0,
-          color: 'purple', id: `mealSummary-${nfkey}`, unit: 'meal'
+          color: 'purple', id: `mealSummary-${nfkey}`, unit: 'meal', groupType: 'noncovered'
         })
       })
     }
-    // 직원식
+    // ── 직원식 카드 ──
     if (staffDefs && staffDefs.length > 0) {
       staffDefs.forEach(sf => {
         const sfkey = sf.legacy_field_key || sf.diet_key
         customCards.push({
           label: sf.diet_name, val: monthTotal.custom[sfkey]||0,
-          color: 'amber', id: `mealSummary-${sfkey}`, unit: 'meal'
+          color: 'amber', id: `mealSummary-${sfkey}`, unit: 'meal', groupType: 'staff'
         })
       })
     }
@@ -6314,13 +6281,9 @@ function buildMealSummaryCards(monthTotal, customFields, grandTotal, patientGrou
     }))
   }
 
-  const baseCards = [
-    { label:'직원식', val:monthTotal.s, color:'green', id:'mealSummary-s' },
-    { label:'비급여', val:monthTotal.n, color:'purple', id:'mealSummary-n' },
-    { label:'보호자', val:monthTotal.g, color:'orange', id:'mealSummary-g' },
-  ]
+  // baseCards(직원식/비급여/보호자) 완전 제거 - 비급여식/직원식은 이미 dietCat에 포함됨
   const totalCard = { label:'총식수', val:grandTotal, color:'gray', id:'mealSummary-total', bold:true, unit:'meal' }
-  return [...customCards, ...baseCards, totalCard].map(item => {
+  return [...customCards, totalCard].map(item => {
     const unitStr = item.unit === 'ea' ? '개' : '식'
     const cardStyle = item.small ? 'min-width:60px;opacity:0.85' : 'min-width:72px'
     const valSize = item.small ? 'text-sm' : 'text-base'
@@ -6526,61 +6489,57 @@ function buildMealRow(day, mealMap, customFields, colCount) {
   const lp=m.lunch_patient||0, ls=m.lunch_staff||0, ln=m.lunch_noncovered||0, lg=m.lunch_guardian||0
   const dp=m.dinner_patient||0, ds=m.dinner_staff||0, dn=m.dinner_noncovered||0, dg=m.dinner_guardian||0
 
-  // 커스텀 값
+  // 커스텀 값만 (diet category 기반) - 기본(직원/비급/보호) 입력칸 제거
   const cVals = customFields.map(f => ({
     key: f.field_key,
     bf: cd[f.field_key]?.bf || 0,
     l:  cd[f.field_key]?.l  || 0,
     d:  cd[f.field_key]?.d  || 0,
+    parent_type: f.parent_type || 'patient',
+    include_in_meal_price: f.include_in_meal_price || 0,
   }))
 
-  // 소계: 환자 컬럼 숨겼으므로 환자 제외 (직원+비급+보호+커스텀)
-  const bfSum = bs+bn+bg2 + cVals.reduce((s,c)=>s+c.bf,0)
-  const lSum  = ls+ln+lg  + cVals.reduce((s,c)=>s+c.l,0)
-  const dSum  = ds+dn+dg  + cVals.reduce((s,c)=>s+c.d,0)
-  const tsSum=bs+ls+ds, tnSum=bn+ln+dn, tgSum=bg2+lg+dg
-  // 총 식수(t-total): 비급여 제외, ea 단위 커스텀 필드 제외, 환자 제외(환자군으로 대체)
-  const cValsForMeals = cVals.filter((_,i) => (customFields[i]?.unit_type||'meal') !== 'ea')
-  const tGrand = tsSum + tgSum + cValsForMeals.reduce((s,c)=>s+c.bf+c.l+c.d,0)
+  // 소계: 커스텀 필드만 합산 (기본칸 제거)
+  const bfSum = cVals.reduce((s,c)=>s+c.bf,0)
+  const lSum  = cVals.reduce((s,c)=>s+c.l,0)
+  const dSum  = cVals.reduce((s,c)=>s+c.d,0)
+  // grandTotal: 비급여 include_in_meal_price=0 제외
+  const cValsForGrand = cVals.filter(c => !(c.parent_type==='noncovered' && !c.include_in_meal_price))
+  const tGrand = cValsForGrand.reduce((s,c)=>s+c.bf+c.l+c.d,0)
 
   const mealSections = [
-    // 환자(bf_p, l_p, d_p)는 hidden input으로 유지 (데이터 보존), 표시 안 함
-    // base 배열에서 환자(_p) 항목 제거 → 직원/비급/보호만 표시
-    { prefix:'bf', border:'#3b82f6', bg:'#dbeafe', base:[{k:'bf_s',v:bs},{k:'bf_n',v:bn},{k:'bf_g',v:bg2}], cPrefix:'bf', sum:bfSum, sumId:`bf-sum-${dateStr}`, sumBg:'bg-blue-50 text-blue-800' },
-    { prefix:'l',  border:'#22c55e', bg:'#dcfce7', base:[{k:'l_s',v:ls},{k:'l_n',v:ln},{k:'l_g',v:lg}],   cPrefix:'l',  sum:lSum,  sumId:`l-sum-${dateStr}`,  sumBg:'bg-green-50 text-green-800' },
-    { prefix:'d',  border:'#a855f7', bg:'#f3e8ff', base:[{k:'d_s',v:ds},{k:'d_n',v:dn},{k:'d_g',v:dg}],   cPrefix:'d',  sum:dSum,  sumId:`d-sum-${dateStr}`,  sumBg:'bg-purple-50 text-purple-800' },
+    { prefix:'bf', border:'#3b82f6', bg:'#dbeafe', cPrefix:'bf', sum:bfSum, sumId:`bf-sum-${dateStr}`, sumBg:'bg-blue-50 text-blue-800' },
+    { prefix:'l',  border:'#22c55e', bg:'#dcfce7', cPrefix:'l',  sum:lSum,  sumId:`l-sum-${dateStr}`,  sumBg:'bg-green-50 text-green-800' },
+    { prefix:'d',  border:'#a855f7', bg:'#f3e8ff', cPrefix:'d',  sum:dSum,  sumId:`d-sum-${dateStr}`,  sumBg:'bg-purple-50 text-purple-800' },
   ]
 
   let cells = ''
-  // 환자 hidden input (데이터 보존용 - 화면 미표시)
+  // 환자 hidden input (레거시 데이터 보존)
   cells += `<td style="display:none">${makeMealInput('bf_p', dateStr, bp)}</td>`
   cells += `<td style="display:none">${makeMealInput('l_p', dateStr, lp)}</td>`
   cells += `<td style="display:none">${makeMealInput('d_p', dateStr, dp)}</td>`
 
+  // diet type별 입력 배경색
+  const ptypeBg = { patient:'#f0f9ff', therapy:'#f0fdf4', noncovered:'#faf5ff', staff:'#fffbeb' }
+
   mealSections.forEach(sec => {
-    // 커스텀 칸들 먼저 (앞쪽)
+    // 커스텀 칸들만 (기본 직원/비급/보호 칸 제거)
     cVals.forEach((cv, ci) => {
       const bl = ci===0 ? `border-left:3px solid ${sec.border};` : `border-left:1px solid ${sec.bg};`
-      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg};background:#fafafa">${makeMealInput(`${sec.cPrefix}_c_${cv.key}`, dateStr, cv[sec.cPrefix === 'bf' ? 'bf' : sec.cPrefix === 'l' ? 'l' : 'd'])}</td>`
-    })
-    // 기본 칸들 뒤에 (직원/비급/보호)
-    sec.base.forEach((b, bi) => {
-      const bl = (cVals.length === 0 && bi===0) ? `border-left:3px solid ${sec.border};` : (bi===0 ? `border-left:1px solid ${sec.bg};` : '')
-      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg}">${makeMealInput(b.k, dateStr, b.v)}</td>`
+      const rowBg = ptypeBg[cv.parent_type] || '#fafafa'
+      const inputVal = sec.cPrefix === 'bf' ? cv.bf : sec.cPrefix === 'l' ? cv.l : cv.d
+      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg};background:${rowBg}">${makeMealInput(`${sec.cPrefix}_c_${cv.key}`, dateStr, inputVal)}</td>`
     })
     cells += `<td class="font-semibold text-center ${sec.sumBg}" id="${sec.sumId}" style="border-left:1px solid ${sec.bg};border-right:3px solid ${sec.border}">${sec.sum||''}</td>`
   })
 
-  // 합계 열 - 커스텀 먼저, 기본(직원/비급/보호) 뒤에
+  // 합계 열 - 커스텀 필드만
   cVals.forEach((cv, ci) => {
     const bl = ci===0 ? 'border-left:3px solid #6b7280;' : ''
-    cells += `<td class="text-center bg-indigo-50" id="t-${cv.key}-${dateStr}" style="${bl}border:1px solid #e0e7ff">${(cv.bf+cv.l+cv.d)||''}</td>`
+    const totBg = { patient:'#eff6ff', therapy:'#f0fdf4', noncovered:'#faf5ff', staff:'#fffbeb' }[cv.parent_type] || '#f8fafc'
+    cells += `<td class="text-center font-medium" id="t-${cv.key}-${dateStr}" style="${bl}border:1px solid #e0e7ff;background:${totBg}">${(cv.bf+cv.l+cv.d)||''}</td>`
   })
-  const baseBl = cVals.length===0 ? 'border-left:3px solid #6b7280;' : ''
-  cells += `<td class="text-center bg-gray-50" id="t-s-${dateStr}" style="${baseBl}border:1px solid #e5e7eb">${tsSum||''}</td>`
-  cells += `<td class="text-center bg-gray-50" id="t-n-${dateStr}" style="border:1px solid #e5e7eb">${tnSum||''}</td>`
-  cells += `<td class="text-center bg-gray-50" id="t-g-${dateStr}" style="border:1px solid #e5e7eb">${tgSum||''}</td>`
-  cells += `<td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd">${tGrand||''}</td>`
+  cells += `<td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd;border-left:3px solid #6b7280">${tGrand||''}</td>`
 
   return `<tr class="${rowClass}" data-date="${dateStr}">
     <td class="font-semibold text-center" style="border:1px solid #d1d5db">${day}</td>
@@ -6601,35 +6560,38 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
       cD[f.field_key]  += cd[f.field_key]?.d||0
     })
   })
-  // 환자 컬럼 제거: 직원/비급/보호 + 커스텀만 합산
-  const bfTotal = mealData.reduce((s,m)=>s+(m.breakfast_staff||0)+(m.breakfast_noncovered||0)+(m.breakfast_guardian||0),0) + customFields.reduce((s,f)=>s+cBf[f.field_key],0)
-  const lTotal  = mealData.reduce((s,m)=>s+(m.lunch_staff||0)+(m.lunch_noncovered||0)+(m.lunch_guardian||0),0) + customFields.reduce((s,f)=>s+cL[f.field_key],0)
-  const dTotal  = mealData.reduce((s,m)=>s+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0) + customFields.reduce((s,f)=>s+cD[f.field_key],0)
+  // 커스텀 필드만 합산 (기본 직원/비급/보호 제거)
+  const bfTotal = customFields.reduce((s,f)=>s+cBf[f.field_key],0)
+  const lTotal  = customFields.reduce((s,f)=>s+cL[f.field_key],0)
+  const dTotal  = customFields.reduce((s,f)=>s+cD[f.field_key],0)
 
-  let cells = `<td colspan="2" class="text-center py-2">월 합계</td>`
-  // 조식: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
-  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-bf-${f.field_key}">${fmt(cBf[f.field_key])}</td>` })
-  cells += `<td class="text-center" id="mealFoot-bf-s">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_staff||0),0))}</td>`
-  cells += `<td class="text-center" id="mealFoot-bf-n">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_noncovered||0),0))}</td>`
-  cells += `<td class="text-center" id="mealFoot-bf-g">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_guardian||0),0))}</td>`
+  // diet type별 배경색
+  const footBg = { patient:'bg-blue-50', therapy:'bg-green-50', noncovered:'bg-purple-50', staff:'bg-amber-50' }
+
+  let cells = `<td colspan="2" class="text-center py-2 font-bold">월 합계</td>`
+  // 조식: 커스텀 필드만
+  customFields.forEach(f => {
+    const bg = footBg[f.parent_type] || ''
+    cells += `<td class="text-center ${bg}" id="mealFoot-bf-${f.field_key}">${fmt(cBf[f.field_key])}</td>`
+  })
   cells += `<td class="text-center bg-blue-100 font-bold" id="mealFoot-bf-sum">${fmt(bfTotal)}</td>`
-  // 중식: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
-  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-l-${f.field_key}">${fmt(cL[f.field_key])}</td>` })
-  cells += `<td class="text-center" id="mealFoot-l-s">${fmt(mealData.reduce((s,m)=>s+(m.lunch_staff||0),0))}</td>`
-  cells += `<td class="text-center" id="mealFoot-l-n">${fmt(mealData.reduce((s,m)=>s+(m.lunch_noncovered||0),0))}</td>`
-  cells += `<td class="text-center" id="mealFoot-l-g">${fmt(mealData.reduce((s,m)=>s+(m.lunch_guardian||0),0))}</td>`
+  // 중식: 커스텀 필드만
+  customFields.forEach(f => {
+    const bg = footBg[f.parent_type] || ''
+    cells += `<td class="text-center ${bg}" id="mealFoot-l-${f.field_key}">${fmt(cL[f.field_key])}</td>`
+  })
   cells += `<td class="text-center bg-green-100 font-bold" id="mealFoot-l-sum">${fmt(lTotal)}</td>`
-  // 석식: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
-  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-d-${f.field_key}">${fmt(cD[f.field_key])}</td>` })
-  cells += `<td class="text-center" id="mealFoot-d-s">${fmt(mealData.reduce((s,m)=>s+(m.dinner_staff||0),0))}</td>`
-  cells += `<td class="text-center" id="mealFoot-d-n">${fmt(mealData.reduce((s,m)=>s+(m.dinner_noncovered||0),0))}</td>`
-  cells += `<td class="text-center" id="mealFoot-d-g">${fmt(mealData.reduce((s,m)=>s+(m.dinner_guardian||0),0))}</td>`
+  // 석식: 커스텀 필드만
+  customFields.forEach(f => {
+    const bg = footBg[f.parent_type] || ''
+    cells += `<td class="text-center ${bg}" id="mealFoot-d-${f.field_key}">${fmt(cD[f.field_key])}</td>`
+  })
   cells += `<td class="text-center bg-purple-100 font-bold" id="mealFoot-d-sum">${fmt(dTotal)}</td>`
-  // 합계: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
-  customFields.forEach(f => { cells += `<td class="text-center bg-indigo-100 font-bold" id="mealFoot-t-${f.field_key}">${fmt(monthTotal.custom[f.field_key]||0)}</td>` })
-  cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-s">${fmt(monthTotal.s)}</td>`
-  cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-n">${fmt(monthTotal.n)}</td>`
-  cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-g">${fmt(monthTotal.g)}</td>`
+  // 합계: 커스텀 필드만
+  customFields.forEach(f => {
+    const bg = footBg[f.parent_type] || 'bg-indigo-100'
+    cells += `<td class="text-center ${bg} font-bold" id="mealFoot-t-${f.field_key}">${fmt(monthTotal.custom[f.field_key]||0)}</td>`
+  })
   cells += `<td class="text-center bg-blue-200 font-bold text-blue-900" id="mealFoot-t-total">${fmt(grandTotal)}</td>`
   return `<tr class="bg-gray-100 font-bold" style="font-size:11px">${cells}</tr>`
 }
@@ -6694,15 +6656,15 @@ function updateMealRowTotals(date) {
   const g = (k) => getMealVal(k, date)
   // dietCats 우선
   const cf = (window._mealDietCats||[]).length > 0
-    ? (window._mealDietCats||[]).map(dc => ({ field_key: dc.legacy_field_key || dc.diet_key, unit_type:'meal' }))
+    ? (window._mealDietCats||[]).map(dc => ({
+        field_key: dc.legacy_field_key || dc.diet_key,
+        unit_type: 'meal',
+        parent_type: dc.parent_type,
+        include_in_meal_price: dc.include_in_meal_price || 0,
+      }))
     : (window._mealCustomFields || [])
 
-  // 환자(bf_p 등)는 hidden input이므로 포함하지 않음
-  const bs=g('bf_s'),bn=g('bf_n'),bg2=g('bf_g')
-  const ls=g('l_s'),ln=g('l_n'),lg=g('l_g')
-  const ds=g('d_s'),dn=g('d_n'),dg=g('d_g')
-
-  // 커스텀 합계
+  // 커스텀 합계만 (기본 직원/비급/보호 제거)
   let bfC=0, lC=0, dC=0
   const customTotals = {}
   cf.forEach(f => {
@@ -6711,25 +6673,22 @@ function updateMealRowTotals(date) {
     customTotals[f.field_key] = bfv+lv+dv
   })
 
-  const bfSum=(bs+bn+bg2)+bfC, lSum=(ls+ln+lg)+lC, dSum=(ds+dn+dg)+dC
-  // 총 식수: 비급여 제외, ea 단위 커스텀 필드 제외, 환자 제외(환자군으로 대체)
-  const customForMeals = cf.filter(f => (f.unit_type||'meal') !== 'ea')
-  const tGrand = (bs+ls+ds)+(bg2+lg+dg) + customForMeals.reduce((s,f)=>s+(customTotals[f.field_key]||0),0)
+  const bfSum = bfC, lSum = lC, dSum = dC
+  // 총식수: 비급여 include_in_meal_price=0 제외
+  const tGrand = cf
+    .filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
+    .reduce((s,f) => s+(customTotals[f.field_key]||0), 0)
 
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v||'' }
   set(`bf-sum-${date}`, bfSum)
   set(`l-sum-${date}`, lSum)
   set(`d-sum-${date}`, dSum)
-  set(`t-s-${date}`, bs+ls+ds)
-  set(`t-n-${date}`, bn+ln+dn)
-  set(`t-g-${date}`, bg2+lg+dg)
   cf.forEach(f => { set(`t-${f.field_key}-${date}`, customTotals[f.field_key]) })
   set(`t-total-${date}`, tGrand)
   updateMealSummaryCards()
 }
 
 function updateMealSummaryCards() {
-  let ts=0, tn=0, tg=0
   // dietCats 우선 (include_in_meal_price, parent_type 포함)
   const cf = (window._mealDietCats||[]).length > 0
     ? (window._mealDietCats||[]).map(dc => ({
@@ -6740,38 +6699,25 @@ function updateMealSummaryCards() {
       }))
     : (window._mealCustomFields || [])
   const customSums = {}
-  const bfSums = {s:0,n:0,g:0}, lSums = {s:0,n:0,g:0}, dSums = {s:0,n:0,g:0}
   const bfC = {}, lC = {}, dC = {}
   cf.forEach(f => { customSums[f.field_key]=0; bfC[f.field_key]=0; lC[f.field_key]=0; dC[f.field_key]=0 })
 
   document.querySelectorAll('#mealTableBody tr[data-date]').forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
-    const bfs=g('bf_s'),bfn=g('bf_n'),bfg=g('bf_g')
-    const ls=g('l_s'),ln=g('l_n'),lg=g('l_g')
-    const ds=g('d_s'),dn=g('d_n'),dg=g('d_g')
-    ts+=bfs+ls+ds; tn+=bfn+ln+dn; tg+=bfg+lg+dg
-    bfSums.s+=bfs; bfSums.n+=bfn; bfSums.g+=bfg
-    lSums.s+=ls;   lSums.n+=ln;   lSums.g+=lg
-    dSums.s+=ds;   dSums.n+=dn;   dSums.g+=dg
     cf.forEach(f => {
       const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
       customSums[f.field_key]+=bfv+lv+dv
       bfC[f.field_key]+=bfv; lC[f.field_key]+=lv; dC[f.field_key]+=dv
     })
   })
-  const customTotalForMeals = cf
-    .filter(f => {
-      if ((f.unit_type||'meal') === 'ea') return false
-      if (f.parent_type === 'noncovered' && !f.include_in_meal_price) return false
-      return true
-    })
+  // 총식수: 비급여 include_in_meal_price=0 제외
+  const grand = cf
+    .filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
     .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
-  const grand = ts+tg+customTotalForMeals
 
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=fmt(v) }
-  // 상단 요약 카드
-  set('mealSummary-s', ts); set('mealSummary-n', tn); set('mealSummary-g', tg)
+  // 상단 요약 카드 (기본 s/n/g 카드는 제거됨)
   cf.forEach(f => { set(`mealSummary-${f.field_key}`, customSums[f.field_key]) })
   set('mealSummary-total', grand)
 
@@ -6783,23 +6729,18 @@ function updateMealSummaryCards() {
       const pgFkey = pg.legacy_field_key || pg.diet_key
       const pgKey = pg.patient_group || pg.diet_key
       const pgVal = customSums[pgFkey] || 0
-      // 연결된 치료식 합산
       const linkedTherapies = dietCats.filter(dc => dc.parent_type === 'therapy' && (dc.linked_patient_group || dc.patient_group) === pgKey)
       const therapySum = linkedTherapies.reduce((s, t) => s + (customSums[t.legacy_field_key || t.diet_key] || 0), 0)
       set(`mealSummary-pg-${pgFkey}`, pgVal + therapySum)
     })
   }
 
-  // 하단 footer 행 실시간 업데이트
-  const bfTotal = bfSums.s+bfSums.n+bfSums.g+cf.reduce((s,f)=>s+bfC[f.field_key],0)
-  const lTotal  = lSums.s+lSums.n+lSums.g  +cf.reduce((s,f)=>s+lC[f.field_key],0)
-  const dTotal  = dSums.s+dSums.n+dSums.g  +cf.reduce((s,f)=>s+dC[f.field_key],0)
-  set('mealFoot-bf-s',bfSums.s); set('mealFoot-bf-n',bfSums.n); set('mealFoot-bf-g',bfSums.g)
-  set('mealFoot-l-s', lSums.s);  set('mealFoot-l-n', lSums.n);  set('mealFoot-l-g', lSums.g)
-  set('mealFoot-d-s', dSums.s);  set('mealFoot-d-n', dSums.n);  set('mealFoot-d-g', dSums.g)
+  // 하단 footer 행 실시간 업데이트 (커스텀 필드만)
+  const bfTotal = cf.reduce((s,f)=>s+bfC[f.field_key],0)
+  const lTotal  = cf.reduce((s,f)=>s+lC[f.field_key],0)
+  const dTotal  = cf.reduce((s,f)=>s+dC[f.field_key],0)
   cf.forEach(f => { set(`mealFoot-bf-${f.field_key}`,bfC[f.field_key]); set(`mealFoot-l-${f.field_key}`,lC[f.field_key]); set(`mealFoot-d-${f.field_key}`,dC[f.field_key]) })
   set('mealFoot-bf-sum',bfTotal); set('mealFoot-l-sum',lTotal); set('mealFoot-d-sum',dTotal)
-  set('mealFoot-t-s',ts); set('mealFoot-t-n',tn); set('mealFoot-t-g',tg)
   cf.forEach(f => { set(`mealFoot-t-${f.field_key}`,customSums[f.field_key]) })
   set('mealFoot-t-total',grand)
 }
@@ -6818,17 +6759,18 @@ async function saveMealBatch() {
   rows.forEach(row => {
     const date = row.dataset.date
     const g = (k) => getMealVal(k, date)
-    // 환자(bf_p 등)는 hidden이므로 실질적으로 0이지만 baseTotal에서 제외해도 무관
-    const baseTotal = ['bf_s','bf_n','bf_g','l_s','l_n','l_g','d_s','d_n','d_g'].reduce((s,k)=>s+g(k),0)
-    const cf = window._mealCustomFields || []
-    const customSum = cf.reduce((s,f)=>s+g(`bf_c_${f.field_key}`)+g(`l_c_${f.field_key}`)+g(`d_c_${f.field_key}`),0)
-    if (baseTotal + customSum > 0) {
+    // diet category 기반만 (기본 s/n/g 컬럼 완전 제거)
+    const dietCf = (window._mealDietCats||[]).length > 0
+      ? (window._mealDietCats||[]).map(dc => ({ field_key: dc.legacy_field_key || dc.diet_key }))
+      : (window._mealCustomFields || [])
+    const customSum = dietCf.reduce((s,f)=>s+g(`bf_c_${f.field_key}`)+g(`l_c_${f.field_key}`)+g(`d_c_${f.field_key}`),0)
+    if (customSum > 0) {
       saved++
       promises.push(api('POST', '/api/meals/save', {
         mealDate: date,
-        breakfastPatient: 0, breakfastStaff: g('bf_s'), breakfastNoncovered: g('bf_n'), breakfastGuardian: g('bf_g'),
-        lunchPatient: 0, lunchStaff: g('l_s'), lunchNoncovered: g('l_n'), lunchGuardian: g('l_g'),
-        dinnerPatient: 0, dinnerStaff: g('d_s'), dinnerNoncovered: g('d_n'), dinnerGuardian: g('d_g'),
+        breakfastPatient: 0, breakfastStaff: 0, breakfastNoncovered: 0, breakfastGuardian: 0,
+        lunchPatient: 0, lunchStaff: 0, lunchNoncovered: 0, lunchGuardian: 0,
+        dinnerPatient: 0, dinnerStaff: 0, dinnerNoncovered: 0, dinnerGuardian: 0,
         customData: buildCustomData(date)
       }))
     }
