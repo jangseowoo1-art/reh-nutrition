@@ -109,7 +109,7 @@ meals.get('/:year/:month', async (c) => {
     }
   }
 
-  const [mealData, customFields] = await Promise.all([
+  const [mealData, customFields, dietCats] = await Promise.all([
     c.env.DB.prepare(
       `SELECT * FROM daily_meals
        WHERE hospital_id = ?
@@ -119,13 +119,17 @@ meals.get('/:year/:month', async (c) => {
     ).bind(hospitalId, year, month).all<any>(),
     c.env.DB.prepare(
       `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+    ).bind(hospitalId).all<any>(),
+    c.env.DB.prepare(
+      `SELECT * FROM diet_categories WHERE hospital_id = ? AND is_active = 1 AND show_in_input = 1 ORDER BY parent_type, sort_order, id`
     ).bind(hospitalId).all<any>()
   ])
 
   return c.json({
     meals: mealData.results,
     customFields: customFields.results,
-    patientCategories: cats
+    patientCategories: cats,
+    dietCategories: dietCats.results || []
   })
 })
 

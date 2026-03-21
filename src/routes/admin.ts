@@ -1678,4 +1678,181 @@ adminRouter.get('/hospitals/:id/category-annual/:year', async (c) => {
   })
 })
 
+// ══════════════════════════════════════════════════════════════
+// 식이 분류 (diet_categories) CRUD
+// ══════════════════════════════════════════════════════════════
+
+// 병원의 diet_categories 전체 조회 (대분류별 그룹)
+adminRouter.get('/hospitals/:id/diet-categories', async (c) => {
+  const id = c.req.param('id')
+  const rows = await c.env.DB.prepare(`
+    SELECT * FROM diet_categories
+    WHERE hospital_id = ?
+    ORDER BY parent_type, sort_order, id
+  `).bind(id).all<any>()
+  return c.json(rows.results || [])
+})
+
+// 프리셋 목록 조회
+adminRouter.get('/diet-category-presets', async (c) => {
+  const rows = await c.env.DB.prepare(`
+    SELECT * FROM diet_category_presets ORDER BY parent_type, sort_order
+  `).all<any>()
+  return c.json(rows.results || [])
+})
+
+// diet_category 단건 생성
+adminRouter.post('/hospitals/:id/diet-categories', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json() as any
+  const { parent_type, diet_name, diet_key, is_active, show_in_input, sort_order, target_meal_price, monthly_budget } = body
+
+  if (!parent_type || !diet_name?.trim()) return c.json({ error: '대분류와 이름을 입력하세요' }, 400)
+
+  // diet_key 자동 생성 (없으면)
+  const key = diet_key?.trim() || `${parent_type}_${Date.now()}`
+
+  await c.env.DB.prepare(`
+    INSERT INTO diet_categories
+      (hospital_id, parent_type, diet_key, diet_name, is_active, show_in_input, sort_order, target_meal_price, monthly_budget)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(hospital_id, diet_key) DO UPDATE SET
+      diet_name = excluded.diet_name,
+      parent_type = excluded.parent_type,
+      is_active = excluded.is_active,
+      show_in_input = excluded.show_in_input,
+      sort_order = excluded.sort_order,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(id, parent_type, key, diet_name.trim(),
+    is_active ?? 1, show_in_input ?? 1, sort_order ?? 0,
+    target_meal_price ?? 0, monthly_budget ?? 0
+  ).run()
+
+  // legacy_field_key 동기화: meal_custom_fields에도 추가
+  const legacyKey = `diet_${key}`
+  await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO meal_custom_fields
+      (hospital_id, field_key, field_name, sort_order, is_active, unit_type)
+    VALUES (?,?,?,?,?,?)
+  `).bind(id, legacyKey, diet_name.trim(), sort_order ?? 0, is_active ?? 1, 'meal').run()
+
+  await c.env.DB.prepare(`
+    UPDATE diet_categories SET legacy_field_key = ? WHERE hospital_id = ? AND diet_key = ?
+  `).bind(legacyKey, id, key).run()
+
+  const newRow = await c.env.DB.prepare(
+    `SELECT * FROM diet_categories WHERE hospital_id = ? AND diet_key = ?`
+  ).bind(id, key).first<any>()
+  return c.json(newRow)
+})
+
+// diet_category 수정 (is_active, show_in_input, 식단가, 목표금액, 이름 등)
+adminRouter.put('/hospitals/:id/diet-categories/:catId', async (c) => {
+  const { id, catId } = c.req.param()
+  const body = await c.req.json() as any
+
+  await c.env.DB.prepare(`
+    UPDATE diet_categories SET
+      diet_name        = COALESCE(?, diet_name),
+      parent_type      = COALESCE(?, parent_type),
+      is_active        = COALESCE(?, is_active),
+      show_in_input    = COALESCE(?, show_in_input),
+      sort_order       = COALESCE(?, sort_order),
+      target_meal_price= COALESCE(?, target_meal_price),
+      monthly_budget   = COALESCE(?, monthly_budget),
+      updated_at       = CURRENT_TIMESTAMP
+    WHERE id = ? AND hospital_id = ?
+  `).bind(
+    body.diet_name ?? null,
+    body.parent_type ?? null,
+    body.is_active ?? null,
+    body.show_in_input ?? null,
+    body.sort_order ?? null,
+    body.target_meal_price ?? null,
+    body.monthly_budget ?? null,
+    catId, id
+  ).run()
+
+  // meal_custom_fields 동기화
+  if (body.legacy_field_key && (body.is_active !== undefined || body.diet_name !== undefined)) {
+    await c.env.DB.prepare(`
+      UPDATE meal_custom_fields SET
+        is_active = COALESCE(?, is_active),
+        field_name = COALESCE(?, field_name)
+      WHERE hospital_id = ? AND field_key = ?
+    `).bind(body.is_active ?? null, body.diet_name ?? null, id, body.legacy_field_key).run()
+  }
+
+  return c.json({ success: true })
+})
+
+// diet_category 삭제 (비활성화)
+adminRouter.delete('/hospitals/:id/diet-categories/:catId', async (c) => {
+  const { id, catId } = c.req.param()
+
+  // legacy_field_key 먼저 조회
+  const row = await c.env.DB.prepare(
+    `SELECT legacy_field_key FROM diet_categories WHERE id = ? AND hospital_id = ?`
+  ).bind(catId, id).first<any>()
+
+  await c.env.DB.prepare(`
+    UPDATE diet_categories SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND hospital_id = ?
+  `).bind(catId, id).run()
+
+  if (row?.legacy_field_key) {
+    await c.env.DB.prepare(`
+      UPDATE meal_custom_fields SET is_active = 0 WHERE hospital_id = ? AND field_key = ?
+    `).bind(id, row.legacy_field_key).run()
+  }
+
+  return c.json({ success: true })
+})
+
+// diet_categories 순서/일괄 업데이트
+adminRouter.put('/hospitals/:id/diet-categories', async (c) => {
+  const id = c.req.param('id')
+  const { categories } = await c.req.json() as { categories: any[] }
+  if (!Array.isArray(categories)) return c.json({ error: 'categories 배열 필요' }, 400)
+
+  for (const cat of categories) {
+    await c.env.DB.prepare(`
+      UPDATE diet_categories SET
+        sort_order = ?, is_active = ?, show_in_input = ?,
+        diet_name = ?, target_meal_price = ?, monthly_budget = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND hospital_id = ?
+    `).bind(
+      cat.sort_order ?? 0, cat.is_active ?? 1, cat.show_in_input ?? 1,
+      cat.diet_name, cat.target_meal_price ?? 0, cat.monthly_budget ?? 0,
+      cat.id, id
+    ).run()
+
+    // meal_custom_fields 동기화
+    if (cat.legacy_field_key) {
+      await c.env.DB.prepare(`
+        UPDATE meal_custom_fields SET
+          is_active = ?, field_name = ?, sort_order = ?
+        WHERE hospital_id = ? AND field_key = ?
+      `).bind(cat.is_active ?? 1, cat.diet_name, cat.sort_order ?? 0, id, cat.legacy_field_key).run()
+    }
+  }
+
+  const updated = await c.env.DB.prepare(`
+    SELECT * FROM diet_categories WHERE hospital_id = ? ORDER BY parent_type, sort_order, id
+  `).bind(id).all<any>()
+  return c.json({ success: true, categories: updated.results || [] })
+})
+
+// meals GET에서 diet_categories 포함 반환
+adminRouter.get('/hospitals/:id/diet-categories-for-meal', async (c) => {
+  const id = c.req.param('id')
+  const rows = await c.env.DB.prepare(`
+    SELECT * FROM diet_categories
+    WHERE hospital_id = ? AND is_active = 1 AND show_in_input = 1
+    ORDER BY parent_type, sort_order, id
+  `).bind(id).all<any>()
+  return c.json(rows.results || [])
+})
+
 export default adminRouter
