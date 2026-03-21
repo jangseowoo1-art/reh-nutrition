@@ -61,6 +61,8 @@ function startClosingPoll(approvedYear, approvedMonth) {
 // ── 초기화 ────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
   if (!App.token) { window.location.href = '/login'; return }
+  // 운영진(executive) 역할이면 전용 대시보드로 리다이렉트
+  if (App.role === 'executive') { window.location.href = '/executive'; return }
 
   // 병원 계정이면 DB의 활성 월(current_year/month)로 App 상태 동기화
   if (App.role !== 'admin') {

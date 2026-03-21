@@ -19,7 +19,7 @@ const State = {
 }
 
 // ── 초기화 ────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+function initExec() {
   // 인증 체크
   if (!State.token || (State.role !== 'executive' && State.role !== 'admin')) {
     alert('운영진 권한이 필요합니다.')
@@ -28,7 +28,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   updateMonthDisplay()
   loadExecData()
-})
+}
+
+// DOMContentLoaded가 이미 발생했거나 발생 전이나 모두 처리
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initExec)
+} else {
+  // 이미 DOM 준비됨
+  initExec()
+}
 
 // ── API 헬퍼 ──────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -108,33 +116,64 @@ window.loadExecData = async function() {
   if (content) content.classList.add('hidden')
   if (icon) icon.classList.add('loading-spin')
 
-  const yStr = String(State.year)
-  const mStr = String(State.month).padStart(2,'0')
-  const [summary, annual] = await Promise.all([
-    api('GET', `/api/executive/summary/${yStr}/${mStr}`),
-    api('GET', `/api/executive/annual/${yStr}`)
-  ])
+  try {
+    const yStr = String(State.year)
+    const mStr = String(State.month).padStart(2,'0')
+    const [summary, annual] = await Promise.all([
+      api('GET', `/api/executive/summary/${yStr}/${mStr}`),
+      api('GET', `/api/executive/annual/${yStr}`)
+    ])
 
-  if (icon) icon.classList.remove('loading-spin')
-  if (!summary) {
-    if (loading) loading.innerHTML = `<p class="text-red-500">데이터를 불러올 수 없습니다.</p>`
-    return
-  }
+    if (icon) icon.classList.remove('loading-spin')
 
-  State.data = summary
-  State.annualData = annual
+    if (!summary || summary.error) {
+      if (loading) loading.innerHTML = `
+        <div class="text-center">
+          <i class="fas fa-exclamation-triangle text-3xl text-red-400 mb-3 block"></i>
+          <p class="text-red-500 font-semibold">데이터를 불러올 수 없습니다</p>
+          <p class="text-gray-400 text-sm mt-1">${summary?.error || '서버 오류'}</p>
+          <button onclick="loadExecData()" class="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">다시 시도</button>
+        </div>`
+      return
+    }
 
-  // 병원명 업데이트
-  const hospName = summary.hospital?.name || State.hospitalName || '운영 현황'
-  const el = document.getElementById('execHospName')
-  if (el) el.textContent = hospName
-  const pl = document.getElementById('execPeriodLabel')
-  if (pl) pl.textContent = `${State.year}년 ${State.month}월 현황`
+    State.data = summary
+    State.annualData = annual
 
-  if (loading) loading.classList.add('hidden')
-  if (content) {
-    content.classList.remove('hidden')
-    renderAll()
+    // 병원명 업데이트
+    const hospName = summary.hospital?.name || State.hospitalName || '운영 현황'
+    const el = document.getElementById('execHospName')
+    if (el) el.textContent = hospName
+    const pl = document.getElementById('execPeriodLabel')
+    if (pl) pl.textContent = `${State.year}년 ${State.month}월 현황`
+
+    if (loading) loading.classList.add('hidden')
+    if (content) {
+      content.classList.remove('hidden')
+      try {
+        renderAll()
+      } catch(renderErr) {
+        console.error('renderAll error:', renderErr)
+        content.innerHTML = `
+          <div class="text-center py-10">
+            <i class="fas fa-exclamation-triangle text-3xl text-amber-400 mb-3 block"></i>
+            <p class="text-gray-600 font-semibold">화면 렌더링 중 오류가 발생했습니다</p>
+            <p class="text-gray-400 text-sm mt-1">${renderErr.message}</p>
+            <button onclick="loadExecData()" class="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">새로고침</button>
+          </div>`
+        content.classList.remove('hidden')
+      }
+    }
+  } catch(e) {
+    if (icon) icon.classList.remove('loading-spin')
+    if (loading) loading.innerHTML = `
+      <div class="text-center">
+        <i class="fas fa-wifi text-3xl text-red-400 mb-3 block"></i>
+        <p class="text-red-500 font-semibold">네트워크 오류</p>
+        <p class="text-gray-400 text-sm mt-1">${e.message}</p>
+        <button onclick="loadExecData()" class="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">다시 시도</button>
+      </div>`
+    console.error('loadExecData error:', e)
   }
 }
 
@@ -156,13 +195,15 @@ function renderAll() {
 
   // 파생값
   const progressPct = budget.progress || 0
-  const mealDiff = budget.currentMealPrice - (prevMonth.mealPrice || 0)
+  const currentMealPrice = budget.currentMealPrice || 0
+  const prevMealPrice = prevMonth.mealPrice || 0
+  const mealDiff = currentMealPrice - prevMealPrice
 
   content.innerHTML = `
     <!-- KPI 카드 그리드 -->
     <div class="grid grid-cols-2 gap-4" style="grid-template-columns: repeat(2, 1fr)" id="kpiGrid">
       ${kpiCard('fa-wallet', '예산 사용', fmtW(budget.totalUsed), fmtW(budget.totalBudget), progressPct, progressColor(progressPct), 'gradient-blue')}
-      ${kpiCard('fa-utensils', '식단가', fmtW(budget.currentMealPrice), `목표 ${fmtW(budget.targetMealPrice)}`, null, null, 'gradient-green', mealDiff !== 0 ? `전월비 ${mealDiff > 0 ? '+' : ''}${fmtW(mealDiff)}` : '전월 동일')}
+      ${kpiCard('fa-utensils', '식단가', fmtW(currentMealPrice), `목표 ${fmtW(budget.targetMealPrice||0)}`, null, null, 'gradient-green', mealDiff !== 0 ? `전월비 ${mealDiff > 0 ? '+' : ''}${fmtW(mealDiff)}` : '전월 동일')}
       ${kpiCard('fa-users', '총 식수', fmt(mealStats.totalMeals)+'식', `${mealStats.daysEntered || 0}일 입력`, null, null, 'gradient-amber')}
       ${kpiCard('fa-search', '검수 현황', `${inspection.completed||0}/${inspection.total_orders||0}`, `이슈 ${inspection.issues||0}건`, inspection.total_orders > 0 ? Math.round((inspection.completed||0)/(inspection.total_orders||1)*100) : 100, '#16a34a', 'gradient-purple')}
     </div>
@@ -476,8 +517,11 @@ function renderMealsTab(mealStats) {
         ${customFields.map(f => {
           const cnt = customTotals[f.field_key] || 0
           const pct = totalMeals > 0 ? Math.round(cnt / totalMeals * 100) : 0
+          // diet_type이 없으므로 field_key에서 추론
+          const key = f.field_key || ''
+          const dietType = key.includes('therapy') ? 'therapy' : key.includes('staff') ? 'staff' : key.includes('noncovered') || key.includes('nc_') ? 'noncovered' : 'patient'
           const barColors = {'patient':'#3b82f6','therapy':'#16a34a','noncovered':'#9333ea','staff':'#d97706'}
-          const barColor = barColors[f.diet_type] || '#6b7280'
+          const barColor = barColors[dietType] || '#6b7280'
           return `
           <div>
             <div class="flex justify-between text-sm mb-1">
