@@ -5926,11 +5926,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   dietCats = dietCats || []
 
   // ── dietCats 우선 사용, 없으면 기존 customFields fallback ──
-  // dietCats가 있으면 그것을 기준으로 그룹화
-  // diet_key → field_key 매핑 (legacy_field_key 사용)
   const useDietGroups = dietCats.length > 0
 
-  // dietCats를 대분류별로 그룹화
   const DIET_GROUP_ORDER = ['patient','therapy','noncovered','staff']
   const DIET_GROUP_META_MEAL = {
     patient:    { name:'환자식',   color:'#2563eb', bg:'#eff6ff', border:'#93c5fd', icon:'fa-user-injured' },
@@ -5939,22 +5936,61 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
     staff:      { name:'직원식',   color:'#d97706', bg:'#fffbeb', border:'#fcd34d', icon:'fa-user-tie' },
   }
 
+  // ── 환자군별 일반식+치료식 그룹화 구조 ──
+  // patientGroups: 환자군(patient 타입) 목록
+  // 각 환자군에 연결된 치료식(linked_patient_group 매칭)을 하위로 붙임
+  // 비연결 치료식은 독립 치료식으로 처리
+  const patientGroupDefs = dietCats.filter(dc => dc.parent_type === 'patient')
+  const therapyDefs = dietCats.filter(dc => dc.parent_type === 'therapy')
+  const noncoveredDefs = dietCats.filter(dc => dc.parent_type === 'noncovered')
+  const staffDefs = dietCats.filter(dc => dc.parent_type === 'staff')
+
+  // 환자군별 구조: { pgKey: { groupDef, therapyItems[] } }
+  const patientGroupStructure = patientGroupDefs.map(pg => {
+    const pgKey = pg.patient_group || pg.diet_key
+    // 이 환자군에 연결된 치료식
+    const linkedTherapies = therapyDefs.filter(t => (t.linked_patient_group || t.patient_group) === pgKey)
+    return { groupDef: pg, therapyItems: linkedTherapies }
+  })
+  // 연결되지 않은(독립) 치료식
+  const linkedTherapyIds = new Set(patientGroupStructure.flatMap(pg => pg.therapyItems.map(t => t.id)))
+  const unlinkedTherapies = therapyDefs.filter(t => !linkedTherapyIds.has(t.id))
+
   // dietCats를 커스텀필드 형태로 변환 (field_key = legacy_field_key || diet_key)
-  // + 대분류 그룹 정보 포함
+  const toFieldObj = (dc) => ({
+    field_key: dc.legacy_field_key || dc.diet_key,
+    field_name: dc.diet_name,
+    unit_type: 'meal',
+    diet_id: dc.id,
+    parent_type: dc.parent_type,
+    diet_key: dc.diet_key,
+    linked_patient_group: dc.linked_patient_group || dc.patient_group || null,
+    include_in_meal_price: dc.include_in_meal_price || 0,
+  })
+
+  // ── 테이블 컬럼 순서 구성 ──
+  // 환자군 일반식 → 연결 치료식 → 비연결 치료식 → 비급여 → 직원 → 기본(직원col/비급col/보호col)
   const dietGroups = {}
   DIET_GROUP_ORDER.forEach(t => { dietGroups[t] = [] })
-  dietCats.forEach(dc => {
-    const fkey = dc.legacy_field_key || dc.diet_key
-    const fieldObj = {
-      field_key: fkey,
-      field_name: dc.diet_name,
-      unit_type: 'meal',
-      diet_id: dc.id,
-      parent_type: dc.parent_type,
-      diet_key: dc.diet_key,
-    }
-    if (dietGroups[dc.parent_type]) dietGroups[dc.parent_type].push(fieldObj)
-  })
+
+  if (useDietGroups) {
+    // 환자군별로 일반식(환자군 자체) + 연결 치료식 순으로
+    patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
+      dietGroups['patient'].push(toFieldObj({ ...groupDef, field_name: groupDef.diet_name }))
+      therapyItems.forEach(t => dietGroups['patient'].push({ ...toFieldObj(t), _isLinkedTherapy: true, _linkedGroupName: groupDef.diet_name }))
+    })
+    // 비연결 치료식
+    unlinkedTherapies.forEach(t => dietGroups['therapy'].push(toFieldObj(t)))
+    // 비급여
+    noncoveredDefs.forEach(dc => dietGroups['noncovered'].push(toFieldObj(dc)))
+    // 직원
+    staffDefs.forEach(dc => dietGroups['staff'].push(toFieldObj(dc)))
+  } else {
+    // 기존 방식
+    dietCats.forEach(dc => {
+      if (dietGroups[dc.parent_type]) dietGroups[dc.parent_type].push(toFieldObj(dc))
+    })
+  }
 
   // 모든 active dietCat field_key 목록 (합계/헤더용)
   const allDietFields = DIET_GROUP_ORDER.flatMap(t => dietGroups[t])
@@ -5990,18 +6026,47 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   const grandTotal = monthTotal.s + monthTotal.g + customTotalForMeals
 
   // ── 그룹 헤더 구성 ──
-  // dietGroups 사용시: 대분류별 colspan 계산
-  // 기존 방식: 커스텀 전체 + 직원/비급/보호
   const baseLabels = ['직원','비급','보호']
   const customLabels = effectiveCustomFields.map(f => f.field_name)
   const allLabels = [...customLabels, ...baseLabels]
   const colCount = allLabels.length + 1  // +1 = 소계
 
-  // dietGroups 기반 그룹 헤더 (식이 분류 구조 사용시)
-  // 각 대분류별 열 수 계산
-  const dietGroupColspans = useDietGroups ? DIET_GROUP_ORDER.map(t => ({
-    type: t, meta: DIET_GROUP_META_MEAL[t], count: dietGroups[t].length
-  })).filter(g => g.count > 0) : []
+  // 2행 그룹 헤더: 환자군 구조 사용 시 환자군별 묶기
+  // 환자군 + 연결 치료식 → 하나의 환자군 그룹
+  // 비연결 치료식 → 치료식 그룹
+  // 비급여 → 비급여식 그룹
+  // 직원 → 직원식 그룹
+  // 기본(직원/비급/보호) → 기본 그룹
+  let level2Groups = []  // { label, count, color, icon }
+  if (useDietGroups) {
+    // 환자군별 그룹
+    patientGroupStructure.forEach(({ groupDef, therapyItems }) => {
+      const colCnt = 1 + therapyItems.length  // 환자군 자체(1) + 연결 치료식
+      if (colCnt > 0) {
+        level2Groups.push({
+          label: groupDef.diet_name,
+          count: colCnt,
+          color: '#2563eb',
+          bg: '#1e40af',
+          icon: 'fa-user-injured',
+          type: 'patient_group'
+        })
+      }
+    })
+    // 비연결 치료식
+    if (unlinkedTherapies.length > 0) {
+      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#16a34a', bg:'#14532d', icon:'fa-pills', type:'therapy' })
+    }
+    // 비급여
+    if (noncoveredDefs.length > 0) {
+      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#9333ea', bg:'#581c87', icon:'fa-hand-holding-usd', type:'noncovered' })
+    }
+    // 직원
+    if (staffDefs.length > 0) {
+      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#d97706', bg:'#78350f', icon:'fa-user-tie', type:'staff' })
+    }
+  }
+  const hasLevel2 = level2Groups.length > 0
 
   // ── 마감 완료 달 읽기전용 처리 ──
   const _mealsReadOnly = isReadOnly(App.currentYear, App.currentMonth)
@@ -6010,7 +6075,7 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   ${_mealsReadOnly ? readOnlyBanner() : ''}
   <!-- 월 합계 요약 카드 -->
   <div class="flex flex-wrap gap-2 mb-4" id="mealSummaryCards">
-    ${buildMealSummaryCards(monthTotal, effectiveCustomFields, grandTotal)}
+    ${buildMealSummaryCards(monthTotal, effectiveCustomFields, grandTotal, patientGroupStructure, unlinkedTherapies, noncoveredDefs, staffDefs)}
   </div>
 
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -6023,7 +6088,6 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         <button onclick="saveMealBatch()" class="btn btn-success btn-sm" ${_mealsReadOnly ? 'disabled title="마감 완료 달은 수정 불가"' : ''}>
           <i class="fas fa-save"></i> ${_mealsReadOnly ? '🔒 저장불가' : '저장'}
         </button>
-        <!-- 칸 생성 버튼 제거: 환자군은 관리자에서 설정하면 자동 반영됩니다 -->
       </div>
     </div>
     <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
@@ -6032,33 +6096,27 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         <thead>
           <!-- 1행: 식사 구분 (조/중/석/합계) -->
           <tr>
-            <th rowspan="${useDietGroups && dietGroupColspans.length > 0 ? 3 : 2}" style="min-width:28px;border:2px solid #1e5c3a">일</th>
-            <th rowspan="${useDietGroups && dietGroupColspans.length > 0 ? 3 : 2}" style="min-width:22px;border:2px solid #1e5c3a">요</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:28px;border:2px solid #1e5c3a">일</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:22px;border:2px solid #1e5c3a">요</th>
             <th colspan="${colCount}" style="border:2px solid #1d4ed8;border-bottom:1px solid #3b82f6;background:#1e40af">조식</th>
             <th colspan="${colCount}" style="border:2px solid #166534;border-bottom:1px solid #22c55e;background:#14532d">중식</th>
             <th colspan="${colCount}" style="border:2px solid #6b21a8;border-bottom:1px solid #a855f7;background:#581c87">석식</th>
             <th colspan="${allLabels.length + 1}" style="border:2px solid #374151;border-bottom:1px solid #6b7280;background:#0f2942">합계</th>
           </tr>
-          <!-- 2행: 대분류 그룹 헤더 (dietGroups 사용시) -->
-          ${useDietGroups && dietGroupColspans.length > 0 ? `
+          <!-- 2행: 환자군/대분류 그룹 헤더 -->
+          ${hasLevel2 ? `
           <tr>
             ${['bf','l','d','t'].map((_, mi) => {
               const borderColors = ['#3b82f6','#22c55e','#a855f7','#6b7280']
               const border = borderColors[mi]
               const isTot = mi===3
-              const groupCells = isTot
-                // 합계열: 대분류별 colspan + 기본(직원/비급/보호)
-                ? dietGroupColspans.map(g =>
-                    `<th colspan="${g.count}" style="padding:2px 3px;border-left:2px solid ${g.meta.color}50;border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:${g.meta.color};font-size:9px;letter-spacing:0.5px">
-                      <i class="fas ${g.meta.icon}" style="margin-right:2px"></i>${g.meta.name}
-                    </th>`
-                  ).join('') + `<th colspan="3" style="padding:2px 3px;border-left:1px solid rgba(255,255,255,0.1);border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:#9ca3af;font-size:9px">기본</th>`
-                // 조/중/석: 대분류 그룹 헤더
-                : dietGroupColspans.map((g, gi) =>
-                    `<th colspan="${g.count}" style="padding:2px 3px;border-left:${gi===0?`3px solid ${border}`:`2px solid ${g.meta.color}50`};border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:${g.meta.color};font-size:9px">
-                      <i class="fas ${g.meta.icon}" style="margin-right:2px"></i>${g.meta.name}
-                    </th>`
-                  ).join('') + `<th colspan="3" style="padding:2px 3px;border-left:1px solid rgba(255,255,255,0.1);border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:#9ca3af;font-size:9px">기본</th>`
+              const groupCells = level2Groups.map((g, gi) => {
+                const isFirst = gi===0
+                const bl = isFirst ? `border-left:3px solid ${border}` : `border-left:2px solid ${g.color}40`
+                return `<th colspan="${g.count}" style="padding:2px 3px;${bl};border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:${g.color};font-size:9px;white-space:nowrap">
+                  <i class="fas ${g.icon}" style="margin-right:2px"></i>${g.label}
+                </th>`
+              }).join('') + `<th colspan="3" style="padding:2px 3px;border-left:1px solid rgba(255,255,255,0.1);border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;color:#9ca3af;font-size:9px">기본</th>`
               return groupCells + `<th style="border-right:${mi<3?`3px solid ${border}`:'2px solid #374151'};border-top:1px solid ${border};border-bottom:1px solid ${border};background:#111827;font-size:9px;color:#6b7280"></th>`
             }).join('')}
           </tr>` : ''}
@@ -6072,10 +6130,14 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const isFirst = li===0
                 const isLast = li===allLabels.length-1
                 const isCustom = li < customLabels.length
-                const bg = isTot ? 'background:#0f2942;' : isCustom ? 'background:#1a2f4a;' : ''
+                const fieldObj = isCustom ? effectiveCustomFields[li] : null
+                // 연결된 치료식은 약간 다른 색으로 구분
+                const isLinkedTherapy = fieldObj?._isLinkedTherapy
+                const bg = isTot ? 'background:#0f2942;' : isLinkedTherapy ? 'background:#0f2d1a;' : isCustom ? 'background:#1a2f4a;' : ''
                 const bl = isFirst ? `border-left:3px solid ${border};` : 'border-left:1px solid rgba(255,255,255,0.15);'
                 const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.15)` : ''
-                return `<th style="${bl}border-top:1px solid ${border};border-bottom:1px solid ${border}${br};padding:3px 2px;${bg}font-size:10px">${label}</th>`
+                const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
+                return `<th ${titleAttr} style="${bl}border-top:1px solid ${border};border-bottom:1px solid ${border}${br};padding:3px 2px;${bg}font-size:10px;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
               }).join('') + `<th style="border:1px solid rgba(255,255,255,0.15);border-right:3px solid ${border};padding:3px 2px;background:${isTot?'#0f2942':'#1e3a6e'};color:#93c5fd;font-size:10px">합</th>`
             }).join('')}
           </tr>
@@ -6096,31 +6158,99 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   bindMealInputEvents()
 }
 
-function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
-  // dietGroups 기반 요약 카드
+function buildMealSummaryCards(monthTotal, customFields, grandTotal, patientGroupStructure, unlinkedTherapies, noncoveredDefs, staffDefs) {
   const useDiet = (window._mealDietCats||[]).length > 0
-  const DIET_COLORS = { patient:'blue', therapy:'green', noncovered:'purple', staff:'amber' }
-  const DIET_LABEL  = { patient:'환자식', therapy:'치료식', noncovered:'비급여식', staff:'직원식' }
 
   let customCards = []
-  if (useDiet) {
-    // 대분류별로 합산 카드 + 개별 카드
-    const groupTotals = { patient:0, therapy:0, noncovered:0, staff:0 }
+
+  if (useDiet && patientGroupStructure && patientGroupStructure.length > 0) {
+    // ── 환자군별 그룹 요약 카드 ──
+    // 각 환자군: 일반식 + 연결 치료식 합산 카드 (+ 세부 소형 카드)
+    const pgColors = ['blue','indigo','violet','sky','cyan','teal']
+    patientGroupStructure.forEach(({ groupDef, therapyItems }, pi) => {
+      const color = pgColors[pi % pgColors.length]
+      const pgFkey = groupDef.legacy_field_key || groupDef.diet_key
+      const pgVal = monthTotal.custom[pgFkey] || 0
+
+      // 치료식 합산
+      let therapySum = 0
+      therapyItems.forEach(t => {
+        const tfkey = t.legacy_field_key || t.diet_key
+        therapySum += (monthTotal.custom[tfkey] || 0)
+      })
+      const pgTotal = pgVal + therapySum
+
+      if (therapyItems.length > 0) {
+        // 환자군 합산 카드 (일반식 + 치료식)
+        customCards.push({
+          label: groupDef.diet_name,
+          val: pgTotal,
+          color,
+          id: `mealSummary-pg-${pgFkey}`,
+          unit: 'meal',
+          subLabel: therapyItems.length > 0 ? `일반 ${fmt(pgVal)} + 치료 ${fmt(therapySum)}` : null,
+        })
+        // 치료식 세부 카드 (소형)
+        therapyItems.forEach(t => {
+          const tfkey = t.legacy_field_key || t.diet_key
+          customCards.push({
+            label: `↳${t.diet_name}`, val: monthTotal.custom[tfkey]||0,
+            color: 'green', id: `mealSummary-${tfkey}`, unit: 'meal', small: true
+          })
+        })
+      } else {
+        // 단독 환자군 카드
+        customCards.push({
+          label: groupDef.diet_name, val: pgVal,
+          color, id: `mealSummary-${pgFkey}`, unit: 'meal'
+        })
+      }
+    })
+    // 비연결 치료식
+    if (unlinkedTherapies && unlinkedTherapies.length > 0) {
+      unlinkedTherapies.forEach(t => {
+        const tfkey = t.legacy_field_key || t.diet_key
+        customCards.push({
+          label: t.diet_name, val: monthTotal.custom[tfkey]||0,
+          color: 'green', id: `mealSummary-${tfkey}`, unit: 'meal'
+        })
+      })
+    }
+    // 비급여식
+    if (noncoveredDefs && noncoveredDefs.length > 0) {
+      noncoveredDefs.forEach(nc => {
+        const nfkey = nc.legacy_field_key || nc.diet_key
+        customCards.push({
+          label: nc.diet_name, val: monthTotal.custom[nfkey]||0,
+          color: 'purple', id: `mealSummary-${nfkey}`, unit: 'meal'
+        })
+      })
+    }
+    // 직원식
+    if (staffDefs && staffDefs.length > 0) {
+      staffDefs.forEach(sf => {
+        const sfkey = sf.legacy_field_key || sf.diet_key
+        customCards.push({
+          label: sf.diet_name, val: monthTotal.custom[sfkey]||0,
+          color: 'amber', id: `mealSummary-${sfkey}`, unit: 'meal'
+        })
+      })
+    }
+  } else if (useDiet) {
+    // 기존 diet 구조 (환자군 구조 없는 경우)
     ;(window._mealDietCats||[]).forEach(dc => {
       const fkey = dc.legacy_field_key || dc.diet_key
-      const val = monthTotal.custom[fkey] || 0
-      groupTotals[dc.parent_type] = (groupTotals[dc.parent_type]||0) + val
+      const DIET_COLORS = { patient:'blue', therapy:'green', noncovered:'purple', staff:'amber' }
       customCards.push({
-        label: dc.diet_name, val,
+        label: dc.diet_name, val: monthTotal.custom[fkey]||0,
         color: DIET_COLORS[dc.parent_type]||'indigo',
-        id: `mealSummary-${fkey}`,
-        unit: 'meal',
-        subtype: dc.parent_type
+        id: `mealSummary-${fkey}`, unit: 'meal'
       })
     })
   } else {
     customCards = customFields.map(f => ({
-      label: f.field_name, val: monthTotal.custom[f.field_key]||0, color:'indigo', id:`mealSummary-${f.field_key}`, unit: f.unit_type||'meal'
+      label: f.field_name, val: monthTotal.custom[f.field_key]||0,
+      color:'indigo', id:`mealSummary-${f.field_key}`, unit: f.unit_type||'meal'
     }))
   }
 
@@ -6132,9 +6262,12 @@ function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
   const totalCard = { label:'총식수', val:grandTotal, color:'gray', id:'mealSummary-total', bold:true, unit:'meal' }
   return [...customCards, ...baseCards, totalCard].map(item => {
     const unitStr = item.unit === 'ea' ? '개' : '식'
-    return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-2 text-center" style="min-width:72px">
-      <div class="text-xs text-gray-500 font-medium mb-0.5">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
-      <div class="text-base font-bold text-${item.color}-600" id="${item.id}">${fmt(item.val)}</div>
+    const cardStyle = item.small ? 'min-width:60px;opacity:0.85' : 'min-width:72px'
+    const valSize = item.small ? 'text-sm' : 'text-base'
+    return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-2 text-center" style="${cardStyle}">
+      <div class="text-xs text-gray-500 font-medium mb-0.5" style="font-size:${item.small?'9px':'11px'}">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
+      <div class="${valSize} font-bold text-${item.color}-600" id="${item.id}">${fmt(item.val)}</div>
+      ${item.subLabel ? `<div style="font-size:8px;color:#9ca3af;line-height:1.2">${item.subLabel}</div>` : ''}
       <div class="text-xs text-gray-400">${unitStr}</div>
     </div>`
   }).join('')
@@ -6572,6 +6705,22 @@ function updateMealSummaryCards() {
   set('mealSummary-s', ts); set('mealSummary-n', tn); set('mealSummary-g', tg)
   cf.forEach(f => { set(`mealSummary-${f.field_key}`, customSums[f.field_key]) })
   set('mealSummary-total', grand)
+
+  // 환자군 그룹 합산 카드 업데이트 (mealSummary-pg-{fkey})
+  const dietCats = window._mealDietCats || []
+  if (dietCats.length > 0) {
+    const patientDefs = dietCats.filter(dc => dc.parent_type === 'patient')
+    patientDefs.forEach(pg => {
+      const pgFkey = pg.legacy_field_key || pg.diet_key
+      const pgKey = pg.patient_group || pg.diet_key
+      const pgVal = customSums[pgFkey] || 0
+      // 연결된 치료식 합산
+      const linkedTherapies = dietCats.filter(dc => dc.parent_type === 'therapy' && (dc.linked_patient_group || dc.patient_group) === pgKey)
+      const therapySum = linkedTherapies.reduce((s, t) => s + (customSums[t.legacy_field_key || t.diet_key] || 0), 0)
+      set(`mealSummary-pg-${pgFkey}`, pgVal + therapySum)
+    })
+  }
+
   // 하단 footer 행 실시간 업데이트
   const bfTotal = bfSums.s+bfSums.n+bfSums.g+cf.reduce((s,f)=>s+bfC[f.field_key],0)
   const lTotal  = lSums.s+lSums.n+lSums.g  +cf.reduce((s,f)=>s+lC[f.field_key],0)
@@ -11542,6 +11691,14 @@ function renderDietCategoryList() {
   const type = window._currentDietTypeTab || 'patient'
   const meta = DIET_TYPE_META[type]
   const items = (window._dietCategories || []).filter(d => d.parent_type === type)
+  // 환자군 목록 (patient 타입만)
+  const patientGroups = (window._dietCategories || []).filter(d => d.parent_type === 'patient' && d.is_active)
+
+  // 환자군 선택 옵션 HTML
+  const patientGroupOptions = (grp) => `
+    <option value="">-- 미지정 --</option>
+    ${patientGroups.map(pg => `<option value="${pg.patient_group || pg.diet_key}" ${(grp === (pg.patient_group || pg.diet_key)) ? 'selected' : ''}>${pg.diet_name}</option>`).join('')}
+  `
 
   if (!items.length) {
     el.innerHTML = `<div class="text-xs text-gray-400 text-center py-6 border-2 border-dashed rounded-xl"
@@ -11553,67 +11710,131 @@ function renderDietCategoryList() {
     return
   }
 
+  // 타입별 헤더 안내문
+  const headerHint = {
+    patient: '식단가 설정 대상 · 각 환자군의 일반식+치료식 합산 기준',
+    therapy: '치료식은 환자군에 연결하여 식수 입력 시 그룹화됩니다',
+    noncovered: '식단가 계산 포함 여부를 항목별로 설정하세요',
+    staff: '직원식 세부 항목 (식단가 계산 제외)',
+  }[type] || ''
+
   el.innerHTML = `
   <div class="rounded-xl overflow-hidden border" style="border-color:${meta.border}">
     <div class="px-3 py-2 text-xs font-bold flex items-center gap-2"
       style="background:${meta.bg};color:${meta.color};border-bottom:1px solid ${meta.border}">
       <i class="fas ${meta.icon}"></i>${meta.name} (${items.filter(i=>i.is_active).length}개 활성)
-      <span class="ml-auto text-gray-400 font-normal">사용여부 · 식수노출 · 식단가 · 목표금액</span>
+      <span class="ml-auto text-gray-400 font-normal text-right" style="font-size:9px">${headerHint}</span>
     </div>
+    ${type === 'patient' ? `
+    <div class="px-3 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700">
+      <i class="fas fa-info-circle mr-1"></i>
+      <strong>환자군</strong>이 식단가 계산의 기준 단위입니다. 식단가(원/식)와 월 목표금액을 환자군별로 설정하세요.<br>
+      <span class="text-blue-500">치료식이 이 환자군에 연결되면 치료식 식수도 합산되어 계산됩니다.</span>
+    </div>` : ''}
+    ${type === 'noncovered' ? `
+    <div class="px-3 py-2 bg-purple-50 border-b border-purple-100 text-xs text-purple-700">
+      <i class="fas fa-info-circle mr-1"></i>
+      <strong>식단가 포함</strong>을 ON으로 설정한 비급여 항목만 식단가 계산 분자(식수)에 포함됩니다.<br>
+      <span class="text-purple-500">기본값: 공기밥추가·간식·기타 = OFF (포함 안 함) / 보호자식·외래식·특식 = 관리자 선택</span>
+    </div>` : ''}
+    ${type === 'therapy' ? `
+    <div class="px-3 py-2 bg-green-50 border-b border-green-100 text-xs text-green-700">
+      <i class="fas fa-info-circle mr-1"></i>
+      치료식은 <strong>환자군 연결</strong>을 설정하면 식수 입력 시 해당 환자군 하위에 그룹화됩니다.<br>
+      <span class="text-green-600">연결된 치료식 식수는 해당 환자군의 식단가 계산에 자동 합산됩니다.</span>
+    </div>` : ''}
     <div class="divide-y" style="divide-color:${meta.border}">
-    ${items.map((cat, i) => `
-      <div class="flex items-center gap-2 px-3 py-2.5 bg-white hover:bg-gray-50 transition" id="dietRow-${cat.id}">
-        <span class="w-5 h-5 rounded text-white text-center text-xs flex items-center justify-center flex-shrink-0 font-bold"
-          style="background:${meta.color};opacity:${cat.is_active?1:0.35}">
-          ${cat.diet_name.charAt(0)}
-        </span>
-        <input type="text" value="${cat.diet_name}" placeholder="식이명"
-          class="form-input flex-1 text-sm py-1"
-          data-diet-id="${cat.id}" data-field="diet_name"
-          onchange="updateDietCatField(${cat.id},'diet_name',this.value)">
-        <!-- 사용여부 -->
-        <label class="flex flex-col items-center gap-0.5 flex-shrink-0 cursor-pointer">
-          <span class="text-xs text-gray-400" style="font-size:9px">사용</span>
-          <div class="relative">
-            <input type="checkbox" class="sr-only" ${cat.is_active ? 'checked' : ''}
-              onchange="updateDietCatField(${cat.id},'is_active',this.checked?1:0)">
-            <div class="toggle-track w-8 h-4 rounded-full transition" style="background:${cat.is_active?meta.color:'#d1d5db'}"></div>
-            <div class="toggle-thumb absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition" style="transform:${cat.is_active?'translateX(16px)':'translateX(0)'}"></div>
+    ${items.map((cat, i) => {
+      const linkedGrp = cat.linked_patient_group || cat.patient_group || ''
+      const includeInPrice = cat.include_in_meal_price || 0
+      return `
+      <div class="px-3 py-2.5 bg-white hover:bg-gray-50 transition" id="dietRow-${cat.id}">
+        <div class="flex items-center gap-2">
+          <span class="w-5 h-5 rounded text-white text-center text-xs flex items-center justify-center flex-shrink-0 font-bold"
+            style="background:${meta.color};opacity:${cat.is_active?1:0.35}">
+            ${cat.diet_name.charAt(0)}
+          </span>
+          <input type="text" value="${cat.diet_name}" placeholder="식이명"
+            class="form-input flex-1 text-sm py-1 min-w-0"
+            data-diet-id="${cat.id}" data-field="diet_name"
+            onchange="updateDietCatField(${cat.id},'diet_name',this.value)">
+          <!-- 사용여부 -->
+          <label class="flex flex-col items-center gap-0.5 flex-shrink-0 cursor-pointer">
+            <span class="text-gray-400" style="font-size:9px">사용</span>
+            <div class="relative">
+              <input type="checkbox" class="sr-only" ${cat.is_active ? 'checked' : ''}
+                onchange="updateDietCatField(${cat.id},'is_active',this.checked?1:0)">
+              <div class="toggle-track w-8 h-4 rounded-full transition" style="background:${cat.is_active?meta.color:'#d1d5db'}"></div>
+              <div class="toggle-thumb absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition" style="transform:${cat.is_active?'translateX(16px)':'translateX(0)'}"></div>
+            </div>
+          </label>
+          <!-- 식수노출 -->
+          <label class="flex flex-col items-center gap-0.5 flex-shrink-0 cursor-pointer">
+            <span class="text-gray-400" style="font-size:9px">노출</span>
+            <div class="relative">
+              <input type="checkbox" class="sr-only" ${cat.show_in_input ? 'checked' : ''}
+                onchange="updateDietCatField(${cat.id},'show_in_input',this.checked?1:0)">
+              <div class="toggle-track w-8 h-4 rounded-full transition" style="background:${cat.show_in_input?'#0ea5e9':'#d1d5db'}"></div>
+              <div class="toggle-thumb absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition" style="transform:${cat.show_in_input?'translateX(16px)':'translateX(0)'}"></div>
+            </div>
+          </label>
+          ${type === 'patient' ? `
+          <!-- 식단가 (환자군만) -->
+          <div class="flex flex-col items-center gap-0.5 flex-shrink-0">
+            <span class="text-gray-400" style="font-size:9px">식단가(원)</span>
+            <input type="number" value="${cat.target_meal_price||0}" min="0" step="100"
+              class="form-input text-sm py-0.5 text-center" style="width:68px"
+              data-diet-id="${cat.id}" data-field="target_meal_price"
+              onchange="updateDietCatField(${cat.id},'target_meal_price',Number(this.value))">
           </div>
-        </label>
-        <!-- 식수노출 -->
-        <label class="flex flex-col items-center gap-0.5 flex-shrink-0 cursor-pointer">
-          <span class="text-xs text-gray-400" style="font-size:9px">노출</span>
-          <div class="relative">
-            <input type="checkbox" class="sr-only" ${cat.show_in_input ? 'checked' : ''}
-              onchange="updateDietCatField(${cat.id},'show_in_input',this.checked?1:0)">
-            <div class="toggle-track w-8 h-4 rounded-full transition" style="background:${cat.show_in_input?'#0ea5e9':'#d1d5db'}"></div>
-            <div class="toggle-thumb absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition" style="transform:${cat.show_in_input?'translateX(16px)':'translateX(0)'}"></div>
-          </div>
-        </label>
-        <!-- 식단가 -->
-        <div class="flex flex-col items-center gap-0.5 flex-shrink-0">
-          <span class="text-xs text-gray-400" style="font-size:9px">식단가(원)</span>
-          <input type="number" value="${cat.target_meal_price||0}" min="0" step="100"
-            class="form-input text-sm py-0.5 text-center" style="width:72px"
-            data-diet-id="${cat.id}" data-field="target_meal_price"
-            onchange="updateDietCatField(${cat.id},'target_meal_price',Number(this.value))">
+          <!-- 월목표 -->
+          <div class="flex flex-col items-center gap-0.5 flex-shrink-0">
+            <span class="text-gray-400" style="font-size:9px">월목표(만원)</span>
+            <input type="number" value="${Math.round((cat.monthly_budget||0)/10000)}" min="0" step="10"
+              class="form-input text-sm py-0.5 text-center" style="width:68px"
+              data-diet-id="${cat.id}" data-field="monthly_budget"
+              onchange="updateDietCatField(${cat.id},'monthly_budget',Number(this.value)*10000)">
+          </div>` : ''}
+          ${type === 'noncovered' ? `
+          <!-- 식단가 포함 여부 -->
+          <label class="flex flex-col items-center gap-0.5 flex-shrink-0 cursor-pointer" title="식단가 계산 분자(식수)에 포함">
+            <span style="font-size:9px;color:${includeInPrice?'#7c3aed':'#9ca3af'}">식단가포함</span>
+            <div class="relative">
+              <input type="checkbox" class="sr-only" ${includeInPrice ? 'checked' : ''}
+                onchange="updateDietCatField(${cat.id},'include_in_meal_price',this.checked?1:0)">
+              <div class="toggle-track w-8 h-4 rounded-full transition" style="background:${includeInPrice?'#7c3aed':'#d1d5db'}"></div>
+              <div class="toggle-thumb absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition" style="transform:${includeInPrice?'translateX(16px)':'translateX(0)'}"></div>
+            </div>
+          </label>` : ''}
+          <!-- 삭제 -->
+          <button onclick="deleteDietCategory(${cat.id})"
+            class="text-red-300 hover:text-red-600 text-sm px-1 py-1 rounded hover:bg-red-50 flex-shrink-0 transition">
+            <i class="fas fa-trash-alt"></i>
+          </button>
         </div>
-        <!-- 목표금액 -->
-        <div class="flex flex-col items-center gap-0.5 flex-shrink-0">
-          <span class="text-xs text-gray-400" style="font-size:9px">월목표(만원)</span>
-          <input type="number" value="${Math.round((cat.monthly_budget||0)/10000)}" min="0" step="10"
-            class="form-input text-sm py-0.5 text-center" style="width:72px"
-            data-diet-id="${cat.id}" data-field="monthly_budget"
-            onchange="updateDietCatField(${cat.id},'monthly_budget',Number(this.value)*10000)">
-        </div>
-        <!-- 삭제 -->
-        <button onclick="deleteDietCategory(${cat.id})"
-          class="text-red-300 hover:text-red-600 text-sm px-1 py-1 rounded hover:bg-red-50 flex-shrink-0 transition">
-          <i class="fas fa-trash-alt"></i>
-        </button>
-      </div>
-    `).join('')}
+        ${type === 'therapy' ? `
+        <!-- 치료식: 환자군 연결 선택 -->
+        <div class="mt-1.5 ml-7 flex items-center gap-2">
+          <span class="text-xs text-gray-400 flex-shrink-0" style="font-size:10px"><i class="fas fa-link mr-0.5 text-green-400"></i>환자군 연결:</span>
+          <select class="form-input text-xs py-0.5 flex-1" style="max-width:160px"
+            onchange="updateDietCatField(${cat.id},'linked_patient_group',this.value||null)">
+            ${patientGroupOptions(linkedGrp)}
+          </select>
+          <span class="text-xs text-gray-400" style="font-size:9px">${linkedGrp ? `→ ${patientGroups.find(p=>(p.patient_group||p.diet_key)===linkedGrp)?.diet_name||linkedGrp} 그룹에 포함` : '미연결 시 독립 표시'}</span>
+        </div>` : ''}
+        ${type === 'patient' ? `
+        <!-- 환자군: 연결된 치료식 표시 -->
+        ${(() => {
+          const therapies = (window._dietCategories||[]).filter(d => d.parent_type==='therapy' && d.is_active && (d.linked_patient_group||d.patient_group)===(cat.patient_group||cat.diet_key))
+          return therapies.length > 0 ? `
+          <div class="mt-1.5 ml-7 flex flex-wrap gap-1 items-center">
+            <span class="text-xs text-blue-400" style="font-size:9px"><i class="fas fa-pills mr-0.5"></i>연결된 치료식:</span>
+            ${therapies.map(t => `<span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs" style="font-size:9px">${t.diet_name}</span>`).join('')}
+          </div>` : `
+          <div class="mt-1.5 ml-7 text-xs text-gray-300" style="font-size:9px"><i class="fas fa-pills mr-0.5"></i>연결된 치료식 없음</div>`
+        })()}` : ''}
+      </div>`
+    }).join('')}
     </div>
   </div>`
 }
@@ -11624,17 +11845,24 @@ function updateDietCatField(id, field, value) {
   cat[field] = value
   // 토글 시각 즉시 반영
   const row = document.getElementById(`dietRow-${id}`)
-  if (row && (field === 'is_active' || field === 'show_in_input')) {
+  if (row && (field === 'is_active' || field === 'show_in_input' || field === 'include_in_meal_price')) {
     const tracks = row.querySelectorAll('.toggle-track')
     const thumbs = row.querySelectorAll('.toggle-thumb')
     const meta = DIET_TYPE_META[cat.parent_type]
     if (field === 'is_active') {
       if (tracks[0]) tracks[0].style.background = value ? meta.color : '#d1d5db'
       if (thumbs[0]) thumbs[0].style.transform = value ? 'translateX(16px)' : 'translateX(0)'
-    } else {
+    } else if (field === 'show_in_input') {
       if (tracks[1]) tracks[1].style.background = value ? '#0ea5e9' : '#d1d5db'
       if (thumbs[1]) thumbs[1].style.transform = value ? 'translateX(16px)' : 'translateX(0)'
+    } else if (field === 'include_in_meal_price') {
+      if (tracks[2]) tracks[2].style.background = value ? '#7c3aed' : '#d1d5db'
+      if (thumbs[2]) thumbs[2].style.transform = value ? 'translateX(16px)' : 'translateX(0)'
     }
+  }
+  // 치료식-환자군 연결 변경 시 환자식 탭 재렌더 (연결된 치료식 표시 갱신)
+  if (field === 'linked_patient_group' && window._currentDietTypeTab === 'therapy') {
+    // 환자식 탭의 연결 치료식 목록은 환자식 탭 전환 시 반영됨
   }
 }
 

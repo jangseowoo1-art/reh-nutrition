@@ -1701,31 +1701,46 @@ adminRouter.get('/diet-category-presets', async (c) => {
   return c.json(rows.results || [])
 })
 
-// diet_category 단건 생성
+// diet_category 단건 생성 (v2 - diet_level, patient_group, include_in_meal_price 포함)
 adminRouter.post('/hospitals/:id/diet-categories', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json() as any
-  const { parent_type, diet_name, diet_key, is_active, show_in_input, sort_order, target_meal_price, monthly_budget } = body
+  const {
+    parent_type, diet_name, diet_key, is_active, show_in_input, sort_order,
+    target_meal_price, monthly_budget,
+    diet_level, patient_group, include_in_meal_price
+  } = body
 
   if (!parent_type || !diet_name?.trim()) return c.json({ error: '대분류와 이름을 입력하세요' }, 400)
 
-  // diet_key 자동 생성 (없으면)
   const key = diet_key?.trim() || `${parent_type}_${Date.now()}`
+  // diet_level 자동 결정 (명시 없으면 parent_type 기반)
+  const level = diet_level || (
+    parent_type === 'patient'    ? 'group' :
+    parent_type === 'therapy'    ? 'therapy' :
+    parent_type === 'noncovered' ? 'noncovered_item' : 'staff_item'
+  )
 
   await c.env.DB.prepare(`
     INSERT INTO diet_categories
-      (hospital_id, parent_type, diet_key, diet_name, is_active, show_in_input, sort_order, target_meal_price, monthly_budget)
-    VALUES (?,?,?,?,?,?,?,?,?)
+      (hospital_id, parent_type, diet_key, diet_name, is_active, show_in_input, sort_order,
+       target_meal_price, monthly_budget, diet_level, patient_group, include_in_meal_price)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(hospital_id, diet_key) DO UPDATE SET
       diet_name = excluded.diet_name,
       parent_type = excluded.parent_type,
       is_active = excluded.is_active,
       show_in_input = excluded.show_in_input,
       sort_order = excluded.sort_order,
+      diet_level = excluded.diet_level,
+      patient_group = excluded.patient_group,
+      include_in_meal_price = excluded.include_in_meal_price,
       updated_at = CURRENT_TIMESTAMP
-  `).bind(id, parent_type, key, diet_name.trim(),
+  `).bind(
+    id, parent_type, key, diet_name.trim(),
     is_active ?? 1, show_in_input ?? 1, sort_order ?? 0,
-    target_meal_price ?? 0, monthly_budget ?? 0
+    target_meal_price ?? 0, monthly_budget ?? 0,
+    level, patient_group ?? null, include_in_meal_price ?? 0
   ).run()
 
   // legacy_field_key 동기화: meal_custom_fields에도 추가
@@ -1746,7 +1761,7 @@ adminRouter.post('/hospitals/:id/diet-categories', async (c) => {
   return c.json(newRow)
 })
 
-// diet_category 수정 (is_active, show_in_input, 식단가, 목표금액, 이름 등)
+// diet_category 수정 (is_active, show_in_input, 식단가, 목표금액, 이름, linked_patient_group 등)
 adminRouter.put('/hospitals/:id/diet-categories/:catId', async (c) => {
   const { id, catId } = c.req.param()
   const body = await c.req.json() as any
@@ -1760,6 +1775,8 @@ adminRouter.put('/hospitals/:id/diet-categories/:catId', async (c) => {
       sort_order       = COALESCE(?, sort_order),
       target_meal_price= COALESCE(?, target_meal_price),
       monthly_budget   = COALESCE(?, monthly_budget),
+      include_in_meal_price = COALESCE(?, include_in_meal_price),
+      linked_patient_group  = CASE WHEN ? IS NOT NULL THEN ? ELSE linked_patient_group END,
       updated_at       = CURRENT_TIMESTAMP
     WHERE id = ? AND hospital_id = ?
   `).bind(
@@ -1770,6 +1787,10 @@ adminRouter.put('/hospitals/:id/diet-categories/:catId', async (c) => {
     body.sort_order ?? null,
     body.target_meal_price ?? null,
     body.monthly_budget ?? null,
+    body.include_in_meal_price ?? null,
+    // linked_patient_group: null 값도 명시적으로 처리
+    'linked_patient_group' in body ? 'set' : null,
+    'linked_patient_group' in body ? (body.linked_patient_group ?? null) : null,
     catId, id
   ).run()
 
@@ -1809,7 +1830,7 @@ adminRouter.delete('/hospitals/:id/diet-categories/:catId', async (c) => {
   return c.json({ success: true })
 })
 
-// diet_categories 순서/일괄 업데이트
+// diet_categories 순서/일괄 업데이트 (v3 - linked_patient_group, include_in_meal_price 지원)
 adminRouter.put('/hospitals/:id/diet-categories', async (c) => {
   const id = c.req.param('id')
   const { categories } = await c.req.json() as { categories: any[] }
@@ -1820,11 +1841,18 @@ adminRouter.put('/hospitals/:id/diet-categories', async (c) => {
       UPDATE diet_categories SET
         sort_order = ?, is_active = ?, show_in_input = ?,
         diet_name = ?, target_meal_price = ?, monthly_budget = ?,
+        include_in_meal_price = ?,
+        diet_level = COALESCE(?, diet_level),
+        patient_group = COALESCE(?, patient_group),
+        linked_patient_group = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND hospital_id = ?
     `).bind(
       cat.sort_order ?? 0, cat.is_active ?? 1, cat.show_in_input ?? 1,
       cat.diet_name, cat.target_meal_price ?? 0, cat.monthly_budget ?? 0,
+      cat.include_in_meal_price ?? 0,
+      cat.diet_level ?? null, cat.patient_group ?? null,
+      cat.linked_patient_group ?? null,
       cat.id, id
     ).run()
 
