@@ -11637,9 +11637,53 @@ async function loadPatientCategories(hospitalId) {
   const isCatFallback = catSettingsResp?.isFallback || false
   const catFallbackYearMonth = catSettingsResp?.fallbackYearMonth || ''
 
+  // ── 카테고리별 목표 설정에는 diet_categories의 patient 타입만 표시 ──
+  // hospital_patient_categories에 비급여/치료식 항목이 섞여 들어간 경우를 방지
+  const patientOnlyDietCats = (dietCats || []).filter(dc => dc.parent_type === 'patient' && dc.is_active)
+
+  // diet_categories patient 항목 → patient_categories 형태로 변환 (예산 설정용)
+  let catsForBudget = []
+  if (patientOnlyDietCats.length > 0) {
+    // diet_categories 기반: category_key = diet_key, category_name = diet_name
+    // category-settings는 patient_category_id 기준이므로 legacyKey로 매핑
+    catsForBudget = patientOnlyDietCats.map(dc => {
+      // hospital_patient_categories에서 같은 이름의 항목 찾기
+      const matched = (cats || []).find(c =>
+        c.category_name === dc.diet_name ||
+        c.category_key === (dc.legacy_field_key || dc.diet_key) ||
+        ('legacy_' + c.category_key) === dc.diet_key
+      )
+      return matched || {
+        id: dc.id,  // fallback: diet_cat id 사용
+        hospital_id: hospitalId,
+        category_name: dc.diet_name,
+        category_key: dc.diet_key,
+        is_active: dc.is_active,
+        sort_order: dc.sort_order || 0,
+        order_code: '',
+        budget_include_keys: null,
+        meals_include_keys: null,
+      }
+    })
+  } else {
+    // diet_categories 없는 경우 기존 patient_categories 사용 (대분류만 필터링)
+    // category_key 기준: 알려진 비급여/치료 키 제외
+    const NON_PATIENT_KEYS = new Set(['other','general','guardian','outpatient','special','staff','night_shift'])
+    catsForBudget = (cats || []).filter(c => {
+      // diet_categories에 noncovered/therapy로 등록된 항목 제외
+      const matchedDiet = (dietCats || []).find(dc =>
+        dc.diet_name === c.category_name ||
+        ('legacy_' + c.category_key) === dc.diet_key
+      )
+      if (matchedDiet && matchedDiet.parent_type !== 'patient') return false
+      return true
+    })
+  }
+
   renderDietCategoryList()
   renderDietPresetChips()
-  renderCategoryBudgetList(window._patientCategories, catSettings, isCatFallback, catFallbackYearMonth)
+  window._budgetCats = catsForBudget  // 예산 설정용 환자군(대분류만) 저장
+  renderCategoryBudgetList(catsForBudget, catSettings, isCatFallback, catFallbackYearMonth)
 }
 
 // ── 식이 분류 관련 상수 ──────────────────────────────────────
@@ -12345,7 +12389,8 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
 }
 
 async function saveCategoryBudgets(hospitalId) {
-  const cats = window._patientCategories || []
+  // _budgetCats 우선 사용 (diet_categories patient 타입만), 없으면 기존 _patientCategories
+  const cats = window._budgetCats || window._patientCategories || []
   if (cats.length === 0) {
     showToast('카테고리를 먼저 저장하세요', 'warning')
     return
