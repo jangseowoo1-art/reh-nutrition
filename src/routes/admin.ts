@@ -1222,6 +1222,81 @@ adminRouter.get('/hospitals/:id/accounts/v2', async (c) => {
   return c.json(accounts.results || [])
 })
 
+// ── 운영진 계정 목록 조회 ─────────────────────────────────────
+adminRouter.get('/hospitals/:id/executive-accounts', async (c) => {
+  const id = c.req.param('id')
+  const accounts = await c.env.DB.prepare(`
+    SELECT u.id, u.username, u.role, u.executive_title, u.nutritionist_name as display_name,
+           u.created_at, u.password_plain
+    FROM users u
+    WHERE u.hospital_id = ? AND u.role = 'executive'
+    ORDER BY u.id
+  `).bind(id).all<any>()
+  return c.json(accounts.results || [])
+})
+
+// ── 운영진 계정 생성 ──────────────────────────────────────────
+adminRouter.post('/hospitals/:id/executive-accounts', async (c) => {
+  const hospitalId = c.req.param('id')
+  const { username, password, displayName, executiveTitle } = await c.req.json()
+  if (!username?.trim() || !password?.trim())
+    return c.json({ error: '아이디와 비밀번호를 입력하세요' }, 400)
+
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM users WHERE username = ?`
+  ).bind(username.trim()).first<any>()
+  if (exists) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
+
+  const hash = await hashPassword(password)
+  await c.env.DB.prepare(`
+    INSERT INTO users (hospital_id, username, password_hash, password_plain, role, nutritionist_name, executive_title)
+    VALUES (?, ?, ?, ?, 'executive', ?, ?)
+  `).bind(hospitalId, username.trim(), hash, password, displayName?.trim()||'', executiveTitle?.trim()||'').run()
+  return c.json({ success: true })
+})
+
+// ── 운영진 계정 수정 ──────────────────────────────────────────
+adminRouter.put('/hospitals/:id/executive-accounts/:uid', async (c) => {
+  const { id: hospitalId, uid } = c.req.param()
+  const { username, password, displayName, executiveTitle } = await c.req.json()
+
+  if (username) {
+    const exists = await c.env.DB.prepare(
+      `SELECT id FROM users WHERE username = ? AND id != ?`
+    ).bind(username.trim(), uid).first<any>()
+    if (exists) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
+    await c.env.DB.prepare(
+      `UPDATE users SET username = ? WHERE id = ? AND hospital_id = ? AND role = 'executive'`
+    ).bind(username.trim(), uid, hospitalId).run()
+  }
+  if (password?.trim()) {
+    const hash = await hashPassword(password)
+    await c.env.DB.prepare(
+      `UPDATE users SET password_hash = ?, password_plain = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(hash, password, uid, hospitalId).run()
+  }
+  if (displayName !== undefined) {
+    await c.env.DB.prepare(
+      `UPDATE users SET nutritionist_name = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(displayName, uid, hospitalId).run()
+  }
+  if (executiveTitle !== undefined) {
+    await c.env.DB.prepare(
+      `UPDATE users SET executive_title = ? WHERE id = ? AND hospital_id = ?`
+    ).bind(executiveTitle, uid, hospitalId).run()
+  }
+  return c.json({ success: true })
+})
+
+// ── 운영진 계정 삭제 ──────────────────────────────────────────
+adminRouter.delete('/hospitals/:id/executive-accounts/:uid', async (c) => {
+  const { id: hospitalId, uid } = c.req.param()
+  await c.env.DB.prepare(
+    `DELETE FROM users WHERE id = ? AND hospital_id = ? AND role = 'executive'`
+  ).bind(uid, hospitalId).run()
+  return c.json({ success: true })
+})
+
 // ── 데일리 이슈 목록 조회 (3일 이내) ──────────────────────────
 adminRouter.get('/daily-issues', async (c) => {
   // 3일 이상 지난 이슈 자동 삭제 (등록일 포함 3일째 자정 기준)

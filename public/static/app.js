@@ -10539,11 +10539,12 @@ async function rollbackClosing(hospitalId, year, month, hospitalName) {
 }
 
 async function openHospitalDetail(hospitalId) {
-  const [hosp, budget, vendorList, accounts] = await Promise.all([
+  const [hosp, budget, vendorList, accounts, execAccounts] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/vendors`),
-    api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
+    api('GET', `/api/admin/hospitals/${hospitalId}/accounts`),
+    api('GET', `/api/admin/hospitals/${hospitalId}/executive-accounts`)
   ])
   if (!hosp) return
 
@@ -10825,18 +10826,46 @@ async function openHospitalDetail(hospitalId) {
 
       <!-- 계정관리 탭 -->
       <div id="hospTab-accounts" class="hidden">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="font-semibold text-gray-700"><i class="fas fa-user-circle text-green-600 mr-1"></i>병원 계정 목록</h3>
-          <button onclick="showAdminAddAccountModal()" class="btn btn-success btn-sm">
-            <i class="fas fa-plus mr-1"></i>계정 추가
-          </button>
+        <!-- 영양사/일반 계정 섹션 -->
+        <div class="mb-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold text-gray-700 flex items-center gap-2">
+              <span class="w-7 h-7 rounded-lg bg-green-100 flex items-center justify-center"><i class="fas fa-user-nurse text-green-600 text-xs"></i></span>
+              영양사 / 일반 계정
+            </h3>
+            <button onclick="showAdminAddAccountModal('hospital')" class="btn btn-success btn-sm">
+              <i class="fas fa-plus mr-1"></i>계정 추가
+            </button>
+          </div>
+          <div id="adminAccountList">
+            ${renderAdminAccountRows((accounts || []).filter(a => a.role !== 'executive'))}
+          </div>
         </div>
-        <div id="adminAccountList">
-          ${renderAdminAccountRows(accounts || [])}
+        <!-- 구분선 -->
+        <div class="border-t border-gray-100 my-4"></div>
+        <!-- 운영진 계정 섹션 -->
+        <div class="mb-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold text-gray-700 flex items-center gap-2">
+              <span class="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center"><i class="fas fa-user-tie text-blue-600 text-xs"></i></span>
+              운영진 계정
+              <span class="text-xs text-gray-400 font-normal bg-gray-100 px-2 py-0.5 rounded-full">읽기 전용 대시보드</span>
+            </h3>
+            <button onclick="showAdminAddAccountModal('executive')" class="btn btn-sm" style="background:#1e40af;color:white">
+              <i class="fas fa-plus mr-1"></i>운영진 추가
+            </button>
+          </div>
+          <div id="adminExecutiveList">
+            ${renderAdminAccountRows(execAccounts || [])}
+          </div>
+          <div class="mt-3 p-3 bg-blue-50 rounded-xl text-xs text-blue-700">
+            <i class="fas fa-shield-alt mr-1"></i>
+            운영진 계정은 <strong>읽기 전용</strong> 대시보드에만 접근합니다. 발주/식수 입력·수정 불가. 예산·식단가·법인카드·지출결의서를 한눈에 확인할 수 있습니다.
+          </div>
         </div>
-        <div class="mt-4 p-3 bg-blue-50 rounded-xl text-xs text-blue-600">
+        <div class="mt-4 p-3 bg-gray-50 rounded-xl text-xs text-gray-500">
           <i class="fas fa-info-circle mr-1"></i>
-          병원 계정은 발주 입력, 식수 관리, 마감 요청 등에 사용됩니다. 관리자 계정은 이 화면에서 관리하지 않습니다.
+          영양사 계정: 발주 입력, 식수 관리, 마감 요청 등 전체 기능 사용 가능
         </div>
       </div>
 
@@ -10971,6 +11000,7 @@ async function openHospitalDetail(hospitalId) {
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 mx-4">
       <h3 class="font-bold text-lg mb-4" id="adminAccountModalTitle">계정 추가</h3>
       <input type="hidden" id="adminAccountId">
+      <input type="hidden" id="adminAccountRole" value="hospital">
       <div class="space-y-3">
         <div>
           <label class="text-sm font-medium text-gray-600">아이디 *</label>
@@ -10986,9 +11016,19 @@ async function openHospitalDetail(hospitalId) {
           </div>
           <p class="text-xs text-gray-400 mt-1" id="adminAccountPwHint"></p>
         </div>
-        <div>
+        <div id="accountNutrNameRow">
           <label class="text-sm font-medium text-gray-600">영양사 이름</label>
           <input type="text" id="adminAccountNutrName" class="form-input mt-1" placeholder="영양사 이름 (선택)">
+        </div>
+        <div id="accountExecFieldsRow" class="hidden">
+          <div class="mb-2">
+            <label class="text-sm font-medium text-gray-600">이름 (표시명)</label>
+            <input type="text" id="adminAccountDisplayName" class="form-input mt-1" placeholder="홍길동">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-600">직책</label>
+            <input type="text" id="adminAccountExecTitle" class="form-input mt-1" placeholder="원장, 이사, 부원장 등">
+          </div>
         </div>
       </div>
       <!-- 생성 완료 후 표시 영역 -->
@@ -11085,15 +11125,13 @@ window.syncVendorBudgetTotal = function(force = false) {
 // 계정 목록 행 렌더
 function renderAdminAccountRows(accounts) {
   if (!accounts || accounts.length === 0) {
-    return `<div class="text-center py-10 text-gray-400">
-      <i class="fas fa-user-circle text-4xl mb-3 block text-gray-300"></i>
+    return `<div class="text-center py-8 text-gray-400">
+      <i class="fas fa-user-circle text-3xl mb-2 block text-gray-300"></i>
       <p class="text-sm">등록된 계정이 없습니다</p>
-      <p class="text-xs mt-1">계정 추가 버튼을 눌러 계정을 등록하세요</p>
     </div>`
   }
   return `<div class="divide-y divide-gray-50">
     ${accounts.map(a => {
-      // 실시간 접속 상태: last_active가 3분 이내면 온라인
       const lastActive = a.last_active ? new Date(a.last_active) : null
       const isOnline = lastActive && (Date.now() - lastActive.getTime()) < 3 * 60 * 1000
       const lastPage = a.current_page || ''
@@ -11101,25 +11139,30 @@ function renderAdminAccountRows(accounts) {
       const lastActiveStr = lastActive ? lastActive.toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit'}) : '-'
       const pwDisplay = a.password_plain || null
       const pwId = `pw-disp-${a.id}`
+      const isExec = a.role === 'executive'
+      const roleBadge = isExec
+        ? `<span class="badge text-xs px-2 py-0.5 rounded-full font-semibold" style="background:#dbeafe;color:#1e40af"><i class="fas fa-user-tie mr-1"></i>운영진</span>`
+        : `<span class="badge text-xs px-2 py-0.5 rounded-full font-semibold" style="background:#dcfce7;color:#166534"><i class="fas fa-user-nurse mr-1"></i>영양사</span>`
+      const titleDisplay = a.executive_title ? `<span class="text-xs text-blue-600 font-medium">${a.executive_title}</span>` : ''
       return `
       <div class="flex items-center gap-3 py-3 hover:bg-gray-50 px-2 rounded-lg">
-        <div class="w-9 h-9 rounded-full ${isOnline ? 'bg-green-100' : 'bg-gray-100'} flex items-center justify-center flex-shrink-0 relative">
-          <i class="fas fa-user ${isOnline ? 'text-green-600' : 'text-gray-400'} text-sm"></i>
-          <!-- 온라인 인디케이터 -->
-          <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${isOnline ? 'bg-green-500' : 'bg-gray-300'}"></span>
+        <div class="w-9 h-9 rounded-full ${isOnline ? (isExec?'bg-blue-100':'bg-green-100') : 'bg-gray-100'} flex items-center justify-center flex-shrink-0 relative">
+          <i class="fas ${isExec?'fa-user-tie':'fa-user'} ${isOnline ? (isExec?'text-blue-600':'text-green-600') : 'text-gray-400'} text-sm"></i>
+          <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${isOnline ? (isExec?'bg-blue-500':'bg-green-500') : 'bg-gray-300'}"></span>
         </div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 flex-wrap">
             <span class="font-medium text-sm">${a.username}</span>
+            ${roleBadge}
             ${isOnline
-              ? `<span class="text-xs font-semibold text-green-600 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-full">● 접속중</span>`
+              ? `<span class="text-xs font-semibold ${isExec?'text-blue-600 bg-blue-50 border border-blue-200':'text-green-600 bg-green-50 border border-green-200'} px-1.5 py-0.5 rounded-full">● 접속중</span>`
               : `<span class="text-xs text-gray-400">마지막 ${lastActiveStr}</span>`
             }
           </div>
           ${a.nutritionist_name ? `<div class="text-xs text-blue-600 font-medium"><i class="fas fa-user-nurse mr-1"></i>${a.nutritionist_name}</div>` : ''}
+          ${titleDisplay}
           ${isOnline && lastAction ? `<div class="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded inline-block mt-0.5"><i class="fas fa-pencil-alt mr-0.5"></i>편집 중: ${lastAction}</div>` : ''}
-          ${isOnline && !lastAction && lastPage ? `<div class="text-xs text-green-500"><i class="fas fa-eye mr-1"></i>${lastPage}</div>` : ''}
-          <!-- 비밀번호 표시 영역 -->
+          ${isOnline && !lastAction && lastPage ? `<div class="text-xs ${isExec?'text-blue-500':'text-green-500'}"><i class="fas fa-eye mr-1"></i>${lastPage}</div>` : ''}
           <div class="flex items-center gap-1.5 mt-0.5">
             <span class="text-xs text-gray-400">PW:</span>
             <span id="${pwId}" class="text-xs font-mono text-gray-300 select-all">••••••</span>
@@ -11132,7 +11175,7 @@ function renderAdminAccountRows(accounts) {
           <div class="text-xs text-gray-400">생성일: ${a.created_at?.split('T')[0] || '-'}</div>
         </div>
         <div class="flex gap-1">
-          <button onclick="editAdminAccount(${a.id}, '${a.username}', '${(a.nutritionist_name||'').replace(/'/g, "\\'")}')"
+          <button onclick="editAdminAccount(${a.id}, '${a.username}', '${(a.nutritionist_name||'').replace(/'/g, "\\'")}', '${a.role||'hospital'}', '${(a.executive_title||'').replace(/'/g, "\\'")}')"
             class="btn btn-secondary btn-sm px-2" title="계정 수정">
             <i class="fas fa-key text-xs"></i>
           </button>
@@ -11349,9 +11392,11 @@ function togglePwVisibility() {
   }
 }
 
-function showAdminAddAccountModal() {
-  document.getElementById('adminAccountModalTitle').textContent = '계정 추가'
+function showAdminAddAccountModal(roleType) {
+  const isExec = (roleType === 'executive')
+  document.getElementById('adminAccountModalTitle').textContent = isExec ? '운영진 계정 추가' : '계정 추가'
   document.getElementById('adminAccountId').value = ''
+  document.getElementById('adminAccountRole').value = roleType || 'hospital'
   document.getElementById('adminAccountUsername').value = ''
   document.getElementById('adminAccountUsername').disabled = false
   document.getElementById('adminAccountPassword').value = ''
@@ -11361,16 +11406,25 @@ function showAdminAddAccountModal() {
   document.getElementById('adminAccountPwHint').textContent = ''
   document.getElementById('adminAccountNutrName').value = ''
   document.getElementById('adminAccountNutrName').disabled = false
+  // 운영진 전용 필드 표시/숨김
+  document.getElementById('accountNutrNameRow').classList.toggle('hidden', isExec)
+  document.getElementById('accountExecFieldsRow').classList.toggle('hidden', !isExec)
+  if (isExec) {
+    document.getElementById('adminAccountDisplayName').value = ''
+    document.getElementById('adminAccountExecTitle').value = ''
+  }
   document.getElementById('accountCreatedResult').classList.add('hidden')
   document.getElementById('accountModalBtns').innerHTML = `
-    <button onclick="saveAdminAccount()" class="btn btn-primary flex-1">저장</button>
+    <button onclick="saveAdminAccount()" class="btn btn-primary flex-1" style="${isExec?'background:#1e40af':''}">${isExec?'운영진 추가':'저장'}</button>
     <button onclick="document.getElementById('adminAccountModal').classList.add('hidden'); document.getElementById('accountCreatedResult').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>`
   document.getElementById('adminAccountModal').classList.remove('hidden')
 }
 
-function editAdminAccount(id, username, nutriName) {
-  document.getElementById('adminAccountModalTitle').textContent = '계정 수정'
+function editAdminAccount(id, username, nutriName, role, execTitle) {
+  const isExec = (role === 'executive')
+  document.getElementById('adminAccountModalTitle').textContent = isExec ? '운영진 계정 수정' : '계정 수정'
   document.getElementById('adminAccountId').value = id
+  document.getElementById('adminAccountRole').value = role || 'hospital'
   document.getElementById('adminAccountUsername').value = username
   document.getElementById('adminAccountUsername').disabled = true
   document.getElementById('adminAccountPassword').value = ''
@@ -11378,12 +11432,20 @@ function editAdminAccount(id, username, nutriName) {
   document.getElementById('pwEyeIcon').className = 'fas fa-eye'
   document.getElementById('adminAccountPwLabel').textContent = '새 비밀번호 (변경 시에만 입력)'
   document.getElementById('adminAccountPwHint').textContent = '비워두면 기존 비밀번호 유지'
-  document.getElementById('adminAccountNutrName').value = nutriName || ''  // ← 현재 영양사 이름 표시
-  document.getElementById('adminAccountNutrName').disabled = false  // ← 영양사 이름 수정 가능
-  document.getElementById('adminAccountNutrName').placeholder = '영양사 이름 변경 (선택)'
+  // 운영진 전용 필드 표시/숨김
+  document.getElementById('accountNutrNameRow').classList.toggle('hidden', isExec)
+  document.getElementById('accountExecFieldsRow').classList.toggle('hidden', !isExec)
+  if (isExec) {
+    document.getElementById('adminAccountDisplayName').value = nutriName || ''
+    document.getElementById('adminAccountExecTitle').value = execTitle || ''
+  } else {
+    document.getElementById('adminAccountNutrName').value = nutriName || ''
+    document.getElementById('adminAccountNutrName').disabled = false
+    document.getElementById('adminAccountNutrName').placeholder = '영양사 이름 변경 (선택)'
+  }
   document.getElementById('accountCreatedResult').classList.add('hidden')
   document.getElementById('accountModalBtns').innerHTML = `
-    <button onclick="saveAdminAccount()" class="btn btn-primary flex-1">변경</button>
+    <button onclick="saveAdminAccount()" class="btn btn-primary flex-1" style="${isExec?'background:#1e40af':''}">${isExec?'운영진 수정':'변경'}</button>
     <button onclick="document.getElementById('adminAccountModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>`
   document.getElementById('adminAccountModal').classList.remove('hidden')
 }
@@ -11392,12 +11454,15 @@ async function saveAdminAccount() {
   const hospitalId = window._adminHospitalId
   if (!hospitalId) return
   const aid = document.getElementById('adminAccountId').value
+  const role = document.getElementById('adminAccountRole')?.value || 'hospital'
+  const isExec = (role === 'executive')
   const username = document.getElementById('adminAccountUsername').value.trim()
   const password = document.getElementById('adminAccountPassword').value
-  const nutritionistName = document.getElementById('adminAccountNutrName')?.value?.trim() || ''
+  const nutritionistName = isExec ? '' : (document.getElementById('adminAccountNutrName')?.value?.trim() || '')
+  const displayName = isExec ? (document.getElementById('adminAccountDisplayName')?.value?.trim() || '') : ''
+  const executiveTitle = isExec ? (document.getElementById('adminAccountExecTitle')?.value?.trim() || '') : ''
 
   if (!username) { showToast('아이디를 입력하세요', 'error'); return }
-  // 신규 계정은 비밀번호 필수, 수정 시 비밀번호는 선택
   if (!aid) {
     if (!password) { showToast('비밀번호를 입력하세요', 'error'); return }
     if (password.length < 4) { showToast('비밀번호는 4자 이상 입력하세요', 'error'); return }
@@ -11405,36 +11470,46 @@ async function saveAdminAccount() {
     if (password && password.length < 4) { showToast('비밀번호는 4자 이상 입력하세요', 'error'); return }
   }
 
-  const body = aid
-    ? { nutritionistName, ...(password ? { password } : {}) }
-    : { username, password, nutritionistName }
-  const res = aid
-    ? await api('PUT', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`, body)
-    : await api('POST', `/api/admin/hospitals/${hospitalId}/accounts`, body)
+  let res
+  if (isExec) {
+    const body = aid
+      ? { displayName, executiveTitle, ...(password ? { password } : {}) }
+      : { username, password, displayName, executiveTitle }
+    res = aid
+      ? await api('PUT', `/api/admin/hospitals/${hospitalId}/executive-accounts/${aid}`, body)
+      : await api('POST', `/api/admin/hospitals/${hospitalId}/executive-accounts`, body)
+  } else {
+    const body = aid
+      ? { nutritionistName, ...(password ? { password } : {}) }
+      : { username, password, nutritionistName }
+    res = aid
+      ? await api('PUT', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`, body)
+      : await api('POST', `/api/admin/hospitals/${hospitalId}/accounts`, body)
+  }
 
   if (res?.success) {
     if (!aid) {
-      // 신규 계정 생성 - 모달에 결과 표시 (비밀번호 확인 위해)
-      document.getElementById('createdUsername').textContent = res.username || username
-      document.getElementById('createdPassword').textContent = res.password || password
+      document.getElementById('createdUsername').textContent = username
+      document.getElementById('createdPassword').textContent = password
       const nutrRow = document.getElementById('createdNutrRow')
-      if (nutrRow) nutrRow.style.display = res.nutritionistName ? '' : 'none'
-      if (document.getElementById('createdNutrName')) document.getElementById('createdNutrName').textContent = res.nutritionistName || ''
+      if (nutrRow) nutrRow.style.display = (isExec ? displayName : nutritionistName) ? '' : 'none'
+      if (document.getElementById('createdNutrName')) document.getElementById('createdNutrName').textContent = isExec ? (displayName+(executiveTitle?` (${executiveTitle})`:'')) : nutritionistName
       document.getElementById('accountCreatedResult').classList.remove('hidden')
-      // 폼 비활성화
       document.getElementById('adminAccountUsername').disabled = true
       document.getElementById('adminAccountPassword').disabled = true
       if (document.getElementById('adminAccountNutrName')) document.getElementById('adminAccountNutrName').disabled = true
       document.getElementById('accountModalBtns').innerHTML = `
         <button onclick="document.getElementById('adminAccountModal').classList.add('hidden'); document.getElementById('accountCreatedResult').classList.add('hidden')" class="btn btn-primary flex-1">확인 후 닫기</button>`
-      showToast('계정이 생성되었습니다', 'success')
+      showToast(isExec ? '운영진 계정이 생성되었습니다' : '계정이 생성되었습니다', 'success')
     } else {
-      // 비밀번호 변경 - 바로 닫기
       document.getElementById('adminAccountModal').classList.add('hidden')
-      showToast('비밀번호가 변경되었습니다', 'success')
+      showToast(isExec ? '운영진 정보가 수정되었습니다' : '계정이 수정되었습니다', 'success')
     }
-    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
-    document.getElementById('adminAccountList').innerHTML = renderAdminAccountRows(updated || [])
+    // 목록 새로고침
+    const allAccounts = await api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
+    document.getElementById('adminAccountList').innerHTML = renderAdminAccountRows((allAccounts || []).filter(a => a.role !== 'executive'))
+    const execAccounts = await api('GET', `/api/admin/hospitals/${hospitalId}/executive-accounts`)
+    document.getElementById('adminExecutiveList').innerHTML = renderAdminAccountRows(execAccounts || [])
   } else if (res?.error) {
     showToast(res.error, 'error')
   } else {
@@ -11446,11 +11521,18 @@ async function deleteAdminAccount(aid, username) {
   const hospitalId = window._adminHospitalId
   if (!hospitalId) return
   if (!confirm(`"${username}" 계정을 삭제하시겠습니까?`)) return
-  const res = await api('DELETE', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`)
+  // 어떤 role인지 판단 (rows에서 data-role 활용 또는 계정 목록 검색)
+  // 간단히 두 API 모두 시도 후 성공한 것 처리
+  let res = await api('DELETE', `/api/admin/hospitals/${hospitalId}/accounts/${aid}`)
+  if (!res?.success) {
+    res = await api('DELETE', `/api/admin/hospitals/${hospitalId}/executive-accounts/${aid}`)
+  }
   if (res?.success) {
     showToast('계정이 삭제되었습니다', 'success')
-    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
-    document.getElementById('adminAccountList').innerHTML = renderAdminAccountRows(updated || [])
+    const allAccounts = await api('GET', `/api/admin/hospitals/${hospitalId}/accounts`)
+    document.getElementById('adminAccountList').innerHTML = renderAdminAccountRows((allAccounts || []).filter(a => a.role !== 'executive'))
+    const execAccounts = await api('GET', `/api/admin/hospitals/${hospitalId}/executive-accounts`)
+    document.getElementById('adminExecutiveList').innerHTML = renderAdminAccountRows(execAccounts || [])
   } else {
     showToast('삭제 실패', 'error')
   }

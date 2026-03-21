@@ -14,6 +14,7 @@ import adminRoute from './routes/admin'
 import cardExpensesRoute from './routes/card_expenses'
 import ceoDashboardRoute from './routes/ceo-dashboard'
 import transactionRoute from './routes/transaction'
+import executiveRoute from './routes/executive'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -51,6 +52,7 @@ app.route('/api/schedule', scheduleRoute)
 app.route('/api/card-expenses', cardExpensesRoute)
 app.route('/api/ceo-dashboard', ceoDashboardRoute)
 app.route('/api/transaction', transactionRoute)
+app.route('/api/executive', executiveRoute)
 
 // ── 관리자 전용 API ───────────────────────────────────────────────
 app.use('/api/admin/*', async (c, next) => {
@@ -77,6 +79,7 @@ app.get('/ceo-dashboard', (c) => { c.header('Cache-Control','no-store'); return 
 app.get('/expense-doc', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 app.get('/ingredient-prices', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 app.get('/transaction-analysis', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
+app.get('/executive', (c) => { c.header('Cache-Control','no-store'); return c.html(getExecutiveShell()) })
 
 // ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
 app.notFound((c) => c.json({ error: 'Not Found' }, 404))
@@ -206,7 +209,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     localStorage.setItem('role', data.role)
     localStorage.setItem('hospitalName', data.hospitalName || '')
     localStorage.setItem('username', data.username)
-    window.location.href = data.role === 'admin' ? '/admin' : '/dashboard'
+    window.location.href = data.role === 'admin' ? '/admin' : data.role === 'executive' ? '/executive' : '/dashboard'
   } catch(err) {
     errEl.textContent = '서버 연결 오류'
     errEl.classList.remove('hidden')
@@ -335,6 +338,95 @@ function getAppShell(): string {
 </nav>
 
 <script src="/static/app.js?v=20260321d"></script>
+</body>
+</html>`
+}
+
+// ── 운영진 전용 페이지 Shell ─────────────────────────────────────
+function getExecutiveShell(): string {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>운영 현황 대시보드</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { background: #f0f4f8; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif; }
+  .exec-card { background: white; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .kpi-card { background: white; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); transition: transform 0.2s; }
+  .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+  .gradient-blue { background: linear-gradient(135deg, #1e40af, #3b82f6); }
+  .gradient-green { background: linear-gradient(135deg, #166534, #16a34a); }
+  .gradient-amber { background: linear-gradient(135deg, #92400e, #d97706); }
+  .gradient-purple { background: linear-gradient(135deg, #581c87, #9333ea); }
+  .gradient-red { background: linear-gradient(135deg, #991b1b, #ef4444); }
+  .progress-bar { height: 8px; border-radius: 4px; background: #e5e7eb; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 4px; transition: width 0.8s ease; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+  .tab-active { border-bottom: 3px solid #1e40af; color: #1e40af; font-weight: 700; }
+  .loading-spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 768px) {
+    .hide-mobile { display: none !important; }
+    .grid-mobile-1 { grid-template-columns: 1fr !important; }
+  }
+</style>
+</head>
+<body>
+<!-- 헤더 -->
+<header style="background:linear-gradient(135deg,#1a4731,#15803d)" class="sticky top-0 z-50 shadow-lg">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
+        <i class="fas fa-chart-line text-white"></i>
+      </div>
+      <div>
+        <div id="execHospName" class="text-white font-bold text-base leading-tight">운영 현황</div>
+        <div id="execPeriodLabel" class="text-green-200 text-xs">로딩 중...</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <!-- 월 선택 -->
+      <div class="flex items-center gap-1 bg-white/10 rounded-xl px-3 py-1.5">
+        <button onclick="execChangeMonth(-1)" class="text-white/70 hover:text-white transition px-1">
+          <i class="fas fa-chevron-left text-xs"></i>
+        </button>
+        <span id="execMonthDisplay" class="text-white text-sm font-semibold min-w-[70px] text-center"></span>
+        <button onclick="execChangeMonth(1)" class="text-white/70 hover:text-white transition px-1">
+          <i class="fas fa-chevron-right text-xs"></i>
+        </button>
+      </div>
+      <!-- 새로고침 -->
+      <button onclick="loadExecData()" class="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition" title="새로고침">
+        <i class="fas fa-sync-alt text-sm" id="execRefreshIcon"></i>
+      </button>
+      <!-- 로그아웃 -->
+      <button onclick="execLogout()" class="w-9 h-9 rounded-xl bg-white/10 hover:bg-red-500/40 flex items-center justify-center text-white transition" title="로그아웃">
+        <i class="fas fa-sign-out-alt text-sm"></i>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- 메인 콘텐츠 -->
+<main class="max-w-7xl mx-auto px-4 py-6" id="execMain">
+  <!-- 로딩 -->
+  <div id="execLoading" class="flex items-center justify-center py-20">
+    <div class="text-center">
+      <i class="fas fa-circle-notch text-4xl text-green-600 loading-spin mb-3 block"></i>
+      <p class="text-gray-500">데이터 불러오는 중...</p>
+    </div>
+  </div>
+  <!-- 콘텐츠 영역 -->
+  <div id="execContent" class="hidden space-y-6"></div>
+</main>
+
+<script src="/static/executive.js?v=20260321"></script>
 </body>
 </html>`
 }
