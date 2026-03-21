@@ -5950,10 +5950,10 @@ function renderMealsContent(content, mealData, customFields, patientCats) {
   // 총 식수: 비급여 제외, ea 커스텀 필드 제외, 환자 제외(환자군으로 대체)
   const grandTotal = monthTotal.s + monthTotal.g + customTotalForMeals
 
-  // 헤더 서브컬럼 생성: 직원/비급/보호 + 환자군(커스텀필드)들 + 합
+  // 헤더 서브컬럼 생성: 환자군(커스텀필드)들 + 직원/비급/보호 + 합 (커스텀이 앞에)
   const baseLabels = ['직원','비급','보호']
   const customLabels = customFields.map(f => f.field_name)
-  const allLabels = [...baseLabels, ...customLabels]
+  const allLabels = [...customLabels, ...baseLabels]
   const colCount = allLabels.length + 1  // +1 = 소계
 
   // ── 마감 완료 달 읽기전용 처리 ──
@@ -5999,7 +5999,7 @@ function renderMealsContent(content, mealData, customFields, patientCats) {
               return allLabels.map((label, li) => {
                 const isFirst = li===0
                 const isLast = li===allLabels.length-1
-                const isCustom = li >= 3  // 직원(0)/비급(1)/보호(2) 이후부터 환자군 커스텀
+                const isCustom = li < customLabels.length  // 앞쪽이 커스텀, 뒤쪽이 기본(직원/비급/보호)
                 const bg = isTot ? 'background:#0f2942;' : isCustom ? 'background:#1a2f4a;' : ''
                 const bl = isFirst ? `border-left:3px solid ${border};` : 'border-left:1px solid rgba(255,255,255,0.15);'
                 const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.15)` : ''
@@ -6035,7 +6035,7 @@ function buildMealSummaryCards(monthTotal, customFields, grandTotal) {
     label: f.field_name, val: monthTotal.custom[f.field_key]||0, color:'indigo', id:`mealSummary-${f.field_key}`, unit: f.unit_type||'meal'
   }))
   const totalCard = { label:'총식수', val:grandTotal, color:'gray', id:'mealSummary-total', bold:true, unit:'meal' }
-  return [...baseCards, ...customCards, totalCard].map(item => {
+  return [...customCards, ...baseCards, totalCard].map(item => {
     const unitStr = item.unit === 'ea' ? '개' : '식'
     return `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-2 text-center" style="min-width:72px">
       <div class="text-xs text-gray-500 font-medium mb-0.5">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
@@ -6270,24 +6270,28 @@ function buildMealRow(day, mealMap, customFields, colCount) {
   cells += `<td style="display:none">${makeMealInput('d_p', dateStr, dp)}</td>`
 
   mealSections.forEach(sec => {
-    sec.base.forEach((b, bi) => {
-      const bl = bi===0 ? `border-left:3px solid ${sec.border};` : ''
-      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg}">${makeMealInput(b.k, dateStr, b.v)}</td>`
+    // 커스텀 칸들 먼저 (앞쪽)
+    cVals.forEach((cv, ci) => {
+      const bl = ci===0 ? `border-left:3px solid ${sec.border};` : `border-left:1px solid ${sec.bg};`
+      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg};background:#fafafa">${makeMealInput(`${sec.cPrefix}_c_${cv.key}`, dateStr, cv[sec.cPrefix === 'bf' ? 'bf' : sec.cPrefix === 'l' ? 'l' : 'd'])}</td>`
     })
-    // 커스텀 칸들
-    cVals.forEach(cv => {
-      cells += `<td style="border:1px solid ${sec.bg};background:#fafafa">${makeMealInput(`${sec.cPrefix}_c_${cv.key}`, dateStr, cv[sec.cPrefix === 'bf' ? 'bf' : sec.cPrefix === 'l' ? 'l' : 'd'])}</td>`
+    // 기본 칸들 뒤에 (직원/비급/보호)
+    sec.base.forEach((b, bi) => {
+      const bl = (cVals.length === 0 && bi===0) ? `border-left:3px solid ${sec.border};` : (bi===0 ? `border-left:1px solid ${sec.bg};` : '')
+      cells += `<td style="${bl}border-top:1px solid ${sec.bg};border-bottom:1px solid ${sec.bg};border-right:1px solid ${sec.bg}">${makeMealInput(b.k, dateStr, b.v)}</td>`
     })
     cells += `<td class="font-semibold text-center ${sec.sumBg}" id="${sec.sumId}" style="border-left:1px solid ${sec.bg};border-right:3px solid ${sec.border}">${sec.sum||''}</td>`
   })
 
-  // 합계 열 (환자 열 숨김)
-  cells += `<td class="text-center bg-gray-50" id="t-s-${dateStr}" style="border-left:3px solid #6b7280;border:1px solid #e5e7eb">${tsSum||''}</td>`
+  // 합계 열 - 커스텀 먼저, 기본(직원/비급/보호) 뒤에
+  cVals.forEach((cv, ci) => {
+    const bl = ci===0 ? 'border-left:3px solid #6b7280;' : ''
+    cells += `<td class="text-center bg-indigo-50" id="t-${cv.key}-${dateStr}" style="${bl}border:1px solid #e0e7ff">${(cv.bf+cv.l+cv.d)||''}</td>`
+  })
+  const baseBl = cVals.length===0 ? 'border-left:3px solid #6b7280;' : ''
+  cells += `<td class="text-center bg-gray-50" id="t-s-${dateStr}" style="${baseBl}border:1px solid #e5e7eb">${tsSum||''}</td>`
   cells += `<td class="text-center bg-gray-50" id="t-n-${dateStr}" style="border:1px solid #e5e7eb">${tnSum||''}</td>`
   cells += `<td class="text-center bg-gray-50" id="t-g-${dateStr}" style="border:1px solid #e5e7eb">${tgSum||''}</td>`
-  cVals.forEach(cv => {
-    cells += `<td class="text-center bg-indigo-50" id="t-${cv.key}-${dateStr}" style="border:1px solid #e0e7ff">${(cv.bf+cv.l+cv.d)||''}</td>`
-  })
   cells += `<td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd">${tGrand||''}</td>`
 
   return `<tr class="${rowClass}" data-date="${dateStr}">
@@ -6315,25 +6319,29 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
   const dTotal  = mealData.reduce((s,m)=>s+(m.dinner_staff||0)+(m.dinner_noncovered||0)+(m.dinner_guardian||0),0) + customFields.reduce((s,f)=>s+cD[f.field_key],0)
 
   let cells = `<td colspan="2" class="text-center py-2">월 합계</td>`
+  // 조식: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
+  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-bf-${f.field_key}">${fmt(cBf[f.field_key])}</td>` })
   cells += `<td class="text-center" id="mealFoot-bf-s">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_staff||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-bf-n">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_noncovered||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-bf-g">${fmt(mealData.reduce((s,m)=>s+(m.breakfast_guardian||0),0))}</td>`
-  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-bf-${f.field_key}">${fmt(cBf[f.field_key])}</td>` })
   cells += `<td class="text-center bg-blue-100 font-bold" id="mealFoot-bf-sum">${fmt(bfTotal)}</td>`
+  // 중식: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
+  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-l-${f.field_key}">${fmt(cL[f.field_key])}</td>` })
   cells += `<td class="text-center" id="mealFoot-l-s">${fmt(mealData.reduce((s,m)=>s+(m.lunch_staff||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-l-n">${fmt(mealData.reduce((s,m)=>s+(m.lunch_noncovered||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-l-g">${fmt(mealData.reduce((s,m)=>s+(m.lunch_guardian||0),0))}</td>`
-  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-l-${f.field_key}">${fmt(cL[f.field_key])}</td>` })
   cells += `<td class="text-center bg-green-100 font-bold" id="mealFoot-l-sum">${fmt(lTotal)}</td>`
+  // 석식: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
+  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-d-${f.field_key}">${fmt(cD[f.field_key])}</td>` })
   cells += `<td class="text-center" id="mealFoot-d-s">${fmt(mealData.reduce((s,m)=>s+(m.dinner_staff||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-d-n">${fmt(mealData.reduce((s,m)=>s+(m.dinner_noncovered||0),0))}</td>`
   cells += `<td class="text-center" id="mealFoot-d-g">${fmt(mealData.reduce((s,m)=>s+(m.dinner_guardian||0),0))}</td>`
-  customFields.forEach(f => { cells += `<td class="text-center" id="mealFoot-d-${f.field_key}">${fmt(cD[f.field_key])}</td>` })
   cells += `<td class="text-center bg-purple-100 font-bold" id="mealFoot-d-sum">${fmt(dTotal)}</td>`
+  // 합계: 커스텀 먼저, 기본(직원/비급/보호) 뒤에
+  customFields.forEach(f => { cells += `<td class="text-center bg-indigo-100 font-bold" id="mealFoot-t-${f.field_key}">${fmt(monthTotal.custom[f.field_key]||0)}</td>` })
   cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-s">${fmt(monthTotal.s)}</td>`
   cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-n">${fmt(monthTotal.n)}</td>`
   cells += `<td class="text-center bg-gray-200 font-bold" id="mealFoot-t-g">${fmt(monthTotal.g)}</td>`
-  customFields.forEach(f => { cells += `<td class="text-center bg-indigo-100 font-bold" id="mealFoot-t-${f.field_key}">${fmt(monthTotal.custom[f.field_key]||0)}</td>` })
   cells += `<td class="text-center bg-blue-200 font-bold text-blue-900" id="mealFoot-t-total">${fmt(grandTotal)}</td>`
   return `<tr class="bg-gray-100 font-bold" style="font-size:11px">${cells}</tr>`
 }
