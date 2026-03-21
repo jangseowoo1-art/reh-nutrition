@@ -6055,8 +6055,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         level2Groups.push({
           label: groupLabel,
           count: colCnt,
-          color: '#1d4ed8',
-          bg: '#dbeafe',
+          color: '#93c5fd',
+          bg: '#1e3a8a',
           icon: 'fa-bed',
           type: 'patient_group'
         })
@@ -6064,15 +6064,15 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
     })
     // 비연결 치료식
     if (unlinkedTherapies.length > 0) {
-      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#15803d', bg:'#dcfce7', icon:'fa-pills', type:'therapy' })
+      level2Groups.push({ label:'치료식', count: unlinkedTherapies.length, color:'#86efac', bg:'#14532d', icon:'fa-pills', type:'therapy' })
     }
     // 비급여
     if (noncoveredDefs.length > 0) {
-      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#7e22ce', bg:'#f3e8ff', icon:'fa-hand-holding-usd', type:'noncovered' })
+      level2Groups.push({ label:'비급여식', count: noncoveredDefs.length, color:'#d8b4fe', bg:'#4a044e', icon:'fa-hand-holding-usd', type:'noncovered' })
     }
     // 직원
     if (staffDefs.length > 0) {
-      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#92400e', bg:'#fef3c7', icon:'fa-user-tie', type:'staff' })
+      level2Groups.push({ label:'직원식', count: staffDefs.length, color:'#fcd34d', bg:'#78350f', icon:'fa-user-tie', type:'staff' })
     }
   } else if (useDietGroups === false || !useDietGroups) {
     // dietGroups 없을 때 기본값 처리 (레거시)
@@ -6082,12 +6082,12 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   // ── 마감 완료 달 읽기전용 처리 ──
   const _mealsReadOnly = isReadOnly(App.currentYear, App.currentMonth)
 
-  // 1행 조/중/석/합계 설정 (색상 + 글씨) - 밝은 배경 + 진한 텍스트로 가독성 강화
+  // 1행 조/중/석/합계 설정 - 어두운 테마 + 선명한 색상 차별
   const mealSections = [
-    { label:'조  식', border:'#2563eb', bg:'#dbeafe', textColor:'#1e3a8a' },
-    { label:'중  식', border:'#16a34a', bg:'#dcfce7', textColor:'#14532d' },
-    { label:'석  식', border:'#9333ea', bg:'#f3e8ff', textColor:'#4a044e' },
-    { label:'합  계', border:'#64748b', bg:'#f1f5f9', textColor:'#0f172a' },
+    { label:'조  식', border:'#3b82f6', bg:'#1e40af', textColor:'#e0f2fe' },
+    { label:'중  식', border:'#16a34a', bg:'#14532d', textColor:'#bbf7d0' },
+    { label:'석  식', border:'#a855f7', bg:'#581c87', textColor:'#f3e8ff' },
+    { label:'합  계', border:'#94a3b8', bg:'#0f172a', textColor:'#f1f5f9' },
   ]
 
   content.innerHTML = `
@@ -6115,8 +6115,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         <thead>
           <!-- 1행: 식사 구분 (조식/중식/석식/합계) - 큰 글씨, 진한 색, 명확한 구분 -->
           <tr>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:30px;border:2px solid #94a3b8;background:#f8fafc;color:#374151;font-size:12px;font-weight:700;padding:6px 4px">일</th>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:24px;border:2px solid #94a3b8;background:#f8fafc;color:#374151;font-size:12px;font-weight:700;padding:6px 2px">요</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:30px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 4px">일</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:24px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 2px">요</th>
             ${mealSections.map((s, si) => {
               const span = si < 3 ? colCount : allLabels.length + 1
               return `<th colspan="${span}" style="
@@ -6124,12 +6124,12 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 border-bottom:3px solid ${s.border};
                 background:${s.bg};
                 color:${s.textColor};
-                font-size:15px;
+                font-size:16px;
                 font-weight:900;
                 padding:9px 4px;
-                letter-spacing:3px;
+                letter-spacing:4px;
                 text-align:center;
-                text-shadow:none;
+                text-shadow:0 1px 3px rgba(0,0,0,0.4);
               ">${s.label}</th>`
             }).join('')}
           </tr>
@@ -6146,29 +6146,29 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                   ${bl};
                   border-top:2px solid ${sec.border};
                   border-bottom:2px solid ${sec.border}80;
-                  background:#f8fafc;
+                  background:#111827;
                   color:${g.color};
-                  font-size:11px;
+                  font-size:12px;
                   font-weight:800;
                   white-space:nowrap;
                 "><i class="fas ${g.icon}" style="margin-right:3px;font-size:10px"></i>${g.label}</th>`
               }).join('') + `<th colspan="3" style="
                 padding:5px 3px;
-                border-left:2px solid #cbd5e1;
+                border-left:2px solid rgba(255,255,255,0.2);
                 border-top:2px solid ${sec.border};
                 border-bottom:2px solid ${sec.border}80;
-                background:#f1f5f9;
-                color:#475569;
-                font-size:10px;
+                background:#111827;
+                color:#94a3b8;
+                font-size:11px;
                 font-weight:700;
               ">기본</th>`
               return groupCells + `<th style="
                 border-right:3px solid ${sec.border};
                 border-top:2px solid ${sec.border};
                 border-bottom:2px solid ${sec.border}80;
-                background:#f1f5f9;
+                background:#111827;
                 font-size:9px;
-                color:#64748b;
+                color:#475569;
               "></th>`
             }).join('')}
           </tr>` : ''}
@@ -6184,21 +6184,21 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const fieldObj = isCustom ? effectiveCustomFields[li] : null
                 const isLinkedTherapy = fieldObj?._isLinkedTherapy
                 // 배경: 합계열=짙은 네이비, 연결치료식=짙은 녹색, 일반커스텀=짙은 청색, 기본=어두운 회색
-                // 배경: 합계열=연한 슬레이트, 연결치료식=연한 녹색, 일반커스텀=연한 청색, 기본=흰색
+                // 배경: 합계열=지하 네이비, 연결치료식=진한 녹색, 일반커스텀=진한 청색, 기본=어두운 회색
                 const bg = isTot
-                  ? 'background:#e2e8f0;'
+                  ? 'background:#0f172a;'
                   : isLinkedTherapy
-                    ? 'background:#dcfce7;'
+                    ? 'background:#052e16;'
                     : isCustom
-                      ? 'background:#dbeafe;'
-                      : 'background:#f8fafc;'
-                const bl = isFirst ? `border-left:3px solid ${sec.border};` : 'border-left:1px solid #e2e8f0;'
-                const br = isLast ? `;border-right:1px solid #e2e8f0` : ''
+                      ? 'background:#1e3a5f;'
+                      : 'background:#1e293b;'
+                const bl = isFirst ? `border-left:3px solid ${sec.border};` : 'border-left:1px solid rgba(255,255,255,0.1);'
+                const br = isLast ? `;border-right:1px solid rgba(255,255,255,0.1)` : ''
                 const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
-                // 텍스트 색: 합계=진한 슬레이트, 연결치료식=진한 녹색, 커스텀=진한 파랑, 기본=진한 회색
-                const textColor = isTot ? 'color:#334155;' : isLinkedTherapy ? 'color:#15803d;' : isCustom ? 'color:#1d4ed8;' : 'color:#374151;'
-                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border};border-bottom:2px solid ${sec.border};${br}padding:5px 3px;font-size:11px;font-weight:700;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
-              }).join('') + `<th style="border-left:2px solid #94a3b8;border-right:3px solid ${sec.border};border-top:2px solid ${sec.border};border-bottom:2px solid ${sec.border};padding:5px 3px;background:${isTot?'#cbd5e1':'#bfdbfe'};color:${isTot?'#1e293b':'#1e40af'};font-size:11px;font-weight:800">합</th>`
+                // 텍스트 색: 합계=연한 파랑, 연결치료식=밝은 녹색, 커스텀=연한 하늘색, 기본=낮은 회색
+                const textColor = isTot ? 'color:#c4b5fd;' : isLinkedTherapy ? 'color:#86efac;' : isCustom ? 'color:#93c5fd;' : 'color:#94a3b8;'
+                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};${br}padding:5px 3px;font-size:11px;font-weight:700;white-space:nowrap">${isLinkedTherapy?'↳ ':''}${label}</th>`
+              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.25);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}60;border-bottom:2px solid ${sec.border};padding:5px 3px;background:${isTot?'#0f172a':'#1e3a8a'};color:${isTot?'#a5b4fc':'#93c5fd'};font-size:12px;font-weight:800">합</th>`
             }).join('')}
           </tr>
         </thead>
@@ -10620,8 +10620,21 @@ async function openHospitalDetail(hospitalId) {
     <div class="sticky top-0 bg-white border-b border-gray-100 px-4 py-3 flex items-center justify-between z-10 md:px-6 md:py-4">
       <h2 class="font-bold text-base text-gray-800 truncate md:text-xl"><i class="fas fa-hospital text-green-600 mr-2"></i>${hosp.name}</h2>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <button onclick="saveAllHospitalTabs(${hospitalId})" class="btn btn-primary btn-sm">
-          <i class="fas fa-save mr-1"></i>전체 저장
+        <!-- 탭별 저장 버튼 (탭 전환 시 해당 버튼만 표시) -->
+        <button id="tabSaveBtn-info" onclick="saveHospitalInfo(${hospitalId})" class="btn btn-primary btn-sm">
+          <i class="fas fa-save mr-1"></i>기본정보 저장
+        </button>
+        <button id="tabSaveBtn-categories" onclick="saveDietAndBudgets(${hospitalId})" class="btn btn-primary btn-sm hidden">
+          <i class="fas fa-save mr-1"></i>환자군 저장
+        </button>
+        <button id="tabSaveBtn-vendors" class="btn btn-success btn-sm hidden" onclick="showAdminAddVendorModal()">
+          <i class="fas fa-plus mr-1"></i>업체 추가
+        </button>
+        <button id="tabSaveBtn-budget" onclick="saveHospitalBudget(${hospitalId})" class="btn btn-primary btn-sm hidden">
+          <i class="fas fa-save mr-1"></i>예산 저장
+        </button>
+        <button id="tabSaveBtn-accounts" class="btn btn-success btn-sm hidden" onclick="showAdminAddAccountModal()">
+          <i class="fas fa-plus mr-1"></i>계정 추가
         </button>
         <button onclick="document.getElementById('hospDetailModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100">✕</button>
       </div>
@@ -10646,6 +10659,8 @@ async function openHospitalDetail(hospitalId) {
           <i class="fas fa-user-circle mr-1"></i>계정관리
         </button>
       </div>
+      <!-- 현재 탭 안내 -->
+      <div id="currentTabLabel" class="text-xs text-gray-400 mb-1"><i class="fas fa-circle-dot mr-1"></i>현재: <strong class="text-gray-600">기본정보</strong> 탭 — 우측 상단 버튼으로 저장</div>
 
       <!-- 기본정보 탭 -->
       <div id="hospTab-info">
@@ -10768,11 +10783,6 @@ async function openHospitalDetail(hospitalId) {
             <textarea id="hi-memo" class="form-input" rows="3">${hosp.admin_memo||''}</textarea>
           </div>
         </div>
-        <div class="mt-4 flex justify-end">
-          <button onclick="saveHospitalInfo(${hospitalId})" class="btn btn-primary">
-            <i class="fas fa-save mr-1"></i>기본정보 저장
-          </button>
-        </div>
       </div>
 
       <!-- 예산설정 탭 -->
@@ -10852,9 +10862,7 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>
         <div class="mt-4 flex justify-end">
-          <button onclick="saveHospitalBudget(${hospitalId})" class="btn btn-primary">
-            <i class="fas fa-save mr-1"></i>예산설정 저장
-          </button>
+          <!-- 상단 우측 버튼으로 통합 -->
         </div>
       </div>
 
@@ -10942,12 +10950,7 @@ async function openHospitalDetail(hospitalId) {
         </div>
 
         <div class="mt-4 flex gap-2 justify-end">
-          <button onclick="saveDietCategories(${hospitalId})" class="btn btn-primary">
-            <i class="fas fa-save mr-1"></i>변경사항 저장
-          </button>
-          <button onclick="saveCategoryBudgets(${hospitalId})" class="btn btn-success">
-            <i class="fas fa-won-sign mr-1"></i>목표금액 저장
-          </button>
+          <!-- 상단 우측 버튼으로 통합 (환자군 저장 = saveDietAndBudgets) -->
         </div>
       </div>
 
@@ -11517,18 +11520,35 @@ function switchHospTab(tab) {
   ['info','categories','budget','vendors','accounts'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
+    document.getElementById(`tabSaveBtn-${t}`)?.classList.toggle('hidden', t !== tab)
   })
+  // 현재 탭 안내 라벨 업데이트
+  const tabNames = { info:'기본정보', categories:'환자군 설정', vendors:'업체 관리', budget:'예산 설정', accounts:'계정 관리' }
+  const lbl = document.getElementById('currentTabLabel')
+  if (lbl) lbl.innerHTML = `<i class="fas fa-circle-dot mr-1"></i>현재: <strong class="text-gray-600">${tabNames[tab]||tab}</strong> 탭${ tab==='vendors'||tab==='accounts' ? ' — 우측 버튼으로 추가' : ' — 우측 상단 버튼으로 저장' }`
   // 환자군 탭으로 전환 시 데이터 로드
   if (tab === 'categories' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
   }
-  // #9: 예산 탭으로 전환 시 업체별 합계 자동 계산
+  // 예산 탭으로 전환 시 업체별 합계 자동 계산
   if (tab === 'budget') {
     setTimeout(() => syncVendorBudgetTotal(), 50)
   }
 }
 
-// 전체 탭 한 번에 저장
+// 환자군 탭: 식이분류 + 목표금액 동시 저장
+async function saveDietAndBudgets(hospitalId) {
+  showToast('환자군 설정 저장 중...', 'info')
+  try {
+    await saveDietCategories(hospitalId)
+    await saveCategoryBudgets(hospitalId)
+    showToast('환자군 설정 저장 완료!', 'success')
+  } catch(e) {
+    showToast('저장 중 오류 발생', 'error')
+  }
+}
+
+// 전체 탭 한 번에 저장 (전체저장 제거 대비 레거시 유지)
 async function saveAllHospitalTabs(hospitalId) {
   showToast('전체 저장 중...', 'info')
   const results = []
