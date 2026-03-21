@@ -12756,7 +12756,7 @@ async function renderReport(selectedHospitalId = null) {
   const rptCatDietPrices = summaryData?.catDietPrices || []
   const rptPrevMonth     = summaryData?.prevMonth || {}
   const rptMealCustomFields = summaryData?.mealCustomFields || []
-  const rptMealCustomTotals = summaryData?.mealCustomTotals || {}
+  // rptMealCustomTotals는 위(line 12698)에서 이미 선언됨 (중복 제거)
 
   // 카테고리별 식수 (mealCustomTotals에서 전체 커스텀 필드 추출 - cat_ 키 + diet_ 키 포함)
   const rptCatMeals = rptMealCustomFields
