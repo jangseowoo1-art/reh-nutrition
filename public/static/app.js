@@ -4530,6 +4530,24 @@ async function saveCatOrderInput(input) {
   showAutoSaveIndicator(res?.success ? 'saved' : 'error')
   // 서브행 합계 셀 업데이트
   const dispTotal = totalOverride !== null ? totalOverride : taxable + exempt + vat
+
+  // ── 저장 성공 시 _catDailyMap 즉시 업데이트 (월 누적 실시간 반영) ──
+  if (res?.success) {
+    if (!window._catDailyMap) window._catDailyMap = {}
+    if (!window._catDailyMap[date]) window._catDailyMap[date] = {}
+    if (!window._catDailyMap[date][parseInt(vendorId)]) window._catDailyMap[date][parseInt(vendorId)] = {}
+    const savedTotal = totalOverride !== null ? totalOverride : taxable + exempt + vat
+    window._catDailyMap[date][parseInt(vendorId)][parseInt(categoryId)] = {
+      order_date: date,
+      vendor_id: parseInt(vendorId),
+      patient_category_id: parseInt(categoryId),
+      taxable: totalOverride !== null ? 0 : taxable,
+      exempt: totalOverride !== null ? 0 : exempt,
+      vat: totalOverride !== null ? 0 : vat,
+      total: savedTotal
+    }
+  }
+
   updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat, totalOverride)
   updateCatMonthTotal(categoryId)
 }
@@ -4570,14 +4588,59 @@ function updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat, 
   updateBudgetProgressPanel()
 }
 
-// 카테고리 월 합계 업데이트
+// 카테고리 월 합계 업데이트 (_catDailyMap 기반 - 정확한 월 전체 합산)
 function updateCatMonthTotal(categoryId) {
-  let monthTotal = 0
-  document.querySelectorAll(`.cat-order-input[data-category="${categoryId}"]`).forEach(inp => {
-    monthTotal += parseOrderVal(inp.value)
+  const dailyMap = window._catDailyMap || {}
+  const vendors = window._ordersVendors || []
+  const patientCats = window._patientCats || []
+
+  // _catDailyMap 기반 전체 월 합산
+  let grandMonthTotal = 0
+  const catMonthTotals = {}
+  patientCats.forEach(cat => { catMonthTotals[cat.id] = 0 })
+
+  Object.keys(dailyMap).forEach(dk => {
+    Object.keys(dailyMap[dk]).forEach(vid => {
+      Object.keys(dailyMap[dk][vid]).forEach(cid => {
+        const r = dailyMap[dk][vid][cid] || {}
+        const t = r.total || 0
+        grandMonthTotal += t
+        if (catMonthTotals[cid] !== undefined) catMonthTotals[cid] += t
+        else catMonthTotals[cid] = (catMonthTotals[cid] || 0) + t
+      })
+    })
   })
-  // tfoot 카테고리 셀 업데이트 - 간단한 버전으로 구현
-  // (tfoot은 렌더링 시 catSettingsMap 사용하므로 실시간 업데이트는 refreshOrders 호출로 처리)
+  // 법인카드형 업체 합산
+  ;(vendors || []).filter(v => v.is_card_type).forEach(v => {
+    const cardMap = window._cardDailyMap?.[v.id] || {}
+    Object.values(cardMap).forEach(amt => { grandMonthTotal += amt || 0 })
+  })
+
+  // tfoot 월 합계 셀 업데이트
+  const footMonthEl = document.getElementById('vfoot-month-total')
+  if (footMonthEl) footMonthEl.textContent = grandMonthTotal > 0 ? fmt(grandMonthTotal) : ''
+
+  // tfoot 업체별 합계 셀 업데이트
+  vendors.forEach(v => {
+    const footEl = document.getElementById(`vfoot-amt-${v.id}`)
+    if (!footEl) return
+    let vTotal = 0
+    if (v.is_card_type) {
+      const cardMap = window._cardDailyMap?.[v.id] || {}
+      Object.values(cardMap).forEach(amt => { vTotal += amt || 0 })
+    } else {
+      Object.keys(dailyMap).forEach(dk => {
+        patientCats.forEach(cat => {
+          const r = (dailyMap[dk]?.[v.id]?.[cat.id]) || {}
+          vTotal += r.total || 0
+        })
+      })
+    }
+    footEl.textContent = vTotal > 0 ? fmt(vTotal) : ''
+    // 인접 월누적 표시 td도 업데이트 (vfoot-amt 다음 td)
+    const nextTd = footEl.nextElementSibling
+    if (nextTd) nextTd.textContent = vTotal > 0 ? fmt(vTotal) : ''
+  })
 }
 
 function updateBudgetProgressPanel() {
@@ -5722,7 +5785,7 @@ function updateDayTotal(date) {
     // 카테고리 모드에서도 주별 진행률 실시간 업데이트
     updateWeekPctCell(date)
 
-    // ── 탭 내 업체 월 누적 금액 실시간 업데이트 ──
+    // ── 탭 내 업체 월 누적 금액 실시간 업데이트 (_catDailyMap 기반 - 정확한 월 전체 합산) ──
     patientCats.forEach(cat => {
       const catColor = getCategoryColorHex(cat.category_key)
       const catSettings5 = (window._catSettingsMap || {})[cat.id] || {}
@@ -5733,18 +5796,16 @@ function updateDayTotal(date) {
       vendorsBudget.forEach(v => {
         const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
         if (!accumEl) return
-        // 이 업체×카테고리의 전체 월 누적 합산 (현재 입력값 포함)
+        // _catDailyMap 기반 월 전체 누적 합산 (DB 저장값 기준 - 정확)
         let vCatLiveTotal = 0
         if (v.is_card_type) {
-          // 법인카드형: _cardDailyMap 에서 월 합계
           const vendorCardMap = window._cardDailyMap?.[v.id] || {}
           Object.values(vendorCardMap).forEach(amt => { vCatLiveTotal += amt || 0 })
         } else {
-          document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"]`).forEach(inp2 => {
-            const fld = inp2.dataset.field
-            const val2 = parseOrderVal(inp2.value)
-            if (fld === 'taxable') vCatLiveTotal += val2 + Math.round(val2 * 0.1)
-            else vCatLiveTotal += val2
+          const dailyMap = window._catDailyMap || {}
+          Object.keys(dailyMap).forEach(dk => {
+            const r = (dailyMap[dk]?.[v.id]?.[cat.id]) || {}
+            vCatLiveTotal += r.total || 0
           })
         }
 
