@@ -2240,81 +2240,6 @@ async function renderOrders() {
           ${weekCards}
         </div>
       </div>
-
-      <!-- 법인카드 달성 현황 -->
-      ${(() => {
-        // 법인카드 총 사용액 계산 (_cardDailyMap 기반)
-        let cardMonthUsed = 0
-        if (window._cardDailyMap) {
-          Object.values(window._cardDailyMap).forEach(dateMap => {
-            Object.values(dateMap).forEach(amt => { cardMonthUsed += amt })
-          })
-        }
-        // 법인카드 총 예산: settings.card_budget 우선, 없으면 cardVendors의 monthly_budget 합산
-        const cardVendors = cardData?.cardVendors || cardData?.vendors || []
-        const cardBudgetFromSettings = settings.card_budget || 0
-        const cardBudgetFromVendors = cardVendors.reduce((s, v) => s + (v.monthly_budget || 0), 0)
-        const cardMonthBudget = cardBudgetFromSettings > 0 ? cardBudgetFromSettings : cardBudgetFromVendors
-
-        // 법인카드 업체가 없거나 예산+사용액 모두 0이면 숨김
-        if (cardVendors.length === 0 && cardMonthUsed === 0) return ''
-
-        const cardPct = cardMonthBudget > 0 ? Math.round(cardMonthUsed / cardMonthBudget * 100) : 0
-        const cardOver = cardPct >= 100, cardWarn = cardPct >= 80 && !cardOver
-        const cardBorderColor = cardOver ? '#ef4444' : cardWarn ? '#f59e0b' : '#7c3aed'
-        const cardBg = cardOver ? '#fff1f2' : cardWarn ? '#fffbeb' : '#faf5ff'
-        const cardBarFill = cardOver ? '#dc2626' : cardWarn ? '#f59e0b' : '#7c3aed'
-        const cardBarBg = cardOver ? '#fee2e2' : cardWarn ? '#fef3c7' : '#ede9fe'
-        const cardBadge = cardOver
-          ? `<span style="background:#dc2626;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">🚨초과</span>`
-          : cardWarn
-          ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">⚠️주의</span>`
-          : ''
-
-        // 소분류별 합계 (온라인 / 소모품 / 식재료 / 기타)
-        const subtypeMap = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
-        const subtypeTotals = {}
-        ;(cardData?.expenses || []).forEach(e => {
-          const sub = e.card_subtype || 'other'
-          subtypeTotals[sub] = (subtypeTotals[sub] || 0) + (e.amount || 0)
-        })
-        const subtypeRows = Object.entries(subtypeMap)
-          .filter(([k]) => (subtypeTotals[k] || 0) > 0)
-          .map(([k, label]) => {
-            const amt = subtypeTotals[k] || 0
-            const pct = cardMonthUsed > 0 ? Math.round(amt / cardMonthUsed * 100) : 0
-            return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:9px;margin-bottom:2px">
-              <span style="color:#7c3aed;font-weight:600">${label}</span>
-              <span style="color:#374151;font-weight:700">${fmtWon(amt)}</span>
-              <span style="color:#9ca3af">${pct}%</span>
-            </div>`
-          }).join('')
-
-        return `<div style="border-top:1px solid #e5e7eb;padding-top:10px;margin-top:10px">
-          <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:8px"><i class="fas fa-credit-card" style="color:#7c3aed;margin-right:4px"></i>법인카드 달성 현황</div>
-          <div id="cardProgressCard" style="border-radius:12px;padding:12px 14px;background:${cardBg};border:2px solid ${cardBorderColor}">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-              <span style="font-size:12px;font-weight:700;color:#374151">💳 법인카드 월 사용액</span>
-              ${cardBadge}
-            </div>
-            <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:6px">
-              <span id="cardMonthPct" style="font-size:${cardOver||cardWarn?'26px':'22px'};font-weight:900;line-height:1;color:${cardOver?'#dc2626':cardWarn?'#d97706':'#7c3aed'}">${cardMonthBudget > 0 ? cardPct + '%' : '-'}</span>
-              <div style="text-align:right">
-                <div style="font-size:9px;color:#9ca3af">사용액</div>
-                <div id="cardMonthAmt" style="font-size:12px;font-weight:700;color:#374151">${fmtWon(cardMonthUsed)}</div>
-              </div>
-            </div>
-            <div style="background:${cardBarBg};border-radius:4px;height:6px;overflow:hidden;margin-bottom:4px">
-              <div id="cardMonthBar" style="height:100%;border-radius:4px;background:${cardBarFill};width:${Math.min(cardPct,100)}%;transition:width 0.4s"></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${subtypeRows?'8px':'0'}">
-              <span style="font-size:9px;color:#9ca3af">목표</span>
-              <span style="font-size:11px;font-weight:800;color:#1f2937">${cardMonthBudget > 0 ? fmtWon(cardMonthBudget) : '예산 미설정'}</span>
-            </div>
-            ${subtypeRows ? `<div style="border-top:1px dashed #e5e7eb;padding-top:6px">${subtypeRows}</div>` : ''}
-          </div>
-        </div>`
-      })()}
     </div>`
   })()}
 
@@ -2375,8 +2300,14 @@ async function renderOrders() {
       <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch">
       <div class="flex gap-2 min-w-max text-xs" id="vendorSummaryRow">
         ${vendors.map(v => {
-          const vOrders = (orderData || []).filter(o => o.vendor_id === v.id)
-          const vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
+          // 법인카드 업체: _cardDailyMap에서 월 합계 계산 (orderData에 없음)
+          let vTotal
+          if (v.is_card_type) {
+            vTotal = Object.values(window._cardDailyMap?.[v.id] || {}).reduce((s, a) => s + a, 0)
+          } else {
+            const vOrders = (orderData || []).filter(o => o.vendor_id === v.id)
+            vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
+          }
           const pctNum = v.monthly_budget > 0 ? Math.round(vTotal / v.monthly_budget * 100) : null
           const over = pctNum !== null && pctNum >= 100
           const warn = pctNum !== null && pctNum >= 80 && !over
@@ -5027,9 +4958,13 @@ function updateBudgetProgressPanel() {
   const vendors = window._ordersVendors || []
   const hasCatsForVsum = (window._patientCats || []).length > 0
   vendors.forEach(v => {
-    // DOM에서 해당 업체 입력값 전체 합산 (일반 모드 + 카테고리 모드 모두 지원)
+    // 법인카드 업체: _cardDailyMap에서 월 합계 계산 (DOM 입력값 없음)
     let vMonthTotal = 0
-    if (hasCatsForVsum) {
+    if (v.is_card_type) {
+      if (window._cardDailyMap?.[v.id]) {
+        Object.values(window._cardDailyMap[v.id]).forEach(amt => { vMonthTotal += amt })
+      }
+    } else if (hasCatsForVsum) {
       // 카테고리 모드: cat-order-input으로 업체별 합산
       const seenKeys = new Set()
       document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"]`).forEach(inp => {
@@ -5287,43 +5222,6 @@ function updateBudgetProgressPanel() {
   }
   // 인사이트 패널도 함께 업데이트
   updateInsightPanel()
-
-  // ── 법인카드 달성 현황 카드 실시간 업데이트 ──
-  ;(() => {
-    const cardProgressCard = document.getElementById('cardProgressCard')
-    if (!cardProgressCard) return
-    // 현재 사용액: _cardDailyMap 기반
-    let cardUsed = 0
-    if (window._cardDailyMap) {
-      Object.values(window._cardDailyMap).forEach(dateMap => {
-        Object.values(dateMap).forEach(amt => { cardUsed += amt })
-      })
-    }
-    // 예산: 전역 budget 객체의 card_budget (settingsData에서 로드됨)
-    const cardBgt = (window._ordersBudget?.card_budget) || 0
-    const cPct = cardBgt > 0 ? Math.round(cardUsed / cardBgt * 100) : 0
-    const cOver = cPct >= 100, cWarn = cPct >= 80 && !cOver
-    const cBorderColor = cOver ? '#ef4444' : cWarn ? '#f59e0b' : '#7c3aed'
-    const cBg = cOver ? '#fff1f2' : cWarn ? '#fffbeb' : '#faf5ff'
-    const cBarFill = cOver ? '#dc2626' : cWarn ? '#f59e0b' : '#7c3aed'
-    const cBarBg = cOver ? '#fee2e2' : cWarn ? '#fef3c7' : '#ede9fe'
-    cardProgressCard.style.background = cBg
-    cardProgressCard.style.border = `2px solid ${cBorderColor}`
-    const cPctEl = document.getElementById('cardMonthPct')
-    if (cPctEl) {
-      cPctEl.textContent = cardBgt > 0 ? `${cPct}%` : '-'
-      cPctEl.style.color = cOver ? '#dc2626' : cWarn ? '#d97706' : '#7c3aed'
-      cPctEl.style.fontSize = (cOver || cWarn) ? '26px' : '22px'
-    }
-    const cAmtEl = document.getElementById('cardMonthAmt')
-    if (cAmtEl) cAmtEl.textContent = fmtWon(cardUsed)
-    const cBarEl = document.getElementById('cardMonthBar')
-    if (cBarEl) {
-      cBarEl.style.width = `${Math.min(cPct, 100)}%`
-      cBarEl.style.background = cBarFill
-      if (cBarEl.parentElement) cBarEl.parentElement.style.background = cBarBg
-    }
-  })()
 
   // ── 업체별 버튼 색상 실시간 갱신 ──
   // 날짜별 입력값 합산 후 저장 여부와 무관하게 실제 입력된 값으로 파란/회색 결정
