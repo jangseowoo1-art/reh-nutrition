@@ -2129,11 +2129,13 @@ async function renderOrders() {
       const grandBudget = cats.reduce((s,c) => s+(catBudgetsMap[c.id]||0), 0)
       // 발주 데이터도 없고 예산도 없으면 숨김
       if (grandAmt === 0 && grandBudget === 0) return ''
+      // 환자군 1개이면 점유(A안)는 항상 100%라 의미없으므로 숨김
+      const showProportion = cats.length > 1
       const rows = cats.map(cat => {
         const color = getCategoryColorHex(cat.category_key)
         const amt = catTotalsMap[cat.id] || 0
         const budget = catBudgetsMap[cat.id] || 0
-        // A안: 실적 비율 (전체 발주 중 이 카테고리 비중)
+        // A안: 실적 비율 (전체 발주 중 이 카테고리 비중) - 2개 이상일 때만
         const aPct = grandAmt > 0 ? Math.round(amt/grandAmt*100) : 0
         // B안: 예산 달성률 (카테고리 목표 대비)
         const bPct = budget > 0 ? Math.round(amt/budget*100) : null
@@ -2141,7 +2143,7 @@ async function renderOrders() {
         return `<div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">
           <span style="display:inline-block;background:${color};color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:28px;text-align:center;white-space:nowrap">${cat.category_name}</span>
           <div style="flex:1;display:flex;flex-direction:column;gap:2px">
-            ${grandAmt > 0 ? `<div style="display:flex;align-items:center;gap:3px">
+            ${showProportion && grandAmt > 0 ? `<div style="display:flex;align-items:center;gap:3px">
               <div style="flex:1;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden">
                 <div id="catABar-${periodLabel}-${cat.id}" style="height:100%;width:${aPct}%;background:${color};border-radius:3px;transition:width 0.4s"></div>
               </div>
@@ -2163,9 +2165,12 @@ async function renderOrders() {
           </div>
         </div>`
       }).join('')
+      const sectionTitle = cats.length === 1
+        ? `<i class="fas fa-chart-bar" style="color:#8b5cf6;font-size:8px"></i> ${cats[0].category_name} 달성률`
+        : `<i class="fas fa-chart-bar" style="color:#8b5cf6;font-size:8px"></i> 환자군별 비중·달성률`
       return `<div style="border-top:1px dashed #e5e7eb;margin-top:6px;padding-top:6px">
         <div style="font-size:9px;font-weight:700;color:#6b7280;margin-bottom:5px;display:flex;align-items:center;gap:3px">
-          <i class="fas fa-chart-bar" style="color:#8b5cf6;font-size:8px"></i> 환자군별 비중·달성률
+          ${sectionTitle}
         </div>
         ${rows}
       </div>`
@@ -4736,6 +4741,7 @@ function updateBudgetProgressPanel() {
 
     // 카테고리 바 실시간 업데이트 (A안+B안)
     const catSettingsMap = window._catSettingsMap || {}
+    const _showProportion2 = patientCats.length > 1  // 환자군 2개 이상일때만 점유 표시
     const updateCatBars = (totalsMap, budgetsMap, periodLbl) => {
       patientCats.forEach(cat => {
         const color = getCategoryColorHex(cat.category_key)
@@ -4753,8 +4759,11 @@ function updateBudgetProgressPanel() {
         const bPct = budg > 0 ? Math.round(amt/budg*100) : null
         const bColor = bPct===null?'#9ca3af':bPct>=100?'#dc2626':bPct>=80?'#d97706':color
 
-        if (aBar)   aBar.style.width = aPct + '%'
-        if (aPctEl) aPctEl.textContent = aPct + '%'
+        // 환자군 2개 이상일때만 점유 바 업데이트
+        if (_showProportion2) {
+          if (aBar)   aBar.style.width = aPct + '%'
+          if (aPctEl) aPctEl.textContent = aPct + '%'
+        }
         if (bBar)   { bBar.style.width = Math.min(bPct||0,100) + '%'; bBar.style.background = bColor }
         if (bPctEl) { bPctEl.textContent = (bPct!==null ? bPct+'%' : ''); bPctEl.style.color = bColor }
         if (amtEl)  amtEl.textContent = fmtMan(amt)

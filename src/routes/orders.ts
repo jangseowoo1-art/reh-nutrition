@@ -216,6 +216,7 @@ orders.get('/patient-categories', async (c) => {
 
 // ── 카테고리별 월간 발주 현황 (영양사용) ────────────────────
 orders.get('/category-monthly/:year/:month', async (c) => {
+  try {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
   if (!hospitalId) return c.json({ categories: [], monthly: [], settings: [] })
@@ -369,6 +370,10 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     todayMeals: todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 },
     prevSettings: prevCatSettingsRows.results || []
   })
+  } catch(e: any) {
+    console.error('[category-monthly] ERROR:', e?.message || e)
+    return c.json({ error: e?.message || 'unknown', categories: [], monthly: [], dailyByVendorCat: [], settings: [], todayMeals: null, prevSettings: [] }, 200)
+  }
 })
 
 // ── 카테고리별 일별 발주 조회 ────────────────────────────────
