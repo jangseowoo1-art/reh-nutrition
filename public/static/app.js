@@ -2797,14 +2797,15 @@ async function renderOrders() {
             const total = catRow.total || 0
             const vCols = getVendorCols(v.tax_type, v.is_card_type)
 
-            // 업체 월 누적 (이 카테고리)
+            // 업체 일 누적 (이 카테고리) - dateStr 이하 날짜만 합산
             let vCatMonthAccum = 0
             if (v.is_card_type) {
-              // 법인카드형 업체: _cardDailyMap 에서 해당 업체의 월 합계
+              // 법인카드형 업체: _cardDailyMap 에서 dateStr 이하 날짜 합계
               const vendorCardMap = window._cardDailyMap?.[v.id] || {}
-              Object.values(vendorCardMap).forEach(amt => { vCatMonthAccum += amt || 0 })
+              Object.entries(vendorCardMap).forEach(([dk, amt]) => { if (dk <= dateStr) vCatMonthAccum += amt || 0 })
             } else {
               Object.keys(catDailyMap).forEach(dk => {
+                if (dk > dateStr) return
                 const r2 = (catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
                 vCatMonthAccum += r2.total || 0
               })
@@ -2864,8 +2865,10 @@ async function renderOrders() {
                 </div>`
             }
 
-            // 업체 월 목표: 업체 자체 monthly_budget 사용, 없으면 카테고리 예산 균등 배분
-            const vMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0)
+            // 업체 일 목표: monthly_budget / working_days (업체 자체 목표 우선, 없으면 카테고리 균등 배분)
+            const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0)
+            const vWorkingDays = catSettings2.working_days > 0 ? catSettings2.working_days : 0
+            const vMonthBudget = vWorkingDays > 0 ? Math.round(vRawMonthBudget / vWorkingDays) : 0
             const vMonthPct = vMonthBudget > 0 ? Math.round(vCatMonthAccum / vMonthBudget * 100) : null
             const vMonthOver = vMonthPct!==null&&vMonthPct>=100
             const vMonthWarn = vMonthPct!==null&&vMonthPct>=80&&!vMonthOver
@@ -2880,12 +2883,12 @@ async function renderOrders() {
               ${inputFields}
               <div style="margin-top:6px;padding-top:5px;border-top:1px solid #f3f4f6">
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:2px">
-                  <span>월 누적</span>
+                  <span>일 누적</span>
                   <span id="vcat-month-accum-${v.id}-${cat.id}" style="font-weight:700;color:${vMonthColor}">${vCatMonthAccum>0?fmtMan(vCatMonthAccum):'0'}</span>
                 </div>
                 ${vMonthBudget > 0 ? `
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:3px">
-                  <span>월 목표</span>
+                  <span>일 목표</span>
                   <span style="color:#6b7280">${fmtMan(vMonthBudget)}</span>
                 </div>
                 <div style="height:4px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
@@ -5785,32 +5788,35 @@ function updateDayTotal(date) {
     // 카테고리 모드에서도 주별 진행률 실시간 업데이트
     updateWeekPctCell(date)
 
-    // ── 탭 내 업체 월 누적 금액 실시간 업데이트 (_catDailyMap 기반 - 정확한 월 전체 합산) ──
+    // ── 탭 내 업체 일 누적 금액 실시간 업데이트 (_catDailyMap 기반 - date 이하 날짜 합산) ──
     patientCats.forEach(cat => {
       const catColor = getCategoryColorHex(cat.category_key)
       const catSettings5 = (window._catSettingsMap || {})[cat.id] || {}
       const catMonthBudget5 = catSettings5.monthly_budget || 0
+      const catWorkingDays5 = catSettings5.working_days > 0 ? catSettings5.working_days : 0
       const vendorsBudget = window._ordersVendors || []
       const vCount = vendorsBudget.length || 1
 
       vendorsBudget.forEach(v => {
         const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
         if (!accumEl) return
-        // _catDailyMap 기반 월 전체 누적 합산 (DB 저장값 기준 - 정확)
+        // _catDailyMap 기반 date 이하 날짜 누적 합산 (일 누적)
         let vCatLiveTotal = 0
         if (v.is_card_type) {
           const vendorCardMap = window._cardDailyMap?.[v.id] || {}
-          Object.values(vendorCardMap).forEach(amt => { vCatLiveTotal += amt || 0 })
+          Object.entries(vendorCardMap).forEach(([dk, amt]) => { if (dk <= date) vCatLiveTotal += amt || 0 })
         } else {
           const dailyMap = window._catDailyMap || {}
           Object.keys(dailyMap).forEach(dk => {
+            if (dk > date) return
             const r = (dailyMap[dk]?.[v.id]?.[cat.id]) || {}
             vCatLiveTotal += r.total || 0
           })
         }
 
-        // 업체 자체 monthly_budget 우선, 없으면 카테고리 예산 균등 배분
-        const vMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
+        // 업체 일 목표: (monthly_budget / working_days)
+        const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
+        const vMonthBudget5 = catWorkingDays5 > 0 ? Math.round(vRawMonthBudget5 / catWorkingDays5) : 0
         const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
         const vMonthOver5 = vMonthPct5!==null&&vMonthPct5>=100
         const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
