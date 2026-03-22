@@ -2174,12 +2174,14 @@ async function renderOrders() {
     // 카테고리별 예산 (일별/주별/월별)
     const catMonthBudgets = {}
     const catDailyBudgets = {}
+    // catWeekBudgets는 현재 주 실제 일수 기반 (고정 5일 아님)
     const catWeekBudgets  = {}
+    const curWeekDays = curWeekData ? curWeekData.wDays : 5
     ;(catSettings2||[]).forEach(s => {
       const id = s.patient_category_id
       catMonthBudgets[id] = s.monthly_budget || 0
       catDailyBudgets[id] = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
-      catWeekBudgets[id]  = catDailyBudgets[id] * 5
+      catWeekBudgets[id]  = catDailyBudgets[id] * curWeekDays
     })
 
     // 각 카드에 카테고리 섹션 삽입하기 위해 miniCardWithCats 헬퍼
@@ -2201,9 +2203,16 @@ async function renderOrders() {
           wCatTotals[r.patient_category_id] = (wCatTotals[r.patient_category_id]||0) + (r.total||0)
         }
       })
+      // 각 주차별 카테고리 예산: 해당 주 실제 일수 × 일예산 (고정 5일 아님)
+      const wCatBudgets = {}
+      ;(catSettings2||[]).forEach(s => {
+        const id = s.patient_category_id
+        const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+        wCatBudgets[id] = daily * (w.wDays || 0)
+      })
       // 각 주차별 목표: 해당 주 실제 일수 × 일예산 (고정 5일 아님)
       const thisWeekBudget = w.wBudget || weekBudget
-      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, thisWeekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, wCatTotals, catWeekBudgets, `w${i+1}`)
+      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, thisWeekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, wCatTotals, wCatBudgets, `w${i+1}`)
     }).join('')
 
     return `
@@ -2591,12 +2600,12 @@ async function renderOrders() {
       const isPast = dateStr < todayStr
       const rowClass = dow === '일' ? 'holiday-row' : weekend ? 'weekend-row' : ''
 
-      const dateObj = new Date(dateStr)
-      const thisMon = new Date(dateObj)
-      thisMon.setDate(dateObj.getDate() - (dateObj.getDay()===0 ? 6 : dateObj.getDay()-1))
+      const dateObjL = localDate(dateStr)
+      const thisMon = new Date(dateObjL)
+      thisMon.setDate(dateObjL.getDate() - (dateObjL.getDay()===0 ? 6 : dateObjL.getDay()-1))
       const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate()+6)
-      const weekKey = thisMon.toISOString().split('T')[0]
-      const weekEndKey = thisSun.toISOString().split('T')[0]
+      const weekKey = toDateStr(thisMon)
+      const weekEndKey = toDateStr(thisSun)
 
       // ── 주간 요약 행 ──
       if (!renderedWeeks.has(weekKey)) {
@@ -4753,20 +4762,36 @@ function updateBudgetProgressPanel() {
     }
 
     const catDailyBudgets2 = {}; const catMonthBudgets2 = {}; const catWeekBudgets2 = {}
+    const _curWeekDays2 = window._ordersBudget?.weeklyData?.find(w=>w.isCurWeek)?.wDays || 5
     ;(window._catOrderSettings||[]).forEach(s => {
       const id = s.patient_category_id
       catMonthBudgets2[id] = s.monthly_budget || 0
       catDailyBudgets2[id] = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
-      catWeekBudgets2[id]  = catDailyBudgets2[id] * 5
+      catWeekBudgets2[id]  = catDailyBudgets2[id] * _curWeekDays2
     })
 
     updateCatBars(catTodayAcc,  catDailyBudgets2, 'today')
     updateCatBars(catMonthAcc,  catMonthBudgets2, 'month')
-    // 주차 바 업데이트
+    // 주차 바 업데이트: 각 주차 카드의 실제 일수(data-week-days) 기반으로 카테고리 예산 계산
     document.querySelectorAll('[id^="week"][id$="-card"]').forEach(el => {
       const num = el.id.replace('-card','').replace('week','')
       if (isNaN(num)) return
-      updateCatBars(catWeekAcc, catWeekBudgets2, `w${num}`)
+      // 해당 주차 카드의 실제 일수 읽기
+      const weekPctCell = document.getElementById(`weekPctCell-${el.id.replace('-card','')}`) ||
+        document.querySelector(`[data-week-num="${num}"]`)
+      const wDaysCard = parseInt(weekPctCell?.dataset?.weekDays || 0)
+      if (wDaysCard > 0) {
+        // 이 주차용 카테고리 예산 생성
+        const wCatBudgets2 = {}
+        ;(window._catOrderSettings||[]).forEach(s => {
+          const id = s.patient_category_id
+          const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+          wCatBudgets2[id] = daily * wDaysCard
+        })
+        updateCatBars(catWeekAcc, wCatBudgets2, `w${num}`)
+      } else {
+        updateCatBars(catWeekAcc, catWeekBudgets2, `w${num}`)
+      }
     })
 
   } else {
