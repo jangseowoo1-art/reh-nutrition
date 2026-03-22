@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<script>
+localStorage.setItem('token', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImhvc3BpdGFsSWQiOm51bGwsImhvc3BpdGFsTmFtZSI6bnVsbCwiaG9zcGl0YWxDb2RlIjpudWxsLCJyb2xlIjoiYWRtaW4iLCJ1c2VybmFtZSI6ImFkbWluIiwiZXhwIjoxNzc0NzIxMDM5fQ.Tg80MjK9b5MgOWOSkPY2vh78WsQ4-nfnzjToOp7hDmo');
+localStorage.setItem('role', 'admin');
+localStorage.setItem('username', 'admin');
+localStorage.setItem('hospitalName', '');
+console.log('Admin localStorage set, role:', localStorage.getItem('role'));
+window.onerror = function(msg, src, line, col, err) {
+  console.error('GLOBAL ERROR: ' + msg + ' (line ' + line + ')');
+  return false;
+};
+</script>
+</head>
+<body>
+<p>Admin auto-login, redirecting to /admin...</p>
+<script>
+setTimeout(() => { window.location.href = '/admin'; }, 300);
+</script>
+</body>
+</html>

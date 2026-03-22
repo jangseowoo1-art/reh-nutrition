@@ -5108,8 +5108,12 @@ function updateBudgetProgressPanel() {
         if (hasFormula3 && mealsKeys3.length > 0) {
           if (mealsKeys3.includes('staff')) catMonthMeals += staffMeals3
           if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
-          // noncovered는 항상 제외 (mealsKeys3에 포함되어 있어도 무시)
           mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
+          // 비급여식 식수: nc_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
+          mealsKeys3.filter(k => k.startsWith('nc_key_')).forEach(k => {
+            const dietKey = k.replace('nc_key_', '')
+            catMonthMeals += (orderMealStats[dietKey] || 0)
+          })
         } else {
           catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0)
         }
@@ -5350,6 +5354,11 @@ function updateInsightPanel() {
         if (mealsKeys2.includes('staff')) catMealCount += staffMeals2
         if (mealsKeys2.includes('guardian')) catMealCount += guardianMeals2
         mealsKeys2.filter(k => k.startsWith('cat_')).forEach(k => { catMealCount += (orderMealStats2[k] || 0) })
+        // 비급여식 식수: nc_key_{diet_key} 형식
+        mealsKeys2.filter(k => k.startsWith('nc_key_')).forEach(k => {
+          const dietKey = k.replace('nc_key_', '')
+          catMealCount += (orderMealStats2[dietKey] || 0)
+        })
       } else {
         // formula 없으면 카테고리 key로 식수 직접 조회
         catMealCount = (orderMealStats2[`cat_${cat.category_key}`] || 0)
@@ -10999,8 +11008,12 @@ async function openHospitalDetail(hospitalId) {
           <h4 class="font-semibold text-gray-700 text-sm mb-3">
             <i class="fas fa-bullseye text-green-600 mr-1"></i>
             카테고리별 목표 설정
-            <span class="text-xs font-normal text-gray-400 ml-1">(식단가 · 월 목표금액)</span>
+            <span class="text-xs font-normal text-gray-400 ml-1">(환자식만 · 식단가 · 월 목표금액)</span>
           </h4>
+          <div class="mb-2 px-2 py-1.5 bg-blue-50 rounded-lg text-xs text-blue-600 border border-blue-100">
+            <i class="fas fa-info-circle mr-1"></i>
+            <strong>환자군(환자식)만</strong> 목표 설정 가능 · 치료식·비급여식·직원식은 목표 설정 제외
+          </div>
           <div id="categoryBudgetList" class="space-y-2">
             <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
           </div>
@@ -12016,6 +12029,11 @@ function renderDietCategoryList() {
       <i class="fas fa-info-circle mr-1"></i>
       치료식은 <strong>환자군 연결</strong>을 설정하면 식수 입력 시 해당 환자군 하위에 그룹화됩니다.<br>
       <span class="text-green-600">연결된 치료식 식수는 해당 환자군의 식단가 계산에 자동 합산됩니다.</span>
+    </div>
+    <div class="px-3 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700">
+      <i class="fas fa-exclamation-triangle mr-1 text-amber-500"></i>
+      <strong>치료식은 별도 목표금액 설정 없음</strong> — 항암식·요양식 등 환자군의 대분류(환자식)에 포함되어 계산됩니다.<br>
+      <span class="text-amber-600">예산 목표는 환자군(환자식 탭)에서 설정하세요.</span>
     </div>` : ''}
     <div class="divide-y" style="divide-color:${meta.border}">
     ${items.map((cat, i) => {
@@ -12254,11 +12272,19 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
     const budgetOptions = cats.map(c => ({
       key: c.category_key, label: c.category_name + ' 예산'
     }))
-    // 식수 항목 선택지 구성 (비급여식은 식단가 계산에서 항상 제외 → 선택 불가)
+    // 식수 항목 선택지 구성: 직원식 + 보호자식 + 환자군 식수 + 비급여식 (공기밥추가 제외, 체크된 것만 포함)
+    const noncoveredForMeals = (window._dietCategories || [])
+      .filter(dc => dc.parent_type === 'noncovered' && dc.is_active)
+      .filter(dc => {
+        // 공기밥추가(rice_extra 포함 key) 제외
+        const k = (dc.diet_key || '').toLowerCase()
+        return !k.includes('rice_extra') && !k.includes('rice_add')
+      })
     const mealsOptions = [
       { key: 'staff', label: '직원식' },
       { key: 'guardian', label: '보호자식' },
-      ...cats.map(c => ({ key: `cat_${c.category_key}`, label: c.category_name + ' 식수' }))
+      ...cats.map(c => ({ key: `cat_${c.category_key}`, label: c.category_name + ' 식수' })),
+      ...noncoveredForMeals.map(dc => ({ key: `nc_key_${dc.diet_key}`, label: dc.diet_name + ' (비급여)' }))
     ]
 
     return `
@@ -12302,7 +12328,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             <i class="fas fa-info-circle mr-1"></i>
             <b>계산식:</b> 선택한 예산 합계 ÷ 선택한 식수 합계<br>
             <span class="text-gray-500">체크 없으면 전체 예산/식수 기준</span><br>
-            <span class="text-red-500 font-medium"><i class="fas fa-ban mr-1"></i>비급여 식수는 식단가 계산에서 항상 제외됩니다</span>
+            <span class="text-amber-600 font-medium"><i class="fas fa-info-circle mr-1"></i>비급여식은 항목별 체크로 식수에 포함/제외 설정 가능 (공기밥추가 제외)</span>
           </div>
           <!-- 예산 포함 항목 -->
           <div>

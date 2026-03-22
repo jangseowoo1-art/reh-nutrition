@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Executive Debug</title>
+</head>
+<body>
+<div id="status">자동 로그인 중...</div>
+<script>
+localStorage.setItem('token', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEwLCJob3NwaXRhbElkIjoxLCJob3NwaXRhbE5hbWUiOiLslYTrr7jrgpgg67OR7JuQIiwiaG9zcGl0YWxDb2RlIjoiQU1JTkEiLCJyb2xlIjoiZXhlY3V0aXZlIiwidXNlcm5hbWUiOiJleGVjX3Rlc3QiLCJleHAiOjE3NzQ3MjAzMjN9.F70nGYW_JIzpJQXmkEIdB_HEX0wpzw0082g0VdKyZog')
+localStorage.setItem('role', 'executive')
+localStorage.setItem('username', 'exec_test')
+localStorage.setItem('hospitalName', '아미나 병원')
+document.getElementById('status').textContent = '로그인 완료, /executive로 이동합니다...'
+setTimeout(() => { window.location.href = '/executive' }, 500)
+</script>
+</body>
+</html>

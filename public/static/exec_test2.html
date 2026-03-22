@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<script>
+// localStorage 설정
+localStorage.setItem('token', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEwLCJob3NwaXRhbElkIjoxLCJob3NwaXRhbE5hbWUiOiLslYTrr7jrgpgg67OR7JuQIiwiaG9zcGl0YWxDb2RlIjoiQU1JTkEiLCJyb2xlIjoiZXhlY3V0aXZlIiwidXNlcm5hbWUiOiJleGVjX3Rlc3QiLCJleHAiOjE3NzQ3MjA2NTJ9.QCufoeeqCtXsJfO-DWsPTjMuMEWb_COZZOKH0CSTDJg');
+localStorage.setItem('role', 'executive');
+localStorage.setItem('username', 'exec_test');
+localStorage.setItem('hospitalName', '아미나 병원');
+console.log('localStorage set');
+console.log('token:', localStorage.getItem('token') ? 'EXISTS' : 'MISSING');
+console.log('role:', localStorage.getItem('role'));
+
+// 에러 캐치
+window.onerror = function(msg, src, line, col, err) {
+  document.getElementById('errors').innerHTML += '<p style="color:red">ERROR: '+msg+' at line '+line+'</p>';
+  return false;
+};
+</script>
+</head>
+<body>
+<h2>Redirecting to /executive...</h2>
+<div id="errors"></div>
+<script>
+setTimeout(() => { window.location.href = '/executive'; }, 500);
+</script>
+</body>
+</html>
