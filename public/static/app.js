@@ -1893,10 +1893,7 @@ async function renderOrders() {
   const todayTotal = hasCatsData ? catTodayTotal : normalTodayTotal
   const weekTotal  = hasCatsData ? catWeekTotal  : normalWeekTotal
 
-  // 주간 예산 = 일일예산 × 5일(영업일)
-  const weekBudget = dailyBudget * 5
-
-  // ── 이번 달 주차별 계산 (1주~5주) ──
+  // ── 이번 달 주차별 계산 (1주~6주) ──
   // 날짜 문자열에서 로컬 Date 생성 헬퍼 (UTC 파싱 버그 방지)
   function localDate(dateStr) {
     const [y, m, d2] = dateStr.split('-').map(Number)
@@ -1917,6 +1914,14 @@ async function renderOrders() {
     if (seenWeeks.has(wk)) continue
     seenWeeks.add(wk)
     const wkEnd = toDateStr(sun)
+    // 이 주차에 속하는 해당 월의 실제 일수 계산 (월 경계 처리)
+    let wDays = 0
+    for (let x = 1; x <= days; x++) {
+      const xs = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(x).padStart(2,'0')}`
+      if (xs >= wk && xs <= wkEnd) wDays++
+    }
+    // 주차별 목표: 해당 월 내 실제 일수 × 일 예산 (1주차 1일이면 1일치, 6주차 2일이면 2일치)
+    const wBudget = dailyBudget > 0 ? dailyBudget * wDays : 0
     // 카테고리 모드이면 catDailyData에서 주합계 계산, 아니면 orderData 사용
     let wTotal = 0
     if (hasCatsData) {
@@ -1924,11 +1929,15 @@ async function renderOrders() {
     } else {
       wTotal = (orderData||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
     }
-    const wPct = weekBudget>0?Math.round(wTotal/weekBudget*100):0
+    const wPct = wBudget>0?Math.round(wTotal/wBudget*100):0
     // 이번 주 여부
     const isCurWeek = todayStr>=wk && todayStr<=wkEnd
-    weeklyData.push({ wk, wkEnd, wTotal, wPct, isCurWeek })
+    weeklyData.push({ wk, wkEnd, wTotal, wPct, isCurWeek, wDays, wBudget })
   }
+
+  // 현재 주 예산: 이번 주차의 실제 일수 기반 (todayStr이 속한 주)
+  const curWeekData = weeklyData.find(w => w.isCurWeek)
+  const weekBudget = curWeekData ? curWeekData.wBudget : (dailyBudget * 5)
 
   const monthPct = totalBudget > 0 ? Math.round(monthTotal / totalBudget * 100) : 0
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
@@ -2183,6 +2192,7 @@ async function renderOrders() {
 
     // 주차 카드들 - 각 주차별 catTotals 계산
     const weekCards = weeklyData.map((w,i) => {
+      // 주차 라벨: 해당 월의 실제 일수 표시 (1일짜리 주차 등 구분)
       const lbl = `${i+1}주 (${w.wk.slice(5).replace('-','/')}~${w.wkEnd.slice(5).replace('-','/')})`
       // 각 주차별 카테고리 합계 계산
       const wCatTotals = {}
@@ -2191,7 +2201,9 @@ async function renderOrders() {
           wCatTotals[r.patient_category_id] = (wCatTotals[r.patient_category_id]||0) + (r.total||0)
         }
       })
-      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, weekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, wCatTotals, catWeekBudgets, `w${i+1}`)
+      // 각 주차별 목표: 해당 주 실제 일수 × 일예산 (고정 5일 아님)
+      const thisWeekBudget = w.wBudget || weekBudget
+      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, thisWeekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, wCatTotals, catWeekBudgets, `w${i+1}`)
     }).join('')
 
     return `
@@ -2478,7 +2490,7 @@ async function renderOrders() {
   })
   const weekStartStr = weekStartStr2
   const weekEndStr = weekEndStr2
-  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*5])), workingDays, weeklyData }
+  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*(curWeekData?.wDays||5)])), workingDays, weeklyData }
   window._ordersData = orderData || []
   window._catDailyOrders = catOrderData?.dailyByVendorCat || []
   window._ordersVendors = vendors || []
@@ -2591,6 +2603,14 @@ async function renderOrders() {
         renderedWeeks.add(weekKey)
         weekNumber++
         const hasCatsForWeek = patientCats.length > 0
+        // 해당 주차의 실제 일수 계산 (월 경계 처리: 이번 달 날짜만 카운트)
+        let wDaysInMonth = 0
+        for (let x = 1; x <= days; x++) {
+          const xs = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(x).padStart(2,'0')}`
+          if (xs >= weekKey && xs <= weekEndKey) wDaysInMonth++
+        }
+        // 해당 주차 예산 = 이번 달 내 실제 일수 × 일 예산
+        const thisWeekBudget = dailyBudget > 0 ? dailyBudget * wDaysInMonth : weekBudget
         let wTotal = 0
         if (hasCatsForWeek) {
           Object.entries(catDailyMap).forEach(([dateKey, vMap]) => {
@@ -2603,7 +2623,7 @@ async function renderOrders() {
         } else {
           wTotal = orderData.filter(o=>o.order_date>=weekKey&&o.order_date<=weekEndKey).reduce((s,o)=>s+(o.total_amount||0),0)
         }
-        const wPct = weekBudget>0 ? Math.round(wTotal/weekBudget*100) : null
+        const wPct = thisWeekBudget>0 ? Math.round(wTotal/thisWeekBudget*100) : null
         const wOver = wPct!==null&&wPct>=100; const wWarn = wPct!==null&&wPct>=80&&!wOver
         const isCurrentWeek = todayStr>=weekKey && todayStr<=weekEndKey
         const wColor = wOver?'#dc2626':wWarn?'#d97706':'#166534'
@@ -2644,13 +2664,13 @@ async function renderOrders() {
 
         // colspan 계산: 날짜(1) + 요일(1) + 일수(1) = 3
         rows.push(`<tr class="week-summary-row${isCurrentWeek?' current-week-row':''}" data-week-key="${weekKey}" data-week-num="${weekNumber}" style="background:${wBg};border-top:${wBW} ${wBS} ${wBorderColor};border-bottom:${wBW} ${wBS} ${wBorderColor};">
-          <td colspan="3" class="sticky left-0" id="weekPctCell-${weekKey}" data-week-num="${weekNumber}" data-week-is-current="${isCurrentWeek?'1':'0'}" data-week-label="${wLabel}" data-week-budget="${weekBudget}" style="background:${wBg};padding:3px 5px;min-width:110px;border-right:3px solid ${wBorderColor};">
+          <td colspan="3" class="sticky left-0" id="weekPctCell-${weekKey}" data-week-num="${weekNumber}" data-week-is-current="${isCurrentWeek?'1':'0'}" data-week-label="${wLabel}" data-week-budget="${thisWeekBudget}" data-week-days="${wDaysInMonth}" style="background:${wBg};padding:3px 5px;min-width:110px;border-right:3px solid ${wBorderColor};">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:3px">
               <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNumber}주${isCurrentWeek?'(현재)':''}</div>
               <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct!==null?wPct+'%':'-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
             </div>
-            <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${wLabel}</div>
-            <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
+            <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${wLabel}<span style="color:#9ca3af;margin-left:3px">(${wDaysInMonth}일)</span></div>
+            <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(thisWeekBudget)}</span></div>
             ${wPctBar}
           </td>
           ${weekCatCells}
@@ -5956,7 +5976,9 @@ function updateWeekPctCell(date) {
     })
   }
 
+  // data-week-budget 속성에 해당 주차 실제 일수 기반 예산 저장됨
   const weekBudget = parseInt(weekPctCell.dataset.weekBudget || 0) || budget.weekBudget || 0
+  const wDaysInMonth = parseInt(weekPctCell.dataset.weekDays || 0)
   const wPct = weekBudget > 0 ? Math.round(wTotal / weekBudget * 100) : null
   const wOver = wPct !== null && wPct >= 100
   const wWarn = wPct !== null && wPct >= 80 && !wOver
@@ -5964,7 +5986,7 @@ function updateWeekPctCell(date) {
   const isCurrentWeek = weekPctCell.dataset.weekIsCurrent === '1'
   const weekNum = weekPctCell.dataset.weekNum || ''
   const weekLabel = weekPctCell.dataset.weekLabel || ''
-  const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver ? '#dc2626' : wWarn ? '#d97706' : '#166534')
+  const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver ? '#dc2626' : wWarn ? '#d97706' : '#166634')
   const wPctBar = wPct !== null
     ? `<div style="height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin-top:3px"><div style="height:4px;width:${Math.min(wPct,100)}%;background:${wColor};border-radius:2px"></div></div>`
     : ''
@@ -5973,7 +5995,7 @@ function updateWeekPctCell(date) {
       <div style="display:inline-flex;align-items:center;background:${wBadgeBg};color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;white-space:nowrap">${weekNum}주${isCurrentWeek?'(현재)':''}</div>
       <span style="font-size:${isCurrentWeek?'13px':'12px'};font-weight:800;color:${wColor};white-space:nowrap">${wPct !== null ? wPct + '%' : '-'}${wOver?' 🚨':wWarn?' ⚠️':''}</span>
     </div>
-    <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${weekLabel}</div>
+    <div style="font-size:8px;color:#6b7280;margin-top:1px;white-space:nowrap">${weekLabel}${wDaysInMonth>0?`<span style="color:#9ca3af;margin-left:3px">(${wDaysInMonth}일)</span>`:''}</div>
     <div style="font-size:9px;font-weight:700;color:${wColor};white-space:nowrap">${fmtMan(wTotal)}<span style="color:#9ca3af;font-size:8px;font-weight:400"> /${fmtMan(weekBudget)}</span></div>
     ${wPctBar}
   `

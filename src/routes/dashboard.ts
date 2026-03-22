@@ -151,7 +151,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
   
   // 일/주/월 목표
   const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
-  const weeklyBudget = dailyBudget * 7
+  // 주간 예산: 이번 주에서 해당 월에 속하는 실제 일수 × 일예산 (월 경계 주차 처리)
+  const monthStr = `${year}-${String(parseInt(month)).padStart(2,'0')}`
+  let weekDaysInMonth = 0
+  for (let d = new Date(weekStartStr); d <= new Date(weekEndStr); d.setDate(d.getDate()+1)) {
+    const ds = d.toISOString().split('T')[0]
+    if (ds.startsWith(monthStr)) weekDaysInMonth++
+  }
+  if (weekDaysInMonth === 0) weekDaysInMonth = 7  // fallback
+  const weeklyBudget = dailyBudget * weekDaysInMonth
 
   // 예산 초과 업체
   const overBudgetVendors = (vendors.results || []).filter((v: any) => 
@@ -1162,7 +1170,15 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
       const totalBudget = settings?.total_budget || 0
       const workingDays = settings?.working_days || new Date(parseInt(year), parseInt(month), 0).getDate()
       const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
-      const weekBudget = dailyBudget * 5
+      // 주간 예산: 이번 주에서 해당 월에 속하는 실제 일수 × 일예산
+      const mStr2 = `${year}-${String(parseInt(month)).padStart(2,'0')}`
+      let wDaysInMonth2 = 0
+      for (let d2 = new Date(weekStartStr); d2 <= new Date(weekEndStr); d2.setDate(d2.getDate()+1)) {
+        const ds2 = d2.toISOString().split('T')[0]
+        if (ds2.startsWith(mStr2)) wDaysInMonth2++
+      }
+      if (wDaysInMonth2 === 0) wDaysInMonth2 = 5
+      const weekBudget = dailyBudget * wDaysInMonth2
       const used = totalUsed?.total || 0
       const progress = totalBudget > 0 ? ((used / totalBudget) * 100).toFixed(1) : '0.0'
 
