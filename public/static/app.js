@@ -460,7 +460,14 @@ async function api(method, url, data = null) {
 
 function fmt(n) { return (n || 0).toLocaleString('ko-KR') }
 function fmtWon(n) { return `${(n || 0).toLocaleString('ko-KR')}원` }
-function fmtMan(n) { return n >= 10000 ? `${Math.round(n/10000)}만` : `${n}` }
+function fmtMan(n) {
+  const v = Math.round(n || 0)
+  if (v >= 100000000) return `${(v/100000000).toFixed(1)}억`
+  if (v >= 10000000) return `${Math.round(v/10000).toLocaleString('ko-KR')}만`  // 1000만 이상: X,XXX만
+  if (v >= 1000000) return `${(v/10000).toFixed(1)}만`   // 100만 이상: XX.X만
+  if (v >= 10000) return `${(v/10000).toFixed(1)}만`     // 1만 이상: X.X만
+  return `${v.toLocaleString('ko-KR')}`
+}
 // 콤마 포함 문자열에서 숫자 추출 (발주입력 text 필드용)
 function parseOrderVal(v) { return parseInt(String(v||'').replace(/,/g,''))||0 }
 function getProgressColor(pct) {
@@ -2548,6 +2555,8 @@ async function renderOrders() {
     const { days, orderData, vendors, patientCats, coveredDates, multiDayMap,
             vendorDailyBudgets, catDailyMap, catSettingsMap,
             dailyBudget, weekBudget, weekStart, weekEnd, todayStr, orderMap } = p
+    // 전체 설정의 working_days (일 목표 계산 기준)
+    const _globalWorkingDays = window._ordersBudget?.workingDays || 0
 
     // ── 카테고리 수에 따른 컬럼 폭 동적 계산 ──
     // 카테고리 1개: 컬럼 폭 축소 (합계·업체별 버튼이 기본 화면에 보이도록)
@@ -2692,7 +2701,9 @@ async function renderOrders() {
         const catColor = getCategoryColorHex(cat.category_key)
         const catAmt = catTotals[ci] || 0
         const catSettings2 = catSettingsMap[cat.id] || {}
-        const catDB = catSettings2.working_days > 0 ? Math.round((catSettings2.monthly_budget||0)/catSettings2.working_days) : 0
+        // 카테고리 working_days가 비정상(0 또는 과다)이면 전체 설정의 working_days 사용
+        const catWD2 = (catSettings2.working_days > 0 && catSettings2.working_days <= 31) ? catSettings2.working_days : _globalWorkingDays
+        const catDB = catWD2 > 0 ? Math.round((catSettings2.monthly_budget||0)/catWD2) : 0
         const catAdjBudget = isCovered ? 0 : catDB * multiDayCount
         const catPct = catAdjBudget > 0 ? Math.round(catAmt/catAdjBudget*100) : null
         const catOver = catPct!==null&&catPct>=100; const catWarn = catPct!==null&&catPct>=80&&!catOver
@@ -2759,7 +2770,9 @@ async function renderOrders() {
 
           // 이 카테고리의 오늘 입력 합계
           const catDayAmt = catTotals[ci] || 0
-          const catDB2 = catSettings2.working_days > 0 ? Math.round(catMonthBudget/catSettings2.working_days) : 0
+          // 카테고리 working_days가 비정상(0 또는 31 초과)이면 전체 설정값 사용
+          const catWD2 = (catSettings2.working_days > 0 && catSettings2.working_days <= 31) ? catSettings2.working_days : _globalWorkingDays
+          const catDB2 = catWD2 > 0 ? Math.round(catMonthBudget/catWD2) : 0
           const catAdjBudget2 = isCovered ? 0 : catDB2 * multiDayCount
           const catPctDay = catAdjBudget2 > 0 ? Math.round(catDayAmt/catAdjBudget2*100) : null
           const catOver2 = catPctDay!==null&&catPctDay>=100
@@ -2865,10 +2878,10 @@ async function renderOrders() {
                 </div>`
             }
 
-            // 업체 일 목표: monthly_budget / working_days (업체 자체 목표 우선, 없으면 카테고리 균등 배분)
+            // 업체 일 목표: v.monthly_budget ÷ 전체 working_days (설정 기준)
+            // v.monthly_budget 우선, 없으면 카테고리 예산 균등 배분 → 일별 목표로 변환
             const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0)
-            const vWorkingDays = catSettings2.working_days > 0 ? catSettings2.working_days : 0
-            const vMonthBudget = vWorkingDays > 0 ? Math.round(vRawMonthBudget / vWorkingDays) : 0
+            const vMonthBudget = _globalWorkingDays > 0 ? Math.round(vRawMonthBudget / _globalWorkingDays) : 0
             const vMonthPct = vMonthBudget > 0 ? Math.round(vCatMonthAccum / vMonthBudget * 100) : null
             const vMonthOver = vMonthPct!==null&&vMonthPct>=100
             const vMonthWarn = vMonthPct!==null&&vMonthPct>=80&&!vMonthOver
@@ -5793,7 +5806,8 @@ function updateDayTotal(date) {
       const catColor = getCategoryColorHex(cat.category_key)
       const catSettings5 = (window._catSettingsMap || {})[cat.id] || {}
       const catMonthBudget5 = catSettings5.monthly_budget || 0
-      const catWorkingDays5 = catSettings5.working_days > 0 ? catSettings5.working_days : 0
+      // 일 목표는 전체 설정의 working_days 기준 (카테고리별 working_days는 용도가 다름)
+      const _globalWD5 = window._ordersBudget?.workingDays || 0
       const vendorsBudget = window._ordersVendors || []
       const vCount = vendorsBudget.length || 1
 
@@ -5814,9 +5828,9 @@ function updateDayTotal(date) {
           })
         }
 
-        // 업체 일 목표: (monthly_budget / working_days)
+        // 업체 일 목표: v.monthly_budget ÷ 전체 working_days
         const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
-        const vMonthBudget5 = catWorkingDays5 > 0 ? Math.round(vRawMonthBudget5 / catWorkingDays5) : 0
+        const vMonthBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
         const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
         const vMonthOver5 = vMonthPct5!==null&&vMonthPct5>=100
         const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
@@ -10863,7 +10877,7 @@ async function openHospitalDetail(hospitalId) {
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">해당월 영업일수 (일)</label>
-            <input id="hb-workdays" type="number" class="form-input" value="${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}">
+            <input id="hb-workdays" type="number" class="form-input" value="${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}" oninput="refreshVendorDayTargets()">
             <p class="text-xs text-gray-400 mt-1">* 자동계산: ${getDefaultWorkingDays(App.currentYear, App.currentMonth)}일 (해당월 전체일수)</p>
           </div>
         </div>
@@ -10871,8 +10885,9 @@ async function openHospitalDetail(hospitalId) {
         <!-- 업체별 목표금액 -->
         <div class="border-t border-gray-100 pt-4">
           <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-store text-green-600 mr-1"></i>업체별 월 목표금액</h3>
+          <p class="text-xs text-gray-400 mb-3"><i class="fas fa-info-circle mr-1"></i>일 목표 = 월 목표금액 ÷ 영업일수(${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}일)</p>
           <div id="hospBudgetVendors">
-            ${renderBudgetVendorRows(vendors)}
+            ${renderBudgetVendorRows(vendors, s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth))}
           </div>
         </div>
         <div class="mt-4 flex justify-end">
@@ -11121,7 +11136,7 @@ async function openHospitalDetail(hospitalId) {
 }
 
 // 예산설정 탭 업체별 목표금액 행 렌더
-function renderBudgetVendorRows(vendors) {
+function renderBudgetVendorRows(vendors, workingDays) {
   if (!vendors || vendors.length === 0) {
     return `<div class="text-center py-8 text-gray-400">
       <i class="fas fa-store text-3xl mb-2 block text-gray-300"></i>
@@ -11129,22 +11144,27 @@ function renderBudgetVendorRows(vendors) {
       <p class="text-xs mt-1">업체관리 탭에서 업체를 먼저 추가하세요</p>
     </div>`
   }
+  const wd = workingDays || 0
   const initSum = vendors.reduce((s,v) => s + (v.monthly_budget||0), 0)
   return `<div class="space-y-2">
-    ${vendors.map(v => `
+    ${vendors.map(v => {
+      const mb = v.monthly_budget || 0
+      const dayTarget = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
+      return `
       <div class="flex items-center gap-3 py-2 border-b border-gray-50">
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
         <div class="flex-1 min-w-0">
           <span class="font-medium text-sm">${v.name}</span>
           <span class="text-xs text-gray-400 ml-2">${getCategoryLabel(v.category)}</span>
+          ${dayTarget > 0 ? `<span class="text-xs text-blue-500 ml-2">일 목표: ${dayTarget.toLocaleString('ko-KR')}원</span>` : ''}
         </div>
         <div class="flex items-center gap-2">
           <input id="hvb-${v.id}" type="number" class="form-input w-40 text-right text-sm py-1.5 vendor-budget-input"
-            value="${v.monthly_budget||0}" placeholder="0" oninput="syncVendorBudgetTotal()">
+            value="${mb||0}" placeholder="0" oninput="syncVendorBudgetTotal()">
           <span class="text-xs text-gray-400 whitespace-nowrap">원</span>
         </div>
-      </div>
-    `).join('')}
+      </div>`
+    }).join('')}
     <!-- #9: 업체 합계 + 자동반영 옵션 -->
     <div class="py-3 border-t-2 border-green-200 bg-green-50 rounded-lg px-3 mt-2">
       <div class="flex items-center justify-between mb-2">
@@ -11169,6 +11189,32 @@ function renderBudgetVendorRows(vendors) {
       </div>
     </div>
   </div>`
+}
+
+// 영업일수 변경 시 업체별 일 목표 실시간 갱신
+window.refreshVendorDayTargets = function() {
+  const wd = parseInt(document.getElementById('hb-workdays')?.value || '0') || 0
+  // 각 vendor-budget-input의 현재 값으로 일 목표 업데이트
+  document.querySelectorAll('.vendor-budget-input').forEach(inp => {
+    const mb = parseInt(inp.value || '0') || 0
+    const dayTarget = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
+    // 같은 행의 일 목표 span 업데이트 (data-vdaytarget 속성 활용)
+    const row = inp.closest('[class*="flex items-center gap-3"]') || inp.parentElement?.parentElement?.parentElement
+    if (row) {
+      let daySpan = row.querySelector('.vendor-day-target')
+      const nameDiv = row.querySelector('.flex-1.min-w-0')
+      if (nameDiv) {
+        daySpan = nameDiv.querySelector('.vendor-day-target')
+        if (!daySpan) {
+          daySpan = document.createElement('span')
+          daySpan.className = 'text-xs text-blue-500 ml-2 vendor-day-target'
+          nameDiv.appendChild(daySpan)
+        }
+        daySpan.textContent = dayTarget > 0 ? `일 목표: ${dayTarget.toLocaleString('ko-KR')}원` : ''
+      }
+    }
+  })
+  syncVendorBudgetTotal()
 }
 
 // 업체별 예산 합산 자동 동기화 (#9 개선: 자동반영 체크박스 + 강제반영 옵션)
