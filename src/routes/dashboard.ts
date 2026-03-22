@@ -375,10 +375,14 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // buildMealsFromKeys: 특정 키 목록에 해당하는 식수 합계 반환
   //   mealStatsRow: { total_staff, total_guardian }
   //   customTotalsMap: { cat_cancer: N, cat_nursing: N, diet_key_xxx: N, ... }  (month 또는 today용)
+  // st_key_{diet_key}: 직원식 개별항목 - 하나라도 체크되면 total_staff 전체 합계 사용 (데이터 미분리)
   const buildMealsFromKeys = (mealsKeys: string[], mealStatsRow: {total_staff?:number,total_guardian?:number}|null, customTotalsMap: Record<string,number>): number => {
     if (!mealsKeys || mealsKeys.length === 0) return 0
     let total = 0
+    // 구버전 호환: 'staff' 단일 키
     if (mealsKeys.includes('staff')) total += (mealStatsRow?.total_staff || 0)
+    // 신버전: st_key_{diet_key} - 직원식 개별항목 (하나라도 있으면 total_staff 포함, 중복 방지)
+    else if (mealsKeys.some(k => k.startsWith('st_key_'))) total += (mealStatsRow?.total_staff || 0)
     if (mealsKeys.includes('guardian')) total += (mealStatsRow?.total_guardian || 0)
     mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (customTotalsMap[k] || 0) })
     // 비급여식 식수: nc_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
@@ -1061,7 +1065,8 @@ dashboard.get('/annual/:year', async (c) => {
       const mGuardian = monthGuardianTotals[mStr] || 0
       if (hasFormula && mealsKeys.length > 0) {
         let total = 0
-        if (mealsKeys.includes('staff')) total += mStaff
+        // 구버전 'staff' 단일키 호환 + 신버전 st_key_ 개별항목 (하나라도 있으면 total_staff)
+        if (mealsKeys.includes('staff') || mealsKeys.some(k => k.startsWith('st_key_'))) total += mStaff
         if (mealsKeys.includes('guardian')) total += mGuardian
         // noncovered는 항상 제외 (설정에 포함되어도 무시)
         mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (mCustom[k] || 0) })

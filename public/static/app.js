@@ -5160,7 +5160,8 @@ function updateBudgetProgressPanel() {
         const guardianMeals3 = window._ordersMealStats?.totalGuardian || 0
         let catMonthMeals = 0
         if (hasFormula3 && mealsKeys3.length > 0) {
-          if (mealsKeys3.includes('staff')) catMonthMeals += staffMeals3
+          // 구버전 'staff' 단일키 + 신버전 st_key_ 개별항목 호환
+          if (mealsKeys3.includes('staff') || mealsKeys3.some(k => k.startsWith('st_key_'))) catMonthMeals += staffMeals3
           if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
           mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
           // 비급여식 식수: nc_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
@@ -5405,7 +5406,8 @@ function updateInsightPanel() {
       // 식수: mealsKeys 기반 (formula 있을 때), 없으면 카테고리 key로 직접 조회
       let catMealCount = 0
       if (hasFormula2 && mealsKeys2.length > 0) {
-        if (mealsKeys2.includes('staff')) catMealCount += staffMeals2
+        // 구버전 'staff' 단일키 + 신버전 st_key_ 개별항목 호환
+        if (mealsKeys2.includes('staff') || mealsKeys2.some(k => k.startsWith('st_key_'))) catMealCount += staffMeals2
         if (mealsKeys2.includes('guardian')) catMealCount += guardianMeals2
         mealsKeys2.filter(k => k.startsWith('cat_')).forEach(k => { catMealCount += (orderMealStats2[k] || 0) })
         // 비급여식 식수: nc_key_{diet_key} 형식
@@ -12328,7 +12330,10 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
     const budgetOptions = cats.map(c => ({
       key: c.category_key, label: c.category_name + ' 예산'
     }))
-    // 식수 항목 선택지 구성: 직원식 + 보호자식 + 환자군 식수 + 비급여식 (공기밥추가 제외, 체크된 것만 포함)
+    // 식수 항목 선택지 구성: 직원식 개별항목 + 환자군 식수 + 비급여식 (공기밥추가 제외)
+    // ※ 기존 '직원식'(staff) 단일항목·'보호자식'(guardian) 단일항목 제거 → 개별 diet_category 항목으로 대체
+    const staffDietsForMeals = (window._dietCategories || [])
+      .filter(dc => dc.parent_type === 'staff' && dc.is_active)
     const noncoveredForMeals = (window._dietCategories || [])
       .filter(dc => dc.parent_type === 'noncovered' && dc.is_active)
       .filter(dc => {
@@ -12337,8 +12342,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         return !k.includes('rice_extra') && !k.includes('rice_add')
       })
     const mealsOptions = [
-      { key: 'staff', label: '직원식' },
-      { key: 'guardian', label: '보호자식' },
+      // 직원식 개별 항목 (st_key_{diet_key}) - 직원식 전체 합계 공유
+      ...staffDietsForMeals.map(dc => ({ key: `st_key_${dc.diet_key}`, label: dc.diet_name + ' (직원)' })),
+      // 보호자식은 비급여식 개별 항목으로 포함되므로 별도 단일 항목 제거
       ...cats.map(c => ({ key: `cat_${c.category_key}`, label: c.category_name + ' 식수' })),
       ...noncoveredForMeals.map(dc => ({ key: `nc_key_${dc.diet_key}`, label: dc.diet_name + ' (비급여)' }))
     ]
@@ -12384,7 +12390,8 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             <i class="fas fa-info-circle mr-1"></i>
             <b>계산식:</b> 선택한 예산 합계 ÷ 선택한 식수 합계<br>
             <span class="text-gray-500">체크 없으면 전체 예산/식수 기준</span><br>
-            <span class="text-amber-600 font-medium"><i class="fas fa-info-circle mr-1"></i>비급여식은 항목별 체크로 식수에 포함/제외 설정 가능 (공기밥추가 제외)</span>
+            <span class="text-amber-600 font-medium"><i class="fas fa-info-circle mr-1"></i>비급여식은 항목별 체크로 식수에 포함/제외 설정 가능 (공기밥추가 제외)</span><br>
+            <span class="text-green-700 font-medium"><i class="fas fa-user-tie mr-1"></i>직원식 항목 체크 시 직원 전체 식수 합계가 포함됩니다 (항목별 세분화 미지원)</span>
           </div>
           <!-- 예산 포함 항목 -->
           <div>
