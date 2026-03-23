@@ -12352,8 +12352,8 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         return !k.includes('rice_extra') && !k.includes('rice_add')
       })
     const mealsOptions = [
-      // 직원식 개별 항목 (st_key_{diet_key}) - 직원식 전체 합계 공유
-      ...staffDietsForMeals.map(dc => ({ key: `st_key_${dc.diet_key}`, label: dc.diet_name + ' (직원)' })),
+      // 직원식 개별 항목 (st_key_{diet_key}) - 직원 일반식/특식/야식 등 세분화 항목
+      ...staffDietsForMeals.map(dc => ({ key: `st_key_${dc.diet_key}`, label: dc.diet_name })),
       // 보호자식은 비급여식 개별 항목으로 포함되므로 별도 단일 항목 제거
       ...cats.map(c => ({ key: `cat_${c.category_key}`, label: c.category_name + ' 식수' })),
       ...noncoveredForMeals.map(dc => ({ key: `nc_key_${dc.diet_key}`, label: dc.diet_name + ' (비급여)' }))
@@ -12401,7 +12401,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             <b>계산식:</b> 선택한 예산 합계 ÷ 선택한 식수 합계<br>
             <span class="text-gray-500">체크 없으면 전체 예산/식수 기준</span><br>
             <span class="text-amber-600 font-medium"><i class="fas fa-info-circle mr-1"></i>비급여식은 항목별 체크로 식수에 포함/제외 설정 가능 (공기밥추가 제외)</span><br>
-            <span class="text-green-700 font-medium"><i class="fas fa-user-tie mr-1"></i>직원식 항목 체크 시 직원 전체 식수 합계가 포함됩니다 (항목별 세분화 미지원)</span>
+            <span class="text-green-700 font-medium"><i class="fas fa-user-tie mr-1"></i>직원식 항목(일반식·특식·야식)별로 식수 포함/제외 설정 가능</span>
           </div>
           <!-- 예산 포함 항목 -->
           <div>
@@ -12430,14 +12430,42 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
                 <button type="button" onclick="checkAllFormulaCbs('meals-include-cb','${cat.id}',false)" class="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 font-medium">전체해제</button>
               </div>
             </div>
-            <div class="grid grid-cols-2 gap-1">
-              ${mealsOptions.map(opt => `
-                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="${opt.key}"
-                    ${mealsKeys.includes(opt.key) ? 'checked' : ''}>
-                  <span>${opt.label}</span>
-                </label>`).join('')}
-            </div>
+            ${staffDietsForMeals.length > 0 ? `
+            <div class="mb-1.5">
+              <div class="text-xs text-amber-700 font-medium mb-0.5"><i class="fas fa-user-tie mr-1"></i>직원식</div>
+              <div class="grid grid-cols-2 gap-1 pl-2">
+                ${staffDietsForMeals.map(dc => `
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="st_key_${dc.diet_key}"
+                      ${mealsKeys.includes('st_key_' + dc.diet_key) ? 'checked' : ''}>
+                    <span>${dc.diet_name}</span>
+                  </label>`).join('')}
+              </div>
+            </div>` : ''}
+            ${cats.length > 0 ? `
+            <div class="mb-1.5">
+              <div class="text-xs text-blue-700 font-medium mb-0.5"><i class="fas fa-user-injured mr-1"></i>환자군</div>
+              <div class="grid grid-cols-2 gap-1 pl-2">
+                ${cats.map(c => `
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="cat_${c.category_key}"
+                      ${mealsKeys.includes('cat_' + c.category_key) ? 'checked' : ''}>
+                    <span>${c.category_name} 식수</span>
+                  </label>`).join('')}
+              </div>
+            </div>` : ''}
+            ${noncoveredForMeals.length > 0 ? `
+            <div>
+              <div class="text-xs text-purple-700 font-medium mb-0.5"><i class="fas fa-hand-holding-usd mr-1"></i>비급여식</div>
+              <div class="grid grid-cols-2 gap-1 pl-2">
+                ${noncoveredForMeals.map(dc => `
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="nc_key_${dc.diet_key}"
+                      ${mealsKeys.includes('nc_key_' + dc.diet_key) ? 'checked' : ''}>
+                    <span>${dc.diet_name}</span>
+                  </label>`).join('')}
+              </div>
+            </div>` : ''}
           </div>
           <!-- 저장 버튼 -->
           <button type="button" onclick="saveCategoryFormula(${cat.id}, ${window._adminHospitalId})"
@@ -17840,12 +17868,13 @@ async function renderTransactionAnalysis() {
     </div>
 
     <!-- 탭 -->
-    <div class="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+    <div class="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
       ${[
-        {id:'upload',  icon:'fa-cloud-upload-alt', label:'파일 업로드'},
-        {id:'preview', icon:'fa-table',            label:'데이터 확인'},
-        {id:'monthly', icon:'fa-chart-bar',        label:'월별 분석'},
-        {id:'cross',   icon:'fa-exchange-alt',     label:'발주 교차분석'}
+        {id:'upload',   icon:'fa-cloud-upload-alt', label:'파일 업로드'},
+        {id:'preview',  icon:'fa-table',            label:'데이터 확인'},
+        {id:'category', icon:'fa-chart-pie',        label:'분류별 분석'},
+        {id:'monthly',  icon:'fa-chart-bar',        label:'월별 분석'},
+        {id:'cross',    icon:'fa-exchange-alt',     label:'발주 교차분석'}
       ].map(t => `
         <button id="txTab-${t.id}" onclick="txSwitchTab('${t.id}')"
           class="tx-tab flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${TXState.tab===t.id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">
@@ -17878,10 +17907,11 @@ function txSwitchTab(tab) {
   txDestroyCharts()
   const c = document.getElementById('txTabContent')
   if (!c) return
-  if (tab === 'upload')  txRenderUploadTab(c)
-  else if (tab === 'preview') txRenderPreviewTab(c)
-  else if (tab === 'monthly') txRenderMonthlyTab(c)
-  else if (tab === 'cross')   txRenderCrossTab(c)
+  if (tab === 'upload')   txRenderUploadTab(c)
+  else if (tab === 'preview')  txRenderPreviewTab(c)
+  else if (tab === 'category') txRenderCategoryTab(c)
+  else if (tab === 'monthly')  txRenderMonthlyTab(c)
+  else if (tab === 'cross')    txRenderCrossTab(c)
 }
 
 // ── 카테고리 로드 ─────────────────────────────────────────────────────
@@ -19047,8 +19077,842 @@ async function txDeleteFile(fileId) {
   }
 }
 
+    showToast('삭제 실패: ' + e.message, 'error')
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: 분류별 분석 (invoice category analysis)
+// ════════════════════════════════════════════════════════════════
+const INV_COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#f97316','#06b6d4','#84cc16','#ec4899','#6366f1']
+
+async function txRenderCategoryTab(container) {
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+
+  // 1) 분석된 업체 목록 로드
+  let vendors = []
+  try {
+    const r = await axios.get('/api/transaction/invoice/vendors', { headers: authH })
+    vendors = r.data.data || []
+  } catch(e) {}
+
+  const selVendor = TXState._invVendor || (vendors[0]?.vendor_name || '')
+  const selYear   = TXState._invYear   || String(TXState.year)
+  const selMonth  = TXState._invMonth  || String(TXState.month)
+
+  container.innerHTML = `
+  <div class="space-y-4">
+    <!-- 컨트롤 바 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-wrap gap-3 items-end">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1 font-medium">업체 선택</label>
+        <select id="invVendorSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none min-w-[160px]">
+          ${vendors.length === 0
+            ? `<option value="">업체 없음 (파일 업로드 필요)</option>`
+            : vendors.map(v => `<option value="${v.vendor_name}" ${v.vendor_name===selVendor?'selected':''}>${v.vendor_name}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1 font-medium">연도</label>
+        <select id="invYearSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+          ${[2024,2025,2026,2027].map(y=>`<option value="${y}" ${String(y)===selYear?'selected':''}>${y}년</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1 font-medium">월</label>
+        <select id="invMonthSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+          ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${String(m)===selMonth?'selected':''}>${m}월</option>`).join('')}
+        </select>
+      </div>
+      <button onclick="txLoadCategoryAnalysis()" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5">
+        <i class="fas fa-search text-xs"></i> 분석
+      </button>
+      <button onclick="txShowInvoiceUploadModal()" class="bg-purple-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1.5">
+        <i class="fas fa-upload text-xs"></i> 명세서 업로드
+      </button>
+    </div>
+
+    <!-- 분석 결과 영역 -->
+    <div id="invAnalysisResult">
+      <div class="bg-white rounded-xl p-10 text-center text-gray-400 border border-gray-100">
+        <i class="fas fa-chart-pie text-4xl mb-3 block opacity-30"></i>
+        업체와 기간을 선택 후 <strong>분석</strong> 버튼을 클릭하세요.
+      </div>
+    </div>
+  </div>`
+
+  // 이벤트 바인딩
+  document.getElementById('invVendorSel')?.addEventListener('change', e => { TXState._invVendor = e.target.value })
+  document.getElementById('invYearSel')?.addEventListener('change',   e => { TXState._invYear  = e.target.value })
+  document.getElementById('invMonthSel')?.addEventListener('change',  e => { TXState._invMonth = e.target.value })
+
+  // 이미 선택값 있으면 자동 분석
+  if (selVendor) txLoadCategoryAnalysis()
+}
+
+// ── 분류별 분석 데이터 로드 + 렌더링 ─────────────────────────
+window.txLoadCategoryAnalysis = async function() {
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const vendor = document.getElementById('invVendorSel')?.value || ''
+  const year   = document.getElementById('invYearSel')?.value  || ''
+  const month  = document.getElementById('invMonthSel')?.value || ''
+
+  TXState._invVendor = vendor; TXState._invYear = year; TXState._invMonth = month
+
+  const resEl = document.getElementById('invAnalysisResult')
+  if (!resEl) return
+  if (!vendor) { resEl.innerHTML = `<div class="bg-white rounded-xl p-8 text-center text-gray-400">업체를 선택하세요.</div>`; return }
+
+  resEl.innerHTML = `<div class="bg-white rounded-xl p-10 text-center text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2 text-sm">분석 중...</p></div>`
+
+  try {
+    const [catRes, trendRes, itemsRes] = await Promise.all([
+      axios.get(`/api/transaction/invoice/category-summary?vendor_name=${encodeURIComponent(vendor)}&year=${year}&month=${month}`, { headers: authH }),
+      axios.get(`/api/transaction/invoice/monthly-trend?vendor_name=${encodeURIComponent(vendor)}&months=12`, { headers: authH }),
+      axios.get(`/api/transaction/invoice/items?vendor_name=${encodeURIComponent(vendor)}&year=${year}&month=${month}`, { headers: authH })
+    ])
+    const catData   = catRes.data
+    const trendData = trendRes.data
+    const allItems  = itemsRes.data.data || []
+
+    txRenderCategoryAnalysis(resEl, vendor, year, month, catData, trendData, allItems)
+  } catch(e) {
+    resEl.innerHTML = `<div class="bg-white rounded-xl p-8 text-center text-red-500"><i class="fas fa-exclamation-triangle mr-2"></i>데이터 로드 실패: ${e.message}</div>`
+  }
+}
+
+// ── 분류별 분석 결과 렌더링 ───────────────────────────────────
+function txRenderCategoryAnalysis(el, vendor, year, month, catData, trendData, allItems) {
+  const categories = catData.categories || []
+  const topItems   = catData.top_items  || []
+  const total      = catData.total      || {}
+  const grandTotal = Number(total.grand_total) || 0
+  const monthlyTotals = trendData.monthly_total || []
+  const monthlyByCat  = trendData.monthly_by_category || []
+
+  if (categories.length === 0 && allItems.length === 0) {
+    el.innerHTML = `<div class="bg-white rounded-xl p-10 text-center text-gray-400 border border-gray-100">
+      <i class="fas fa-inbox text-3xl mb-2 block opacity-30"></i>
+      ${year}년 ${month}월 <strong>${vendor}</strong> 데이터가 없습니다.<br>
+      <span class="text-sm">명세서를 업로드해 주세요.</span>
+    </div>`
+    return
+  }
+
+  // ── 분류별 도넛 차트 데이터
+  const catNames  = categories.map(c => c.supplier_category || '미분류')
+  const catAmts   = categories.map(c => Number(c.grand_total) || 0)
+
+  // ── 월별 트렌드 데이터
+  const trendLabels = monthlyTotals.map(r => `${r.document_year}.${String(r.document_month).padStart(2,'0')}`)
+  const trendValues = monthlyTotals.map(r => Number(r.grand_total) || 0)
+
+  // ── 이전달 대비 변화
+  let prevMonthDiff = null
+  if (monthlyTotals.length >= 2) {
+    const cur  = monthlyTotals[monthlyTotals.length - 1]
+    const prev = monthlyTotals[monthlyTotals.length - 2]
+    if (prev && Number(prev.grand_total) > 0) {
+      const curAmt  = Number(cur?.grand_total) || 0
+      const prevAmt = Number(prev.grand_total) || 0
+      prevMonthDiff = Math.round((curAmt - prevAmt) / prevAmt * 100)
+    }
+  }
+
+  el.innerHTML = `
+  <div class="space-y-4">
+    <!-- ① 요약 카드 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">총 금액</div>
+        <div class="text-xl font-bold text-blue-600">${(grandTotal/10000).toFixed(1)}만원</div>
+        <div class="text-xs text-gray-500 mt-1">${vendor} · ${year}년 ${month}월</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">총 품목 수</div>
+        <div class="text-xl font-bold text-green-600">${Number(total.item_count) || 0}개</div>
+        <div class="text-xs text-gray-500 mt-1">분류 ${categories.length}개</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">과세 금액</div>
+        <div class="text-xl font-bold text-orange-500">${((Number(total.taxable_amount)||0)/10000).toFixed(1)}만원</div>
+        <div class="text-xs text-gray-500 mt-1">부가세 ${((Number(total.total_vat)||0)/10000).toFixed(1)}만원</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">전월 대비</div>
+        ${prevMonthDiff !== null
+          ? `<div class="text-xl font-bold ${prevMonthDiff > 0 ? 'text-red-500' : 'text-green-600'}">${prevMonthDiff > 0 ? '▲' : '▼'}${Math.abs(prevMonthDiff)}%</div>
+             <div class="text-xs text-gray-500 mt-1">${prevMonthDiff > 0 ? '전월보다 증가' : '전월보다 감소'}</div>`
+          : `<div class="text-lg font-bold text-gray-400">-</div><div class="text-xs text-gray-500 mt-1">비교 데이터 없음</div>`}
+      </div>
+    </div>
+
+    <!-- ② 분류별 구성 + 도넛 차트 -->
+    <div class="grid md:grid-cols-2 gap-4">
+      <!-- 도넛 차트 -->
+      <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+        <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+          <i class="fas fa-chart-pie text-blue-500"></i> 분류별 금액 비중
+        </h3>
+        <div style="position:relative;height:220px">
+          <canvas id="invDonutChart"></canvas>
+        </div>
+      </div>
+
+      <!-- 분류별 바 -->
+      <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+        <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+          <i class="fas fa-bars text-green-500"></i> 분류별 금액 상세
+        </h3>
+        <div class="space-y-2">
+          ${categories.map((cat, i) => {
+            const amt = Number(cat.grand_total) || 0
+            const pct = grandTotal > 0 ? Math.round(amt / grandTotal * 100) : 0
+            const color = INV_COLORS[i % INV_COLORS.length]
+            return `<div>
+              <div class="flex justify-between items-center mb-1">
+                <span class="text-sm font-medium text-gray-700">${cat.supplier_category || '미분류'}</span>
+                <div class="text-right">
+                  <span class="text-sm font-bold" style="color:${color}">${(amt/10000).toFixed(1)}만원</span>
+                  <span class="text-xs text-gray-400 ml-2">${pct}% · ${cat.item_count}개</span>
+                </div>
+              </div>
+              <div style="height:8px;background:#f3f4f6;border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${pct}%;background:${color};border-radius:4px;transition:width 0.6s"></div>
+              </div>
+            </div>`
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 분류별 TOP 품목 -->
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-trophy text-yellow-500"></i> 분류별 주요 품목 (금액 TOP 5)
+      </h3>
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        ${categories.map((cat, ci) => {
+          const color = INV_COLORS[ci % INV_COLORS.length]
+          const catTopItems = topItems.filter(it => it.supplier_category === cat.supplier_category)
+          return `<div style="border:1px solid ${color}30;border-radius:10px;overflow:hidden">
+            <div style="background:${color}15;padding:8px 12px;border-bottom:1px solid ${color}20">
+              <span style="font-size:12px;font-weight:700;color:${color}">${cat.supplier_category || '미분류'}</span>
+              <span style="font-size:10px;color:#6b7280;margin-left:6px">${cat.item_count}개 품목 · ${(Number(cat.grand_total)/10000).toFixed(1)}만원</span>
+            </div>
+            <div style="padding:8px 12px">
+              ${catTopItems.length === 0
+                ? `<div style="font-size:11px;color:#9ca3af;padding:8px 0">품목 없음</div>`
+                : catTopItems.map((it, ii) => `
+                  <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;${ii>0?'border-top:1px solid #f3f4f6':''}">
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:11px;font-weight:600;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${it.item_name}</div>
+                      <div style="font-size:9px;color:#9ca3af">${it.unit||''} · ${it.quantity}${it.unit||''}</div>
+                    </div>
+                    <div style="text-align:right;margin-left:8px;flex-shrink:0">
+                      <div style="font-size:11px;font-weight:700;color:#1f2937">${(Number(it.total)/10000).toFixed(1)}만</div>
+                      <div style="font-size:9px;color:#9ca3af">@${Number(it.unit_price).toLocaleString()}</div>
+                    </div>
+                  </div>`).join('')}
+            </div>
+          </div>`
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- ④ 월별 트렌드 차트 -->
+    ${monthlyTotals.length > 1 ? `
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-chart-line text-purple-500"></i> 월별 사용 금액 트렌드 (${vendor})
+      </h3>
+      <div style="height:220px">
+        <canvas id="invTrendChart"></canvas>
+      </div>
+    </div>` : ''}
+
+    <!-- ⑤ 월별 분류별 누적 바 차트 -->
+    ${monthlyByCat.length > 1 ? `
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-chart-bar text-orange-500"></i> 월별 분류별 금액 추이
+      </h3>
+      <div style="height:250px">
+        <canvas id="invStackedChart"></canvas>
+      </div>
+    </div>` : ''}
+
+    <!-- ⑥ 전체 품목 테이블 -->
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h3 class="font-bold text-gray-700 text-sm flex items-center gap-2">
+          <i class="fas fa-list text-blue-500"></i> 전체 품목 상세 (${allItems.length}개)
+        </h3>
+        <div class="flex gap-2">
+          <input id="invItemSearch" type="text" placeholder="품목명 검색..."
+            class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-400 focus:outline-none w-40"
+            oninput="txFilterInvItems(this.value)">
+          <select id="invCatFilter" class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-400 focus:outline-none"
+            onchange="txFilterInvItems(document.getElementById('invItemSearch').value)">
+            <option value="">전체 분류</option>
+            ${categories.map(c => `<option value="${c.supplier_category}">${c.supplier_category}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs" id="invItemTable">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-200">
+              <th class="px-3 py-2 text-left text-gray-500 font-semibold">분류</th>
+              <th class="px-3 py-2 text-left text-gray-500 font-semibold">품목코드</th>
+              <th class="px-3 py-2 text-left text-gray-500 font-semibold">품목명</th>
+              <th class="px-3 py-2 text-left text-gray-500 font-semibold">규격</th>
+              <th class="px-3 py-2 text-center text-gray-500 font-semibold">단위</th>
+              <th class="px-3 py-2 text-right text-gray-500 font-semibold">수량</th>
+              <th class="px-3 py-2 text-right text-gray-500 font-semibold">단가</th>
+              <th class="px-3 py-2 text-right text-gray-500 font-semibold">금액</th>
+              <th class="px-3 py-2 text-right text-gray-500 font-semibold">부가세</th>
+              <th class="px-3 py-2 text-right text-gray-500 font-semibold">합계</th>
+              <th class="px-3 py-2 text-center text-gray-500 font-semibold">과세</th>
+            </tr>
+          </thead>
+          <tbody id="invItemTbody">
+            ${txBuildItemRows(allItems, categories)}
+          </tbody>
+          <tfoot>
+            <tr class="bg-blue-50 font-bold border-t-2 border-blue-200">
+              <td colspan="7" class="px-3 py-2 text-right text-gray-700">합계</td>
+              <td class="px-3 py-2 text-right text-blue-700">${(Number(total.total_amount)||0).toLocaleString()}</td>
+              <td class="px-3 py-2 text-right text-orange-600">${(Number(total.total_vat)||0).toLocaleString()}</td>
+              <td class="px-3 py-2 text-right text-blue-800 font-bold">${grandTotal.toLocaleString()}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </div>`
+
+  // 전역에 품목 데이터 저장 (검색용)
+  window._invAllItems = allItems
+  window._invCategories = categories
+
+  // 차트 그리기
+  setTimeout(() => {
+    // 도넛 차트
+    const donutCtx = document.getElementById('invDonutChart')?.getContext('2d')
+    if (donutCtx && catAmts.length > 0) {
+      const ch = new Chart(donutCtx, {
+        type: 'doughnut',
+        data: {
+          labels: catNames,
+          datasets: [{ data: catAmts, backgroundColor: INV_COLORS.slice(0, catNames.length), borderWidth: 2, borderColor: '#fff' }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } },
+            tooltip: {
+              callbacks: {
+                label: ctx => {
+                  const v = ctx.parsed; const tot = ctx.dataset.data.reduce((a,b)=>a+b,0)
+                  return ` ${(v/10000).toFixed(1)}만원 (${Math.round(v/tot*100)}%)`
+                }
+              }
+            }
+          }
+        }
+      })
+      if (!window._txCharts) window._txCharts = []
+      window._txCharts.push(ch)
+    }
+
+    // 트렌드 라인 차트
+    if (monthlyTotals.length > 1) {
+      const trendCtx = document.getElementById('invTrendChart')?.getContext('2d')
+      if (trendCtx) {
+        const ch2 = new Chart(trendCtx, {
+          type: 'line',
+          data: {
+            labels: trendLabels,
+            datasets: [{
+              label: '월 총액',
+              data: trendValues,
+              borderColor: '#3b82f6', backgroundColor: '#3b82f620',
+              borderWidth: 2, pointRadius: 5, pointBackgroundColor: '#3b82f6', fill: true, tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: { ticks: { callback: v => (v/10000).toFixed(0)+'만' }, beginAtZero: false },
+              x: { ticks: { font: { size: 10 } } }
+            }
+          }
+        })
+        window._txCharts.push(ch2)
+      }
+    }
+
+    // 누적 바 차트 (월별 분류별)
+    if (monthlyByCat.length > 1) {
+      const stackCtx = document.getElementById('invStackedChart')?.getContext('2d')
+      if (stackCtx) {
+        // 데이터 재구성
+        const allMonths = [...new Set(monthlyByCat.map(r => `${r.document_year}.${String(r.document_month).padStart(2,'0')}`))]
+        const allCats   = [...new Set(monthlyByCat.map(r => r.supplier_category || '미분류'))]
+        const stackDatasets = allCats.map((cat, ci) => ({
+          label: cat,
+          data: allMonths.map(ym => {
+            const [y,m] = ym.split('.')
+            const row = monthlyByCat.find(r => r.document_year == y && String(r.document_month).padStart(2,'0') == m && (r.supplier_category||'미분류') === cat)
+            return Number(row?.grand_total) || 0
+          }),
+          backgroundColor: INV_COLORS[ci % INV_COLORS.length] + 'CC'
+        }))
+        const ch3 = new Chart(stackCtx, {
+          type: 'bar',
+          data: { labels: allMonths, datasets: stackDatasets },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'top', labels: { font: { size: 10 }, boxWidth: 12 } } },
+            scales: {
+              x: { stacked: true, ticks: { font: { size: 10 } } },
+              y: { stacked: true, ticks: { callback: v => (v/10000).toFixed(0)+'만' } }
+            }
+          }
+        })
+        window._txCharts.push(ch3)
+      }
+    }
+  }, 100)
+}
+
+// ── 품목 테이블 행 생성 ───────────────────────────────────────
+function txBuildItemRows(items, categories) {
+  if (!items || items.length === 0) return `<tr><td colspan="11" class="text-center py-8 text-gray-400">데이터 없음</td></tr>`
+  const colorMap = {}
+  ;(categories || []).forEach((c, i) => { colorMap[c.supplier_category] = INV_COLORS[i % INV_COLORS.length] })
+
+  let lastCat = null
+  return items.map(it => {
+    const isNewCat = it.supplier_category !== lastCat
+    lastCat = it.supplier_category
+    const color = colorMap[it.supplier_category] || '#6b7280'
+    const taxBadge = it.tax_amount > 0
+      ? `<span style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 4px;border-radius:4px">과세</span>`
+      : `<span style="background:#f1f5f9;color:#64748b;font-size:9px;padding:1px 4px;border-radius:4px">면세</span>`
+    return `${isNewCat ? `<tr class="inv-cat-sep" data-cat="${it.supplier_category||''}">
+      <td colspan="11" style="background:${color}15;padding:4px 12px;border-top:2px solid ${color}40">
+        <span style="font-size:11px;font-weight:700;color:${color}"><i class="fas fa-tag" style="margin-right:4px"></i>${it.supplier_category||'미분류'}</span>
+      </td>
+    </tr>` : ''}
+    <tr class="inv-item-row border-b border-gray-50 hover:bg-gray-50 transition-colors" data-cat="${it.supplier_category||''}" data-name="${it.item_name||''}">
+      <td class="px-3 py-1.5"></td>
+      <td class="px-3 py-1.5 text-gray-400 font-mono">${it.item_code||'-'}</td>
+      <td class="px-3 py-1.5 font-medium text-gray-800">${it.item_name||''}</td>
+      <td class="px-3 py-1.5 text-gray-500 max-w-[120px] truncate" title="${it.spec||''}">${it.spec||''}</td>
+      <td class="px-3 py-1.5 text-center text-gray-600">${it.unit||''}</td>
+      <td class="px-3 py-1.5 text-right text-gray-700">${it.quantity}</td>
+      <td class="px-3 py-1.5 text-right text-gray-700">${Number(it.unit_price).toLocaleString()}</td>
+      <td class="px-3 py-1.5 text-right text-gray-800 font-medium">${Number(it.amount).toLocaleString()}</td>
+      <td class="px-3 py-1.5 text-right text-orange-500">${Number(it.tax_amount).toLocaleString()}</td>
+      <td class="px-3 py-1.5 text-right text-blue-700 font-bold">${Number(it.total).toLocaleString()}</td>
+      <td class="px-3 py-1.5 text-center">${taxBadge}</td>
+    </tr>`
+  }).join('')
+}
+
+// ── 품목 검색/필터 ────────────────────────────────────────────
+window.txFilterInvItems = function(keyword) {
+  const cat    = document.getElementById('invCatFilter')?.value || ''
+  const kw     = (keyword || '').toLowerCase().trim()
+  const items  = window._invAllItems || []
+  const cats   = window._invCategories || []
+
+  const filtered = items.filter(it => {
+    const matchCat  = !cat || it.supplier_category === cat
+    const matchName = !kw  || (it.item_name||'').toLowerCase().includes(kw)
+    return matchCat && matchName
+  })
+
+  const tbody = document.getElementById('invItemTbody')
+  if (tbody) tbody.innerHTML = txBuildItemRows(filtered, cats)
+}
+
+// ── 명세서 업로드 모달 (분류별 분석용) ───────────────────────
+window.txShowInvoiceUploadModal = function() {
+  // 업체 목록 (기존 + 직접입력)
+  const existingVendors = Array.from(new Set((window._invAllItems||[]).map(i => i.vendor_name).filter(Boolean)))
+
+  const modal = document.createElement('div')
+  modal.id = 'invUploadModal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
+  modal.innerHTML = `
+  <div style="background:white;border-radius:16px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">
+    <div style="padding:20px 24px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+      <h3 style="font-size:16px;font-weight:700;color:#1f2937"><i class="fas fa-upload text-purple-500 mr-2"></i>거래명세서 업로드 (분류별 분석)</h3>
+      <button onclick="document.getElementById('invUploadModal').remove()" style="color:#9ca3af;font-size:20px;cursor:pointer">✕</button>
+    </div>
+    <div style="padding:24px" class="space-y-4">
+      <!-- 업체 선택/입력 -->
+      <div>
+        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">업체명 <span style="color:#ef4444">*</span></label>
+        <div style="display:flex;gap:8px">
+          <input id="invUpVendor" type="text" placeholder="업체명 직접 입력 (예: 삼성웰스토리)"
+            class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-400 focus:outline-none">
+        </div>
+        ${existingVendors.length > 0 ? `
+        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
+          <span style="font-size:10px;color:#9ca3af">최근 업체:</span>
+          ${existingVendors.slice(0,5).map(v => `
+            <button onclick="document.getElementById('invUpVendor').value='${v}'"
+              style="font-size:10px;background:#f3e8ff;color:#7c3aed;border:none;padding:2px 8px;border-radius:12px;cursor:pointer">${v}</button>`).join('')}
+        </div>` : ''}
+      </div>
+
+      <!-- 연도/월 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">연도 <span style="color:#ef4444">*</span></label>
+          <select id="invUpYear" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+            ${[2024,2025,2026,2027].map(y=>`<option value="${y}" ${y===TXState.year?'selected':''}>${y}년</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">월 <span style="color:#ef4444">*</span></label>
+          <select id="invUpMonth" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+            ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===TXState.month?'selected':''}>${m}월</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <!-- 파일 선택 -->
+      <div>
+        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">엑셀 파일 <span style="color:#ef4444">*</span> <span style="font-weight:400;color:#9ca3af">(.xlsx, .xls)</span></label>
+        <input id="invUpFile" type="file" accept=".xlsx,.xls"
+          class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-400 focus:outline-none">
+      </div>
+
+      <!-- 포맷 설정 -->
+      <div style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid #e2e8f0">
+        <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:10px"><i class="fas fa-sliders-h text-blue-400 mr-1"></i>파싱 설정</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">건너뛸 행 수 (헤더)</label>
+            <input id="invUpSkip" type="number" value="4" min="0" max="20"
+              class="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
+            <div style="font-size:10px;color:#9ca3af;margin-top:2px">삼성웰스토리: 4 (기본)</div>
+          </div>
+          <div>
+            <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">분류 구분 방식</label>
+            <select id="invUpCatMode" class="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
+              <option value="subtotal">소계 행으로 구분 (삼성웰스토리)</option>
+              <option value="category_col">별도 분류 컬럼</option>
+              <option value="none">분류 없음</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:10px">
+          ${[
+            {id:'invUpColCode',  label:'품목코드', val:'0'},
+            {id:'invUpColName',  label:'품목명',   val:'1'},
+            {id:'invUpColSpec',  label:'규격',     val:'2'},
+            {id:'invUpColUnit',  label:'단위',     val:'3'},
+            {id:'invUpColQty',   label:'수량',     val:'4'},
+          ].map(c=>`<div>
+            <label style="font-size:10px;color:#6b7280;display:block;margin-bottom:2px">${c.label}열</label>
+            <input id="${c.id}" type="number" value="${c.val}" min="0" max="20"
+              class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-center">
+          </div>`).join('')}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px">
+          ${[
+            {id:'invUpColPrice', label:'단가',  val:'5'},
+            {id:'invUpColAmt',   label:'금액',  val:'6'},
+            {id:'invUpColVat',   label:'부가세',val:'7'},
+            {id:'invUpColTotal', label:'합계',  val:'8'},
+          ].map(c=>`<div>
+            <label style="font-size:10px;color:#6b7280;display:block;margin-bottom:2px">${c.label}열</label>
+            <input id="${c.id}" type="number" value="${c.val}" min="0" max="20"
+              class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-center">
+          </div>`).join('')}
+        </div>
+      </div>
+
+      <!-- 미리보기 결과 -->
+      <div id="invUpPreview" style="display:none"></div>
+
+      <!-- 버튼 -->
+      <div style="display:flex;gap:10px;padding-top:8px">
+        <button onclick="txPreviewInvoiceFile()" style="flex:1;background:#3b82f6;color:white;border:none;padding:10px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">
+          <i class="fas fa-eye mr-1"></i> 미리보기
+        </button>
+        <button id="invUpSaveBtn" onclick="txSaveInvoiceFile()" disabled
+          style="flex:1;background:#7c3aed;color:white;border:none;padding:10px;border-radius:10px;font-size:13px;font-weight:600;cursor:not-allowed;opacity:0.5">
+          <i class="fas fa-save mr-1"></i> 저장
+        </button>
+      </div>
+    </div>
+  </div>`
+  document.body.appendChild(modal)
+}
+
+// ── 명세서 파싱 미리보기 ──────────────────────────────────────
+window.txPreviewInvoiceFile = async function() {
+  const file = document.getElementById('invUpFile')?.files?.[0]
+  if (!file) { showToast('파일을 선택하세요.', 'error'); return }
+
+  const skipRows  = parseInt(document.getElementById('invUpSkip')?.value  || '4')
+  const catMode   = document.getElementById('invUpCatMode')?.value || 'subtotal'
+  const cols = {
+    code:  parseInt(document.getElementById('invUpColCode')?.value  || '0'),
+    name:  parseInt(document.getElementById('invUpColName')?.value  || '1'),
+    spec:  parseInt(document.getElementById('invUpColSpec')?.value  || '2'),
+    unit:  parseInt(document.getElementById('invUpColUnit')?.value  || '3'),
+    qty:   parseInt(document.getElementById('invUpColQty')?.value   || '4'),
+    price: parseInt(document.getElementById('invUpColPrice')?.value || '5'),
+    amt:   parseInt(document.getElementById('invUpColAmt')?.value   || '6'),
+    vat:   parseInt(document.getElementById('invUpColVat')?.value   || '7'),
+    total: parseInt(document.getElementById('invUpColTotal')?.value || '8'),
+  }
+
+  const prevEl = document.getElementById('invUpPreview')
+  if (prevEl) { prevEl.style.display = 'block'; prevEl.innerHTML = `<div class="text-center py-4 text-gray-400"><i class="fas fa-spinner fa-spin"></i> 파싱 중...</div>` }
+
+  try {
+    const parsed = await txParseInvoiceExcel(file, skipRows, catMode, cols)
+    window._invParsedData = parsed
+
+    // 저장 버튼 활성화
+    const saveBtn = document.getElementById('invUpSaveBtn')
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.style.cursor = 'pointer'; saveBtn.style.opacity = '1' }
+
+    // 미리보기 렌더링
+    const totalItems = parsed.items.length
+    const totalAmt   = parsed.items.reduce((s,i) => s + (Number(i.total)||0), 0)
+
+    if (prevEl) prevEl.innerHTML = `
+    <div style="background:#f0fdf4;border-radius:10px;padding:14px;border:1px solid #bbf7d0">
+      <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:10px">
+        <i class="fas fa-check-circle mr-1"></i> 파싱 성공 · ${totalItems}개 품목 · 총 ${(totalAmt/10000).toFixed(1)}만원
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        ${parsed.categories.map((cat,i) => `
+          <span style="background:${INV_COLORS[i%INV_COLORS.length]}20;color:${INV_COLORS[i%INV_COLORS.length]};font-size:11px;padding:2px 10px;border-radius:12px;font-weight:600">
+            ${cat.name} ${cat.item_count}개 · ${(Number(cat.total)/10000).toFixed(1)}만
+          </span>`).join('')}
+      </div>
+      <div style="max-height:200px;overflow-y:auto;border-radius:8px;border:1px solid #d1fae5">
+        <table style="width:100%;font-size:10px;border-collapse:collapse">
+          <thead><tr style="background:#dcfce7">
+            <th style="padding:4px 8px;text-align:left;color:#166534">분류</th>
+            <th style="padding:4px 8px;text-align:left;color:#166534">품목명</th>
+            <th style="padding:4px 8px;text-align:right;color:#166534">수량</th>
+            <th style="padding:4px 8px;text-align:right;color:#166534">합계</th>
+          </thead>
+          <tbody>
+            ${parsed.items.slice(0,30).map(it => `<tr style="border-top:1px solid #f0fdf4">
+              <td style="padding:3px 8px;color:#6b7280">${it.supplier_category||''}</td>
+              <td style="padding:3px 8px;color:#374151">${it.item_name||''}</td>
+              <td style="padding:3px 8px;text-align:right;color:#374151">${it.quantity}</td>
+              <td style="padding:3px 8px;text-align:right;color:#1d4ed8;font-weight:600">${Number(it.total).toLocaleString()}</td>
+            </tr>`).join('')}
+            ${totalItems > 30 ? `<tr><td colspan="4" style="padding:4px 8px;text-align:center;color:#9ca3af">... ${totalItems - 30}개 더 있음</td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>
+    </div>`
+  } catch(e) {
+    if (prevEl) prevEl.innerHTML = `<div style="background:#fef2f2;border-radius:10px;padding:12px;border:1px solid #fecaca;color:#dc2626;font-size:12px">
+      <i class="fas fa-exclamation-triangle mr-1"></i> 파싱 오류: ${e.message}
+    </div>`
+  }
+}
+
+// ── 엑셀 파싱 엔진 (SheetJS) ─────────────────────────────────
+async function txParseInvoiceExcel(file, skipRows, catMode, cols) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = e => {
+      try {
+        const XLSX = window.XLSX
+        if (!XLSX) throw new Error('SheetJS 라이브러리가 로드되지 않았습니다.')
+        const wb = XLSX.read(e.target.result, { type: 'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+        const items = []
+        const categoriesMap = {}
+        let currentCategory = ''
+        let catOrder = 0
+
+        for (let i = skipRows; i < rawRows.length; i++) {
+          const row = rawRows[i]
+          const cellA = String(row[0] || '').trim()
+          const cellB = String(row[1] || '').trim()
+
+          // ── 분류 행 감지 ──
+          if (catMode === 'subtotal') {
+            // "소계" 패턴: B열에 "소계" 텍스트
+            if (cellB === '소계' || cellB.includes('소계')) {
+              // A열이 분류명
+              if (cellA) {
+                if (!categoriesMap[cellA]) categoriesMap[cellA] = { name: cellA, sort_order: catOrder++, items: [] }
+                // 소계 금액 업데이트
+                categoriesMap[cellA].amount = Number(row[cols.amt] || 0)
+                categoriesMap[cellA].vat    = Number(row[cols.vat] || 0)
+                categoriesMap[cellA].total  = Number(row[cols.total] || 0)
+              }
+              continue
+            }
+            // 합계 행 건너뛰기
+            if (cellA === '합계' || cellA.includes('합계') || cellB === '합계') continue
+            // 페이지 번호 행 건너뛰기 (예: "1/1")
+            if (/^\d+\/\d+$/.test(cellA)) continue
+            // 품목 행 (A열이 숫자로 시작하는 코드)
+            if (/^\d/.test(cellA) && cellB) {
+              // 현재 분류 찾기: items를 역순으로 보고 마지막 분류 기준
+              const item = {
+                item_code: cellA,
+                item_name: String(row[cols.name] || '').trim(),
+                spec:      String(row[cols.spec]  || '').trim(),
+                unit:      String(row[cols.unit]  || '').trim(),
+                quantity:  Number(row[cols.qty]   || 0),
+                unit_price: Number(row[cols.price] || 0),
+                amount:    Number(row[cols.amt]   || 0),
+                tax_amount: Number(row[cols.vat]  || 0),
+                total:     Number(row[cols.total] || 0),
+                supplier_category: currentCategory
+              }
+              // currentCategory 결정: 직전 소계보다 아래에 있는 품목은 다음 분류
+              // → 실제로는 소계 전에 나오는 품목들이 해당 분류에 속함
+              items.push(item)
+              if (currentCategory && !categoriesMap[currentCategory]) {
+                categoriesMap[currentCategory] = { name: currentCategory, sort_order: catOrder++, items: [] }
+              }
+              if (currentCategory) categoriesMap[currentCategory].items.push(item)
+            }
+          } else {
+            // 분류 없음 또는 별도 컬럼
+            if (!/^\d/.test(cellA) || !cellB) continue
+            if (cellA === '합계') continue
+            const item = {
+              item_code: cellA,
+              item_name: String(row[cols.name] || '').trim(),
+              spec:      String(row[cols.spec]  || '').trim(),
+              unit:      String(row[cols.unit]  || '').trim(),
+              quantity:  Number(row[cols.qty]   || 0),
+              unit_price: Number(row[cols.price] || 0),
+              amount:    Number(row[cols.amt]   || 0),
+              tax_amount: Number(row[cols.vat]  || 0),
+              total:     Number(row[cols.total] || 0),
+              supplier_category: catMode === 'category_col' ? String(row[cols.code - 1] || '') : ''
+            }
+            items.push(item)
+          }
+        }
+
+        // ── 소계 기반일 때 분류 재매핑 ──
+        // 소계 행이 나오기 전 품목들을 해당 분류에 매핑
+        if (catMode === 'subtotal') {
+          // 재파싱: 소계 위의 품목들이 그 분류에 속함
+          let currentCat = ''
+          const itemsReParsed = []
+          const catsSeen = []
+
+          // 분류-품목 관계를 재구성
+          // rawRows를 다시 순회하면서 소계 행 직전 그룹 품목에 분류 할당
+          let pending = []
+          for (let i = skipRows; i < rawRows.length; i++) {
+            const row = rawRows[i]
+            const cA = String(row[0] || '').trim()
+            const cB = String(row[1] || '').trim()
+            if (cB === '소계' || cB.includes('소계')) {
+              const catName = cA || '기타'
+              pending.forEach(p => { p.supplier_category = catName })
+              catsSeen.push(catName)
+              itemsReParsed.push(...pending)
+              pending = []
+            } else if (/^\d/.test(cA) && cB && cA !== '합계' && !/^\d+\/\d+$/.test(cA)) {
+              pending.push({
+                item_code: cA,
+                item_name: String(row[cols.name] || '').trim(),
+                spec:      String(row[cols.spec]  || '').trim(),
+                unit:      String(row[cols.unit]  || '').trim(),
+                quantity:  Number(row[cols.qty]   || 0),
+                unit_price: Number(row[cols.price] || 0),
+                amount:    Number(row[cols.amt]   || 0),
+                tax_amount: Number(row[cols.vat]  || 0),
+                total:     Number(row[cols.total] || 0),
+                supplier_category: ''
+              })
+            }
+          }
+          // 남은 pending (분류 없는 마지막 항목)
+          pending.forEach(p => { p.supplier_category = '기타'; itemsReParsed.push(p) })
+
+          const finalCategories = Object.keys(categoriesMap).map(k => ({
+            name:       k,
+            item_count: itemsReParsed.filter(it => it.supplier_category === k).length,
+            amount:     categoriesMap[k].amount || itemsReParsed.filter(it=>it.supplier_category===k).reduce((s,i)=>s+(i.amount||0),0),
+            vat:        categoriesMap[k].vat    || itemsReParsed.filter(it=>it.supplier_category===k).reduce((s,i)=>s+(i.tax_amount||0),0),
+            total:      categoriesMap[k].total  || itemsReParsed.filter(it=>it.supplier_category===k).reduce((s,i)=>s+(i.total||0),0),
+          }))
+
+          resolve({ items: itemsReParsed, categories: finalCategories })
+        } else {
+          const finalCategories = []
+          resolve({ items, categories: finalCategories })
+        }
+      } catch(err) { reject(err) }
+    }
+    reader.onerror = () => reject(new Error('파일 읽기 실패'))
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+// ── 명세서 저장 ───────────────────────────────────────────────
+window.txSaveInvoiceFile = async function() {
+  const parsed = window._invParsedData
+  if (!parsed || !parsed.items || parsed.items.length === 0) {
+    showToast('먼저 미리보기를 실행하세요.', 'error'); return
+  }
+  const vendor = document.getElementById('invUpVendor')?.value.trim()
+  const year   = document.getElementById('invUpYear')?.value
+  const month  = document.getElementById('invUpMonth')?.value
+  if (!vendor) { showToast('업체명을 입력하세요.', 'error'); return }
+
+  const saveBtn = document.getElementById('invUpSaveBtn')
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 저장 중...' }
+
+  try {
+    const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    const res = await axios.post('/api/transaction/invoice/save', {
+      vendor_name: vendor, year: Number(year), month: Number(month),
+      items: parsed.items,
+      categories: parsed.categories
+    }, { headers: authH })
+
+    if (res.data.ok) {
+      showToast(`✅ 저장 완료! ${res.data.item_count}개 품목`, 'success')
+      document.getElementById('invUploadModal')?.remove()
+      // 분석 업데이트
+      TXState._invVendor = vendor
+      TXState._invYear   = year
+      TXState._invMonth  = month
+      txSwitchTab('category')
+    } else {
+      throw new Error(res.data.error || '저장 실패')
+    }
+  } catch(e) {
+    showToast('저장 실패: ' + e.message, 'error')
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save mr-1"></i> 저장'; saveBtn.style.opacity='1'; saveBtn.style.cursor='pointer' }
+  }
+}
+
 // ════════════════════════════════════════
-// TAB 2: 데이터 확인 (미리보기/수정)
 // ════════════════════════════════════════
 async function txRenderPreviewTab(container) {
   container.innerHTML = `
