@@ -977,6 +977,13 @@ adminRouter.post('/hospitals/:id/vendors', async (c) => {
     taxType||'mixed', monthlyBudget||0, sortOrder||99,
     isCardType ? 1 : 0, cardSubtype || null
   ).run()
+  // ── 발주 업체 등록 시 거래명세서 업체도 자동 생성 (미설정 상태로) ──
+  const norm = name.trim().replace(/\s+/g, '')
+  await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO hospital_invoice_vendors
+      (hospital_id, vendor_name, vendor_name_norm, test_status)
+    VALUES (?, ?, ?, 'untested')
+  `).bind(hospitalId, name.trim(), norm).run()
   return c.json({ success: true })
 })
 
@@ -1013,9 +1020,20 @@ adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
 // ── 병원별 업체 삭제 (관리자용) ───────────────────────────────
 adminRouter.delete('/hospitals/:id/vendors/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
+  // 업체명 조회 후 명세서 업체도 soft-delete
+  const vendor = await c.env.DB.prepare(
+    `SELECT name FROM vendors WHERE id=? AND hospital_id=?`
+  ).bind(vid, hospitalId).first<any>()
   await c.env.DB.prepare(`
     UPDATE vendors SET is_active=0 WHERE id=? AND hospital_id=?
   `).bind(vid, hospitalId).run()
+  if (vendor?.name) {
+    const norm = vendor.name.replace(/\s+/g, '')
+    await c.env.DB.prepare(`
+      UPDATE hospital_invoice_vendors SET is_active=0
+      WHERE hospital_id=? AND vendor_name_norm=?
+    `).bind(hospitalId, norm).run()
+  }
   return c.json({ success: true })
 })
 
@@ -1956,6 +1974,29 @@ adminRouter.get('/hospitals/:id/diet-categories-for-meal', async (c) => {
     ORDER BY parent_type, sort_order, id
   `).bind(id).all<any>()
   return c.json(rows.results || [])
+})
+
+// ── 발주 업체 → 명세서 업체 일괄 동기화 (초기 설정용) ──────────
+adminRouter.post('/hospitals/:id/sync-invoice-vendors', async (c) => {
+  const hospitalId = c.req.param('id')
+  const vendors = await c.env.DB.prepare(`
+    SELECT name FROM vendors WHERE hospital_id=? AND is_active=1
+  `).bind(hospitalId).all<any>()
+  let created = 0
+  for (const v of (vendors.results || [])) {
+    const norm = v.name.replace(/\s+/g, '')
+    const existing = await c.env.DB.prepare(
+      `SELECT id FROM hospital_invoice_vendors WHERE hospital_id=? AND vendor_name_norm=?`
+    ).bind(hospitalId, norm).first<any>()
+    if (!existing) {
+      await c.env.DB.prepare(`
+        INSERT INTO hospital_invoice_vendors (hospital_id, vendor_name, vendor_name_norm, test_status)
+        VALUES (?, ?, ?, 'untested')
+      `).bind(hospitalId, v.name, norm).run()
+      created++
+    }
+  }
+  return c.json({ success: true, created })
 })
 
 export default adminRouter

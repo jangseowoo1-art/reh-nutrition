@@ -1258,6 +1258,57 @@ txRouter.delete('/invoice/file/:file_id', async (c) => {
 // ── 병원별 명세서 업체 관리 API (hospital_invoice_vendors) ────
 // ══════════════════════════════════════════════════════════════
 
+// GET /vendors-for-invoice  - 발주 업체 목록 + 업로드 통계 + 파싱 설정 상태
+txRouter.get('/vendors-for-invoice', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    // vendors 테이블 + hospital_invoice_vendors (파싱 설정) + transaction_files (업로드 통계) 조인
+    const rows = await c.env.DB.prepare(`
+      SELECT
+        v.id, v.name, v.category, v.tax_type, v.monthly_budget, v.is_card_type,
+        hiv.id AS invoice_vendor_id,
+        hiv.test_status AS invoice_test_status,
+        hiv.skip_rows, hiv.col_code, hiv.col_name, hiv.col_spec, hiv.col_unit,
+        hiv.col_qty, hiv.col_price, hiv.col_amount, hiv.col_vat, hiv.col_total, hiv.cat_mode,
+        (SELECT COUNT(*) FROM transaction_files tf
+         WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
+        ) AS upload_count,
+        (SELECT tf.document_year FROM transaction_files tf
+         WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
+         ORDER BY tf.document_year DESC, tf.document_month DESC LIMIT 1
+        ) AS last_upload_year,
+        (SELECT tf.document_month FROM transaction_files tf
+         WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
+         ORDER BY tf.document_year DESC, tf.document_month DESC LIMIT 1
+        ) AS last_upload_month
+      FROM vendors v
+      LEFT JOIN hospital_invoice_vendors hiv
+        ON hiv.hospital_id = v.hospital_id AND hiv.vendor_id = v.id AND hiv.is_active = 1
+      WHERE v.hospital_id = ?
+      ORDER BY v.sort_order, v.id
+    `).bind(hospitalId).all<any>()
+    return c.json({ ok: true, vendors: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// GET /invoice-vendors/by-vendor/:vendorId  - vendor_id로 파싱 설정 조회
+txRouter.get('/invoice-vendors/by-vendor/:vendorId', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorId = Number(c.req.param('vendorId'))
+    const row = await c.env.DB.prepare(`
+      SELECT * FROM hospital_invoice_vendors
+      WHERE hospital_id=? AND vendor_id=? AND is_active=1
+      LIMIT 1
+    `).bind(hospitalId, vendorId).first<any>()
+    return c.json({ ok: true, vendor: row || null })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
 // GET /invoice-vendors  - 병원의 등록 업체 목록 (최근 업로드 정보 포함)
 txRouter.get('/invoice-vendors', async (c) => {
   try {
@@ -1304,30 +1355,62 @@ txRouter.get('/invoice-vendors/:id', async (c) => {
   }
 })
 
-// POST /invoice-vendors  - 업체 등록
+// POST /invoice-vendors  - 업체 등록 (vendor_id 기반 UPSERT 지원)
 txRouter.post('/invoice-vendors', async (c) => {
   try {
     const hospitalId = await resolveHospitalId(c)
     const body = await c.req.json() as any
     const {
-      vendor_name, description = '',
+      vendor_id = null, vendor_name, description = '',
       skip_rows = 4, col_code = 0, col_name = 1, col_spec = 2,
       col_unit = 3, col_qty = 4, col_price = 5,
       col_amount = 6, col_vat = 7, col_total = 8,
       cat_mode = 'subtotal', col_category = null
     } = body
 
-    if (!vendor_name?.trim()) return c.json({ ok: false, error: '업체명 필수' }, 400)
-    const norm = vendor_name.trim().replace(/\s+/g, '')
+    // vendor_id가 있는 경우: vendors 테이블에서 이름 조회
+    let resolvedName = vendor_name?.trim()
+    if (vendor_id && !resolvedName) {
+      const v = await c.env.DB.prepare(`SELECT name FROM vendors WHERE id=? AND hospital_id=?`).bind(vendor_id, hospitalId).first<any>()
+      resolvedName = v?.name || `vendor_${vendor_id}`
+    }
+    if (!resolvedName) return c.json({ ok: false, error: '업체명 필수' }, 400)
+    const norm = resolvedName.replace(/\s+/g, '')
 
-    const result = await c.env.DB.prepare(`
+    // vendor_id 기반 UPSERT: vendor_id가 있으면 vendor_id로 기존 레코드 조회
+    if (vendor_id) {
+      const existing = await c.env.DB.prepare(
+        `SELECT id FROM hospital_invoice_vendors WHERE hospital_id=? AND vendor_id=? AND is_active=1 LIMIT 1`
+      ).bind(hospitalId, vendor_id).first<any>()
+
+      if (existing) {
+        // 업데이트
+        await c.env.DB.prepare(`
+          UPDATE hospital_invoice_vendors SET
+            vendor_name=?, vendor_name_norm=?, skip_rows=?, col_code=?, col_name=?, col_spec=?,
+            col_unit=?, col_qty=?, col_price=?, col_amount=?, col_vat=?, col_total=?,
+            cat_mode=?, col_category=?, updated_at=CURRENT_TIMESTAMP
+          WHERE id=? AND hospital_id=?
+        `).bind(
+          resolvedName, norm, skip_rows, col_code, col_name, col_spec,
+          col_unit, col_qty, col_price, col_amount, col_vat, col_total,
+          cat_mode, col_category ?? null, existing.id, hospitalId
+        ).run()
+        const updated = await c.env.DB.prepare(`SELECT * FROM hospital_invoice_vendors WHERE id=?`).bind(existing.id).first<any>()
+        return c.json({ ok: true, vendor: updated })
+      }
+    }
+
+    // 신규 삽입
+    await c.env.DB.prepare(`
       INSERT INTO hospital_invoice_vendors
-        (hospital_id, vendor_name, vendor_name_norm, description,
+        (hospital_id, vendor_id, vendor_name, vendor_name_norm, description,
          skip_rows, col_code, col_name, col_spec, col_unit, col_qty,
          col_price, col_amount, col_vat, col_total, cat_mode, col_category,
          updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(hospital_id, vendor_name_norm) DO UPDATE SET
+        vendor_id=COALESCE(excluded.vendor_id, vendor_id),
         vendor_name=excluded.vendor_name, description=excluded.description,
         skip_rows=excluded.skip_rows, col_code=excluded.col_code,
         col_name=excluded.col_name, col_spec=excluded.col_spec,
@@ -1337,7 +1420,7 @@ txRouter.post('/invoice-vendors', async (c) => {
         cat_mode=excluded.cat_mode, col_category=excluded.col_category,
         updated_at=CURRENT_TIMESTAMP
     `).bind(
-      hospitalId, vendor_name.trim(), norm, description,
+      hospitalId, vendor_id ?? null, resolvedName, norm, description,
       skip_rows, col_code, col_name, col_spec, col_unit, col_qty,
       col_price, col_amount, col_vat, col_total, cat_mode, col_category ?? null
     ).run()
