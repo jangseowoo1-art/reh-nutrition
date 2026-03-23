@@ -155,14 +155,16 @@ txRouter.post('/upload', async (c) => {
       const itemName = String(row.item_name || '').trim()
       if (!itemName) continue
 
-      const itemCode   = String(row.item_code || '').trim()
-      const spec       = String(row.spec || '').trim()
-      const qty        = Number(row.quantity ?? row.qty ?? 0)
-      const unitPrice  = Number(row.unit_price ?? 0)
-      const amount     = Number(row.amount ?? 0) || Math.round(qty * unitPrice)
-      const taxType    = normalizeTaxType(row.tax_type)
-      const normalized = normalizeItemName(itemName)
-      const catId      = guessCategoryId(normalized, catMap)
+      const itemCode         = String(row.item_code || '').trim()
+      const spec             = String(row.spec || '').trim()
+      const qty              = Number(row.quantity ?? row.qty ?? 0)
+      const unitPrice        = Number(row.unit_price ?? 0)
+      const amount           = Number(row.amount ?? 0) || Math.round(qty * unitPrice)
+      const taxType          = normalizeTaxType(row.tax_type)
+      const normalized       = normalizeItemName(itemName)
+      const catId            = guessCategoryId(normalized, catMap)
+      // supplier_category: category_hint(파싱 시 추출된 분류명) 또는 supplier_category 필드 사용
+      const supplierCategory = String(row.supplier_category || row.category_hint || '').trim()
 
       // 부가세 계산 우선순위:
       // 1) 파일 원본에 부가세 컬럼이 있으면 그 값 사용 (tax_amount_raw >= 0)
@@ -186,14 +188,15 @@ txRouter.post('/upload', async (c) => {
            document_year, document_month,
            item_name, item_name_normalized, item_code, spec, category_id,
            quantity, unit, unit_price, amount, tax_type, tax_amount,
-           raw_row, is_verified, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,CURRENT_TIMESTAMP)
+           supplier_category, raw_row, is_verified, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,CURRENT_TIMESTAMP)
       `).bind(
         docId, fileId, hospitalId, vendor_name || '',
         document_year, document_month,
         itemName, normalized, itemCode, spec, catId,
         qty, row.unit || '', unitPrice, amount, taxType,
         taxAmount,
+        supplierCategory,
         JSON.stringify(row)
       ).run()
       insertCount++
@@ -914,6 +917,340 @@ txRouter.put('/vendor-templates/:id', async (c) => {
     id
   ).run()
   return c.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════════════
+// ── 분류별 분석 API (invoice category analysis) ──────────────
+// ══════════════════════════════════════════════════════════════
+
+// ── 파싱된 데이터(JSON) 저장 + supplier_category 포함 ──────────
+// POST /invoice/save
+// body: { hospital_id, vendor_name, year, month, trade_period,
+//         total_amount, taxable_amount, tax_amount, nontaxable_amount,
+//         items: [{item_code, item_name, spec, unit, quantity, unit_price, amount, tax_amount, total, supplier_category}],
+//         categories: [{name, amount, vat, total, item_count}] }
+txRouter.post('/invoice/save', async (c) => {
+  try {
+    const body = await c.req.json() as any
+    const hospitalId = await resolveHospitalId(c, body.hospital_id)
+    const { vendor_name, year, month, trade_period, items = [], categories = [] } = body
+
+    if (!vendor_name || !year || !month) {
+      return c.json({ ok: false, error: '업체명/연도/월 필수' }, 400)
+    }
+
+    // 1) transaction_files 레코드 upsert
+    const fileRes = await c.env.DB.prepare(`
+      INSERT INTO transaction_files
+        (hospital_id, file_name, file_type, vendor_name, document_year, document_month,
+         parse_status, row_count, updated_at)
+      VALUES (?, ?, 'xlsx', ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
+    `).bind(
+      hospitalId,
+      `${vendor_name}_${year}${String(month).padStart(2,'0')}.xlsx`,
+      vendor_name, Number(year), Number(month), items.length
+    ).run()
+    const fileId = fileRes.meta.last_row_id
+
+    // 2) transaction_documents
+    const totalAmount = categories.reduce((s: number, c: any) => s + (Number(c.total) || 0), 0)
+    const taxableAmount = categories.reduce((s: number, c: any) => s + (Number(c.amount) || 0), 0)
+    const taxAmount = categories.reduce((s: number, c: any) => s + (Number(c.vat) || 0), 0)
+
+    const docRes = await c.env.DB.prepare(`
+      INSERT INTO transaction_documents
+        (file_id, hospital_id, vendor_name, document_year, document_month,
+         total_amount, taxable_amount, tax_amount, item_count, trade_period)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `).bind(
+      fileId, hospitalId, vendor_name, Number(year), Number(month),
+      totalAmount, taxableAmount, taxAmount, items.length, trade_period || ''
+    ).run()
+    const docId = docRes.meta.last_row_id
+
+    // 3) transaction_items (배치 INSERT)
+    const BATCH = 50
+    for (let i = 0; i < items.length; i += BATCH) {
+      const chunk = items.slice(i, i + BATCH)
+      const stmts = chunk.map((it: any) =>
+        c.env.DB.prepare(`
+          INSERT INTO transaction_items
+            (document_id, file_id, hospital_id, vendor_name, document_year, document_month,
+             item_code, item_name, item_name_normalized, spec, unit, quantity,
+             unit_price, amount, tax_type, tax_amount, supplier_category, raw_row)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          docId, fileId, hospitalId, vendor_name, Number(year), Number(month),
+          it.item_code || '',
+          it.item_name || '',
+          (it.item_name || '').replace(/[,\s（）()]/g, '').slice(0, 50),
+          it.spec || '',
+          it.unit || '',
+          Number(it.quantity) || 0,
+          Number(it.unit_price) || 0,
+          Number(it.amount) || 0,
+          (Number(it.tax_amount) || 0) > 0 ? 'taxable' : 'nontaxable',
+          Number(it.tax_amount) || 0,
+          it.supplier_category || '',
+          JSON.stringify(it)
+        )
+      )
+      await c.env.DB.batch(stmts)
+    }
+
+    // 4) invoice_supplier_classifications - 분류명 저장 (중복 무시)
+    if (categories.length > 0) {
+      const catStmts = categories.map((cat: any, idx: number) =>
+        c.env.DB.prepare(`
+          INSERT OR IGNORE INTO invoice_supplier_classifications
+            (hospital_id, vendor_name, category_name, sort_order)
+          VALUES (?,?,?,?)
+        `).bind(hospitalId, vendor_name, cat.name, idx)
+      )
+      await c.env.DB.batch(catStmts)
+    }
+
+    return c.json({ ok: true, file_id: fileId, doc_id: docId, item_count: items.length })
+  } catch (e: any) {
+    console.error('[invoice/save] ERROR:', e)
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 저장된 분석 목록 조회 ──────────────────────────────────────
+// GET /invoice/list?hospital_id=&vendor_name=&year=
+txRouter.get('/invoice/list', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const year = c.req.query('year') || ''
+
+    let sql = `
+      SELECT tf.id as file_id, tf.vendor_name, tf.document_year, tf.document_month,
+             tf.row_count, tf.created_at,
+             td.id as doc_id, td.total_amount, td.taxable_amount, td.tax_amount,
+             td.item_count, td.trade_period
+      FROM transaction_files tf
+      LEFT JOIN transaction_documents td ON td.file_id = tf.id
+      WHERE tf.hospital_id = ? AND tf.file_type = 'xlsx'
+    `
+    const params: any[] = [hospitalId]
+    if (vendorName) { sql += ` AND tf.vendor_name = ?`; params.push(vendorName) }
+    if (year)       { sql += ` AND tf.document_year = ?`; params.push(Number(year)) }
+    sql += ` ORDER BY tf.document_year DESC, tf.document_month DESC, tf.id DESC`
+
+    const rows = await c.env.DB.prepare(sql).bind(...params).all<any>()
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 분류별 집계 분석 ───────────────────────────────────────────
+// GET /invoice/category-summary?hospital_id=&vendor_name=&year=&month=
+txRouter.get('/invoice/category-summary', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const year  = c.req.query('year')  || ''
+    const month = c.req.query('month') || ''
+
+    if (!vendorName || !year || !month) {
+      return c.json({ ok: false, error: '업체명/연도/월 필수' }, 400)
+    }
+
+    // 분류별 합계
+    const catRows = await c.env.DB.prepare(`
+      SELECT supplier_category,
+             COUNT(*) as item_count,
+             SUM(amount) as total_amount,
+             SUM(tax_amount) as total_vat,
+             SUM(amount + tax_amount) as grand_total
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+        AND supplier_category != ''
+      GROUP BY supplier_category
+      ORDER BY grand_total DESC
+    `).bind(hospitalId, vendorName, Number(year), Number(month)).all<any>()
+
+    // 분류별 TOP5 품목
+    const topItems = await c.env.DB.prepare(`
+      SELECT supplier_category, item_name, unit, quantity, unit_price, amount, tax_amount,
+             (amount + tax_amount) as total,
+             ROW_NUMBER() OVER (PARTITION BY supplier_category ORDER BY amount DESC) as rn
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+        AND supplier_category != ''
+      ORDER BY supplier_category, amount DESC
+    `).bind(hospitalId, vendorName, Number(year), Number(month)).all<any>()
+
+    // 전체 합계
+    const totalRow = await c.env.DB.prepare(`
+      SELECT COUNT(*) as item_count,
+             SUM(amount) as total_amount,
+             SUM(tax_amount) as total_vat,
+             SUM(amount + tax_amount) as grand_total
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+    `).bind(hospitalId, vendorName, Number(year), Number(month)).first<any>()
+
+    return c.json({
+      ok: true,
+      categories: catRows.results || [],
+      top_items: (topItems.results || []).filter((r: any) => r.rn <= 5),
+      total: totalRow
+    })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 월별 트렌드 분석 (동일 업체, 최근 N개월) ─────────────────
+// GET /invoice/monthly-trend?hospital_id=&vendor_name=&months=12
+txRouter.get('/invoice/monthly-trend', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const months = Number(c.req.query('months') || '12')
+
+    if (!vendorName) return c.json({ ok: false, error: '업체명 필수' }, 400)
+
+    // 월별 총액 트렌드
+    const monthlyTotal = await c.env.DB.prepare(`
+      SELECT document_year, document_month,
+             SUM(amount) as total_amount,
+             SUM(tax_amount) as total_vat,
+             SUM(amount + tax_amount) as grand_total,
+             COUNT(*) as item_count
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=?
+      GROUP BY document_year, document_month
+      ORDER BY document_year DESC, document_month DESC
+      LIMIT ?
+    `).bind(hospitalId, vendorName, months).all<any>()
+
+    // 월별 분류별 트렌드
+    const monthlyByCategory = await c.env.DB.prepare(`
+      SELECT document_year, document_month, supplier_category,
+             SUM(amount) as total_amount,
+             SUM(tax_amount) as total_vat,
+             SUM(amount + tax_amount) as grand_total,
+             COUNT(*) as item_count
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=? AND supplier_category != ''
+      GROUP BY document_year, document_month, supplier_category
+      ORDER BY document_year DESC, document_month DESC
+      LIMIT ?
+    `).bind(hospitalId, vendorName, months * 10).all<any>()
+
+    // 분류별 최근 2개월 비교 (전월 대비)
+    const categoryComparison = await c.env.DB.prepare(`
+      WITH ranked AS (
+        SELECT supplier_category, document_year, document_month,
+               SUM(amount) as total_amount,
+               SUM(amount + tax_amount) as grand_total,
+               COUNT(*) as item_count,
+               ROW_NUMBER() OVER (PARTITION BY supplier_category ORDER BY document_year DESC, document_month DESC) as rn
+        FROM transaction_items
+        WHERE hospital_id=? AND vendor_name=? AND supplier_category != ''
+        GROUP BY supplier_category, document_year, document_month
+      )
+      SELECT curr.supplier_category,
+             curr.document_year as curr_year, curr.document_month as curr_month,
+             curr.grand_total as curr_total, curr.item_count as curr_count,
+             prev.document_year as prev_year, prev.document_month as prev_month,
+             prev.grand_total as prev_total, prev.item_count as prev_count,
+             ROUND((curr.grand_total - prev.grand_total) * 100.0 / prev.grand_total, 1) as change_pct
+      FROM ranked curr
+      LEFT JOIN ranked prev ON curr.supplier_category = prev.supplier_category AND prev.rn = 2
+      WHERE curr.rn = 1
+      ORDER BY curr.grand_total DESC
+    `).bind(hospitalId, vendorName).all<any>()
+
+    // 업체별 등록된 분류 목록
+    const categoryList = await c.env.DB.prepare(`
+      SELECT DISTINCT category_name, sort_order
+      FROM invoice_supplier_classifications
+      WHERE hospital_id=? AND vendor_name=?
+      ORDER BY sort_order
+    `).bind(hospitalId, vendorName).all<any>()
+
+    return c.json({
+      ok: true,
+      monthly_total: (monthlyTotal.results || []).reverse(),
+      monthly_by_category: monthlyByCategory.results || [],
+      category_comparison: categoryComparison.results || [],
+      categories: categoryList.results || []
+    })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 특정 월 전체 품목 목록 ─────────────────────────────────────
+// GET /invoice/items?hospital_id=&vendor_name=&year=&month=&category=
+txRouter.get('/invoice/items', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const year  = Number(c.req.query('year')  || 0)
+    const month = Number(c.req.query('month') || 0)
+    const category = c.req.query('category') || ''
+
+    let sql = `
+      SELECT id, item_code, item_name, spec, unit, quantity, unit_price,
+             amount, tax_amount, (amount+tax_amount) as total,
+             supplier_category, tax_type
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+    `
+    const params: any[] = [hospitalId, vendorName, year, month]
+    if (category) { sql += ` AND supplier_category=?`; params.push(category) }
+    sql += ` ORDER BY supplier_category, amount DESC`
+
+    const rows = await c.env.DB.prepare(sql).bind(...params).all<any>()
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 업체 목록 조회 (분석된 업체) ──────────────────────────────
+// GET /invoice/vendors?hospital_id=
+txRouter.get('/invoice/vendors', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const rows = await c.env.DB.prepare(`
+      SELECT DISTINCT vendor_name,
+             MIN(document_year) as first_year,
+             MAX(document_year) as last_year,
+             COUNT(DISTINCT document_year||'-'||document_month) as month_count,
+             SUM(amount + tax_amount) as total_amount
+      FROM transaction_items
+      WHERE hospital_id=?
+      GROUP BY vendor_name
+      ORDER BY total_amount DESC
+    `).bind(hospitalId).all<any>()
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 파일 삭제 ──────────────────────────────────────────────────
+// DELETE /invoice/file/:file_id
+txRouter.delete('/invoice/file/:file_id', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const fileId = Number(c.req.param('file_id'))
+    // CASCADE로 items/documents도 삭제됨
+    await c.env.DB.prepare(`
+      DELETE FROM transaction_files WHERE id=? AND hospital_id=?
+    `).bind(fileId, hospitalId).run()
+    return c.json({ ok: true })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
 })
 
 export default txRouter

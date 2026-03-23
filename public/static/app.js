@@ -17965,10 +17965,24 @@ function txRenderUploadTab(container) {
           <!-- 업체명 / 년월 / 병원 -->
           <div class="grid grid-cols-2 gap-2">
             <div>
-              <label class="text-xs text-gray-500 font-medium block mb-1">업체명</label>
-              <input id="txVendorName" type="text" placeholder="예: 삼성웰스토리"
-                class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none"
-                oninput="txOnVendorNameChange(this.value)">
+              <label class="text-xs text-gray-500 font-medium block mb-1">업체 선택 <span class="text-gray-400 font-normal">(직접 입력 가능)</span></label>
+              <div class="relative">
+                <input id="txVendorName" type="text" placeholder="업체명 입력 또는 아래에서 선택"
+                  list="txVendorDatalist"
+                  class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-300 focus:outline-none"
+                  oninput="txOnVendorNameChange(this.value)">
+                <datalist id="txVendorDatalist">
+                  <option value="삼성웰스토리">
+                  <option value="아워홈">
+                  <option value="CJ프레시웨이">
+                  <option value="이산유통">
+                  <option value="푸드힐">
+                  <option value="현대그린푸드">
+                  <option value="신세계푸드">
+                </datalist>
+              </div>
+              <!-- 기존 업체 빠른선택 -->
+              <div id="txExistingVendors" class="mt-1.5 flex flex-wrap gap-1"></div>
             </div>
             <div>
               <label class="text-xs text-gray-500 font-medium block mb-1">헤더 행 건너뛰기</label>
@@ -18094,6 +18108,39 @@ function txRenderUploadTab(container) {
   txLoadFileList()
   txLoadTemplateList()
   if (App.role === 'admin') txLoadHospitalSelector()
+  // ★ 기존 업체 목록 로드 (빠른 선택 버튼)
+  txLoadExistingVendorsForUpload()
+}
+
+// 업로드 탭에서 기존 업체 빠른선택 버튼 로드
+async function txLoadExistingVendorsForUpload() {
+  const el = document.getElementById('txExistingVendors')
+  if (!el) return
+  try {
+    const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    const r = await axios.get('/api/transaction/invoice/vendors', { headers: authH })
+    const vendors = (r.data.data || []).slice(0, 10)  // 최대 10개
+    if (vendors.length > 0) {
+      el.innerHTML = vendors.map(v => `
+        <button type="button" onclick="document.getElementById('txVendorName').value='${v.vendor_name}';txOnVendorNameChange('${v.vendor_name}')"
+          class="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-full hover:bg-blue-100 transition">
+          ${v.vendor_name}
+        </button>`).join('')
+      // datalist에도 추가
+      const dl = document.getElementById('txVendorDatalist')
+      if (dl) {
+        vendors.forEach(v => {
+          if (!dl.querySelector(`option[value="${v.vendor_name}"]`)) {
+            const opt = document.createElement('option')
+            opt.value = v.vendor_name
+            dl.appendChild(opt)
+          }
+        })
+      }
+    } else {
+      el.innerHTML = '<span class="text-xs text-gray-400">아직 업로드된 업체 없음</span>'
+    }
+  } catch(e) { el.innerHTML = '' }
 }
 
 // 컬럼 필드 정의 (색상 포함)
@@ -18561,24 +18608,65 @@ function txDetectPeriodFromRows(rows) {
 }
 
 // 삼성웰스토리 등 카테고리 행 자동인식
-const TX_CATEGORY_KEYWORDS = ['가공식품','농산물류','농산물','저장식품','수산/건어물류','수산건어물','육류','축산물','소모품','위생용품','음료']
+const TX_CATEGORY_KEYWORDS = ['가공식품','농산물류','농산물','저장식품','수산/건어물류','수산건어물','육류','축산물','소모품','위생용품','음료','냉동식품','양념류','유제품','곡류','두류','과일류','채소류','건어물']
 const TX_CATEGORY_MAP = {
   '가공식품':'PROCESSED','농산물류':'VEGGIE','농산물':'VEGGIE',
   '저장식품':'GRAIN','수산/건어물류':'SEAFOOD','수산건어물':'SEAFOOD',
   '육류':'MEAT','축산물':'MEAT','소모품':'SUPPLIES',
-  '위생용품':'SUPPLIES','음료':'PROCESSED'
+  '위생용품':'SUPPLIES','음료':'PROCESSED','냉동식품':'PROCESSED',
+  '양념류':'VEGGIE','유제품':'PROCESSED','곡류':'GRAIN','두류':'VEGGIE',
+  '과일류':'VEGGIE','채소류':'VEGGIE','건어물':'SEAFOOD'
 }
 
-function txIsCategoryRow(row) {
+/**
+ * 카테고리 소계 행 인식 (두 가지 방법)
+ * 1) 노란색 배경(#FFFF80) + B열 = "소계" 패턴 (삼성웰스토리 등)
+ * 2) A열에 분류명 키워드만 있는 행
+ * @param {Array} row - 행 데이터 배열
+ * @param {object} cellStyles - {rowIndex: {colIndex: {bgColor}}} 스타일 맵 (선택)
+ * @param {number} rowIdx - 현재 행 인덱스
+ * @returns {string|null} 분류명 또는 null
+ */
+function txIsCategoryRow(row, cellStyles, rowIdx) {
   if (!row || !Array.isArray(row)) return null
+  const a = String(row[0] || '').trim()
+  const b = String(row[1] || '').trim()
+
+  // 방법1: A열에 분류명, B열='소계' (소계 행 = 분류 끝 표시)
+  // → 분류명 반환 (소계 행 자체는 파싱에서 제외되지만 분류명 추출용)
+  if (b === '소계' && a) {
+    return a  // 분류명 반환
+  }
+
+  // 방법2: 노란색 배경 셀 감지 (cellStyles 제공 시)
+  if (cellStyles && rowIdx !== undefined) {
+    const rowStyle = cellStyles[rowIdx]
+    if (rowStyle) {
+      const firstCellBg = rowStyle[0]?.bgColor || ''
+      // 노란색: #FFFF80 = ffffff80, #FFFF00 = ffff0000 등
+      if (/ff{2}[0-9a-f]{2}80|ffff[0-9a-f]{4}/i.test(firstCellBg) && a) {
+        return a
+      }
+    }
+  }
+
+  // 방법3: 비어있지 않은 셀이 A열 1개뿐이고 키워드 포함
   const nonEmpty = row.filter(c => c !== null && c !== undefined && String(c).trim() !== '')
   if (nonEmpty.length === 1) {
     const val = String(nonEmpty[0]).trim()
     for (const kw of TX_CATEGORY_KEYWORDS) {
-      if (val.includes(kw)) return kw
+      if (val.includes(kw)) return val
     }
   }
+
   return null
+}
+
+// 노란색 소계 행인지 확인 (분류 소계 행 = 건너뜀)
+function txIsSubtotalRow(row) {
+  const b = String(row[1] || '').trim()
+  const a = String(row[0] || '').trim()
+  return b === '소계' || (a && b === '소계')
 }
 
 function txHandleDrop(e) {
@@ -18832,10 +18920,11 @@ function txIsSkipRow(row, itemNameCol) {
   if (!row || row.length === 0) return true
   const first  = String(row[0] || '').trim()
   const second = String(row[1] || '').trim()
-  const itemCell = String(row[itemNameCol] || '').trim()
+  const itemCell = itemNameCol >= 0 ? String(row[itemNameCol] || '').trim() : ''
   // 소계/합계/페이지 표시 행 제거
   if (/소계|합계|subtotal|total/i.test(second)) return true
   if (/소계|합계|subtotal|total/i.test(itemCell)) return true
+  if (/소계|합계/i.test(first) && !second) return true  // A열만 합계인 행
   if (/^\d+\/\d+$/.test(first)) return true  // "1/1" 같은 페이지 표시
   if (first === '' && second === '' && itemCell === '') return true
   return false
@@ -18902,15 +18991,73 @@ async function txParseExcel(file, colMap, skipRows) {
         }
 
         const parsed = []
-        let currentCategory = null  // 삼성웰스토리 카테고리 행 추적
+        // ★ 개선: 템플릿 설정 없어도 항상 분류 자동 감지 활성화
+        // has_category_rows=1 이거나, 소계 행 패턴(B열='소계')이 파일에 있으면 활성화
         const hasCatRows = TXState._appliedTemplate?.has_category_rows === 1
-        console.log('[txParseExcel] effectiveColMap:', effectiveColMap, 'effectiveSkip:', effectiveSkip, 'total rows:', rows.length)
+
+        // ★ 소계 행 패턴 사전 스캔: B열='소계' 패턴이 있으면 자동 분류 모드
+        let autoDetectCats = hasCatRows
+        if (!autoDetectCats) {
+          for (let si = 0; si < rows.length; si++) {
+            const sr = rows[si]
+            if (String(sr[1]||'').trim() === '소계' && String(sr[0]||'').trim()) {
+              autoDetectCats = true
+              break
+            }
+          }
+        }
+
+        // ★ 노란색 배경 셀 스타일 추출 (셀 스타일이 있는 경우)
+        const cellStyles = {}
+        try {
+          if (ws['!cells'] || true) {
+            Object.keys(ws).forEach(addr => {
+              if (addr.startsWith('!')) return
+              const cell = ws[addr]
+              if (cell && cell.s && cell.s.fgColor) {
+                const m = addr.match(/([A-Z]+)(\d+)/)
+                if (m) {
+                  const rowIdx = parseInt(m[2]) - 1
+                  const colIdx = XLSX.utils.decode_col(m[1])
+                  if (!cellStyles[rowIdx]) cellStyles[rowIdx] = {}
+                  cellStyles[rowIdx][colIdx] = { bgColor: cell.s.fgColor.rgb || '' }
+                }
+              }
+            })
+          }
+        } catch(_) {}
+
+        // ★ 삼성웰스토리 등: "분류명 / 소계" 행이 분류 끝을 나타냄
+        // 소계 행을 만나면 직전 항목들에 분류명을 소급 적용 (후방 할당 방식)
+        // 분류명 행(B열 비어있고 A열에 분류명)이 선행하는 경우는 순방향으로도 처리
+        console.log('[txParseExcel] effectiveColMap:', effectiveColMap, 'effectiveSkip:', effectiveSkip, 'total rows:', rows.length, 'autoDetectCats:', autoDetectCats)
+
+        let pendingCategory = null      // 순방향: 분류명 행 발견 후 다음 항목에 적용
+        let lastCategoryStart = 0       // 후방 할당: 현재 분류 그룹의 시작 인덱스
+
         for (let i = effectiveSkip; i < rows.length; i++) {
           const row = rows[i]
-          // 카테고리 행 자동인식 (삼성웰스토리 등)
-          if (hasCatRows) {
-            const catKeyword = txIsCategoryRow(row)
-            if (catKeyword) { currentCategory = catKeyword; continue }
+          // ★ 카테고리/소계 행 처리
+          if (autoDetectCats) {
+            const catKeyword = txIsCategoryRow(row, cellStyles, i)
+            if (catKeyword) {
+              const isSubtotal = String(row[1]||'').trim() === '소계'
+              if (isSubtotal) {
+                // 소계 행 = 이 행 앞 항목들이 catKeyword 분류
+                // lastCategoryStart 부터 parsed.length-1 까지 supplier_category 설정
+                for (let pi = lastCategoryStart; pi < parsed.length; pi++) {
+                  if (!parsed[pi].supplier_category) {
+                    parsed[pi].supplier_category = catKeyword
+                  }
+                }
+                lastCategoryStart = parsed.length  // 다음 분류 그룹 시작점 갱신
+              } else {
+                // 순수 분류명 행 (소계 없이 분류명만 있는 경우)
+                pendingCategory = catKeyword
+                lastCategoryStart = parsed.length
+              }
+              continue
+            }
           }
           // 소계/합계/페이지 행 자동 제거
           if (txIsSkipRow(row, effectiveColMap.item_name)) continue
@@ -18939,10 +19086,21 @@ async function txParseExcel(file, colMap, skipRows) {
             quantity: qty, unit, unit_price, amount, tax_type,
             // 원본 파일의 부가세 값 전송 (-1이면 컬럼 없음, 0이면 면세, >0이면 실제 부가세)
             tax_amount_raw: rawTaxAmt,
-            category_hint: currentCategory || null,
+            // supplier_category: 순방향 분류명(pendingCategory) 사용, 소계 만나면 소급 수정됨
+            supplier_category: pendingCategory || null,
             raw: JSON.stringify(row)
           })
         }
+
+        // 파일 끝까지 소계 행 없이 남은 항목이 있으면 pendingCategory 적용
+        if (pendingCategory) {
+          for (let pi = lastCategoryStart; pi < parsed.length; pi++) {
+            if (!parsed[pi].supplier_category) {
+              parsed[pi].supplier_category = pendingCategory
+            }
+          }
+        }
+
         resolve(parsed)
       } catch(err) { reject(err) }
     }
@@ -20136,19 +20294,338 @@ async function txSaveItem(itemId) {
 }
 
 // ════════════════════════════════════════
-// TAB 3: 월별 분석
+// TAB 3: 월별 분석 (업체별 분류 추이 분석)
 // ════════════════════════════════════════
 async function txRenderMonthlyTab(container) {
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+
+  // 업체 목록 로드
+  let vendors = []
+  try {
+    const r = await axios.get('/api/transaction/invoice/vendors', { headers: authH })
+    vendors = r.data.data || []
+  } catch(e) {}
+
+  const selVendor = TXState._monthlyVendor || (vendors[0]?.vendor_name || '')
+
   container.innerHTML = `
-  <div id="txMonthlyContent">
-    <div class="text-center text-gray-400 py-16">
-      <i class="fas fa-spinner fa-spin text-3xl mb-3"></i><br>분석 데이터 불러오는 중...
+  <div class="space-y-4">
+    <!-- 컨트롤 바 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-wrap gap-3 items-end">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1 font-medium">업체 선택</label>
+        <select id="monthlyVendorSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none min-w-[160px]">
+          ${vendors.length === 0
+            ? `<option value="">업체 없음 (파일 업로드 필요)</option>`
+            : vendors.map(v => `<option value="${v.vendor_name}" ${v.vendor_name===selVendor?'selected':''}>${v.vendor_name} (${v.month_count}개월)</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1 font-medium">분석 기간</label>
+        <select id="monthlyPeriodSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+          <option value="6">최근 6개월</option>
+          <option value="12" selected>최근 12개월</option>
+          <option value="24">최근 24개월</option>
+        </select>
+      </div>
+      <button onclick="txLoadVendorMonthlyTrend()" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5">
+        <i class="fas fa-chart-line text-xs"></i> 추이 분석
+      </button>
+    </div>
+
+    <!-- 분석 결과 -->
+    <div id="monthlyTrendResult">
+      <div class="bg-white rounded-xl p-10 text-center text-gray-400 border border-gray-100">
+        <i class="fas fa-chart-bar text-4xl mb-3 block opacity-30"></i>
+        업체를 선택하고 <strong>추이 분석</strong> 버튼을 클릭하세요.
+      </div>
     </div>
   </div>`
-  await txLoadMonthlyAnalysis()
+
+  document.getElementById('monthlyVendorSel')?.addEventListener('change', e => { TXState._monthlyVendor = e.target.value })
+
+  if (selVendor) txLoadVendorMonthlyTrend()
 }
 
-async function txLoadMonthlyAnalysis() {
+// ── 업체별 월별 추이 분석 로드 ────────────────────────────────
+window.txLoadVendorMonthlyTrend = async function() {
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const vendor = document.getElementById('monthlyVendorSel')?.value || ''
+  const months = document.getElementById('monthlyPeriodSel')?.value || '12'
+  TXState._monthlyVendor = vendor
+
+  const el = document.getElementById('monthlyTrendResult')
+  if (!el) return
+  if (!vendor) { el.innerHTML = `<div class="bg-white rounded-xl p-8 text-center text-gray-400">업체를 선택하세요.</div>`; return }
+
+  el.innerHTML = `<div class="bg-white rounded-xl p-10 text-center text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2 text-sm">분석 중...</p></div>`
+
+  try {
+    const r = await axios.get(`/api/transaction/invoice/monthly-trend?vendor_name=${encodeURIComponent(vendor)}&months=${months}`, { headers: authH })
+    const trendData = r.data
+    txRenderVendorMonthlyTrend(el, vendor, trendData)
+  } catch(e) {
+    el.innerHTML = `<div class="bg-white rounded-xl p-8 text-center text-red-500"><i class="fas fa-exclamation-triangle mr-2"></i>데이터 로드 실패: ${e.message}</div>`
+  }
+}
+
+// ── 업체별 월별 추이 렌더링 ───────────────────────────────────
+function txRenderVendorMonthlyTrend(el, vendor, trendData) {
+  const monthlyTotal    = trendData.monthly_total  || []
+  const monthlyByCat    = trendData.monthly_by_category || []
+  const categories      = trendData.categories || []
+  const catComparison   = trendData.category_comparison || []
+
+  if (monthlyTotal.length === 0) {
+    el.innerHTML = `<div class="bg-white rounded-xl p-10 text-center text-gray-400 border border-gray-100">
+      <i class="fas fa-inbox text-3xl mb-2 block opacity-30"></i>
+      <strong>${vendor}</strong> 데이터가 없습니다.<br>
+      <span class="text-sm">명세서를 업로드해 주세요.</span>
+    </div>`
+    return
+  }
+
+  // 월 라벨
+  const labels = monthlyTotal.map(r => `${r.document_year}.${String(r.document_month).padStart(2,'0')}`)
+  const totals = monthlyTotal.map(r => Number(r.grand_total) || 0)
+
+  // 전월 대비 증감
+  const changes = monthlyTotal.map((r, i) => {
+    if (i === 0) return null
+    const prev = Number(monthlyTotal[i-1].grand_total) || 0
+    const cur  = Number(r.grand_total) || 0
+    return prev > 0 ? Math.round((cur - prev) / prev * 100) : null
+  })
+
+  // 분류별 월 데이터 정리
+  const catNames = [...new Set(monthlyByCat.map(r => r.supplier_category))].filter(Boolean)
+  const catMonthlyData = catNames.map((catName, ci) => {
+    const color = INV_COLORS[ci % INV_COLORS.length]
+    const data = labels.map(label => {
+      const [yr, mo] = label.split('.')
+      const row = monthlyByCat.find(r => r.supplier_category === catName &&
+        r.document_year == yr && r.document_month == mo)
+      return row ? Number(row.grand_total) || 0 : 0
+    })
+    return { catName, data, color }
+  })
+
+  // 분류별 최근월 금액 정렬 (많은 순)
+  catMonthlyData.sort((a,b) => (b.data[b.data.length-1]||0) - (a.data[a.data.length-1]||0))
+
+  // 최근 2개월 비교 테이블
+  const lastIdx = monthlyTotal.length - 1
+  const prevIdx = lastIdx - 1
+  const lastMonth = monthlyTotal[lastIdx]
+  const prevMonth = prevIdx >= 0 ? monthlyTotal[prevIdx] : null
+
+  el.innerHTML = `
+  <div class="space-y-4">
+    <!-- 최근 2개월 비교 카드 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">이번 달 (${lastMonth?.document_year}.${String(lastMonth?.document_month||0).padStart(2,'0')})</div>
+        <div class="text-xl font-bold text-blue-600">${((Number(lastMonth?.grand_total)||0)/10000).toFixed(1)}만원</div>
+        <div class="text-xs text-gray-500 mt-1">${Number(lastMonth?.item_count)||0}개 품목</div>
+      </div>
+      ${prevMonth ? `
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">전월 (${prevMonth.document_year}.${String(prevMonth.document_month).padStart(2,'0')})</div>
+        <div class="text-xl font-bold text-gray-500">${((Number(prevMonth.grand_total)||0)/10000).toFixed(1)}만원</div>
+        <div class="text-xs text-gray-500 mt-1">${Number(prevMonth.item_count)||0}개 품목</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">전월 대비 증감</div>
+        ${(() => {
+          const cur  = Number(lastMonth?.grand_total) || 0
+          const prev = Number(prevMonth?.grand_total) || 1
+          const pct  = Math.round((cur - prev) / prev * 100)
+          return `<div class="text-xl font-bold ${pct > 0 ? 'text-red-500' : 'text-green-600'}">${pct > 0 ? '▲' : '▼'}${Math.abs(pct)}%</div>
+                  <div class="text-xs text-gray-500 mt-1">${((cur-prev)/10000).toFixed(1)}만원 ${pct>0?'증가':'감소'}</div>`
+        })()}
+      </div>` : '<div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm col-span-2"><div class="text-xs text-gray-400">이전 월 데이터 없음</div></div>'}
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-400 mb-1">분석 기간</div>
+        <div class="text-xl font-bold text-purple-600">${monthlyTotal.length}개월</div>
+        <div class="text-xs text-gray-500 mt-1">${labels[0]} ~ ${labels[labels.length-1]}</div>
+      </div>
+    </div>
+
+    <!-- ★ 분류별 전월 대비 비교 카드 (핵심 기능) -->
+    ${catComparison.length > 0 ? `
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-balance-scale text-blue-500"></i> 분류별 전월 대비 비교
+        <span class="text-xs font-normal text-gray-400">(${vendor} · 분류별 최근 2개월)</span>
+      </h3>
+      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+        ${catComparison.map((cat, ci) => {
+          const color = INV_COLORS[ci % INV_COLORS.length]
+          const curr = Number(cat.curr_total) || 0
+          const prev = Number(cat.prev_total) || 0
+          const pct  = cat.change_pct !== null ? Number(cat.change_pct) : null
+          const diff = curr - prev
+          return `<div style="border:1px solid ${color}30;border-radius:10px;padding:12px;background:${color}08">
+            <div style="font-size:11px;font-weight:700;color:${color};margin-bottom:6px">
+              ${cat.supplier_category}
+            </div>
+            <div style="font-size:16px;font-weight:800;color:#1f2937">${(curr/10000).toFixed(1)}만</div>
+            <div style="font-size:10px;color:#6b7280;margin-top:2px">${cat.curr_year}.${String(cat.curr_month).padStart(2,'0')} · ${cat.curr_count}개</div>
+            ${prev > 0 ? `
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid ${color}20">
+              <div style="font-size:10px;color:#9ca3af">전월 (${cat.prev_year}.${String(cat.prev_month).padStart(2,'0')}): ${(prev/10000).toFixed(1)}만</div>
+              <div style="font-size:12px;font-weight:700;color:${pct > 0 ? '#ef4444' : pct < 0 ? '#10b981' : '#6b7280'}">
+                ${pct !== null ? `${pct > 0 ? '▲' : pct < 0 ? '▼' : '━'} ${Math.abs(pct)}%` : '━'}
+                <span style="font-size:10px;font-weight:normal;margin-left:4px">${diff >= 0 ? '+' : ''}${(diff/10000).toFixed(1)}만</span>
+              </div>
+            </div>` : `<div style="margin-top:4px;font-size:10px;color:#9ca3af">전월 데이터 없음</div>`}
+          </div>`
+        }).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- 월별 총액 추이 라인 차트 -->
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-chart-line text-blue-500"></i> ${vendor} 월별 총액 추이
+      </h3>
+      <div style="height:220px"><canvas id="monthlyTotalChart"></canvas></div>
+    </div>
+
+    <!-- 분류별 월별 누적 바 차트 -->
+    ${catMonthlyData.length > 0 ? `
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-chart-bar text-orange-500"></i> 분류별 월별 금액 추이
+      </h3>
+      <div style="height:260px"><canvas id="monthlyCatStackChart"></canvas></div>
+    </div>` : ''}
+
+    <!-- 월별 × 분류별 상세 테이블 -->
+    ${catMonthlyData.length > 0 ? `
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-table text-purple-500"></i> 월별 분류별 상세
+      </h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-200">
+              <th class="px-3 py-2 text-left text-gray-500 font-semibold sticky left-0 bg-gray-50">분류</th>
+              ${labels.map(l => `<th class="px-3 py-2 text-right text-gray-500 font-semibold whitespace-nowrap">${l}</th>`).join('')}
+              <th class="px-3 py-2 text-right text-gray-500 font-semibold">합계</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${catMonthlyData.map((cd, ci) => {
+              const rowTotal = cd.data.reduce((s,v) => s+v, 0)
+              return `<tr class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="px-3 py-2 font-medium sticky left-0 bg-white" style="color:${cd.color}">
+                  <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${cd.color}"></span>
+                  ${cd.catName}
+                </td>
+                ${cd.data.map((v, di) => {
+                  const prevV = di > 0 ? cd.data[di-1] : null
+                  const chg = prevV !== null && prevV > 0 ? Math.round((v - prevV)/prevV*100) : null
+                  return `<td class="px-3 py-2 text-right">
+                    <div class="font-medium text-gray-700">${v > 0 ? (v/10000).toFixed(1)+'만' : '<span class="text-gray-300">-</span>'}</div>
+                    ${chg !== null && v > 0 ? `<div class="text-xs ${chg>10?'text-red-500':chg<-10?'text-green-600':'text-gray-400'}">${chg>0?'▲':'▼'}${Math.abs(chg)}%</div>` : ''}
+                  </td>`
+                }).join('')}
+                <td class="px-3 py-2 text-right font-bold text-gray-800">${(rowTotal/10000).toFixed(1)}만</td>
+              </tr>`
+            }).join('')}
+            <tr class="bg-blue-50 border-t-2 border-blue-200 font-bold">
+              <td class="px-3 py-2 text-gray-700 sticky left-0 bg-blue-50">합계</td>
+              ${totals.map((v, di) => {
+                const chg = changes[di]
+                return `<td class="px-3 py-2 text-right">
+                  <div class="text-blue-700">${(v/10000).toFixed(1)}만</div>
+                  ${chg !== null ? `<div class="text-xs ${chg>10?'text-red-500':chg<-10?'text-green-600':'text-gray-400'}">${chg>0?'▲':'▼'}${Math.abs(chg)}%</div>` : ''}
+                </td>`
+              }).join('')}
+              <td class="px-3 py-2 text-right text-blue-800">${(totals.reduce((s,v)=>s+v,0)/10000).toFixed(1)}만</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
+  </div>`
+
+  // 차트 그리기
+  setTimeout(() => {
+    // 월별 총액 라인 차트
+    const lineCtx = document.getElementById('monthlyTotalChart')?.getContext('2d')
+    if (lineCtx) {
+      new Chart(lineCtx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: '월별 합계',
+            data: totals,
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59,130,246,0.08)',
+            tension: 0.3,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            borderWidth: 2,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => `${(ctx.raw/10000).toFixed(1)}만원`
+              }
+            }
+          },
+          scales: {
+            y: { ticks: { callback: v => (v/10000).toFixed(0)+'만' }, grid: { color: '#f0f0f0' } },
+            x: { ticks: { maxRotation: 45 } }
+          }
+        }
+      })
+    }
+
+    // 분류별 누적 바 차트
+    const stackCtx = document.getElementById('monthlyCatStackChart')?.getContext('2d')
+    if (stackCtx && catMonthlyData.length > 0) {
+      new Chart(stackCtx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: catMonthlyData.map(cd => ({
+            label: cd.catName,
+            data: cd.data,
+            backgroundColor: cd.color + 'cc',
+            borderColor: cd.color,
+            borderWidth: 1,
+            borderRadius: 2
+          }))
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+            tooltip: {
+              callbacks: {
+                label: ctx => `${ctx.dataset.label}: ${(ctx.raw/10000).toFixed(1)}만원`
+              }
+            }
+          },
+          scales: {
+            x: { stacked: true, ticks: { maxRotation: 45 } },
+            y: { stacked: true, ticks: { callback: v => (v/10000).toFixed(0)+'만' } }
+          }
+        }
+      })
+    }
+  }, 50)
+}
   const el = document.getElementById('txMonthlyContent')
   if (!el) return
   try {
