@@ -19284,6 +19284,9 @@ async function txRenderCategoryTab(container) {
       <button onclick="txShowInvoiceUploadModal()" class="bg-purple-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1.5">
         <i class="fas fa-upload text-xs"></i> 명세서 업로드
       </button>
+      <button onclick="txExportCategoryAnalysis()" id="invExportBtn" class="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-1.5" style="display:none">
+        <i class="fas fa-file-excel text-xs"></i> 엑셀 다운로드
+      </button>
     </div>
 
     <!-- 분석 결과 영역 -->
@@ -19378,26 +19381,29 @@ function txRenderCategoryAnalysis(el, vendor, year, month, catData, trendData, a
     <!-- ① 요약 카드 -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-        <div class="text-xs text-gray-400 mb-1">총 금액</div>
+        <div class="text-xs text-gray-400 mb-1">총 합계 금액</div>
         <div class="text-xl font-bold text-blue-600">${(grandTotal/10000).toFixed(1)}만원</div>
+        <div class="text-xs text-blue-400 mt-0.5">${grandTotal.toLocaleString()}원</div>
         <div class="text-xs text-gray-500 mt-1">${vendor} · ${year}년 ${month}월</div>
       </div>
       <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
         <div class="text-xs text-gray-400 mb-1">총 품목 수</div>
         <div class="text-xl font-bold text-green-600">${Number(total.item_count) || 0}개</div>
         <div class="text-xs text-gray-500 mt-1">분류 ${categories.length}개</div>
+        <div class="text-xs text-gray-400 mt-0.5">면세 ${allItems.filter(i=>!i.tax_amount||Number(i.tax_amount)===0).length}개 / 과세 ${allItems.filter(i=>Number(i.tax_amount)>0).length}개</div>
       </div>
       <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
         <div class="text-xs text-gray-400 mb-1">과세 금액</div>
         <div class="text-xl font-bold text-orange-500">${((Number(total.taxable_amount)||0)/10000).toFixed(1)}만원</div>
-        <div class="text-xs text-gray-500 mt-1">부가세 ${((Number(total.total_vat)||0)/10000).toFixed(1)}만원</div>
+        <div class="text-xs text-orange-300 mt-0.5">${(Number(total.taxable_amount)||0).toLocaleString()}원</div>
+        <div class="text-xs text-gray-500 mt-1">부가세 ${((Number(total.total_vat)||0)).toLocaleString()}원</div>
       </div>
       <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
         <div class="text-xs text-gray-400 mb-1">전월 대비</div>
         ${prevMonthDiff !== null
           ? `<div class="text-xl font-bold ${prevMonthDiff > 0 ? 'text-red-500' : 'text-green-600'}">${prevMonthDiff > 0 ? '▲' : '▼'}${Math.abs(prevMonthDiff)}%</div>
              <div class="text-xs text-gray-500 mt-1">${prevMonthDiff > 0 ? '전월보다 증가' : '전월보다 감소'}</div>`
-          : `<div class="text-lg font-bold text-gray-400">-</div><div class="text-xs text-gray-500 mt-1">비교 데이터 없음</div>`}
+          : `<div class="text-lg font-bold text-gray-400">-</div><div class="text-xs text-gray-500 mt-1">비교 데이터 없음</div><div class="text-xs text-gray-400">추가 업로드 시 활성화</div>`}
       </div>
     </div>
 
@@ -19496,6 +19502,93 @@ function txRenderCategoryAnalysis(el, vendor, year, month, catData, trendData, a
       </div>
     </div>` : ''}
 
+    <!-- ⑤-b 월별 사용률 분석 (단일 월 포함 항상 표시) -->
+    <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <h3 class="font-bold text-gray-700 text-sm mb-4 flex items-center gap-2">
+        <i class="fas fa-calendar-alt text-teal-500"></i> ${year}년 ${month}월 사용률 분석
+        <span class="ml-auto text-xs text-gray-400 font-normal">거래일: ${year}-${String(month).padStart(2,'0')}</span>
+      </h3>
+      <div class="grid md:grid-cols-2 gap-4">
+        <!-- 왼쪽: 분류별 금액 순위 -->
+        <div>
+          <div class="text-xs font-semibold text-gray-500 mb-3 flex items-center gap-1">
+            <i class="fas fa-crown text-yellow-400"></i> 분류별 금액 순위
+          </div>
+          <div class="space-y-2">
+            ${(() => {
+              const sorted = [...categories].sort((a,b) => (Number(b.grand_total)||0) - (Number(a.grand_total)||0))
+              const totalAmt = sorted.reduce((s,c) => s+(Number(c.grand_total)||0), 0)
+              const medals = ['🥇','🥈','🥉']
+              return sorted.map((cat, i) => {
+                const amt = Number(cat.grand_total) || 0
+                const pct = totalAmt > 0 ? (amt/totalAmt*100).toFixed(1) : 0
+                const color = INV_COLORS[categories.indexOf(cat) % INV_COLORS.length]
+                const badge = medals[i] || `${i+1}위`
+                return `<div class="flex items-center gap-3 p-2.5 rounded-lg bg-gray-50">
+                  <span class="text-base w-6 text-center">${badge}</span>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex justify-between items-center mb-1">
+                      <span class="text-xs font-semibold text-gray-700">${cat.supplier_category||'미분류'}</span>
+                      <span class="text-xs font-bold" style="color:${color}">${(amt/10000).toFixed(1)}만원 (${pct}%)</span>
+                    </div>
+                    <div style="height:6px;background:#e5e7eb;border-radius:3px">
+                      <div style="height:100%;width:${pct}%;background:${color};border-radius:3px"></div>
+                    </div>
+                    <div class="text-xs text-gray-400 mt-1">${cat.item_count}개 품목 · 부가세 ${(Number(cat.total_vat)||0).toLocaleString()}원</div>
+                  </div>
+                </div>`
+              }).join('')
+            })()}
+          </div>
+        </div>
+        <!-- 오른쪽: 분류별 수량 기준 사용 빈도 상위 품목 -->
+        <div>
+          <div class="text-xs font-semibold text-gray-500 mb-3 flex items-center gap-1">
+            <i class="fas fa-fire text-orange-400"></i> 수량 기준 주요 사용 품목 (전체 TOP 8)
+          </div>
+          <div class="space-y-1.5">
+            ${(() => {
+              const sorted = [...allItems].sort((a,b) => {
+                // 금액 기준 정렬 (수량 * 단가)
+                return (Number(b.amount)||0) - (Number(a.amount)||0)
+              }).slice(0, 8)
+              const maxAmt = Number(sorted[0]?.amount)||1
+              return sorted.map((it, i) => {
+                const amt = Number(it.amount) || 0
+                const pct = (amt/maxAmt*100).toFixed(0)
+                const catIdx = categories.findIndex(c => c.supplier_category === it.supplier_category)
+                const color = INV_COLORS[catIdx >= 0 ? catIdx : 0]
+                return `<div class="flex items-center gap-2 py-1">
+                  <span class="text-xs text-gray-400 w-4 text-right">${i+1}</span>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex justify-between items-center">
+                      <span class="text-xs font-medium text-gray-700 truncate max-w-[140px]" title="${it.item_name}">${it.item_name}</span>
+                      <span class="text-xs font-bold text-gray-800 ml-1">${amt.toLocaleString()}원</span>
+                    </div>
+                    <div class="flex items-center gap-1 mt-0.5">
+                      <div style="flex:1;height:4px;background:#f3f4f6;border-radius:2px">
+                        <div style="height:100%;width:${pct}%;background:${color};border-radius:2px"></div>
+                      </div>
+                      <span class="text-xs text-gray-400 whitespace-nowrap">${it.quantity}${it.unit||''}</span>
+                    </div>
+                  </div>
+                  <span style="font-size:9px;background:${color}20;color:${color};padding:1px 5px;border-radius:8px;white-space:nowrap">${it.supplier_category||'미분류'}</span>
+                </div>`
+              }).join('')
+            })()}
+          </div>
+        </div>
+      </div>
+      ${monthlyTotals.length <= 1 ? `
+      <div class="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100 flex items-start gap-2">
+        <i class="fas fa-info-circle text-blue-400 mt-0.5"></i>
+        <div class="text-xs text-blue-700">
+          <strong>월별 추이 분석:</strong> 현재 ${year}년 ${month}월 1개월 데이터만 존재합니다.
+          동일 업체(${vendor})의 다른 달 명세서를 추가 업로드하면 <strong>월별 비교 트렌드</strong>가 자동으로 활성화됩니다.
+        </div>
+      </div>` : ''}
+    </div>
+
     <!-- ⑥ 전체 품목 테이블 -->
     <div class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -19511,6 +19604,9 @@ function txRenderCategoryAnalysis(el, vendor, year, month, catData, trendData, a
             <option value="">전체 분류</option>
             ${categories.map(c => `<option value="${c.supplier_category}">${c.supplier_category}</option>`).join('')}
           </select>
+          <button onclick="txExportCategoryAnalysis()" class="text-sm bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 flex items-center gap-1.5 whitespace-nowrap">
+            <i class="fas fa-file-excel text-xs"></i> 엑셀
+          </button>
         </div>
       </div>
       <div class="overflow-x-auto">
@@ -19550,6 +19646,10 @@ function txRenderCategoryAnalysis(el, vendor, year, month, catData, trendData, a
   // 전역에 품목 데이터 저장 (검색용)
   window._invAllItems = allItems
   window._invCategories = categories
+
+  // 엑셀 다운로드 버튼 표시
+  const exportBtn = document.getElementById('invExportBtn')
+  if (exportBtn) exportBtn.style.display = 'flex'
 
   // 차트 그리기
   setTimeout(() => {
@@ -19693,6 +19793,128 @@ window.txFilterInvItems = function(keyword) {
 
   const tbody = document.getElementById('invItemTbody')
   if (tbody) tbody.innerHTML = txBuildItemRows(filtered, cats)
+}
+
+// ── 분류별 분석 결과 엑셀 다운로드 ──────────────────────────
+window.txExportCategoryAnalysis = async function() {
+  if (typeof XLSX === 'undefined') {
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    s.onload = () => { showToast('라이브러리 로드 완료. 다시 클릭해주세요.', 'info') }
+    document.head.appendChild(s)
+    showToast('엑셀 라이브러리 로딩 중...', 'warning')
+    return
+  }
+
+  const items = window._invAllItems || []
+  const cats  = window._invCategories || []
+  const vendor = TXState._invVendor || ''
+  const year   = TXState._invYear   || ''
+  const month  = TXState._invMonth  || ''
+
+  if (items.length === 0) { showToast('내보낼 데이터가 없습니다.', 'error'); return }
+
+  const wb = XLSX.utils.book_new()
+
+  // ── Sheet 1: 분류별 요약
+  const summaryRows = [
+    ['분류별 거래명세서 분석 보고서'],
+    [`업체: ${vendor}   기간: ${year}년 ${month}월`],
+    [],
+    ['분류', '품목수', '금액(원)', '부가세(원)', '합계(원)', '비율(%)'],
+  ]
+  const grandTot = cats.reduce((s,c) => s + (Number(c.grand_total)||0), 0)
+  cats.forEach(c => {
+    const amt = Number(c.grand_total) || 0
+    summaryRows.push([
+      c.supplier_category || '미분류',
+      Number(c.item_count) || 0,
+      Number(c.total_amount) || 0,
+      Number(c.total_vat) || 0,
+      amt,
+      grandTot > 0 ? Math.round(amt / grandTot * 1000) / 10 : 0
+    ])
+  })
+  summaryRows.push([])
+  summaryRows.push(['합계', items.length,
+    cats.reduce((s,c)=>s+(Number(c.total_amount)||0),0),
+    cats.reduce((s,c)=>s+(Number(c.total_vat)||0),0),
+    grandTot, 100
+  ])
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
+  wsSummary['!cols'] = [{wch:16},{wch:8},{wch:14},{wch:12},{wch:14},{wch:8}]
+  XLSX.utils.book_append_sheet(wb, wsSummary, '분류별 요약')
+
+  // ── Sheet 2: 전체 품목 상세
+  const detailRows = [
+    ['분류', '품목코드', '품목명', '규격', '단위', '수량', '단가(원)', '금액(원)', '부가세(원)', '합계(원)', '과세구분']
+  ]
+  // 분류 순서대로 정렬
+  const catOrder = cats.map(c => c.supplier_category || '미분류')
+  const sorted = [...items].sort((a, b) => {
+    const ai = catOrder.indexOf(a.supplier_category || '미분류')
+    const bi = catOrder.indexOf(b.supplier_category || '미분류')
+    if (ai !== bi) return ai - bi
+    return (Number(b.amount)||0) - (Number(a.amount)||0)
+  })
+  sorted.forEach(it => {
+    detailRows.push([
+      it.supplier_category || '미분류',
+      it.item_code || '',
+      it.item_name || '',
+      it.spec || '',
+      it.unit || '',
+      it.quantity,
+      Number(it.unit_price) || 0,
+      Number(it.amount) || 0,
+      Number(it.tax_amount) || 0,
+      Number(it.total) || 0,
+      it.tax_amount > 0 ? '과세' : '면세'
+    ])
+  })
+  // 합계행
+  detailRows.push([
+    '합 계', '', '', '', '',
+    sorted.reduce((s,i)=>s+(Number(i.quantity)||0),0),
+    '',
+    sorted.reduce((s,i)=>s+(Number(i.amount)||0),0),
+    sorted.reduce((s,i)=>s+(Number(i.tax_amount)||0),0),
+    sorted.reduce((s,i)=>s+(Number(i.total)||0),0),
+    ''
+  ])
+  const wsDetail = XLSX.utils.aoa_to_sheet(detailRows)
+  wsDetail['!cols'] = [{wch:14},{wch:13},{wch:24},{wch:30},{wch:6},{wch:7},{wch:12},{wch:12},{wch:10},{wch:12},{wch:7}]
+  XLSX.utils.book_append_sheet(wb, wsDetail, '품목 상세')
+
+  // ── Sheet 3: 분류별 TOP 품목
+  const topRows = [['분류', '순위', '품목명', '수량', '단위', '단가(원)', '금액(원)', '비율(%)']]
+  cats.forEach(cat => {
+    const catItems = sorted.filter(i => (i.supplier_category||'미분류') === (cat.supplier_category||'미분류'))
+    const catTotal = catItems.reduce((s,i)=>s+(Number(i.amount)||0),0)
+    catItems.slice(0,5).forEach((it, idx) => {
+      const pct = catTotal > 0 ? Math.round(Number(it.amount)/catTotal*1000)/10 : 0
+      topRows.push([
+        idx === 0 ? (cat.supplier_category||'미분류') : '',
+        idx+1,
+        it.item_name,
+        it.quantity,
+        it.unit||'',
+        Number(it.unit_price)||0,
+        Number(it.amount)||0,
+        pct
+      ])
+    })
+    topRows.push([])
+  })
+  const wsTop = XLSX.utils.aoa_to_sheet(topRows)
+  wsTop['!cols'] = [{wch:14},{wch:5},{wch:28},{wch:7},{wch:6},{wch:12},{wch:12},{wch:8}]
+  XLSX.utils.book_append_sheet(wb, wsTop, '분류별 TOP5')
+
+  // 파일 저장
+  const fname = `분류별분석_${vendor}_${year}${String(month).padStart(2,'0')}.xlsx`
+  XLSX.writeFile(wb, fname)
+  showToast(`✅ 엑셀 다운로드 완료: ${fname}`, 'success')
 }
 
 // ── 명세서 업로드 모달 (분류별 분석용) ───────────────────────
