@@ -10974,14 +10974,39 @@ async function openHospitalDetail(hospitalId) {
 
       <!-- 업체관리 탭 -->
       <div id="hospTab-vendors" class="hidden">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="font-semibold text-gray-700"><i class="fas fa-store text-green-600 mr-1"></i>업체 정보 등록</h3>
-          <button onclick="showAdminAddVendorModal()" class="btn btn-success btn-sm">
-            <i class="fas fa-plus mr-1"></i>업체 추가
-          </button>
+        <!-- 발주 업체 섹션 -->
+        <div class="mb-6">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-store text-green-600 mr-1"></i>발주 업체 목록</h3>
+              <p class="text-xs text-gray-400 mt-0.5">발주 입력·예산 관리에 사용되는 업체 목록</p>
+            </div>
+            <button onclick="showAdminAddVendorModal()" class="btn btn-success btn-sm">
+              <i class="fas fa-plus mr-1"></i>업체 추가
+            </button>
+          </div>
+          <div id="adminVendorList">
+            ${renderAdminVendorRows(vendors)}
+          </div>
         </div>
-        <div id="adminVendorList">
-          ${renderAdminVendorRows(vendors)}
+
+        <!-- 구분선 -->
+        <div class="border-t border-gray-100 my-4"></div>
+
+        <!-- 명세서 업체 섹션 -->
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-semibold text-gray-700"><i class="fas fa-file-invoice text-blue-600 mr-1"></i>거래명세서 업체 관리</h3>
+              <p class="text-xs text-gray-400 mt-0.5">업체별 명세서 구조(컬럼 매핑)를 등록해두면 매월 파일만 선택하면 됩니다</p>
+            </div>
+            <button onclick="showAddInvoiceVendorModal(${hospitalId})" class="btn btn-sm" style="background:#2563eb;color:white">
+              <i class="fas fa-plus mr-1"></i>명세서 업체 추가
+            </button>
+          </div>
+          <div id="invoiceVendorList" class="space-y-2">
+            <div class="text-xs text-gray-400 text-center py-4"><i class="fas fa-spinner fa-spin mr-1"></i>로딩중...</div>
+          </div>
         </div>
       </div>
 
@@ -11755,6 +11780,10 @@ function switchHospTab(tab) {
   // 예산 탭으로 전환 시 업체별 합계 자동 계산
   if (tab === 'budget') {
     setTimeout(() => syncVendorBudgetTotal(), 50)
+  }
+  // 업체 탭으로 전환 시 명세서 업체 목록 로드
+  if (tab === 'vendors' && window._adminHospitalId) {
+    loadInvoiceVendors(window._adminHospitalId)
   }
 }
 
@@ -19917,103 +19946,133 @@ window.txExportCategoryAnalysis = async function() {
   showToast(`✅ 엑셀 다운로드 완료: ${fname}`, 'success')
 }
 
-// ── 명세서 업로드 모달 (분류별 분석용) ───────────────────────
-window.txShowInvoiceUploadModal = function() {
-  // 업체 목록 (기존 + 직접입력)
-  const existingVendors = Array.from(new Set((window._invAllItems||[]).map(i => i.vendor_name).filter(Boolean)))
+// ── 명세서 업로드 모달 (분류별 분석용) - 업체 카드 선택 방식 ────
+window.txShowInvoiceUploadModal = async function() {
+  document.getElementById('invUploadModal')?.remove()
 
   const modal = document.createElement('div')
   modal.id = 'invUploadModal'
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
   modal.innerHTML = `
-  <div style="background:white;border-radius:16px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">
+  <div style="background:white;border-radius:16px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto">
     <div style="padding:20px 24px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
-      <h3 style="font-size:16px;font-weight:700;color:#1f2937"><i class="fas fa-upload text-purple-500 mr-2"></i>거래명세서 업로드 (분류별 분석)</h3>
+      <h3 style="font-size:16px;font-weight:700;color:#1f2937"><i class="fas fa-upload text-purple-500 mr-2"></i>거래명세서 업로드</h3>
       <button onclick="document.getElementById('invUploadModal').remove()" style="color:#9ca3af;font-size:20px;cursor:pointer">✕</button>
     </div>
-    <div style="padding:24px" class="space-y-4">
-      <!-- 업체 선택/입력 -->
+    <div style="padding:20px" class="space-y-4">
+      <!-- STEP 1: 업체 선택 -->
       <div>
-        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">업체명 <span style="color:#ef4444">*</span></label>
-        <div style="display:flex;gap:8px">
-          <input id="invUpVendor" type="text" placeholder="업체명 직접 입력 (예: 삼성웰스토리)"
-            class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-400 focus:outline-none">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px">
+          <span style="background:#7c3aed;color:white;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;margin-right:6px">1</span>
+          업체 선택
         </div>
-        ${existingVendors.length > 0 ? `
-        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
-          <span style="font-size:10px;color:#9ca3af">최근 업체:</span>
-          ${existingVendors.slice(0,5).map(v => `
-            <button onclick="document.getElementById('invUpVendor').value='${v}'"
-              style="font-size:10px;background:#f3e8ff;color:#7c3aed;border:none;padding:2px 8px;border-radius:12px;cursor:pointer">${v}</button>`).join('')}
-        </div>` : ''}
+        <div id="invUpVendorCards" class="grid gap-2" style="grid-template-columns:repeat(2,1fr)">
+          <div style="text-align:center;padding:16px;color:#9ca3af;grid-column:1/-1">
+            <i class="fas fa-spinner fa-spin"></i> 등록된 업체 불러오는 중...
+          </div>
+        </div>
+        <!-- 직접 입력 옵션 -->
+        <div id="invUpManualWrap" class="hidden mt-3">
+          <div style="font-size:11px;color:#6b7280;margin-bottom:4px">업체명 직접 입력 (등록되지 않은 업체)</div>
+          <input id="invUpVendorManual" type="text" placeholder="업체명 입력"
+            class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            oninput="invUpSelectManualVendor()">
+        </div>
+        <button onclick="document.getElementById('invUpManualWrap').classList.toggle('hidden')"
+          style="margin-top:8px;font-size:11px;color:#7c3aed;background:none;border:none;cursor:pointer;padding:0">
+          <i class="fas fa-plus mr-1"></i>등록되지 않은 업체 직접 입력
+        </button>
       </div>
 
-      <!-- 연도/월 -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div>
-          <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">연도 <span style="color:#ef4444">*</span></label>
-          <select id="invUpYear" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
-            ${[2024,2025,2026,2027].map(y=>`<option value="${y}" ${y===TXState.year?'selected':''}>${y}년</option>`).join('')}
-          </select>
-        </div>
-        <div>
-          <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">월 <span style="color:#ef4444">*</span></label>
-          <select id="invUpMonth" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
-            ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===TXState.month?'selected':''}>${m}월</option>`).join('')}
-          </select>
+      <!-- STEP 2: 선택된 업체 파싱 구조 표시 (업체 선택 후 표시됨) -->
+      <div id="invUpVendorInfo" class="hidden">
+        <div style="background:#eff6ff;border-radius:10px;padding:12px;border:1px solid #bfdbfe">
+          <div style="font-size:12px;font-weight:600;color:#1e40af;margin-bottom:6px">
+            <i class="fas fa-check-circle mr-1"></i>선택된 업체: <span id="invUpVendorName" style="font-size:14px"></span>
+            <span id="invUpVerifiedBadge" class="hidden" style="margin-left:6px;font-size:10px;background:#dcfce7;color:#166534;padding:1px 8px;border-radius:12px">검증완료</span>
+          </div>
+          <div id="invUpParsingInfo" style="font-size:11px;color:#3b82f6;font-family:monospace"></div>
         </div>
       </div>
 
-      <!-- 파일 선택 -->
-      <div>
-        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">엑셀 파일 <span style="color:#ef4444">*</span> <span style="font-weight:400;color:#9ca3af">(.xlsx, .xls)</span></label>
-        <input id="invUpFile" type="file" accept=".xlsx,.xls"
-          class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-400 focus:outline-none">
-      </div>
-
-      <!-- 포맷 설정 -->
-      <div style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid #e2e8f0">
-        <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:10px"><i class="fas fa-sliders-h text-blue-400 mr-1"></i>파싱 설정</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <!-- STEP 3: 연도/월 -->
+      <div id="invUpDateStep" class="hidden">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px">
+          <span style="background:#7c3aed;color:white;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;margin-right:6px">2</span>
+          명세서 연도/월
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
-            <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">건너뛸 행 수 (헤더)</label>
-            <input id="invUpSkip" type="number" value="4" min="0" max="20"
-              class="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
-            <div style="font-size:10px;color:#9ca3af;margin-top:2px">삼성웰스토리: 4 (기본)</div>
+            <select id="invUpYear" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+              ${[2024,2025,2026,2027].map(y=>`<option value="${y}" ${y===(TXState?.year||2026)?'selected':''}>${y}년</option>`).join('')}
+            </select>
           </div>
           <div>
-            <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">분류 구분 방식</label>
-            <select id="invUpCatMode" class="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
-              <option value="subtotal">소계 행으로 구분 (삼성웰스토리)</option>
-              <option value="category_col">별도 분류 컬럼</option>
-              <option value="none">분류 없음</option>
+            <select id="invUpMonth" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+              ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===(TXState?.month||3)?'selected':''}>${m}월</option>`).join('')}
             </select>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:10px">
-          ${[
-            {id:'invUpColCode',  label:'품목코드', val:'0'},
-            {id:'invUpColName',  label:'품목명',   val:'1'},
-            {id:'invUpColSpec',  label:'규격',     val:'2'},
-            {id:'invUpColUnit',  label:'단위',     val:'3'},
-            {id:'invUpColQty',   label:'수량',     val:'4'},
-          ].map(c=>`<div>
-            <label style="font-size:10px;color:#6b7280;display:block;margin-bottom:2px">${c.label}열</label>
-            <input id="${c.id}" type="number" value="${c.val}" min="0" max="20"
-              class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-center">
-          </div>`).join('')}
+      </div>
+
+      <!-- STEP 4: 파일 선택 -->
+      <div id="invUpFileStep" class="hidden">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px">
+          <span style="background:#7c3aed;color:white;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;margin-right:6px">3</span>
+          엑셀 파일 선택
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px">
-          ${[
-            {id:'invUpColPrice', label:'단가',  val:'5'},
-            {id:'invUpColAmt',   label:'금액',  val:'6'},
-            {id:'invUpColVat',   label:'부가세',val:'7'},
-            {id:'invUpColTotal', label:'합계',  val:'8'},
-          ].map(c=>`<div>
-            <label style="font-size:10px;color:#6b7280;display:block;margin-bottom:2px">${c.label}열</label>
-            <input id="${c.id}" type="number" value="${c.val}" min="0" max="20"
-              class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-center">
-          </div>`).join('')}
+        <input id="invUpFile" type="file" accept=".xlsx,.xls"
+          class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+      </div>
+
+      <!-- 파싱 설정 (고급) 토글 -->
+      <div id="invUpAdvancedWrap" class="hidden">
+        <button onclick="document.getElementById('invUpAdvancedSettings').classList.toggle('hidden')"
+          style="font-size:11px;color:#6b7280;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:6px 12px;cursor:pointer;width:100%">
+          <i class="fas fa-sliders-h mr-1"></i>파싱 설정 수동 조정 (고급)
+          <i class="fas fa-chevron-down ml-1 text-xs"></i>
+        </button>
+        <div id="invUpAdvancedSettings" class="hidden mt-2" style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid #e2e8f0">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">건너뛸 행 수</label>
+              <input id="invUpSkip" type="number" value="4" min="0" max="20"
+                class="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">분류 구분 방식</label>
+              <select id="invUpCatMode" class="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
+                <option value="subtotal">소계 행으로 구분</option>
+                <option value="category_col">별도 분류 컬럼</option>
+                <option value="none">분류 없음</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+            ${[
+              {id:'invUpColCode',  label:'코드', val:'0'},
+              {id:'invUpColName',  label:'품명', val:'1'},
+              {id:'invUpColSpec',  label:'규격', val:'2'},
+              {id:'invUpColUnit',  label:'단위', val:'3'},
+              {id:'invUpColQty',   label:'수량', val:'4'},
+            ].map(c=>`<div>
+              <label style="font-size:10px;color:#6b7280;display:block;margin-bottom:2px">${c.label}열</label>
+              <input id="${c.id}" type="number" value="${c.val}" min="0"
+                class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-center">
+            </div>`).join('')}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px">
+            ${[
+              {id:'invUpColPrice', label:'단가',  val:'5'},
+              {id:'invUpColAmt',   label:'금액',  val:'6'},
+              {id:'invUpColVat',   label:'부가세',val:'7'},
+              {id:'invUpColTotal', label:'합계',  val:'8'},
+            ].map(c=>`<div>
+              <label style="font-size:10px;color:#6b7280;display:block;margin-bottom:2px">${c.label}열</label>
+              <input id="${c.id}" type="number" value="${c.val}" min="0"
+                class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs text-center">
+            </div>`).join('')}
+          </div>
         </div>
       </div>
 
@@ -20021,7 +20080,7 @@ window.txShowInvoiceUploadModal = function() {
       <div id="invUpPreview" style="display:none"></div>
 
       <!-- 버튼 -->
-      <div style="display:flex;gap:10px;padding-top:8px">
+      <div id="invUpBtnWrap" class="hidden" style="display:none;gap:10px;padding-top:8px">
         <button onclick="txPreviewInvoiceFile()" style="flex:1;background:#3b82f6;color:white;border:none;padding:10px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">
           <i class="fas fa-eye mr-1"></i> 미리보기
         </button>
@@ -20033,6 +20092,133 @@ window.txShowInvoiceUploadModal = function() {
     </div>
   </div>`
   document.body.appendChild(modal)
+
+  // 업체 목록 비동기 로드
+  try {
+    const r = await axios.get('/api/transaction/invoice-vendors', { headers: authH })
+    const vendors = r.data.vendors || []
+    window._invUploadVendors = vendors
+    const cardsEl = document.getElementById('invUpVendorCards')
+    if (!cardsEl) return
+    if (vendors.length === 0) {
+      cardsEl.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:20px;color:#6b7280">
+        <p style="font-size:13px">등록된 명세서 업체가 없습니다</p>
+        <p style="font-size:11px;color:#9ca3af;margin-top:4px">관리자 > 병원설정 > 업체관리 탭에서 업체를 등록하세요</p>
+      </div>`
+      return
+    }
+    cardsEl.innerHTML = vendors.map(v => {
+      const uploadCount = v.upload_count_live ?? v.upload_count ?? 0
+      const lastYear = v.last_year_live ?? v.last_upload_year
+      const lastMonth = v.last_month_live ?? v.last_upload_month
+      const lastText = lastYear ? `최근: ${lastYear}/${lastMonth}` : '업로드 없음'
+      const statusColor = v.test_status === 'verified' ? '#16a34a' : '#9ca3af'
+      const statusIcon = v.test_status === 'verified' ? 'fa-check-circle' : 'fa-question-circle'
+      return `
+      <div onclick="invUpSelectVendor(${v.id})" id="invUpCard-${v.id}"
+        style="border:2px solid #e5e7eb;border-radius:12px;padding:12px;cursor:pointer;transition:all 0.15s;background:white"
+        onmouseover="this.style.borderColor='#7c3aed';this.style.background='#faf5ff'"
+        onmouseout="if(!this.classList.contains('selected')){this.style.borderColor='#e5e7eb';this.style.background='white'}">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <div style="width:32px;height:32px;border-radius:8px;background:#eff6ff;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-building" style="color:#2563eb;font-size:13px"></i>
+          </div>
+          <div style="min-width:0">
+            <div style="font-size:13px;font-weight:600;color:#1f2937;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.vendor_name}</div>
+            <div style="font-size:10px;color:${statusColor}">
+              <i class="fas ${statusIcon} mr-0.5"></i>${v.test_status === 'verified' ? '검증완료' : '미검증'}
+            </div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:#9ca3af">${lastText} · ${uploadCount}회</div>
+      </div>`
+    }).join('')
+  } catch(e) {
+    const cardsEl = document.getElementById('invUpVendorCards')
+    if (cardsEl) cardsEl.innerHTML = `<div style="grid-column:1/-1;color:#ef4444;text-align:center;padding:12px;font-size:12px">업체 목록 로드 실패</div>`
+  }
+}
+
+// 업로드 모달에서 업체 선택
+window.invUpSelectVendor = function(vendorId) {
+  const vendors = window._invUploadVendors || []
+  const v = vendors.find(x => x.id === vendorId)
+  if (!v) return
+
+  // 카드 선택 상태
+  document.querySelectorAll('[id^="invUpCard-"]').forEach(el => {
+    el.classList.remove('selected')
+    el.style.borderColor = '#e5e7eb'
+    el.style.background = 'white'
+  })
+  const card = document.getElementById(`invUpCard-${vendorId}`)
+  if (card) {
+    card.classList.add('selected')
+    card.style.borderColor = '#7c3aed'
+    card.style.background = '#faf5ff'
+  }
+
+  // 선택된 업체 정보 표시
+  window._invUpSelectedVendor = v
+  document.getElementById('invUpVendorName').textContent = v.vendor_name
+  if (v.test_status === 'verified') document.getElementById('invUpVerifiedBadge')?.classList.remove('hidden')
+  else document.getElementById('invUpVerifiedBadge')?.classList.add('hidden')
+  document.getElementById('invUpParsingInfo').textContent =
+    `건너뛸행: ${v.skip_rows} | 코드:${v.col_code} 품명:${v.col_name} 수량:${v.col_qty} 단가:${v.col_price} 금액:${v.col_amount} | 분류: ${v.cat_mode}`
+  document.getElementById('invUpVendorInfo')?.classList.remove('hidden')
+
+  // 파싱 설정 자동 적용
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val }
+  setVal('invUpSkip', v.skip_rows)
+  setVal('invUpCatMode', v.cat_mode)
+  setVal('invUpColCode', v.col_code)
+  setVal('invUpColName', v.col_name)
+  setVal('invUpColSpec', v.col_spec)
+  setVal('invUpColUnit', v.col_unit)
+  setVal('invUpColQty', v.col_qty)
+  setVal('invUpColPrice', v.col_price)
+  setVal('invUpColAmt', v.col_amount)
+  setVal('invUpColVat', v.col_vat)
+  setVal('invUpColTotal', v.col_total)
+
+  // 다음 단계 표시
+  document.getElementById('invUpDateStep')?.classList.remove('hidden')
+  document.getElementById('invUpFileStep')?.classList.remove('hidden')
+  document.getElementById('invUpAdvancedWrap')?.classList.remove('hidden')
+  const btnWrap = document.getElementById('invUpBtnWrap')
+  if (btnWrap) { btnWrap.classList.remove('hidden'); btnWrap.style.display = 'flex' }
+}
+
+// 직접 입력 업체 선택 시
+window.invUpSelectManualVendor = function() {
+  const name = document.getElementById('invUpVendorManual')?.value?.trim()
+  if (!name) return
+  window._invUpSelectedVendor = null
+
+  // 카드 선택 해제
+  document.querySelectorAll('[id^="invUpCard-"]').forEach(el => {
+    el.classList.remove('selected')
+    el.style.borderColor = '#e5e7eb'
+    el.style.background = 'white'
+  })
+
+  document.getElementById('invUpVendorName').textContent = name
+  document.getElementById('invUpVerifiedBadge')?.classList.add('hidden')
+  document.getElementById('invUpParsingInfo').textContent = '기본 파싱 설정 사용 (직접 입력 업체)'
+  document.getElementById('invUpVendorInfo')?.classList.remove('hidden')
+
+  // 기본값으로 리셋
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val }
+  setVal('invUpSkip', 4); setVal('invUpCatMode', 'subtotal')
+  setVal('invUpColCode',0); setVal('invUpColName',1); setVal('invUpColSpec',2)
+  setVal('invUpColUnit',3); setVal('invUpColQty',4); setVal('invUpColPrice',5)
+  setVal('invUpColAmt',6); setVal('invUpColVat',7); setVal('invUpColTotal',8)
+
+  document.getElementById('invUpDateStep')?.classList.remove('hidden')
+  document.getElementById('invUpFileStep')?.classList.remove('hidden')
+  document.getElementById('invUpAdvancedWrap')?.classList.remove('hidden')
+  const btnWrap = document.getElementById('invUpBtnWrap')
+  if (btnWrap) { btnWrap.classList.remove('hidden'); btnWrap.style.display = 'flex' }
 }
 
 // ── 명세서 파싱 미리보기 ──────────────────────────────────────
@@ -20255,10 +20441,14 @@ window.txSaveInvoiceFile = async function() {
   if (!parsed || !parsed.items || parsed.items.length === 0) {
     showToast('먼저 미리보기를 실행하세요.', 'error'); return
   }
-  const vendor = document.getElementById('invUpVendor')?.value.trim()
+  // 업체명: 카드 선택 > 직접 입력 순으로 가져오기
+  const selectedV = window._invUpSelectedVendor
+  const vendor = selectedV?.vendor_name
+    || document.getElementById('invUpVendorManual')?.value?.trim()
+    || document.getElementById('invUpVendor')?.value?.trim()
   const year   = document.getElementById('invUpYear')?.value
   const month  = document.getElementById('invUpMonth')?.value
-  if (!vendor) { showToast('업체명을 입력하세요.', 'error'); return }
+  if (!vendor) { showToast('업체를 선택하거나 업체명을 입력하세요.', 'error'); return }
 
   const saveBtn = document.getElementById('invUpSaveBtn')
   if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 저장 중...' }
@@ -20274,6 +20464,15 @@ window.txSaveInvoiceFile = async function() {
     if (res.data.ok) {
       showToast(`✅ 저장 완료! ${res.data.item_count}개 품목`, 'success')
       document.getElementById('invUploadModal')?.remove()
+      // upload-sync: 최근 업로드 정보 갱신 (명세서 업체 카드에서 선택된 경우)
+      const selectedV = window._invUpSelectedVendor
+      if (selectedV?.id) {
+        try {
+          await axios.post(`/api/transaction/invoice-vendors/${selectedV.id}/upload-sync`, {
+            year: Number(year), month: Number(month)
+          }, { headers: authH })
+        } catch(e) { /* 무시 */ }
+      }
       // 분석 업데이트
       TXState._invVendor = vendor
       TXState._invYear   = year
@@ -20987,3 +21186,446 @@ async function txLoadDashboard() {
   TXState.month = +document.getElementById('txMonth').value
   txSwitchTab(TXState.tab)
 }
+
+// ══════════════════════════════════════════════════════════════════
+// ── 명세서 업체 관리 (hospital_invoice_vendors) ───────────────────
+// ══════════════════════════════════════════════════════════════════
+
+// 명세서 업체 목록 로드 & 렌더링
+async function loadInvoiceVendors(hospitalId) {
+  const listEl = document.getElementById('invoiceVendorList')
+  if (!listEl) return
+  listEl.innerHTML = `<div class="text-xs text-gray-400 text-center py-4"><i class="fas fa-spinner fa-spin mr-1"></i>로딩중...</div>`
+  try {
+    const hqParam = hospitalId ? `?hospitalId=${hospitalId}` : ''
+    const r = await axios.get(`/api/transaction/invoice-vendors${hqParam}`, { headers: authH })
+    const vendors = r.data.vendors || []
+    if (vendors.length === 0) {
+      listEl.innerHTML = `<div class="text-center py-8 text-gray-400">
+        <i class="fas fa-file-invoice text-4xl mb-2 block text-gray-200"></i>
+        <p class="text-sm">등록된 명세서 업체가 없습니다</p>
+        <p class="text-xs mt-1 text-gray-300">위 버튼으로 업체를 추가하세요</p>
+      </div>`
+      return
+    }
+    listEl.innerHTML = vendors.map(v => renderInvoiceVendorCard(v, hospitalId)).join('')
+  } catch(e) {
+    listEl.innerHTML = `<div class="text-red-500 text-sm text-center py-4">오류: ${e.message}</div>`
+  }
+}
+
+// 명세서 업체 카드 렌더링
+function renderInvoiceVendorCard(v, hospitalId) {
+  const statusColor = v.test_status === 'verified' ? 'text-green-600 bg-green-50' : v.test_status === 'failed' ? 'text-red-600 bg-red-50' : 'text-gray-500 bg-gray-50'
+  const statusIcon = v.test_status === 'verified' ? 'fa-check-circle' : v.test_status === 'failed' ? 'fa-times-circle' : 'fa-question-circle'
+  const statusText = v.test_status === 'verified' ? '검증완료' : v.test_status === 'failed' ? '검증실패' : '미검증'
+
+  const uploadCount = v.upload_count_live ?? v.upload_count ?? 0
+  const lastYear = v.last_year_live ?? v.last_upload_year
+  const lastMonth = v.last_month_live ?? v.last_upload_month
+  const lastUploadText = lastYear ? `${lastYear}년 ${lastMonth}월` : '없음'
+
+  const catModeText = { subtotal: '소계행 감지', category_col: '분류열 방식', none: '분류없음' }[v.cat_mode] || v.cat_mode
+
+  return `
+  <div class="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition" id="inv-vendor-${v.id}">
+    <div class="flex items-start gap-3">
+      <!-- 아이콘 -->
+      <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
+        <i class="fas fa-building text-blue-600"></i>
+      </div>
+      <!-- 정보 -->
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-semibold text-gray-800">${v.vendor_name}</span>
+          <span class="text-xs px-2 py-0.5 rounded-full font-medium ${statusColor}">
+            <i class="fas ${statusIcon} mr-0.5"></i>${statusText}
+          </span>
+        </div>
+        ${v.description ? `<p class="text-xs text-gray-400 mt-0.5">${v.description}</p>` : ''}
+        <div class="flex flex-wrap gap-3 mt-2 text-xs text-gray-500">
+          <span><i class="fas fa-table mr-1 text-gray-300"></i>${catModeText}</span>
+          <span><i class="fas fa-upload mr-1 text-gray-300"></i>총 ${uploadCount}회 업로드</span>
+          <span><i class="fas fa-calendar-alt mr-1 text-gray-300"></i>최근: ${lastUploadText}</span>
+          ${v.test_verified_at ? `<span class="text-green-600"><i class="fas fa-clock mr-1"></i>검증: ${v.test_verified_at.split('T')[0]}</span>` : ''}
+        </div>
+        <!-- 파싱 구조 요약 -->
+        <div class="mt-2 px-2 py-1.5 bg-gray-50 rounded-lg text-xs text-gray-400 font-mono">
+          건너뛸행 ${v.skip_rows} | 코드:${v.col_code} 품명:${v.col_name} 수량:${v.col_qty} 단가:${v.col_price} 금액:${v.col_amount} 부가세:${v.col_vat}
+        </div>
+        <!-- 테스트 샘플 (검증 시) -->
+        ${v.test_status === 'verified' && v.test_sample_rows ? (() => {
+          try {
+            const rows = typeof v.test_sample_rows === 'string' ? JSON.parse(v.test_sample_rows) : v.test_sample_rows
+            if (rows && rows.length > 0) {
+              return `<div class="mt-2 text-xs text-gray-400">
+                <span class="text-green-600 font-medium">샘플 데이터:</span>
+                ${rows.slice(0,2).map(r => `<span class="ml-1 bg-green-50 text-green-700 px-1.5 py-0.5 rounded">${r.item_name||r[1]||'-'}</span>`).join('')}
+              </div>`
+            }
+          } catch(e) {}
+          return ''
+        })() : ''}
+      </div>
+      <!-- 버튼 -->
+      <div class="flex flex-col gap-1.5 flex-shrink-0">
+        <button onclick="showEditInvoiceVendorModal(${v.id}, ${hospitalId})" class="btn btn-secondary btn-sm px-2.5 text-xs">
+          <i class="fas fa-edit mr-1"></i>설정
+        </button>
+        <button onclick="showInvoiceVendorTestModal(${v.id}, ${hospitalId})" class="btn btn-sm px-2.5 text-xs ${v.test_status === 'verified' ? 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100' : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'}">
+          <i class="fas fa-vial mr-1"></i>테스트
+        </button>
+        <button onclick="deleteInvoiceVendor(${v.id}, ${hospitalId})" class="btn btn-danger btn-sm px-2.5 text-xs">
+          <i class="fas fa-trash text-xs"></i>
+        </button>
+      </div>
+    </div>
+  </div>`
+}
+
+// 명세서 업체 추가 모달
+function showAddInvoiceVendorModal(hospitalId) {
+  showInvoiceVendorFormModal(null, hospitalId)
+}
+
+// 명세서 업체 편집 모달
+async function showEditInvoiceVendorModal(vendorId, hospitalId) {
+  try {
+    const hqParam = hospitalId ? `?hospitalId=${hospitalId}` : ''
+    const r = await axios.get(`/api/transaction/invoice-vendors/${vendorId}${hqParam}`, { headers: authH })
+    showInvoiceVendorFormModal(r.data.vendor, hospitalId)
+  } catch(e) {
+    showToast('업체 정보 로드 실패: ' + e.message, 'error')
+  }
+}
+
+// 명세서 업체 등록/편집 공통 모달
+function showInvoiceVendorFormModal(vendor, hospitalId) {
+  const isEdit = !!vendor
+  const v = vendor || {
+    vendor_name: '', description: '',
+    skip_rows: 4, col_code: 0, col_name: 1, col_spec: 2,
+    col_unit: 3, col_qty: 4, col_price: 5,
+    col_amount: 6, col_vat: 7, col_total: 8,
+    cat_mode: 'subtotal', col_category: null
+  }
+
+  // 기존 모달 제거
+  document.getElementById('invVendorFormModal')?.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'invVendorFormModal'
+  modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[300] p-4'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between p-5 border-b border-gray-100">
+        <h3 class="font-bold text-lg text-gray-800">
+          <i class="fas fa-file-invoice text-blue-600 mr-2"></i>
+          ${isEdit ? '명세서 업체 설정 편집' : '명세서 업체 추가'}
+        </h3>
+        <button onclick="document.getElementById('invVendorFormModal').remove()" class="text-gray-400 hover:text-gray-600 w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center">✕</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <!-- 업체명 -->
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1">업체명 <span class="text-red-500">*</span></label>
+          <input id="ivf-name" class="form-input" value="${v.vendor_name}" placeholder="예: 삼성웰스토리" ${isEdit ? 'readonly class="form-input bg-gray-50"' : ''}>
+        </div>
+        <!-- 설명 -->
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1">메모 (선택)</label>
+          <input id="ivf-desc" class="form-input" value="${v.description||''}" placeholder="업체 관련 메모">
+        </div>
+        <!-- 파싱 구조 -->
+        <div class="bg-blue-50 rounded-xl p-4">
+          <div class="text-sm font-semibold text-blue-800 mb-3">
+            <i class="fas fa-table mr-1"></i>파일 파싱 구조 설정
+            <span class="text-xs font-normal text-blue-500 ml-1">(0부터 시작하는 열 번호)</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-gray-600 mb-1">헤더 건너뛸 행수</label>
+              <input id="ivf-skip" type="number" class="form-input text-sm" value="${v.skip_rows}" min="0" max="20">
+              <p class="text-xs text-gray-400 mt-0.5">데이터 시작 전 행 수</p>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-600 mb-1">분류 방식</label>
+              <select id="ivf-catmode" class="form-input text-sm" onchange="toggleCatColInput()">
+                <option value="subtotal" ${v.cat_mode==='subtotal'?'selected':''}>소계행 감지 (권장)</option>
+                <option value="category_col" ${v.cat_mode==='category_col'?'selected':''}>분류 열 지정</option>
+                <option value="none" ${v.cat_mode==='none'?'selected':''}>분류 없음</option>
+              </select>
+            </div>
+          </div>
+          <div id="ivf-catcol-wrap" class="${v.cat_mode==='category_col'?'':'hidden'} mt-2">
+            <label class="block text-xs text-gray-600 mb-1">분류 열 번호</label>
+            <input id="ivf-catcol" type="number" class="form-input text-sm" value="${v.col_category??''}" min="0" placeholder="분류 열 번호">
+          </div>
+          <div class="mt-3 grid grid-cols-3 gap-2">
+            ${[
+              ['ivf-col-code','품목코드 열',v.col_code],
+              ['ivf-col-name','품목명 열',v.col_name],
+              ['ivf-col-spec','규격 열',v.col_spec],
+              ['ivf-col-unit','단위 열',v.col_unit],
+              ['ivf-col-qty','수량 열',v.col_qty],
+              ['ivf-col-price','단가 열',v.col_price],
+              ['ivf-col-amount','금액 열',v.col_amount],
+              ['ivf-col-vat','부가세 열',v.col_vat],
+              ['ivf-col-total','합계 열',v.col_total],
+            ].map(([id, label, val]) => `
+              <div>
+                <label class="block text-xs text-gray-600 mb-0.5">${label}</label>
+                <input id="${id}" type="number" class="form-input text-sm" value="${val}" min="0">
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        <!-- 안내 -->
+        <div class="bg-amber-50 rounded-xl p-3 text-xs text-amber-700">
+          <i class="fas fa-lightbulb mr-1"></i>
+          설정 저장 후 <strong>테스트</strong> 버튼으로 샘플 파일을 업로드해 파싱이 올바른지 확인하세요.
+        </div>
+      </div>
+      <div class="flex gap-2 p-5 border-t border-gray-100">
+        <button onclick="document.getElementById('invVendorFormModal').remove()" class="btn btn-secondary flex-1">취소</button>
+        <button onclick="saveInvoiceVendor(${isEdit ? v.id : 'null'}, ${hospitalId})" class="btn btn-primary flex-1">
+          <i class="fas fa-save mr-1"></i>${isEdit ? '저장' : '등록'}
+        </button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+}
+
+// 분류 방식 선택 시 분류열 입력란 토글
+function toggleCatColInput() {
+  const mode = document.getElementById('ivf-catmode')?.value
+  document.getElementById('ivf-catcol-wrap')?.classList.toggle('hidden', mode !== 'category_col')
+}
+
+// 명세서 업체 저장 (추가/수정)
+async function saveInvoiceVendor(vendorId, hospitalId) {
+  const nameEl = document.getElementById('ivf-name')
+  if (!nameEl?.value?.trim()) { showToast('업체명을 입력하세요', 'error'); return }
+
+  const body = {
+    vendor_name: nameEl.value.trim(),
+    description: document.getElementById('ivf-desc')?.value?.trim() || '',
+    skip_rows: +document.getElementById('ivf-skip')?.value || 4,
+    col_code: +document.getElementById('ivf-col-code')?.value || 0,
+    col_name: +document.getElementById('ivf-col-name')?.value || 1,
+    col_spec: +document.getElementById('ivf-col-spec')?.value || 2,
+    col_unit: +document.getElementById('ivf-col-unit')?.value || 3,
+    col_qty: +document.getElementById('ivf-col-qty')?.value || 4,
+    col_price: +document.getElementById('ivf-col-price')?.value || 5,
+    col_amount: +document.getElementById('ivf-col-amount')?.value || 6,
+    col_vat: +document.getElementById('ivf-col-vat')?.value || 7,
+    col_total: +document.getElementById('ivf-col-total')?.value || 8,
+    cat_mode: document.getElementById('ivf-catmode')?.value || 'subtotal',
+    col_category: document.getElementById('ivf-catcol')?.value !== '' ? +document.getElementById('ivf-catcol')?.value : null
+  }
+
+  try {
+    const hqParam = hospitalId ? `?hospitalId=${hospitalId}` : ''
+    if (vendorId) {
+      await axios.put(`/api/transaction/invoice-vendors/${vendorId}${hqParam}`, body, { headers: authH })
+    } else {
+      await axios.post(`/api/transaction/invoice-vendors${hqParam}`, body, { headers: authH })
+    }
+    document.getElementById('invVendorFormModal')?.remove()
+    showToast(vendorId ? '업체 설정 저장 완료' : '명세서 업체 등록 완료', 'success')
+    loadInvoiceVendors(hospitalId)
+  } catch(e) {
+    showToast('저장 실패: ' + (e.response?.data?.error || e.message), 'error')
+  }
+}
+
+// 명세서 업체 삭제
+async function deleteInvoiceVendor(vendorId, hospitalId) {
+  if (!confirm('이 명세서 업체를 삭제하시겠습니까?')) return
+  try {
+    const hqParam = hospitalId ? `?hospitalId=${hospitalId}` : ''
+    await axios.delete(`/api/transaction/invoice-vendors/${vendorId}${hqParam}`, { headers: authH })
+    showToast('삭제 완료', 'success')
+    loadInvoiceVendors(hospitalId)
+  } catch(e) {
+    showToast('삭제 실패: ' + e.message, 'error')
+  }
+}
+
+// 명세서 구조 테스트 모달 (파일 업로드 후 파싱 검증)
+function showInvoiceVendorTestModal(vendorId, hospitalId) {
+  document.getElementById('invVendorTestModal')?.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'invVendorTestModal'
+  modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[300] p-4'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between p-5 border-b border-gray-100">
+        <h3 class="font-bold text-lg text-gray-800">
+          <i class="fas fa-vial text-blue-600 mr-2"></i>명세서 구조 테스트
+        </h3>
+        <button onclick="document.getElementById('invVendorTestModal').remove()" class="text-gray-400 hover:text-gray-600 w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center">✕</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div class="bg-blue-50 rounded-xl p-3 text-sm text-blue-700">
+          <i class="fas fa-info-circle mr-1"></i>
+          명세서 샘플 파일을 업로드하면 현재 설정된 파싱 구조로 데이터를 미리 확인할 수 있습니다.
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-2">테스트용 엑셀 파일 선택</label>
+          <input type="file" id="ivt-file" accept=".xlsx,.xls" class="form-input text-sm"
+            onchange="previewInvoiceVendorTest(${vendorId}, ${hospitalId})">
+        </div>
+        <div id="ivt-result" class="hidden">
+          <!-- 파싱 결과 미리보기 -->
+        </div>
+      </div>
+      <div class="flex gap-2 p-5 border-t border-gray-100">
+        <button onclick="document.getElementById('invVendorTestModal').remove()" class="btn btn-secondary flex-1">닫기</button>
+        <button id="ivt-confirm-btn" onclick="confirmInvoiceVendorTest(${vendorId}, ${hospitalId})" class="btn btn-primary flex-1 hidden">
+          <i class="fas fa-check mr-1"></i>검증 완료로 표시
+        </button>
+      </div>
+    </div>
+  `
+  document.body.appendChild(modal)
+}
+
+// 테스트 파일 파싱 미리보기
+async function previewInvoiceVendorTest(vendorId, hospitalId) {
+  const fileInput = document.getElementById('ivt-file')
+  const resultEl = document.getElementById('ivt-result')
+  if (!fileInput?.files[0] || !resultEl) return
+
+  resultEl.innerHTML = `<div class="text-center py-4 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>파싱 중...</div>`
+  resultEl.classList.remove('hidden')
+
+  try {
+    // 업체 파싱 구조 가져오기
+    const hqParam = hospitalId ? `?hospitalId=${hospitalId}` : ''
+    const vr = await axios.get(`/api/transaction/invoice-vendors/${vendorId}${hqParam}`, { headers: authH })
+    const v = vr.data.vendor
+
+    // XLSX 라이브러리 로드
+    if (!window.XLSX) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script')
+        s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+        s.onload = res; s.onerror = rej
+        document.head.appendChild(s)
+      })
+    }
+
+    const file = fileInput.files[0]
+    const ab = await file.arrayBuffer()
+    const wb = XLSX.read(ab, { type: 'array' })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+    // skip_rows 이후부터 데이터 파싱
+    const skipRows = v.skip_rows || 4
+    const dataRows = rows.slice(skipRows)
+
+    const items = []
+    let currentCategory = ''
+
+    for (const row of dataRows) {
+      if (!row || row.every(c => c === '' || c === null || c === undefined)) continue
+      const code = String(row[v.col_code] || '').trim()
+      const name = String(row[v.col_name] || '').trim()
+      const qty = row[v.col_qty]
+      const price = row[v.col_price]
+      const amount = row[v.col_amount]
+
+      // 소계행 감지 (cat_mode === 'subtotal')
+      if (v.cat_mode === 'subtotal' && !code && name && !qty && !price) {
+        if (name.includes('류') || name.includes('식') || name.includes('품')) {
+          currentCategory = name.replace(/소계|합계|\d+/g, '').trim()
+          continue
+        }
+      }
+
+      if (!name) continue
+      if (!code && !qty && !price) continue
+
+      items.push({
+        code, name,
+        spec: String(row[v.col_spec] || ''),
+        unit: String(row[v.col_unit] || ''),
+        qty: isNaN(+qty) ? qty : +qty,
+        price: isNaN(+price) ? price : +price,
+        amount: isNaN(+amount) ? amount : +amount,
+        category: currentCategory
+      })
+      if (items.length >= 10) break
+    }
+
+    window._invTestSampleRows = items.slice(0, 3)
+
+    if (items.length === 0) {
+      resultEl.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-xl p-4 text-red-600 text-sm">
+        <i class="fas fa-times-circle mr-1"></i>파싱된 데이터가 없습니다. 파싱 설정을 확인하세요.
+        <div class="mt-2 text-xs">현재 설정: 건너뛸 행 ${skipRows}, 품목코드 열 ${v.col_code}, 품목명 열 ${v.col_name}</div>
+      </div>`
+      return
+    }
+
+    resultEl.innerHTML = `
+      <div class="bg-green-50 border border-green-200 rounded-xl p-3 text-green-700 text-sm mb-3">
+        <i class="fas fa-check-circle mr-1"></i>총 ${items.length}개 이상 항목 파싱 성공 (상위 10개 미리보기)
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs border-collapse">
+          <thead>
+            <tr class="bg-gray-50">
+              <th class="border border-gray-200 px-2 py-1.5 text-left text-gray-600">분류</th>
+              <th class="border border-gray-200 px-2 py-1.5 text-left text-gray-600">코드</th>
+              <th class="border border-gray-200 px-2 py-1.5 text-left text-gray-600">품목명</th>
+              <th class="border border-gray-200 px-2 py-1.5 text-right text-gray-600">수량</th>
+              <th class="border border-gray-200 px-2 py-1.5 text-right text-gray-600">단가</th>
+              <th class="border border-gray-200 px-2 py-1.5 text-right text-gray-600">금액</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(it => `
+              <tr class="hover:bg-gray-50">
+                <td class="border border-gray-100 px-2 py-1.5">
+                  ${it.category ? `<span class="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-xs">${it.category}</span>` : '-'}
+                </td>
+                <td class="border border-gray-100 px-2 py-1.5 text-gray-500 font-mono">${it.code||'-'}</td>
+                <td class="border border-gray-100 px-2 py-1.5 font-medium">${it.name}</td>
+                <td class="border border-gray-100 px-2 py-1.5 text-right">${it.qty}</td>
+                <td class="border border-gray-100 px-2 py-1.5 text-right">${(+it.price||0).toLocaleString()}</td>
+                <td class="border border-gray-100 px-2 py-1.5 text-right font-medium">${(+it.amount||0).toLocaleString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+    document.getElementById('ivt-confirm-btn')?.classList.remove('hidden')
+  } catch(e) {
+    resultEl.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-xl p-4 text-red-600 text-sm">
+      <i class="fas fa-times-circle mr-1"></i>오류: ${e.message}
+    </div>`
+  }
+}
+
+// 테스트 검증 완료로 표시
+async function confirmInvoiceVendorTest(vendorId, hospitalId) {
+  try {
+    const hqParam = hospitalId ? `?hospitalId=${hospitalId}` : ''
+    await axios.post(`/api/transaction/invoice-vendors/${vendorId}/test${hqParam}`, {
+      success: true,
+      sample_rows: window._invTestSampleRows || []
+    }, { headers: authH })
+    document.getElementById('invVendorTestModal')?.remove()
+    showToast('검증 완료로 표시됐습니다!', 'success')
+    loadInvoiceVendors(hospitalId)
+  } catch(e) {
+    showToast('저장 실패: ' + e.message, 'error')
+  }
+}
+
