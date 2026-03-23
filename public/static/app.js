@@ -20070,6 +20070,7 @@ window.txShowInvoiceUploadModal = async function() {
   document.body.appendChild(modal)
 
   // 발주 업체 목록 비동기 로드 (vendors 테이블 기반)
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   const hospitalId = window._currentHospitalId || window._adminHospitalId
   try {
     // 발주 업체 목록
