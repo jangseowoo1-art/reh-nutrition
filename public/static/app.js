@@ -18083,7 +18083,9 @@ async function txUpLoadVendors() {
   if (!grid) return
   const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   try {
-    const r = await axios.get('/api/transaction/vendors-for-invoice', { headers: authH })
+    // admin은 TXState.selectedHospitalId, 병원 계정은 토큰의 hospitalId 자동 사용
+    const hospitalParam = TXState.selectedHospitalId ? `?hospital_id=${TXState.selectedHospitalId}` : ''
+    const r = await axios.get(`/api/transaction/vendors-for-invoice${hospitalParam}`, { headers: authH })
     const vendors = r.data.vendors || []
     window._txUpVendors = vendors
 
@@ -18461,7 +18463,11 @@ async function txLoadHospitalSelector() {
     ).join('')
     // TXState에 저장
     if (hospitals.length > 0) TXState.selectedHospitalId = hospitals[0].id
-    sel.addEventListener('change', e => { TXState.selectedHospitalId = +e.target.value })
+    sel.addEventListener('change', e => {
+      TXState.selectedHospitalId = +e.target.value
+      // 파일 업로드 탭이 열려있으면 업체 목록 자동 갱신
+      if (TXState.tab === 'upload') txUpLoadVendors()
+    })
   } catch(e) {
     sel.innerHTML = '<option value="1">병원 1 (기본)</option>'
     TXState.selectedHospitalId = 1
