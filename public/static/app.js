@@ -19001,9 +19001,13 @@ window.txUpSave = async function() {
 
   try {
     const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    // ★ 관리자가 선택한 병원 ID 반드시 포함
+    const hospitalId   = TXState.selectedHospitalId || window._adminHospitalId || null
+    const hospitalName = TXState.selectedHospitalName || ''
     const res = await axios.post('/api/transaction/invoice/save', {
       vendor_name: vendor, vendor_id: vendorId,
       year: Number(year), month: Number(month),
+      hospital_id: hospitalId ? Number(hospitalId) : undefined,
       date_from: dateFrom, date_to: dateTo,
       upload_mode: uploadMode,
       items: parsed.items, categories: parsed.categories
@@ -19012,7 +19016,8 @@ window.txUpSave = async function() {
     if (res.data.ok) {
       const modeText = uploadMode === 'accumulate' ? '누적 저장' : '저장'
       const periodText = dateFrom ? ` (${dateFrom.slice(5)} ~ ${(dateTo||dateFrom).slice(5)})` : ''
-      showToast(`✅ ${modeText} 완료! ${res.data.item_count}개 품목${periodText}`, 'success')
+      const hospMsg = hospitalName ? ` [${hospitalName}]` : ''
+      showToast(`✅ ${modeText} 완료${hospMsg}! ${res.data.item_count}개 품목${periodText}`, 'success')
       // upload-sync
       if (invoiceVendorId) {
         try { await axios.post(`/api/transaction/invoice-vendors/${invoiceVendorId}/upload-sync`,
@@ -19277,14 +19282,20 @@ window.txManSave = async function() {
 
   try {
     const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    // ★ 관리자가 선택한 병원 ID 반드시 포함
+    const hospitalId   = TXState.selectedHospitalId || window._adminHospitalId || null
+    const hospitalName = TXState.selectedHospitalName || ''
     const res = await axios.post('/api/transaction/invoice/save', {
       vendor_name: vendor, vendor_id: vendorId,
-      year, month, items, categories,
+      year, month,
+      hospital_id: hospitalId ? Number(hospitalId) : undefined,
+      items, categories,
       input_type: 'manual', tax_type: type
     }, { headers: authH })
 
     if (res.data.ok) {
-      showToast(`✅ 수동 저장 완료! ${res.data.item_count}개 품목`, 'success')
+      const hospMsg = hospitalName ? ` [${hospitalName}]` : ''
+      showToast(`✅ 수동 저장 완료${hospMsg}! ${res.data.item_count}개 품목`, 'success')
       TXState._invVendor = vendor; TXState._invYear = year; TXState._invMonth = month
       txSwitchTab('category')
     } else {
@@ -20118,6 +20129,28 @@ async function txRenderCategoryTab(container) {
     vendors = r.data.data || []
   } catch(e) {}
 
+  // 업체가 없을 경우 안내 화면 표시
+  if (vendors.length === 0) {
+    const hospName = TXState.selectedHospitalName || ''
+    container.innerHTML = `
+    <div class="bg-white rounded-xl shadow-sm border border-orange-100 p-8 text-center">
+      <div class="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+        <i class="fas fa-file-invoice text-orange-400 text-2xl"></i>
+      </div>
+      <h3 class="text-base font-bold text-gray-700 mb-2">
+        ${hospName ? `<span class="text-blue-600">${hospName}</span>의 ` : ''}거래명세서 데이터가 없습니다
+      </h3>
+      <p class="text-sm text-gray-400 mb-4">
+        거래명세서 파일을 먼저 업로드한 후 분류별 분석을 이용하세요.
+      </p>
+      <button onclick="txSwitchTab('upload')"
+        class="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition">
+        <i class="fas fa-upload"></i> 거래명세서 업로드하기
+      </button>
+    </div>`
+    return
+  }
+
   const selVendor = TXState._invVendor || (vendors[0]?.vendor_name || '')
   const selYear   = TXState._invYear   || String(TXState.year)
   const selMonth  = TXState._invMonth  || String(TXState.month)
@@ -20137,11 +20170,16 @@ async function txRenderCategoryTab(container) {
         <!-- 업체 선택 -->
         <div>
           <label class="block text-xs text-gray-500 mb-1 font-medium">업체 선택</label>
-          <select id="invVendorSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none min-w-[160px]">
-            ${vendors.length === 0
-              ? `<option value="">업체 없음 (파일 업로드 필요)</option>`
-              : vendors.map(v => `<option value="${v.vendor_name}" ${v.vendor_name===selVendor?'selected':''}>${v.vendor_name}</option>`).join('')}
-          </select>
+          ${vendors.length === 0
+            ? `<div class="flex items-center gap-2">
+                <span class="text-xs text-orange-500 font-medium"><i class="fas fa-exclamation-circle mr-1"></i>이 병원의 명세서 데이터 없음</span>
+                <button onclick="txSwitchTab('upload')" class="text-xs bg-orange-500 text-white px-2 py-1 rounded-lg hover:bg-orange-600 transition">
+                  <i class="fas fa-upload mr-1"></i>업로드
+                </button>
+               </div>`
+            : `<select id="invVendorSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none min-w-[160px]">
+                ${vendors.map(v => `<option value="${v.vendor_name}" ${v.vendor_name===selVendor?'selected':''}>${v.vendor_name}</option>`).join('')}
+               </select>`}
         </div>
 
         <!-- 기간 모드 토글 -->
@@ -21169,13 +21207,20 @@ window.txExportCategoryAnalysis = async function() {
 window.txShowInvoiceUploadModal = async function() {
   document.getElementById('invUploadModal')?.remove()
 
+  // 현재 선택된 병원 정보
+  const hospitalId   = TXState.selectedHospitalId || window._adminHospitalId || ''
+  const hospitalName = TXState.selectedHospitalName || window._adminHospitalName || ''
+
   const modal = document.createElement('div')
   modal.id = 'invUploadModal'
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
   modal.innerHTML = `
   <div style="background:white;border-radius:16px;width:100%;max-width:680px;max-height:92vh;overflow-y:auto">
     <div style="padding:20px 24px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:white;z-index:1">
-      <h3 style="font-size:16px;font-weight:700;color:#1f2937"><i class="fas fa-upload text-purple-500 mr-2"></i>거래명세서 업로드</h3>
+      <div>
+        <h3 style="font-size:16px;font-weight:700;color:#1f2937"><i class="fas fa-upload text-purple-500 mr-2"></i>거래명세서 업로드</h3>
+        ${hospitalName ? `<div style="font-size:11px;color:#7c3aed;margin-top:2px"><i class="fas fa-hospital text-xs mr-1"></i>업로드 대상 병원: <strong>${hospitalName}</strong></div>` : ''}
+      </div>
       <button onclick="document.getElementById('invUploadModal').remove()" style="color:#9ca3af;font-size:20px;cursor:pointer;background:none;border:none">✕</button>
     </div>
     <div style="padding:20px" class="space-y-4">
@@ -21300,7 +21345,7 @@ window.txShowInvoiceUploadModal = async function() {
 
   // 발주 업체 목록 비동기 로드 (vendors 테이블 기반)
   const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
-  const hospitalId = TXState.selectedHospitalId || window._currentHospitalId || window._adminHospitalId
+  // hospitalId는 함수 상단에 이미 선언됨 (재선언 금지)
   const hParam = hospitalId ? `?hospital_id=${hospitalId}` : ''
   try {
     // 발주 업체 목록
@@ -21356,6 +21401,9 @@ window.invUpSelectVendor = async function(vendorId) {
   const vendors = window._invUploadVendors || []
   const v = vendors.find(x => x.id === vendorId)
   if (!v) return
+
+  // 인증 헤더 (함수 스코프 내에서 정의)
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
 
   // 카드 선택 상태
   document.querySelectorAll('[id^="invUpCard-"]').forEach(el => {
@@ -21428,6 +21476,8 @@ window.invUpSaveParsingSetting = async function(showToastMsg) {
   const vendorId = window._invUpSelectedVendorId
   if (!vendorId) return
   const vendorName = window._invUpSelectedVendorName || ''
+  // 인증 헤더 (함수 스코프 내에서 정의)
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   const body = {
     vendor_id: vendorId,
     vendor_name: vendorName,
@@ -21778,15 +21828,25 @@ window.txSaveInvoiceFile = async function() {
 
   try {
     const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    // 관리자가 선택한 병원 ID 포함 (없으면 백엔드 resolveHospitalId가 토큰에서 처리)
+    const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || null
+    const hospitalName = TXState.selectedHospitalName || ''
+    // 거래기간 자동감지 값
+    const dateFrom = window._txUpDateFrom || null
+    const dateTo   = window._txUpDateTo   || null
     const res = await axios.post('/api/transaction/invoice/save', {
       vendor_name: vendor, vendor_id: vendorId,
       year: Number(year), month: Number(month),
+      hospital_id: hospitalId ? Number(hospitalId) : undefined,
+      date_from: dateFrom,
+      date_to: dateTo,
       items: parsed.items,
       categories: parsed.categories
     }, { headers: authH })
 
     if (res.data.ok) {
-      showToast(`✅ 저장 완료! ${res.data.item_count}개 품목`, 'success')
+      const hospMsg = hospitalName ? ` (${hospitalName})` : ''
+      showToast(`✅ 저장 완료${hospMsg}! ${res.data.item_count}개 품목`, 'success')
       document.getElementById('invUploadModal')?.remove()
       // upload-sync: 최근 업로드 정보 갱신
       if (invoiceVendorId) {
@@ -22038,13 +22098,37 @@ async function txSaveItem(itemId) {
 // ════════════════════════════════════════
 async function txRenderMonthlyTab(container) {
   const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
+  const hospitalParam = hospitalId ? `?hospital_id=${hospitalId}` : ''
 
-  // 업체 목록 로드
+  // 업체 목록 로드 (현재 선택된 병원 기준)
   let vendors = []
   try {
-    const r = await axios.get('/api/transaction/invoice/vendors', { headers: authH })
+    const r = await axios.get(`/api/transaction/invoice/vendors${hospitalParam}`, { headers: authH })
     vendors = r.data.data || []
   } catch(e) {}
+
+  // 업체가 없을 경우 안내 화면 표시
+  if (vendors.length === 0) {
+    const hospName = TXState.selectedHospitalName || ''
+    container.innerHTML = `
+    <div class="bg-white rounded-xl shadow-sm border border-orange-100 p-8 text-center">
+      <div class="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+        <i class="fas fa-chart-bar text-orange-400 text-2xl"></i>
+      </div>
+      <h3 class="text-base font-bold text-gray-700 mb-2">
+        ${hospName ? `<span class="text-blue-600">${hospName}</span>의 ` : ''}월별 분석 데이터가 없습니다
+      </h3>
+      <p class="text-sm text-gray-400 mb-4">
+        거래명세서 파일을 먼저 업로드한 후 월별 분석을 이용하세요.
+      </p>
+      <button onclick="txSwitchTab('upload')"
+        class="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition">
+        <i class="fas fa-upload"></i> 거래명세서 업로드하기
+      </button>
+    </div>`
+    return
+  }
 
   const selVendor = TXState._monthlyVendor || (vendors[0]?.vendor_name || '')
 
@@ -22055,9 +22139,7 @@ async function txRenderMonthlyTab(container) {
       <div>
         <label class="block text-xs text-gray-500 mb-1 font-medium">업체 선택</label>
         <select id="monthlyVendorSel" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none min-w-[160px]">
-          ${vendors.length === 0
-            ? `<option value="">업체 없음 (파일 업로드 필요)</option>`
-            : vendors.map(v => `<option value="${v.vendor_name}" ${v.vendor_name===selVendor?'selected':''}>${v.vendor_name} (${v.month_count}개월)</option>`).join('')}
+          ${vendors.map(v => `<option value="${v.vendor_name}" ${v.vendor_name===selVendor?'selected':''}>${v.vendor_name} (${v.month_count}개월)</option>`).join('')}
         </select>
       </div>
       <div>
@@ -22093,6 +22175,8 @@ window.txLoadVendorMonthlyTrend = async function() {
   const vendor = document.getElementById('monthlyVendorSel')?.value || ''
   const months = document.getElementById('monthlyPeriodSel')?.value || '12'
   TXState._monthlyVendor = vendor
+  const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
+  const hParam = hospitalId ? `&hospital_id=${hospitalId}` : ''
 
   const el = document.getElementById('monthlyTrendResult')
   if (!el) return
@@ -22101,7 +22185,7 @@ window.txLoadVendorMonthlyTrend = async function() {
   el.innerHTML = `<div class="bg-white rounded-xl p-10 text-center text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i><p class="mt-2 text-sm">분석 중...</p></div>`
 
   try {
-    const r = await axios.get(`/api/transaction/invoice/monthly-trend?vendor_name=${encodeURIComponent(vendor)}&months=${months}`, { headers: authH })
+    const r = await axios.get(`/api/transaction/invoice/monthly-trend?vendor_name=${encodeURIComponent(vendor)}&months=${months}${hParam}`, { headers: authH })
     const trendData = r.data
     txRenderVendorMonthlyTrend(el, vendor, trendData)
   } catch(e) {
@@ -22370,10 +22454,28 @@ function txRenderVendorMonthlyTrend(el, vendor, trendData) {
 // TAB 4: 발주 교차 분석
 // ════════════════════════════════════════
 async function txRenderCrossTab(container) {
+  const hospitalName = TXState.selectedHospitalName || ''
+  const hospBadge = hospitalName
+    ? `<span class="inline-flex items-center gap-1.5 bg-blue-100 text-blue-700 text-xs font-semibold px-3 py-1 rounded-full border border-blue-200">
+        <i class="fas fa-hospital text-xs"></i>${hospitalName}
+       </span>`
+    : ''
   container.innerHTML = `
-  <div id="txCrossContent">
-    <div class="text-center text-gray-400 py-16">
-      <i class="fas fa-spinner fa-spin text-3xl mb-3"></i><br>교차 분석 중...
+  <div class="space-y-3">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <i class="fas fa-exchange-alt text-blue-500"></i>
+        <span class="font-bold text-gray-700 text-sm">발주 vs 명세서 교차분석</span>
+        ${hospBadge}
+      </div>
+      <button onclick="txLoadCrossAnalysis()" class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 transition">
+        <i class="fas fa-sync-alt"></i> 재조회
+      </button>
+    </div>
+    <div id="txCrossContent">
+      <div class="text-center text-gray-400 py-16">
+        <i class="fas fa-spinner fa-spin text-3xl mb-3"></i><br>교차 분석 중...
+      </div>
     </div>
   </div>`
   await txLoadCrossAnalysis()
@@ -22994,7 +23096,9 @@ async function txLoadCrossAnalysis() {
   const el = document.getElementById('txCrossContent')
   if (!el) return
   try {
-    const res = await axios.get(`/api/transaction/cross-analysis?year=${TXState.year}&month=${TXState.month}`,
+    const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
+    const hParam = hospitalId ? `&hospital_id=${hospitalId}` : ''
+    const res = await axios.get(`/api/transaction/cross-analysis?year=${TXState.year}&month=${TXState.month}${hParam}`,
       { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
     const d = res.data
     if (!d.ok) throw new Error(d.error)
