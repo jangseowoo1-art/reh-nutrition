@@ -17862,6 +17862,23 @@ async function renderTransactionAnalysis() {
   const el = document.getElementById('pageContent')
   el.innerHTML = `
   <div class="space-y-4">
+    <!-- 관리자 전용: 병원 선택 배너 -->
+    ${App.role === 'admin' ? `
+    <div class="flex items-center gap-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4 shadow-sm border border-blue-200">
+      <div class="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
+        <i class="fas fa-hospital text-white text-sm"></i>
+      </div>
+      <div class="flex items-center gap-2 flex-1 min-w-0">
+        <span class="text-sm font-semibold text-blue-800 whitespace-nowrap">병원 선택</span>
+        <select id="txHospitalId" class="flex-1 max-w-xs text-sm border border-blue-300 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none text-gray-700 font-medium">
+          <option value="">로딩 중...</option>
+        </select>
+      </div>
+      <div class="text-xs text-blue-600 hidden sm:block">
+        <i class="fas fa-info-circle mr-1"></i>병원을 선택하면 해당 병원의 업체만 표시됩니다
+      </div>
+    </div>` : ''}
+
     <!-- 헤더 바 -->
     <div class="flex flex-wrap items-center justify-between gap-3 bg-white rounded-xl p-4 shadow-sm border border-gray-100">
       <div class="flex items-center gap-3">
@@ -17909,6 +17926,11 @@ async function renderTransactionAnalysis() {
   document.getElementById('txYear').addEventListener('change', e => { TXState.year = +e.target.value })
   document.getElementById('txMonth').addEventListener('change', e => { TXState.month = +e.target.value })
 
+  // 관리자: 병원 선택 드롭다운 로드
+  if (App.role === 'admin') {
+    await txLoadHospitalSelector()
+  }
+
   // 카테고리 로드
   await txLoadCategories()
   // 현재 탭 렌더링
@@ -17945,6 +17967,13 @@ async function txLoadCategories() {
 // TAB 1: 파일 업로드
 // ════════════════════════════════════════
 function txRenderUploadTab(container) {
+  // 현재 선택된 병원명 표시 (관리자)
+  const hospBadge = App.role === 'admin' && TXState.selectedHospitalName
+    ? `<span class="inline-flex items-center gap-1.5 bg-blue-100 text-blue-700 text-xs font-semibold px-3 py-1 rounded-full border border-blue-200">
+        <i class="fas fa-hospital text-xs"></i>${TXState.selectedHospitalName}
+       </span>`
+    : ''
+
   container.innerHTML = `
   <div class="space-y-4">
     <!-- 헤더 -->
@@ -17952,6 +17981,7 @@ function txRenderUploadTab(container) {
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-bold text-gray-700 flex items-center gap-2">
           <i class="fas fa-file-invoice-dollar text-purple-500"></i> 거래명세서 업로드
+          ${hospBadge}
         </h3>
         <span class="text-xs text-gray-400">업체를 클릭하면 파싱 설정과 파일 업로드 화면이 열립니다</span>
       </div>
@@ -18451,26 +18481,39 @@ async function txDeleteTemplate(id) {
 }
 
 async function txLoadHospitalSelector() {
-
   const sel = document.getElementById('txHospitalId')
   if (!sel) return
   try {
     const res = await axios.get('/api/admin/hospitals',
       { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
     const hospitals = res.data || []
+    // 기존에 선택된 병원이 있으면 유지, 없으면 첫 번째 병원
+    const prevId = TXState.selectedHospitalId
+    const defaultHosp = prevId && hospitals.find(h => h.id === prevId)
+      ? prevId : (hospitals.length > 0 ? hospitals[0].id : 1)
     sel.innerHTML = hospitals.map(h =>
-      `<option value="${h.id}">${h.name}</option>`
+      `<option value="${h.id}" ${h.id === defaultHosp ? 'selected' : ''}>${h.name}</option>`
     ).join('')
-    // TXState에 저장
-    if (hospitals.length > 0) TXState.selectedHospitalId = hospitals[0].id
+    TXState.selectedHospitalId = defaultHosp
+    TXState._hospitals = hospitals  // 병원 목록 캐시
+
     sel.addEventListener('change', e => {
       TXState.selectedHospitalId = +e.target.value
+      const hosp = (TXState._hospitals || []).find(h => h.id === TXState.selectedHospitalId)
+      TXState.selectedHospitalName = hosp ? hosp.name : ''
       // 파일 업로드 탭이 열려있으면 업체 목록 자동 갱신
       if (TXState.tab === 'upload') txUpLoadVendors()
+      // 다른 탭 데이터도 병원 기준으로 갱신
+      else txSwitchTab(TXState.tab)
     })
+
+    // 초기 병원명 저장
+    const initHosp = hospitals.find(h => h.id === defaultHosp)
+    TXState.selectedHospitalName = initHosp ? initHosp.name : ''
   } catch(e) {
     sel.innerHTML = '<option value="1">병원 1 (기본)</option>'
     TXState.selectedHospitalId = 1
+    TXState.selectedHospitalName = '병원 1'
   }
 }
 
