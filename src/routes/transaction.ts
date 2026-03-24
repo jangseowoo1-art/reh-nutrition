@@ -1044,9 +1044,156 @@ txRouter.post('/invoice/save', async (c) => {
       await c.env.DB.batch(catStmts)
     }
 
+    // 5) 주요 식재료 단가 자동 추출 (12개 고정 식재료)
+    try {
+      const autoExtracted = await extractIngredientPrices(c.env.DB, hospitalId, Number(year), Number(month), items)
+      if (autoExtracted.length > 0) {
+        for (const ing of autoExtracted) {
+          // 수동 입력값이 이미 있으면 덮어쓰지 않음 (source='manual' 우선)
+          await c.env.DB.prepare(`
+            INSERT INTO ingredient_prices
+              (hospital_id, year, month, ingredient_name, unit, unit_price, memo,
+               source, total_amount, total_quantity, vendor_name, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(hospital_id, year, month, ingredient_name) DO UPDATE SET
+              unit_price     = CASE WHEN excluded.source='auto' AND source='manual' THEN unit_price ELSE excluded.unit_price END,
+              unit           = CASE WHEN excluded.source='auto' AND source='manual' THEN unit ELSE excluded.unit END,
+              total_amount   = excluded.total_amount,
+              total_quantity = excluded.total_quantity,
+              vendor_name    = excluded.vendor_name,
+              source         = CASE WHEN source='manual' THEN 'manual' ELSE 'auto' END,
+              updated_at     = CURRENT_TIMESTAMP
+          `).bind(
+            hospitalId, Number(year), Number(month),
+            ing.ingredient_name, ing.unit, ing.unit_price,
+            `자동추출(${vendor_name})`,
+            'auto',
+            ing.total_amount, ing.total_quantity, vendor_name
+          ).run()
+        }
+        console.log(`[invoice/save] 식재료 단가 자동추출: ${autoExtracted.length}종 (병원${hospitalId}, ${year}/${month})`)
+      }
+    } catch (ingErr: any) {
+      console.warn('[invoice/save] 식재료 자동추출 실패(무시):', ingErr.message)
+    }
+
     return c.json({ ok: true, file_id: fileId, doc_id: docId, item_count: items.length })
   } catch (e: any) {
     console.error('[invoice/save] ERROR:', e)
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 식재료 자동 단가 추출 헬퍼 ────────────────────────────────────────────
+// transaction_items에서 12개 고정 식재료를 매핑하여 avg 단가를 계산
+const INGREDIENT_KEYWORD_MAP: { ingredient: string; unit: string; keywords: string[] }[] = [
+  { ingredient: '쌀',      unit: 'kg',  keywords: ['쌀','백미','현미','잡곡','찹쌀','햅쌀'] },
+  { ingredient: '닭고기',  unit: 'kg',  keywords: ['닭','치킨','닭고기','닭가슴','닭다리','닭날개','닭발','삼계'] },
+  { ingredient: '돼지고기',unit: 'kg',  keywords: ['돼지','삼겹','목살','앞다리','뒷다리','돈육','돈가스','등갈비'] },
+  { ingredient: '쇠고기',  unit: 'kg',  keywords: ['쇠고기','소고기','한우','갈비','사골','설도','불고기','육우'] },
+  { ingredient: '두부',    unit: 'kg',  keywords: ['두부','순두부','연두부'] },
+  { ingredient: '계란',    unit: '개',  keywords: ['계란','달걀','난각','계란(','달걀('] },
+  { ingredient: '양파',    unit: 'kg',  keywords: ['양파'] },
+  { ingredient: '감자',    unit: 'kg',  keywords: ['감자','감자('] },
+  { ingredient: '당근',    unit: 'kg',  keywords: ['당근'] },
+  { ingredient: '배추',    unit: 'kg',  keywords: ['배추','절임배추','배추김치'] },
+  { ingredient: '대파',    unit: 'kg',  keywords: ['대파','파(','쪽파','실파'] },
+  { ingredient: '마늘',    unit: 'kg',  keywords: ['마늘','깐마늘','통마늘','마늘('] },
+]
+
+async function extractIngredientPrices(
+  db: D1Database,
+  hospitalId: number,
+  year: number,
+  month: number,
+  items: any[]
+): Promise<{ ingredient_name: string; unit: string; unit_price: number; total_amount: number; total_quantity: number }[]> {
+  const results = []
+
+  for (const map of INGREDIENT_KEYWORD_MAP) {
+    // items 배열에서 해당 식재료 키워드가 포함된 품목 필터링
+    const matched = items.filter((it: any) => {
+      const name = (it.item_name || '').toString()
+      return map.keywords.some(kw => name.includes(kw))
+    })
+
+    if (matched.length === 0) continue
+
+    // 단가가 있는 품목만 사용
+    const withPrice = matched.filter((it: any) => Number(it.unit_price) > 0 && Number(it.quantity) > 0)
+    if (withPrice.length === 0) continue
+
+    // 금액 기준 가중평균 단가 계산
+    const totalAmt = withPrice.reduce((s: number, it: any) => s + (Number(it.amount) || 0), 0)
+    const totalQty = withPrice.reduce((s: number, it: any) => s + (Number(it.quantity) || 0), 0)
+    const avgPrice = totalQty > 0 ? Math.round(totalAmt / totalQty) : 0
+
+    if (avgPrice > 0) {
+      results.push({
+        ingredient_name: map.ingredient,
+        unit: map.unit,
+        unit_price: avgPrice,
+        total_amount: Math.round(totalAmt),
+        total_quantity: Math.round(totalQty * 100) / 100,
+      })
+    }
+  }
+
+  return results
+}
+
+// ── 기존 저장된 명세서에서 식재료 단가 소급 추출 ─────────────────────────
+// POST /invoice/extract-ingredient-prices
+// body: { hospital_id?, year, month }
+txRouter.post('/invoice/extract-ingredient-prices', async (c) => {
+  try {
+    const body = await c.req.json() as any
+    const hospitalId = await resolveHospitalId(c, body.hospital_id)
+    const year  = Number(body.year  || new Date().getFullYear())
+    const month = Number(body.month || (new Date().getMonth() + 1))
+
+    // DB에서 해당 연월의 모든 품목 조회
+    const rows = await c.env.DB.prepare(`
+      SELECT item_name, unit_price, quantity, amount, vendor_name
+      FROM transaction_items
+      WHERE hospital_id=? AND document_year=? AND document_month=?
+        AND unit_price > 0 AND quantity > 0
+    `).bind(hospitalId, year, month).all<any>()
+
+    const items = rows.results || []
+    if (items.length === 0) {
+      return c.json({ ok: true, extracted: 0, message: '명세서 데이터 없음' })
+    }
+
+    const vendorName = items[0]?.vendor_name || '자동추출'
+    const autoExtracted = await extractIngredientPrices(c.env.DB, hospitalId, year, month, items)
+
+    for (const ing of autoExtracted) {
+      await c.env.DB.prepare(`
+        INSERT INTO ingredient_prices
+          (hospital_id, year, month, ingredient_name, unit, unit_price, memo,
+           source, total_amount, total_quantity, vendor_name, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(hospital_id, year, month, ingredient_name) DO UPDATE SET
+          unit_price     = CASE WHEN excluded.source='auto' AND source='manual' THEN unit_price ELSE excluded.unit_price END,
+          unit           = CASE WHEN excluded.source='auto' AND source='manual' THEN unit ELSE excluded.unit END,
+          total_amount   = excluded.total_amount,
+          total_quantity = excluded.total_quantity,
+          vendor_name    = excluded.vendor_name,
+          source         = CASE WHEN source='manual' THEN 'manual' ELSE 'auto' END,
+          updated_at     = CURRENT_TIMESTAMP
+      `).bind(
+        hospitalId, year, month,
+        ing.ingredient_name, ing.unit, ing.unit_price,
+        `자동추출(${vendorName})`,
+        'auto',
+        ing.total_amount, ing.total_quantity, vendorName
+      ).run()
+    }
+
+    return c.json({ ok: true, extracted: autoExtracted.length, items_scanned: items.length,
+      detail: autoExtracted.map(i => ({ name: i.ingredient_name, price: i.unit_price, total: i.total_amount })) })
+  } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
   }
 })

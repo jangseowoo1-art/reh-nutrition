@@ -8513,7 +8513,11 @@ async function renderIngredientPricesPage() {
       price: ex.unit_price || '',
       prevPrice: prev.unit_price || 0,
       prevYearPrice: prevY.unit_price || 0,
-      memo: ex.memo || ''
+      memo: ex.memo || '',
+      source: ex.source || '',
+      totalAmount: ex.total_amount || 0,
+      totalQty: ex.total_quantity || 0,
+      vendorName: ex.vendor_name || '',
     }
   })
 
@@ -8584,6 +8588,11 @@ async function renderIngredientPricesPage() {
       <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
         <h2 class="font-bold text-gray-800 text-sm"><i class="fas fa-table text-green-500 mr-1"></i>품목별 단가 입력</h2>
         <div class="flex gap-2 flex-wrap">
+          <!-- 거래명세서에서 자동추출 버튼 -->
+          <button onclick="ingExtractFromInvoice(${year},${month})"
+            style="background:#0891b2;color:white;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;border:none">
+            <i class="fas fa-magic"></i>명세서에서 자동추출
+          </button>
           <!-- #5 엑셀 자동 분석 버튼 -->
           <label style="background:#7c3aed;color:white;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
             <i class="fas fa-file-excel"></i>엑셀 자동분석
@@ -8597,12 +8606,12 @@ async function renderIngredientPricesPage() {
           </button>
         </div>
       </div>
-      <!-- #5 엑셀 업로드 안내 -->
-      <div id="ingExcelHint" style="background:#f5f3ff;border-bottom:1px solid #e9d5ff;padding:10px 16px;font-size:11px;color:#7c3aed;display:flex;align-items:flex-start;gap:8px">
+      <!-- 자동추출 안내 -->
+      <div id="ingExcelHint" style="background:#ecfeff;border-bottom:1px solid #a5f3fc;padding:10px 16px;font-size:11px;color:#0e7490;display:flex;align-items:flex-start;gap:8px">
         <i class="fas fa-info-circle mt-0.5"></i>
-        <span><strong>엑셀 자동분석:</strong> 삼성웰스토리, 아워홈 등 거래내역 엑셀 파일을 업로드하면 쌀·닭고기·돼지고기 등 주요 식재료 단가를 자동으로 분석합니다.<br>
+        <span><strong>거래명세서 자동추출:</strong> 업로드된 거래명세서에서 쌀·닭고기·돼지고기·계란 등 12종 식재료 단가를 자동으로 추출합니다. 새 명세서 업로드 시 매번 자동 반영됩니다.<br>
         분석된 단가는 표에 자동 입력됩니다. (단가 = 금액 ÷ 수량)</span>
-        <button onclick="document.getElementById('ingExcelHint').style.display='none'" style="background:none;border:none;color:#a78bfa;cursor:pointer;font-size:14px;flex-shrink:0">✕</button>
+        <button onclick="document.getElementById('ingExcelHint').style.display='none'" style="background:none;border:none;color:#0891b2;cursor:pointer;font-size:14px;flex-shrink:0">✕</button>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm" id="ingTable">
@@ -8611,6 +8620,7 @@ async function renderIngredientPricesPage() {
               <th class="py-2.5 px-3 text-left font-semibold">식재료</th>
               <th class="py-2.5 px-3 text-center font-semibold">단위</th>
               <th class="py-2.5 px-3 text-right font-semibold">당월 단가(원)</th>
+              <th class="py-2.5 px-3 text-right font-semibold">당월 금액(원)</th>
               <th class="py-2.5 px-3 text-right font-semibold">${prevMLabel}</th>
               <th class="py-2.5 px-3 text-right font-semibold">전월 대비</th>
               <th class="py-2.5 px-3 text-right font-semibold">${prevYLabel}</th>
@@ -8650,9 +8660,22 @@ function buildIngRow(i, r, prevMLabel, prevYLabel) {
     ? r.price > r.prevPrice ? 'background:#fff5f5' : r.price < r.prevPrice ? 'background:#f0fdf4' : ''
     : ''
 
+  // 자동 추출 여부 배지
+  const isAuto = r.source === 'auto'
+  const autoBadge = isAuto
+    ? `<span style="font-size:9px;background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 4px;margin-left:3px;font-weight:600">자동</span>`
+    : ''
+  // 금액 표시 (자동추출 시에만)
+  const amountCell = isAuto && r.totalAmount > 0
+    ? `<span style="color:#374151;font-size:11px">${r.totalAmount.toLocaleString()}</span><br><span style="color:#9ca3af;font-size:9px">${r.totalQty > 0 ? r.totalQty + r.unit : ''}</span>`
+    : '<span style="color:#9ca3af">-</span>'
+
   return `<tr class="border-b border-gray-50" data-ing-idx="${i}" style="${rowBg}">
     <td class="py-2 px-3">
-      <input type="text" class="form-input text-xs py-1 ing-name" id="ing-pname-${i}" value="${r.name}" style="width:90px">
+      <div style="display:flex;align-items:center;gap:2px">
+        <input type="text" class="form-input text-xs py-1 ing-name" id="ing-pname-${i}" value="${r.name}" style="width:80px">
+        ${autoBadge}
+      </div>
     </td>
     <td class="py-2 px-3 text-center">
       <select class="form-input text-xs py-1 ing-unit" id="ing-punit-${i}" style="width:56px">
@@ -8665,6 +8688,7 @@ function buildIngRow(i, r, prevMLabel, prevYLabel) {
         data-prev-price="${r.prevPrice||0}" data-prev-year-price="${r.prevYearPrice||0}"
         oninput="refreshIngRow(${i},${r.prevPrice},${r.prevYearPrice})">
     </td>
+    <td class="py-2 px-3 text-right text-xs" id="ing-pamount-${i}">${amountCell}</td>
     <td class="py-2 px-3 text-right text-xs text-gray-500" id="ing-pprev-${i}">
       ${r.prevPrice > 0 ? r.prevPrice.toLocaleString()+'원' : '-'}
     </td>
@@ -8718,6 +8742,29 @@ window.addIngredientRow = function() {
   const idx = tbody.querySelectorAll('tr').length
   const newRow = buildIngRow(idx, { name:'', unit:'kg', price:'', prevPrice:0, prevYearPrice:0, memo:'' }, '', '')
   tbody.insertAdjacentHTML('beforeend', newRow)
+}
+
+// 거래명세서에서 식재료 단가 소급 자동추출 (독립 페이지용)
+window.ingExtractFromInvoice = async function(year, month) {
+  const btn = event?.target?.closest('button')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>추출 중...' }
+  try {
+    const res = await api('POST', '/api/transaction/invoice/extract-ingredient-prices', { year, month })
+    if (res?.ok) {
+      if (res.extracted > 0) {
+        showToast(`✅ ${res.extracted}종 식재료 단가 자동추출 완료! (${res.items_scanned}개 품목 분석)`, 'success')
+        renderIngredientPricesPage()
+      } else {
+        showToast(`${year}년 ${month}월 업로드된 거래명세서에서 해당 식재료를 찾지 못했습니다.`, 'warning')
+      }
+    } else {
+      showToast('자동추출 실패: ' + (res?.error || '알 수 없는 오류'), 'error')
+    }
+  } catch(e) {
+    showToast('자동추출 오류: ' + e.message, 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic mr-1"></i>명세서에서 자동추출' }
+  }
 }
 
 window.saveIngredientPricesPage = async function(year, month) {
@@ -20236,9 +20283,7 @@ async function txRenderCategoryTab(container) {
         <button onclick="txLoadCategoryAnalysis()" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5">
           <i class="fas fa-search text-xs"></i> 분석
         </button>
-        <button onclick="txShowInvoiceUploadModal()" class="bg-purple-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1.5">
-          <i class="fas fa-upload text-xs"></i> 명세서 업로드
-        </button>
+
         <button onclick="txExportCategoryAnalysis()" id="invExportBtn" class="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-1.5" style="display:none">
           <i class="fas fa-file-excel text-xs"></i> 엑셀 다운로드
         </button>
@@ -22949,7 +22994,8 @@ async function txIngLoadManualTab(authH, hospitalId) {
       const ex  = eMap[name] || {}
       const prev = pMap[name] || {}
       const pyR  = pyMap[name] || {}
-      return { name, unit: ex.unit || def.unit, price: ex.unit_price || '', prevPrice: prev.unit_price || 0, prevYearPrice: pyR.unit_price || 0, memo: ex.memo || '' }
+      return { name, unit: ex.unit || def.unit, price: ex.unit_price || '', prevPrice: prev.unit_price || 0, prevYearPrice: pyR.unit_price || 0, memo: ex.memo || '',
+               source: ex.source || '', totalAmount: ex.total_amount || 0, totalQty: ex.total_quantity || 0, vendorName: ex.vendor_name || '' }
     })
 
     const prevMLabel = `${prevY}년 ${prevM}월`
@@ -22985,6 +23031,7 @@ async function txIngLoadManualTab(authH, hospitalId) {
               <th class="text-left py-2 px-3">식재료명</th>
               <th class="text-center py-2 px-3">단위</th>
               <th class="text-right py-2 px-3">당월 단가</th>
+              <th class="text-right py-2 px-3">당월 금액</th>
               <th class="text-right py-2 px-3">${prevMLabel}</th>
               <th class="text-right py-2 px-3">전월 대비</th>
               <th class="text-right py-2 px-3">${prevYLabel}</th>
@@ -23012,8 +23059,21 @@ function txIngBuildManualRow(i, r) {
     const d = cur - prev, p = ((d/prev)*100).toFixed(1)
     return `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원(${p}%)</span>`
   }
+  const isAuto = r.source === 'auto'
+  const autoBadge = isAuto
+    ? `<span style="font-size:9px;background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 4px;margin-left:2px;font-weight:600">자동</span>`
+    : ''
+  const amountCell = isAuto && r.totalAmount > 0
+    ? `<div style="color:#374151;font-size:11px">${r.totalAmount.toLocaleString()}원</div><div style="color:#9ca3af;font-size:9px">${r.totalQty > 0 ? r.totalQty + r.unit : ''}</div>`
+    : '<span style="color:#d1d5db">-</span>'
+
   return `<tr class="border-b border-gray-50" data-ing-idx="${i}" style="${r.price&&r.prevPrice?(r.price>r.prevPrice?'background:#fff5f5':r.price<r.prevPrice?'background:#f0fdf4':''):''}">
-    <td class="py-1.5 px-3"><input type="text" id="txIng-name-${i}" value="${r.name||''}" class="border border-gray-200 rounded px-2 py-1 text-xs w-24"></td>
+    <td class="py-1.5 px-3">
+      <div style="display:flex;align-items:center">
+        <input type="text" id="txIng-name-${i}" value="${r.name||''}" class="border border-gray-200 rounded px-2 py-1 text-xs w-20">
+        ${autoBadge}
+      </div>
+    </td>
     <td class="py-1.5 px-3 text-center">
       <select id="txIng-unit-${i}" class="border border-gray-200 rounded px-1 py-1 text-xs">
         ${['kg','개','박스','묶음','L','봉','팩'].map(u=>`<option value="${u}" ${r.unit===u?'selected':''}>${u}</option>`).join('')}
@@ -23024,6 +23084,7 @@ function txIngBuildManualRow(i, r) {
         class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right"
         oninput="txIngRefreshRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})">
     </td>
+    <td class="py-1.5 px-3 text-right">${amountCell}</td>
     <td class="py-1.5 px-3 text-right text-gray-400">${r.prevPrice > 0 ? r.prevPrice.toLocaleString()+'원' : '-'}</td>
     <td class="py-1.5 px-3 text-right" id="txIng-diff-${i}">${diff(r.price, r.prevPrice)}</td>
     <td class="py-1.5 px-3 text-right text-gray-400">${r.prevYearPrice > 0 ? r.prevYearPrice.toLocaleString()+'원' : '-'}</td>
