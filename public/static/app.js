@@ -17839,6 +17839,33 @@ window.ceoExpenseTypeFilter = function() {
 // 거래명세서 분석 페이지 (transaction-analysis)
 // ══════════════════════════════════════════════════════════════════════
 
+// ── 헤더 키워드 → 내부 필드명 매핑 (파싱 엔진 전역 상수) ──────────────
+const TX_HEADER_MAP = {
+  // 품목코드
+  '품목코드': 'item_code', '코드': 'item_code', 'code': 'item_code', '상품코드': 'item_code',
+  // 품목명
+  '품목명': 'item_name', '품명': 'item_name', '상품명': 'item_name', '명칭': 'item_name',
+  'name': 'item_name', '제품명': 'item_name',
+  // 규격
+  '규격': 'spec', '사양': 'spec', 'spec': 'spec',
+  // 단위
+  '단위': 'unit', 'unit': 'unit',
+  // 수량
+  '수량': 'quantity', '발주수량': 'quantity', 'qty': 'quantity', '주문수량': 'quantity',
+  // 단가/평균단가
+  '단가': 'unit_price', '평균단가': 'unit_price', '단위가격': 'unit_price',
+  'price': 'unit_price', '공급단가': 'unit_price',
+  // 금액 (공급가)
+  '금액': 'amount', '공급가액': 'amount', '공급가': 'amount', '공급금액': 'amount',
+  'amount': 'amount',
+  // 부가세
+  '부가세': 'tax_amount', '세액': 'tax_amount', 'vat': 'tax_amount', '부가가치세': 'tax_amount',
+  // 합계
+  '합계': 'total', '합계금액': 'total', 'total': 'total', '총금액': 'total',
+  // 분류
+  '분류': 'supplier_category', '카테고리': 'supplier_category', '구분': 'supplier_category',
+}
+
 // ── 전역 상태 ──────────────────────────────────────────────────────────
 const TXState = {
   year: new Date().getFullYear(),
@@ -18471,7 +18498,11 @@ window.txUpPreview = async function() {
     const btn = document.getElementById('txUpSaveBtn')
     if (btn) { btn.disabled = false; btn.classList.remove('opacity-50','cursor-not-allowed') }
   } catch(e) {
-    if (prevEl) prevEl.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-600"><i class="fas fa-exclamation-circle mr-1"></i>파싱 실패: ${e.message}</div>`
+    console.error('[txUpPreview] 파싱 오류:', e)
+    if (prevEl) prevEl.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-600">
+      <i class="fas fa-exclamation-circle mr-1"></i><strong>파싱 실패</strong>: ${e.message}
+      <br><small class="text-red-400 mt-1 block">콘솔(F12)에서 상세 오류를 확인하세요.</small>
+    </div>`
   }
 }
 
@@ -20663,6 +20694,16 @@ function txAutoMapCols(headerRow) {
 
 // ── 메인 파싱 함수 (헤더 자동 감지 버전) ──
 async function txParseInvoiceExcel(file) {
+  // SheetJS 동적 로드 (없을 경우)
+  if (!window.XLSX) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+      s.onload = res
+      s.onerror = () => rej(new Error('SheetJS CDN 로드 실패. 네트워크 연결을 확인하세요.'))
+      document.head.appendChild(s)
+    })
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = e => {
@@ -20700,14 +20741,28 @@ async function txParseInvoiceExcel(file) {
         }
         const isTotalRow = (row) => {
           const texts = row.map(c => String(c||'').trim())
-          return texts.some(t => t === '합계' || t === '총합계' || t === '총계')
+          return texts.some(t => t === '합계' || t === '총합계' || t === '총계' || t === '합 계')
             && !texts.some(t => /^\d{5,}/.test(t))  // 품목코드 없으면
         }
         const isPageRow = (row) => /^\d+\/\d+$/.test(String(row[0]||'').trim())
         const isDataRow = (row) => {
-          const codeVal = String(row[colMap['item_code'] ?? 0] || '').trim()
-          const nameVal = String(row[colMap['item_name'] ?? 1] || '').trim()
-          return /^\d{5,}/.test(codeVal) && nameVal  // 5자리 이상 숫자 코드 + 품명 있음
+          const nameIdx = colMap['item_name'] ?? 1
+          const nameVal = String(row[nameIdx] || '').trim()
+          if (!nameVal) return false  // 품명이 없으면 데이터 행 아님
+          // 품목코드 컬럼이 매핑된 경우: 숫자코드로 검증
+          if (colMap['item_code'] !== undefined) {
+            const codeVal = String(row[colMap['item_code']] || '').trim()
+            // 숫자코드 또는 문자코드 모두 허용 (코드가 있으면 데이터 행)
+            if (codeVal && !/^(소계|합계|합\s*계|총합계|총계|거래|기간|사업장)/.test(codeVal)) return true
+          }
+          // 품목코드 없이 품명만으로 판단 (단가 또는 수량 컬럼에 숫자가 있는지 확인)
+          const hasNumeric = [colMap['quantity'], colMap['unit_price'], colMap['amount'], colMap['total']]
+            .filter(idx => idx !== undefined)
+            .some(idx => {
+              const v = row[idx]
+              return v !== '' && v !== null && !isNaN(Number(v)) && Number(v) > 0
+            })
+          return hasNumeric
         }
 
         for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
