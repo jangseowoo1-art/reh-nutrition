@@ -18061,8 +18061,53 @@ function txRenderUploadTab(container) {
 
       <!-- ══ 자동 매핑 패널 ══ -->
       <div id="txUpPanelAuto">
-        <!-- 연도/월 + 파일 선택 -->
-        <div class="grid grid-cols-2 gap-3 mb-4">
+
+        <!-- ① 업로드 방식 설정 -->
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-4">
+          <div class="text-xs font-semibold text-gray-600 mb-2 flex items-center gap-1.5">
+            <i class="fas fa-cog text-gray-400"></i>업체 업로드 방식
+            <span class="text-gray-400 font-normal">(업체별로 저장됨)</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2 mb-3">
+            <!-- 누적/덮어쓰기 -->
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">저장 방식</label>
+              <div class="flex gap-1.5">
+                <button id="txUpModeMonthly" onclick="txUpSetUploadMode('monthly')"
+                  class="flex-1 text-xs py-1.5 rounded-lg border-2 border-blue-500 bg-blue-50 text-blue-700 font-semibold transition-all">
+                  <i class="fas fa-sync-alt mr-1"></i>월별 덮어쓰기
+                </button>
+                <button id="txUpModeAccumulate" onclick="txUpSetUploadMode('accumulate')"
+                  class="flex-1 text-xs py-1.5 rounded-lg border-2 border-gray-200 bg-white text-gray-500 font-semibold transition-all hover:border-orange-300 hover:text-orange-600">
+                  <i class="fas fa-layer-group mr-1"></i>날짜별 누적
+                </button>
+              </div>
+              <p id="txUpModeDesc" class="text-xs text-blue-500 mt-1">
+                같은 월 기존 데이터를 덮어씁니다
+              </p>
+            </div>
+            <!-- 기간 입력 방식 -->
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">기간 설정</label>
+              <div class="flex gap-1.5">
+                <button id="txUpPeriodAuto" onclick="txUpSetPeriodType('auto')"
+                  class="flex-1 text-xs py-1.5 rounded-lg border-2 border-blue-500 bg-blue-50 text-blue-700 font-semibold transition-all">
+                  <i class="fas fa-magic mr-1"></i>자동감지
+                </button>
+                <button id="txUpPeriodManual" onclick="txUpSetPeriodType('manual')"
+                  class="flex-1 text-xs py-1.5 rounded-lg border-2 border-gray-200 bg-white text-gray-500 font-semibold transition-all hover:border-purple-300 hover:text-purple-600">
+                  <i class="fas fa-pen mr-1"></i>직접입력
+                </button>
+              </div>
+              <p id="txUpPeriodDesc" class="text-xs text-blue-500 mt-1">
+                파일에서 거래기간을 자동으로 읽습니다
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② 월 지정 (공통) -->
+        <div class="grid grid-cols-2 gap-3 mb-3">
           <div>
             <label class="text-xs text-gray-500 block mb-1 font-medium"><i class="fas fa-calendar mr-1"></i>연도</label>
             <select id="txUpYear" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
@@ -18077,6 +18122,49 @@ function txRenderUploadTab(container) {
           </div>
         </div>
 
+        <!-- ③ 날짜 범위 입력 (period_type='manual' 또는 자동감지 실패 시) -->
+        <div id="txUpDateRangePanel" style="display:none" class="mb-3">
+          <div class="bg-purple-50 border border-purple-200 rounded-xl p-3">
+            <div class="text-xs font-semibold text-purple-700 mb-2">
+              <i class="fas fa-calendar-week mr-1"></i>거래 날짜 범위
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="text-xs text-gray-500 block mb-1">시작일</label>
+                <input id="txUpDateFrom" type="date"
+                  class="w-full text-sm border border-purple-200 rounded-lg px-2 py-1.5 bg-white">
+              </div>
+              <div>
+                <label class="text-xs text-gray-500 block mb-1">종료일</label>
+                <input id="txUpDateTo" type="date"
+                  class="w-full text-sm border border-purple-200 rounded-lg px-2 py-1.5 bg-white">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ④ 자동감지 결과 표시 -->
+        <div id="txUpAutoDetectedPeriod" style="display:none" class="mb-3">
+          <div class="bg-green-50 border border-green-200 rounded-xl px-3 py-2 flex items-center gap-2">
+            <i class="fas fa-check-circle text-green-500 text-sm"></i>
+            <span id="txUpAutoDetectedText" class="text-xs text-green-700 font-medium"></span>
+            <button onclick="txUpClearDetectedPeriod()" class="ml-auto text-gray-400 hover:text-gray-600 text-xs">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- ⑤ 누적 업로드 현황 -->
+        <div id="txUpAccumulateInfo" style="display:none" class="mb-3">
+          <div class="bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+            <div class="text-xs font-semibold text-orange-700 mb-1">
+              <i class="fas fa-layer-group mr-1"></i>이번 달 누적 업로드 현황
+            </div>
+            <div id="txUpAccumulateList" class="text-xs text-orange-600"></div>
+          </div>
+        </div>
+
+        <!-- ⑥ 파일 선택 -->
         <div class="mb-4">
           <label class="text-xs text-gray-500 block mb-1 font-medium"><i class="fas fa-file-excel text-green-500 mr-1"></i>엑셀 파일 선택</label>
           <input id="txUpFile" type="file" accept=".xlsx,.xls"
@@ -18084,10 +18172,10 @@ function txRenderUploadTab(container) {
             onchange="txUpPreview()">
         </div>
 
-        <!-- 미리보기 결과 (인라인 테이블) -->
+        <!-- ⑦ 미리보기 결과 (인라인 테이블) -->
         <div id="txUpPreviewResult" style="display:none" class="mb-4"></div>
 
-        <!-- 저장 버튼 -->
+        <!-- ⑧ 저장 버튼 -->
         <button id="txUpSaveBtn" onclick="txUpSave()" disabled
           class="w-full bg-purple-600 text-white font-semibold py-3 rounded-xl text-sm opacity-50 cursor-not-allowed">
           <i class="fas fa-save mr-2"></i>저장
@@ -18197,8 +18285,13 @@ async function txUpLoadVendors() {
       const uploadCount = v.upload_count ?? 0
       const lastYear = v.last_upload_year
       const lastMonth = v.last_upload_month
-      const lastText = lastYear ? `${lastYear}년 ${lastMonth}월` : '업로드 없음'
+      const lastDateFrom = v.last_date_from
+      const lastDateTo   = v.last_date_to
+      const lastText = lastDateFrom
+        ? `${lastDateFrom.slice(5)} ~ ${(lastDateTo||lastDateFrom).slice(5)}`
+        : (lastYear ? `${lastYear}년 ${lastMonth}월` : '업로드 없음')
       const isVerified = v.invoice_test_status === 'verified'
+      const isAccumulate = v.upload_mode === 'accumulate'
       const catColors = {
         major:'#ede9fe', meat:'#fce7f3', seafood:'#e0f2fe', organic:'#dcfce7',
         general:'#f3f4f6', cleaning:'#fef9c3', consumable:'#dbeafe'
@@ -18218,9 +18311,11 @@ async function txUpLoadVendors() {
           <span class="text-xs ${isVerified ? 'text-green-700' : 'text-gray-400'}">
             <i class="fas ${isVerified ? 'fa-check-circle' : 'fa-circle'} mr-0.5"></i>${isVerified ? '검증완료' : '미검증'}
           </span>
-          <span class="text-xs text-gray-500">${uploadCount}회</span>
+          <span class="text-xs ${isAccumulate ? 'text-orange-500' : 'text-blue-400'}">
+            <i class="fas ${isAccumulate ? 'fa-layer-group' : 'fa-sync-alt'} mr-0.5"></i>${isAccumulate ? '누적' : '월별'}
+          </span>
         </div>
-        <div class="text-xs text-gray-400 mt-1">${lastText}</div>
+        <div class="text-xs text-gray-400 mt-1">${uploadCount ? `${uploadCount}회 · ` : ''}${lastText}</div>
       </div>`
     }).join('')
   } catch(e) {
@@ -18274,20 +18369,29 @@ window.txUpSelectVendor = async function(vendorId) {
     cfg = r.data.vendor || null
   } catch(e) {}
 
-  const defaults = { skip_rows:4, cat_mode:'subtotal', col_code:0, col_name:1, col_spec:2, col_unit:3, col_qty:4, col_price:5, col_amount:6, col_vat:7, col_total:8 }
+  const defaults = { skip_rows:4, cat_mode:'subtotal', col_code:0, col_name:1, col_spec:2, col_unit:3, col_qty:4, col_price:5, col_amount:6, col_vat:7, col_total:8,
+                     upload_mode:'monthly', period_type:'auto' }
   const s = cfg || defaults
   window._txUpInvoiceVendorId = cfg?.id || null
 
-  // 요약 표시
-  const summary = document.getElementById('txUpParsingSummary')
-  if (summary) summary.textContent = `건너뛸행: ${s.skip_rows} | 코드:${s.col_code} 품명:${s.col_name} 수량:${s.col_qty} 단가:${s.col_price} | 분류: ${s.cat_mode}`
+  // 업로드 방식 & 기간 설정 적용
+  const uploadMode  = s.upload_mode  || 'monthly'
+  const periodType  = s.period_type  || 'auto'
+  window._txUpUploadMode = uploadMode
+  window._txUpPeriodType = periodType
+  window._txUpDateFrom   = null
+  window._txUpDateTo     = null
 
-  // 설정값 적용
-  const sv = (id, val) => { const el = document.getElementById(id); if (el) el.value = val }
-  sv('txUpSkip', s.skip_rows); sv('txUpCatMode', s.cat_mode)
-  sv('txUpColCode', s.col_code); sv('txUpColName', s.col_name); sv('txUpColSpec', s.col_spec)
-  sv('txUpColUnit', s.col_unit); sv('txUpColQty', s.col_qty); sv('txUpColPrice', s.col_price)
-  sv('txUpColAmt', s.col_amount); sv('txUpColVat', s.col_vat); sv('txUpColTotal', s.col_total)
+  txUpSetUploadMode(uploadMode, false)   // false = DB 저장 안 함(초기화)
+  txUpSetPeriodType(periodType, false)
+
+  // 누적 모드면 이번 달 업로드 현황 표시
+  if (uploadMode === 'accumulate') {
+    txUpLoadAccumulateInfo(v.name)
+  } else {
+    const ai = document.getElementById('txUpAccumulateInfo')
+    if (ai) ai.style.display = 'none'
+  }
 
   // 저장 버튼 비활성화
   const btn = document.getElementById('txUpSaveBtn')
@@ -18295,6 +18399,9 @@ window.txUpSelectVendor = async function(vendorId) {
   // 미리보기 초기화
   const prev = document.getElementById('txUpPreviewResult')
   if (prev) { prev.style.display = 'none'; prev.innerHTML = '' }
+  // 자동감지 결과 초기화
+  const adp = document.getElementById('txUpAutoDetectedPeriod')
+  if (adp) adp.style.display = 'none'
   // 파일 초기화
   const fi = document.getElementById('txUpFile'); if (fi) fi.value = ''
 
@@ -18379,6 +18486,122 @@ window.txUpSwitchMode = function(mode) {
   }
 }
 
+// ── 업로드 방식 전환 (월별 덮어쓰기 / 날짜별 누적) ──────────────────────
+window.txUpSetUploadMode = async function(mode, saveToDb = true) {
+  window._txUpUploadMode = mode
+  const btnMonthly    = document.getElementById('txUpModeMonthly')
+  const btnAccumulate = document.getElementById('txUpModeAccumulate')
+  const desc          = document.getElementById('txUpModeDesc')
+  const activeClass   = 'flex-1 text-xs py-1.5 rounded-lg border-2 font-semibold transition-all'
+  if (mode === 'accumulate') {
+    if (btnMonthly)    btnMonthly.className    = `${activeClass} border-gray-200 bg-white text-gray-500 hover:border-blue-300 hover:text-blue-600`
+    if (btnAccumulate) btnAccumulate.className = `${activeClass} border-orange-500 bg-orange-50 text-orange-700`
+    if (desc) desc.innerHTML = '<span class="text-orange-500">날짜 범위별로 쌓이며, 1달치가 쌓이면 월별 분석에 반영됩니다</span>'
+    // 누적 현황 표시
+    const vendorName = window._txUpSelectedVendorName
+    if (vendorName) txUpLoadAccumulateInfo(vendorName)
+  } else {
+    if (btnMonthly)    btnMonthly.className    = `${activeClass} border-blue-500 bg-blue-50 text-blue-700`
+    if (btnAccumulate) btnAccumulate.className = `${activeClass} border-gray-200 bg-white text-gray-500 hover:border-orange-300 hover:text-orange-600`
+    if (desc) desc.innerHTML = '<span class="text-blue-500">같은 월 기존 데이터를 덮어씁니다</span>'
+    const ai = document.getElementById('txUpAccumulateInfo')
+    if (ai) ai.style.display = 'none'
+  }
+  // DB 저장 (업체 설정 반영)
+  if (saveToDb) await txUpSaveVendorPeriodConfig()
+}
+
+// ── 기간 설정 방식 전환 (자동감지 / 직접입력) ────────────────────────────
+window.txUpSetPeriodType = async function(type, saveToDb = true) {
+  window._txUpPeriodType = type
+  const btnAuto   = document.getElementById('txUpPeriodAuto')
+  const btnManual = document.getElementById('txUpPeriodManual')
+  const rangePanel = document.getElementById('txUpDateRangePanel')
+  const desc       = document.getElementById('txUpPeriodDesc')
+  const activeClass = 'flex-1 text-xs py-1.5 rounded-lg border-2 font-semibold transition-all'
+  if (type === 'manual') {
+    if (btnAuto)   btnAuto.className   = `${activeClass} border-gray-200 bg-white text-gray-500 hover:border-blue-300 hover:text-blue-600`
+    if (btnManual) btnManual.className = `${activeClass} border-purple-500 bg-purple-50 text-purple-700`
+    if (rangePanel) rangePanel.style.display = 'block'
+    if (desc) desc.innerHTML = '<span class="text-purple-500">날짜 범위를 직접 입력하세요</span>'
+    // 자동감지 결과 패널 숨김
+    const adp = document.getElementById('txUpAutoDetectedPeriod')
+    if (adp) adp.style.display = 'none'
+  } else {
+    if (btnAuto)   btnAuto.className   = `${activeClass} border-blue-500 bg-blue-50 text-blue-700`
+    if (btnManual) btnManual.className = `${activeClass} border-gray-200 bg-white text-gray-500 hover:border-purple-300 hover:text-purple-600`
+    if (rangePanel) rangePanel.style.display = 'none'
+    if (desc) desc.innerHTML = '<span class="text-blue-500">파일에서 거래기간을 자동으로 읽습니다</span>'
+  }
+  if (saveToDb) await txUpSaveVendorPeriodConfig()
+}
+
+// ── 업체 기간 설정 DB 저장 ──────────────────────────────────────────────
+async function txUpSaveVendorPeriodConfig() {
+  const vendorId = window._txUpSelectedVendorId
+  if (!vendorId) return
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const body = {
+    vendor_id: vendorId,
+    upload_mode: window._txUpUploadMode || 'monthly',
+    period_type: window._txUpPeriodType || 'auto',
+  }
+  try {
+    if (window._txUpInvoiceVendorId) {
+      await axios.put(`/api/transaction/invoice-vendors/${window._txUpInvoiceVendorId}`, body, { headers: authH })
+    } else {
+      const r = await axios.post('/api/transaction/invoice-vendors', {
+        ...body, vendor_name: window._txUpSelectedVendorName || ''
+      }, { headers: authH })
+      if (r.data?.vendor?.id) window._txUpInvoiceVendorId = r.data.vendor.id
+    }
+  } catch(e) { console.warn('업체 설정 저장 실패:', e.message) }
+}
+
+// ── 이번 달 누적 업로드 현황 조회 ──────────────────────────────────────
+async function txUpLoadAccumulateInfo(vendorName) {
+  const ai = document.getElementById('txUpAccumulateInfo')
+  const al = document.getElementById('txUpAccumulateList')
+  if (!ai || !al) return
+  ai.style.display = 'block'
+  al.innerHTML = '<span class="text-orange-400"><i class="fas fa-spinner fa-spin mr-1"></i>조회 중...</span>'
+  const year  = document.getElementById('txUpYear')?.value  || new Date().getFullYear()
+  const month = document.getElementById('txUpMonth')?.value || (new Date().getMonth() + 1)
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  try {
+    const hospitalParam = TXState.selectedHospitalId ? `&hospital_id=${TXState.selectedHospitalId}` : ''
+    const r = await axios.get(
+      `/api/transaction/invoice-files?vendor_name=${encodeURIComponent(vendorName)}&year=${year}&month=${month}${hospitalParam}`,
+      { headers: authH }
+    )
+    const files = r.data.files || []
+    if (files.length === 0) {
+      al.innerHTML = '<span class="text-gray-400">이번 달 업로드 없음 (첫 번째 업로드)</span>'
+    } else {
+      const totalItems = files.reduce((s, f) => s + (f.row_count || 0), 0)
+      al.innerHTML = files.map(f => {
+        const from = f.date_from ? f.date_from.slice(5) : '?'
+        const to   = f.date_to   ? f.date_to.slice(5)   : '?'
+        return `<div class="flex items-center gap-1 mb-0.5">
+          <i class="fas fa-file-alt text-orange-400 text-xs"></i>
+          <span>${from} ~ ${to}</span>
+          <span class="text-orange-400 ml-1">${f.row_count}개 품목</span>
+        </div>`
+      }).join('') + `<div class="mt-1 pt-1 border-t border-orange-200 font-semibold">합계 ${totalItems}개 품목</div>`
+    }
+  } catch(e) {
+    al.innerHTML = '<span class="text-red-400">조회 실패</span>'
+  }
+}
+
+// ── 자동감지 기간 초기화 ─────────────────────────────────────────────────
+window.txUpClearDetectedPeriod = function() {
+  window._txUpDateFrom = null
+  window._txUpDateTo   = null
+  const adp = document.getElementById('txUpAutoDetectedPeriod')
+  if (adp) adp.style.display = 'none'
+}
+
 // 파일 선택 후 자동 미리보기 (원본 엑셀 컬럼 그대로)
 window.txUpPreview = async function() {
   const file = document.getElementById('txUpFile')?.files?.[0]
@@ -18390,12 +18613,47 @@ window.txUpPreview = async function() {
     const parsed = await txParseInvoiceExcel(file)
     window._txUpParsedData = parsed
 
+    // ── 거래기간 자동감지 (period_type='auto'일 때) ──
+    if ((window._txUpPeriodType || 'auto') === 'auto' && parsed.rawRows) {
+      const detected = txDetectPeriodFromRawRows(parsed.rawRows)
+      if (detected) {
+        window._txUpDateFrom = detected.startDate
+        window._txUpDateTo   = detected.endDate
+        // 연/월 자동 설정
+        const yearEl  = document.getElementById('txUpYear')
+        const monthEl = document.getElementById('txUpMonth')
+        if (yearEl)  yearEl.value  = detected.year
+        if (monthEl) monthEl.value = detected.month
+        // 자동감지 결과 배너 표시
+        const adp  = document.getElementById('txUpAutoDetectedPeriod')
+        const adtx = document.getElementById('txUpAutoDetectedText')
+        if (adp && adtx) {
+          adtx.textContent = `거래기간 자동감지: ${detected.startDate} ~ ${detected.endDate}`
+          adp.style.display = 'block'
+        }
+      }
+    } else if ((window._txUpPeriodType || 'auto') === 'manual') {
+      // 직접입력 모드: input에서 가져옴
+      window._txUpDateFrom = document.getElementById('txUpDateFrom')?.value || null
+      window._txUpDateTo   = document.getElementById('txUpDateTo')?.value   || null
+    }
+
+    // 누적 모드인 경우 현황 갱신
+    if (window._txUpUploadMode === 'accumulate') {
+      txUpLoadAccumulateInfo(window._txUpSelectedVendorName || '')
+    }
+
     const items    = parsed.items || []
     const headers  = parsed.headers || []  // 원본 엑셀 헤더
     const totalItems = items.length
     const totalAmt   = items.reduce((s,i) => s + (Number(i.total)||0), 0)
     const totalVat   = items.reduce((s,i) => s + (Number(i.tax_amount)||0), 0)
     const fmt = n => Number(n||0).toLocaleString()
+
+    // 날짜 범위 표시 (미리보기 요약에 포함)
+    const dateRangeText = window._txUpDateFrom
+      ? `${window._txUpDateFrom} ~ ${window._txUpDateTo || window._txUpDateFrom}`
+      : ''
 
     // 상단 요약 카드
     const summaryHtml = `
@@ -18475,12 +18733,27 @@ window.txUpPreview = async function() {
     }).join('')
     const tfoot = `<tr>${tfootCells}</tr>`
 
+    const periodBadge = dateRangeText
+      ? `<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium ml-1">
+          <i class="fas fa-calendar-week mr-1"></i>${dateRangeText}
+        </span>`
+      : ''
+    const modeBadge = window._txUpUploadMode === 'accumulate'
+      ? `<span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium ml-1">
+          <i class="fas fa-layer-group mr-1"></i>누적
+        </span>`
+      : `<span class="text-xs bg-blue-50 text-blue-500 px-2 py-0.5 rounded-full font-medium ml-1">
+          <i class="fas fa-sync-alt mr-1"></i>월별 덮어쓰기
+        </span>`
+
     if (prevEl) prevEl.innerHTML = `
     <div class="bg-white border border-gray-200 rounded-xl p-4">
-      <div class="flex items-center gap-2 mb-3">
+      <div class="flex items-center flex-wrap gap-2 mb-3">
         <i class="fas fa-check-circle text-green-500"></i>
         <span class="text-sm font-bold text-green-700">파싱 성공</span>
-        <span class="text-xs text-gray-400 ml-1">· 헤더 자동 감지 완료 (${parsed.headerRowIdx+1}행)</span>
+        <span class="text-xs text-gray-400">· ${totalItems}개 품목</span>
+        ${periodBadge}
+        ${modeBadge}
       </div>
       ${summaryHtml}
       <div class="flex flex-wrap gap-1.5 mb-3">${catBadges}</div>
@@ -18494,9 +18767,16 @@ window.txUpPreview = async function() {
       </div>
     </div>`
 
-    // 저장 버튼 활성화
+    // 저장 버튼 활성화 (누적/덮어쓰기에 따른 텍스트)
     const btn = document.getElementById('txUpSaveBtn')
-    if (btn) { btn.disabled = false; btn.classList.remove('opacity-50','cursor-not-allowed') }
+    if (btn) {
+      btn.disabled = false
+      btn.classList.remove('opacity-50','cursor-not-allowed')
+      const saveModeText = window._txUpUploadMode === 'accumulate'
+        ? `<i class="fas fa-layer-group mr-2"></i>누적 저장${dateRangeText ? ' ('+dateRangeText+')' : ''}`
+        : `<i class="fas fa-save mr-2"></i>저장`
+      btn.innerHTML = saveModeText
+    }
   } catch(e) {
     console.error('[txUpPreview] 파싱 오류:', e)
     if (prevEl) prevEl.innerHTML = `<div class="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-600">
@@ -18517,6 +18797,24 @@ window.txUpSave = async function() {
   const month = document.getElementById('txUpMonth')?.value
   if (!vendor) { showToast('업체를 선택하세요', 'error'); return }
 
+  // 기간 정보 수집
+  const uploadMode = window._txUpUploadMode || 'monthly'
+  const periodType = window._txUpPeriodType || 'auto'
+  let dateFrom = window._txUpDateFrom || null
+  let dateTo   = window._txUpDateTo   || null
+  // 직접입력 모드: input에서 최신값 가져오기
+  if (periodType === 'manual') {
+    dateFrom = document.getElementById('txUpDateFrom')?.value || null
+    dateTo   = document.getElementById('txUpDateTo')?.value   || null
+  }
+
+  // 날짜범위 없으면 해당 월 전체로 기본값 설정
+  if (!dateFrom && !dateTo) {
+    const mm = String(month).padStart(2,'0')
+    dateFrom = `${year}-${mm}-01`
+    dateTo   = `${year}-${mm}-31`  // DB에서 월 마지막날로 처리
+  }
+
   const btn = document.getElementById('txUpSaveBtn')
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>저장 중...' }
 
@@ -18525,18 +18823,35 @@ window.txUpSave = async function() {
     const res = await axios.post('/api/transaction/invoice/save', {
       vendor_name: vendor, vendor_id: vendorId,
       year: Number(year), month: Number(month),
+      date_from: dateFrom, date_to: dateTo,
+      upload_mode: uploadMode,
       items: parsed.items, categories: parsed.categories
     }, { headers: authH })
 
     if (res.data.ok) {
-      showToast(`✅ 저장 완료! ${res.data.item_count}개 품목`, 'success')
+      const modeText = uploadMode === 'accumulate' ? '누적 저장' : '저장'
+      const periodText = dateFrom ? ` (${dateFrom.slice(5)} ~ ${(dateTo||dateFrom).slice(5)})` : ''
+      showToast(`✅ ${modeText} 완료! ${res.data.item_count}개 품목${periodText}`, 'success')
       // upload-sync
       if (invoiceVendorId) {
-        try { await axios.post(`/api/transaction/invoice-vendors/${invoiceVendorId}/upload-sync`, { year: Number(year), month: Number(month) }, { headers: authH }) } catch(e) {}
+        try { await axios.post(`/api/transaction/invoice-vendors/${invoiceVendorId}/upload-sync`,
+          { year: Number(year), month: Number(month) }, { headers: authH }) } catch(e) {}
       }
       TXState._invVendor = vendor; TXState._invYear = year; TXState._invMonth = month
-      // 분류별 분석 탭으로 이동
-      txSwitchTab('category')
+      // 누적 모드면 업로드 패널 유지 (다음 파일 업로드 가능), 월별 모드면 분석 탭으로
+      if (uploadMode === 'accumulate') {
+        // 현황 갱신 + 파일 인풋 초기화
+        const fi = document.getElementById('txUpFile'); if (fi) fi.value = ''
+        const prev = document.getElementById('txUpPreviewResult')
+        if (prev) { prev.style.display = 'none'; prev.innerHTML = '' }
+        window._txUpDateFrom = null; window._txUpDateTo = null
+        const adp = document.getElementById('txUpAutoDetectedPeriod')
+        if (adp) adp.style.display = 'none'
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-layer-group mr-2"></i>누적 저장'; btn.classList.add('opacity-50','cursor-not-allowed') }
+        txUpLoadAccumulateInfo(vendor)
+      } else {
+        txSwitchTab('category')
+      }
     } else {
       throw new Error(res.data.error || '저장 실패')
     }
@@ -20666,6 +20981,31 @@ window.txPreviewInvoiceFile = async function() {
   }
 }
 
+// ── 거래기간 자동감지 (rawRows에서 거래기간 텍스트 파싱) ──────────────────
+function txDetectPeriodFromRawRows(rawRows) {
+  // 패턴1: "거래기간 : 2026/03/02 ~ 2026/03/02" (삼성웰스토리 등)
+  // 패턴2: "2026-03-01 ~ 2026-03-31"
+  // 패턴3: "기간: 2026.03.01~2026.03.31"
+  const patterns = [
+    /(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})\s*[~～\-]\s*(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/,
+    /(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s*[~～\-]\s*(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/,
+  ]
+  for (let i = 0; i < Math.min(15, rawRows.length); i++) {
+    const rowStr = (rawRows[i] || []).map(c => String(c||'')).join(' ')
+    for (const pat of patterns) {
+      const m = rowStr.match(pat)
+      if (m) {
+        const y1 = m[1], mo1 = String(m[2]).padStart(2,'0'), d1 = String(m[3]).padStart(2,'0')
+        const y2 = m[4], mo2 = String(m[5]).padStart(2,'0'), d2 = String(m[6]).padStart(2,'0')
+        const startDate = `${y1}-${mo1}-${d1}`
+        const endDate   = `${y2}-${mo2}-${d2}`
+        return { startDate, endDate, year: parseInt(y1), month: parseInt(mo1) }
+      }
+    }
+  }
+  return null
+}
+
 // ── 헤더 행 자동 감지 ──
 function txDetectHeaderRow(rawRows) {
   const keyHeaders = ['품목명','품명','상품명','수량','금액','합계','단가','평균단가','공급가']
@@ -20841,7 +21181,8 @@ async function txParseInvoiceExcel(file) {
           categories: finalCategories,
           headers: displayHeaders,   // 원본 헤더 (미리보기용)
           headerRowIdx,
-          colMap
+          colMap,
+          rawRows,                   // 거래기간 자동감지용
         })
       } catch(err) { reject(err) }
     }

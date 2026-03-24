@@ -933,22 +933,46 @@ txRouter.post('/invoice/save', async (c) => {
   try {
     const body = await c.req.json() as any
     const hospitalId = await resolveHospitalId(c, body.hospital_id)
-    const { vendor_name, year, month, trade_period, items = [], categories = [] } = body
+    const { vendor_name, year, month, trade_period,
+            date_from = null, date_to = null,
+            upload_mode = 'monthly',
+            items = [], categories = [] } = body
 
     if (!vendor_name || !year || !month) {
       return c.json({ ok: false, error: '업체명/연도/월 필수' }, 400)
     }
 
-    // 1) transaction_files 레코드 upsert
+    // upload_mode='accumulate'(누적)이면 같은 연월에 이미 저장된 records가 있어도 추가(append)
+    // upload_mode='monthly'(덮어쓰기)면 기존 데이터 삭제 후 재저장
+    if (upload_mode === 'monthly') {
+      // 기존 파일/문서/품목 삭제 (같은 병원+업체+연월)
+      const existingFiles = await c.env.DB.prepare(`
+        SELECT id FROM transaction_files
+        WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+      `).bind(hospitalId, vendor_name, Number(year), Number(month)).all<any>()
+      for (const ef of (existingFiles.results || [])) {
+        const existingDocs = await c.env.DB.prepare(
+          `SELECT id FROM transaction_documents WHERE file_id=?`
+        ).bind(ef.id).all<any>()
+        for (const ed of (existingDocs.results || [])) {
+          await c.env.DB.prepare(`DELETE FROM transaction_items WHERE document_id=?`).bind(ed.id).run()
+        }
+        await c.env.DB.prepare(`DELETE FROM transaction_documents WHERE file_id=?`).bind(ef.id).run()
+        await c.env.DB.prepare(`DELETE FROM transaction_files WHERE id=?`).bind(ef.id).run()
+      }
+    }
+
+    // 1) transaction_files 레코드 삽입
     const fileRes = await c.env.DB.prepare(`
       INSERT INTO transaction_files
         (hospital_id, file_name, file_type, vendor_name, document_year, document_month,
-         parse_status, row_count, updated_at)
-      VALUES (?, ?, 'xlsx', ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
+         parse_status, row_count, date_from, date_to, updated_at)
+      VALUES (?, ?, 'xlsx', ?, ?, ?, 'completed', ?, ?, ?, CURRENT_TIMESTAMP)
     `).bind(
       hospitalId,
-      `${vendor_name}_${year}${String(month).padStart(2,'0')}.xlsx`,
-      vendor_name, Number(year), Number(month), items.length
+      `${vendor_name}_${year}${String(month).padStart(2,'0')}_${date_from||''}${date_to?'~'+date_to:''}.xlsx`,
+      vendor_name, Number(year), Number(month), items.length,
+      date_from || null, date_to || null
     ).run()
     const fileId = fileRes.meta.last_row_id
 
@@ -957,14 +981,21 @@ txRouter.post('/invoice/save', async (c) => {
     const taxableAmount = categories.reduce((s: number, c: any) => s + (Number(c.amount) || 0), 0)
     const taxAmount = categories.reduce((s: number, c: any) => s + (Number(c.vat) || 0), 0)
 
+    // 거래기간 문자열
+    const tradePeriodStr = date_from && date_to
+      ? `${date_from} ~ ${date_to}`
+      : trade_period || `${year}-${String(month).padStart(2,'0')}`
+
     const docRes = await c.env.DB.prepare(`
       INSERT INTO transaction_documents
         (file_id, hospital_id, vendor_name, document_year, document_month,
-         total_amount, taxable_amount, tax_amount, item_count, trade_period)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
+         total_amount, taxable_amount, tax_amount, item_count, trade_period,
+         date_from, date_to)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(
       fileId, hospitalId, vendor_name, Number(year), Number(month),
-      totalAmount, taxableAmount, taxAmount, items.length, trade_period || ''
+      totalAmount, taxableAmount, taxAmount, items.length, tradePeriodStr,
+      date_from || null, date_to || null
     ).run()
     const docId = docRes.meta.last_row_id
 
@@ -977,8 +1008,9 @@ txRouter.post('/invoice/save', async (c) => {
           INSERT INTO transaction_items
             (document_id, file_id, hospital_id, vendor_name, document_year, document_month,
              item_code, item_name, item_name_normalized, spec, unit, quantity,
-             unit_price, amount, tax_type, tax_amount, supplier_category, raw_row)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             unit_price, amount, tax_type, tax_amount, supplier_category, raw_row,
+             date_from, date_to)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           docId, fileId, hospitalId, vendor_name, Number(year), Number(month),
           it.item_code || '',
@@ -992,7 +1024,9 @@ txRouter.post('/invoice/save', async (c) => {
           (Number(it.tax_amount) || 0) > 0 ? 'taxable' : 'nontaxable',
           Number(it.tax_amount) || 0,
           it.supplier_category || '',
-          JSON.stringify(it)
+          JSON.stringify(it),
+          date_from || null,
+          date_to || null
         )
       )
       await c.env.DB.batch(stmts)
@@ -1013,6 +1047,29 @@ txRouter.post('/invoice/save', async (c) => {
     return c.json({ ok: true, file_id: fileId, doc_id: docId, item_count: items.length })
   } catch (e: any) {
     console.error('[invoice/save] ERROR:', e)
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 업체/연월별 파일 목록 조회 (누적 현황 확인용) ────────────────────────
+// GET /invoice-files?vendor_name=&year=&month=
+txRouter.get('/invoice-files', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const year  = Number(c.req.query('year')  || new Date().getFullYear())
+    const month = Number(c.req.query('month') || (new Date().getMonth() + 1))
+
+    const rows = await c.env.DB.prepare(`
+      SELECT id, vendor_name, document_year, document_month,
+             row_count, date_from, date_to, created_at
+      FROM transaction_files
+      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+      ORDER BY id ASC
+    `).bind(hospitalId, vendorName, year, month).all<any>()
+
+    return c.json({ ok: true, files: rows.results || [] })
+  } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
   }
 })
@@ -1270,6 +1327,7 @@ txRouter.get('/vendors-for-invoice', async (c) => {
         hiv.test_status AS invoice_test_status,
         hiv.skip_rows, hiv.col_code, hiv.col_name, hiv.col_spec, hiv.col_unit,
         hiv.col_qty, hiv.col_price, hiv.col_amount, hiv.col_vat, hiv.col_total, hiv.cat_mode,
+        hiv.upload_mode, hiv.period_type,
         (SELECT COUNT(*) FROM transaction_files tf
          WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
         ) AS upload_count,
@@ -1280,7 +1338,15 @@ txRouter.get('/vendors-for-invoice', async (c) => {
         (SELECT tf.document_month FROM transaction_files tf
          WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
          ORDER BY tf.document_year DESC, tf.document_month DESC LIMIT 1
-        ) AS last_upload_month
+        ) AS last_upload_month,
+        (SELECT tf.date_from FROM transaction_files tf
+         WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
+         ORDER BY tf.document_year DESC, tf.document_month DESC, tf.id DESC LIMIT 1
+        ) AS last_date_from,
+        (SELECT tf.date_to FROM transaction_files tf
+         WHERE tf.hospital_id = v.hospital_id AND tf.vendor_name = v.name
+         ORDER BY tf.document_year DESC, tf.document_month DESC, tf.id DESC LIMIT 1
+        ) AS last_date_to
       FROM vendors v
       LEFT JOIN hospital_invoice_vendors hiv
         ON hiv.hospital_id = v.hospital_id AND hiv.vendor_id = v.id AND hiv.is_active = 1
@@ -1365,7 +1431,8 @@ txRouter.post('/invoice-vendors', async (c) => {
       skip_rows = 4, col_code = 0, col_name = 1, col_spec = 2,
       col_unit = 3, col_qty = 4, col_price = 5,
       col_amount = 6, col_vat = 7, col_total = 8,
-      cat_mode = 'subtotal', col_category = null
+      cat_mode = 'subtotal', col_category = null,
+      upload_mode = 'monthly', period_type = 'auto'
     } = body
 
     // vendor_id가 있는 경우: vendors 테이블에서 이름 조회
@@ -1389,12 +1456,12 @@ txRouter.post('/invoice-vendors', async (c) => {
           UPDATE hospital_invoice_vendors SET
             vendor_name=?, vendor_name_norm=?, skip_rows=?, col_code=?, col_name=?, col_spec=?,
             col_unit=?, col_qty=?, col_price=?, col_amount=?, col_vat=?, col_total=?,
-            cat_mode=?, col_category=?, updated_at=CURRENT_TIMESTAMP
+            cat_mode=?, col_category=?, upload_mode=?, period_type=?, updated_at=CURRENT_TIMESTAMP
           WHERE id=? AND hospital_id=?
         `).bind(
           resolvedName, norm, skip_rows, col_code, col_name, col_spec,
           col_unit, col_qty, col_price, col_amount, col_vat, col_total,
-          cat_mode, col_category ?? null, existing.id, hospitalId
+          cat_mode, col_category ?? null, upload_mode, period_type, existing.id, hospitalId
         ).run()
         const updated = await c.env.DB.prepare(`SELECT * FROM hospital_invoice_vendors WHERE id=?`).bind(existing.id).first<any>()
         return c.json({ ok: true, vendor: updated })
@@ -1407,8 +1474,8 @@ txRouter.post('/invoice-vendors', async (c) => {
         (hospital_id, vendor_id, vendor_name, vendor_name_norm, description,
          skip_rows, col_code, col_name, col_spec, col_unit, col_qty,
          col_price, col_amount, col_vat, col_total, cat_mode, col_category,
-         updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+         upload_mode, period_type, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(hospital_id, vendor_name_norm) DO UPDATE SET
         vendor_id=COALESCE(excluded.vendor_id, vendor_id),
         vendor_name=excluded.vendor_name, description=excluded.description,
@@ -1418,11 +1485,13 @@ txRouter.post('/invoice-vendors', async (c) => {
         col_price=excluded.col_price, col_amount=excluded.col_amount,
         col_vat=excluded.col_vat, col_total=excluded.col_total,
         cat_mode=excluded.cat_mode, col_category=excluded.col_category,
+        upload_mode=excluded.upload_mode, period_type=excluded.period_type,
         updated_at=CURRENT_TIMESTAMP
     `).bind(
       hospitalId, vendor_id ?? null, resolvedName, norm, description,
       skip_rows, col_code, col_name, col_spec, col_unit, col_qty,
-      col_price, col_amount, col_vat, col_total, cat_mode, col_category ?? null
+      col_price, col_amount, col_vat, col_total, cat_mode, col_category ?? null,
+      upload_mode, period_type
     ).run()
 
     const newRow = await c.env.DB.prepare(
@@ -1444,6 +1513,7 @@ txRouter.put('/invoice-vendors/:id', async (c) => {
       vendor_name, description,
       skip_rows, col_code, col_name, col_spec, col_unit, col_qty,
       col_price, col_amount, col_vat, col_total, cat_mode, col_category,
+      upload_mode, period_type,
       test_status, test_sample_rows
     } = body
 
@@ -1458,6 +1528,8 @@ txRouter.put('/invoice-vendors/:id', async (c) => {
         col_amount=COALESCE(?,col_amount), col_vat=COALESCE(?,col_vat),
         col_total=COALESCE(?,col_total), cat_mode=COALESCE(?,cat_mode),
         col_category=?,
+        upload_mode=COALESCE(?,upload_mode),
+        period_type=COALESCE(?,period_type),
         test_status=COALESCE(?,test_status),
         test_sample_rows=COALESCE(?,test_sample_rows),
         test_verified_at=CASE WHEN ?='verified' THEN CURRENT_TIMESTAMP ELSE test_verified_at END,
@@ -1469,6 +1541,7 @@ txRouter.put('/invoice-vendors/:id', async (c) => {
       col_spec ?? null, col_unit ?? null, col_qty ?? null,
       col_price ?? null, col_amount ?? null, col_vat ?? null,
       col_total ?? null, cat_mode ?? null, col_category ?? null,
+      upload_mode ?? null, period_type ?? null,
       test_status ?? null,
       test_sample_rows ? JSON.stringify(test_sample_rows) : null,
       test_status ?? null,
