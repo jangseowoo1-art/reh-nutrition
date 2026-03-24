@@ -18034,56 +18034,6 @@ function txRenderUploadTab(container) {
 
       <!-- ══ 자동 매핑 패널 ══ -->
       <div id="txUpPanelAuto">
-        <!-- 파싱 설정 요약 -->
-        <div class="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-center justify-between">
-          <div>
-            <div class="text-xs text-gray-500 mb-1">파싱 설정</div>
-            <div id="txUpParsingSummary" class="text-xs text-gray-700 font-mono"></div>
-          </div>
-          <button onclick="document.getElementById('txUpParsingDetail').classList.toggle('hidden');this.querySelector('.chev').classList.toggle('fa-chevron-down');this.querySelector('.chev').classList.toggle('fa-chevron-up')"
-            class="text-xs text-purple-600 border border-purple-200 rounded-lg px-3 py-1.5 hover:bg-purple-50 flex items-center gap-1.5 ml-3 flex-shrink-0">
-            <i class="fas fa-sliders-h mr-1"></i>설정 수정 <i class="fas fa-chevron-down chev text-xs"></i>
-          </button>
-        </div>
-
-        <!-- 파싱 상세 설정 (접힘) -->
-        <div id="txUpParsingDetail" class="hidden mb-4 p-4 bg-gray-50 rounded-xl border border-gray-200">
-          <div class="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label class="text-xs text-gray-500 block mb-1">건너뛸 행 수</label>
-              <input id="txUpSkip" type="number" value="4" min="0" max="20"
-                class="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5" onchange="txUpSaveParsing()">
-            </div>
-            <div>
-              <label class="text-xs text-gray-500 block mb-1">분류 구분 방식</label>
-              <select id="txUpCatMode" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5" onchange="txUpSaveParsing()">
-                <option value="subtotal">소계 행으로 구분</option>
-                <option value="category_col">별도 분류 컬럼</option>
-                <option value="none">분류 없음</option>
-              </select>
-            </div>
-          </div>
-          <div class="text-xs text-gray-500 mb-2">컬럼 인덱스 (0부터 시작)</div>
-          <div class="grid grid-cols-5 gap-2 mb-2">
-            ${[['txUpColCode','코드','0'],['txUpColName','품명','1'],['txUpColSpec','규격','2'],['txUpColUnit','단위','3'],['txUpColQty','수량','4']].map(([id,lbl,val])=>`
-            <div>
-              <label class="text-xs text-gray-400 block mb-1">${lbl}</label>
-              <input id="${id}" type="number" value="${val}" min="0" class="w-full text-xs border border-gray-200 rounded px-2 py-1 text-center" onchange="txUpSaveParsing()">
-            </div>`).join('')}
-          </div>
-          <div class="grid grid-cols-4 gap-2 mb-3">
-            ${[['txUpColPrice','단가','5'],['txUpColAmt','금액','6'],['txUpColVat','부가세','7'],['txUpColTotal','합계','8']].map(([id,lbl,val])=>`
-            <div>
-              <label class="text-xs text-gray-400 block mb-1">${lbl}</label>
-              <input id="${id}" type="number" value="${val}" min="0" class="w-full text-xs border border-gray-200 rounded px-2 py-1 text-center" onchange="txUpSaveParsing()">
-            </div>`).join('')}
-          </div>
-          <button onclick="txUpSaveParsing(true)"
-            class="w-full bg-purple-600 text-white text-xs py-2 rounded-lg hover:bg-purple-700">
-            <i class="fas fa-save mr-1"></i>파싱 설정 저장
-          </button>
-        </div>
-
         <!-- 연도/월 + 파일 선택 -->
         <div class="grid grid-cols-2 gap-3 mb-4">
           <div>
@@ -18402,37 +18352,22 @@ window.txUpSwitchMode = function(mode) {
   }
 }
 
-// 파일 선택 후 자동 미리보기 (인라인 상세 테이블)
+// 파일 선택 후 자동 미리보기 (원본 엑셀 컬럼 그대로)
 window.txUpPreview = async function() {
   const file = document.getElementById('txUpFile')?.files?.[0]
   if (!file) return
-  const skipRows = parseInt(document.getElementById('txUpSkip')?.value || '4')
-  const catMode  = document.getElementById('txUpCatMode')?.value || 'subtotal'
-  const cols = {
-    code:  parseInt(document.getElementById('txUpColCode')?.value  || '0'),
-    name:  parseInt(document.getElementById('txUpColName')?.value  || '1'),
-    spec:  parseInt(document.getElementById('txUpColSpec')?.value  || '2'),
-    unit:  parseInt(document.getElementById('txUpColUnit')?.value  || '3'),
-    qty:   parseInt(document.getElementById('txUpColQty')?.value   || '4'),
-    price: parseInt(document.getElementById('txUpColPrice')?.value || '5'),
-    amt:   parseInt(document.getElementById('txUpColAmt')?.value   || '6'),
-    vat:   parseInt(document.getElementById('txUpColVat')?.value   || '7'),
-    total: parseInt(document.getElementById('txUpColTotal')?.value || '8'),
-  }
   const prevEl = document.getElementById('txUpPreviewResult')
   if (prevEl) { prevEl.style.display = 'block'; prevEl.innerHTML = '<div class="text-center py-6 text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-1"></i>파싱 중...</div>' }
 
   try {
-    const parsed = await txParseInvoiceExcel(file, skipRows, catMode, cols)
+    const parsed = await txParseInvoiceExcel(file)
     window._txUpParsedData = parsed
 
-    const items = parsed.items || []
+    const items    = parsed.items || []
+    const headers  = parsed.headers || []  // 원본 엑셀 헤더
     const totalItems = items.length
     const totalAmt   = items.reduce((s,i) => s + (Number(i.total)||0), 0)
-    const totalExempt = items.filter(i => i.tax_type==='exempt').reduce((s,i)=>s+(Number(i.amount)||0),0)
-    const totalTaxable = items.filter(i => i.tax_type!=='exempt').reduce((s,i)=>s+(Number(i.amount)||0),0)
-    const totalVat   = items.reduce((s,i) => s + (Number(i.vat)||0), 0)
-
+    const totalVat   = items.reduce((s,i) => s + (Number(i.tax_amount)||0), 0)
     const fmt = n => Number(n||0).toLocaleString()
 
     // 상단 요약 카드
@@ -18450,9 +18385,9 @@ window.txUpPreview = async function() {
         <div class="text-xs text-purple-500 mb-0.5">부가세</div>
         <div class="font-bold text-purple-700">${fmt(totalVat)}원</div>
       </div>
-      <div class="bg-gray-50 rounded-lg p-2 text-center">
-        <div class="text-xs text-gray-500 mb-0.5">분류 수</div>
-        <div class="font-bold text-gray-700">${parsed.categories?.length||0}개</div>
+      <div class="bg-orange-50 rounded-lg p-2 text-center">
+        <div class="text-xs text-orange-500 mb-0.5">분류 수</div>
+        <div class="font-bold text-orange-700">${parsed.categories?.length||0}개</div>
       </div>
     </div>`
 
@@ -18463,51 +18398,68 @@ window.txUpPreview = async function() {
         ${cat.name} ${cat.item_count}개 · ${fmt(cat.total)}원
       </span>`).join('')
 
-    // 품목 상세 테이블 (전체)
-    const thead = `<tr class="bg-gray-100">
-      <th class="border border-gray-200 px-2 py-1.5 text-left text-xs font-semibold text-gray-600">분류</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-left text-xs font-semibold text-gray-600">품명</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-left text-xs font-semibold text-gray-600">규격</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-center text-xs font-semibold text-gray-600">수량</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-right text-xs font-semibold text-gray-600">단가</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-right text-xs font-semibold text-gray-600">공급가</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-right text-xs font-semibold text-gray-600">부가세</th>
-      <th class="border border-gray-200 px-2 py-1.5 text-right text-xs font-semibold text-gray-600">합계</th>
-    </tr>`
+    // ── 원본 엑셀 헤더 그대로 테이블 생성 ──
+    // 숫자형 컬럼 판단
+    const numericKeys = new Set(['quantity','unit_price','amount','tax_amount','total'])
+    const isNumericHeader = (h) => {
+      const field = TX_HEADER_MAP[h]
+      return field && numericKeys.has(field)
+    }
 
-    const tbody = items.map(item => {
-      const isSubtotal = item.is_subtotal
-      const rowCls = isSubtotal ? 'bg-blue-50 font-semibold' : (item.row_index%2===0?'bg-white':'bg-gray-50/50')
-      return `<tr class="${rowCls}">
-        <td class="border border-gray-200 px-2 py-1 text-xs text-gray-500">${item.category||''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-gray-800">${item.name||''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-gray-500">${item.spec||''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-center text-gray-700">${item.qty||''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-right text-gray-700">${item.price?fmt(item.price):''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-right text-gray-700">${item.amount?fmt(item.amount):''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-right text-gray-700">${item.vat?fmt(item.vat):''}</td>
-        <td class="border border-gray-200 px-2 py-1 text-xs text-right font-medium text-gray-900">${item.total?fmt(item.total):''}</td>
-      </tr>`}).join('')
+    // 분류 컬럼 추가 (소계가 있는 경우)
+    const hasCats = parsed.categories?.length > 1
+    const showHeaders = hasCats ? ['분류', ...headers] : headers
 
-    const tfoot = `<tr class="bg-gray-200 font-bold">
-      <td colspan="5" class="border border-gray-300 px-2 py-1.5 text-xs text-right text-gray-700">합계</td>
-      <td class="border border-gray-300 px-2 py-1.5 text-xs text-right text-gray-900">${fmt(totalTaxable+totalExempt)}</td>
-      <td class="border border-gray-300 px-2 py-1.5 text-xs text-right text-gray-900">${fmt(totalVat)}</td>
-      <td class="border border-gray-300 px-2 py-1.5 text-xs text-right text-gray-900">${fmt(totalAmt)}</td>
-    </tr>`
+    const theadCells = showHeaders.map(h => {
+      const align = isNumericHeader(h) ? 'right' : (h==='분류'?'center':'left')
+      return `<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:${align};font-size:11px;font-weight:700;color:#374151;white-space:nowrap;background:#f3f4f6">${h}</th>`
+    }).join('')
+    const thead = `<tr>${theadCells}</tr>`
+
+    const tbody = items.map((item, ri) => {
+      const bg = ri%2===0 ? '#fff' : '#f9fafb'
+      const raw = item._raw || {}
+      const cells = showHeaders.map(h => {
+        let val = ''
+        if (h === '분류') {
+          val = item.supplier_category || ''
+          return `<td style="padding:5px 8px;border:1px solid #e5e7eb;font-size:11px;text-align:center;background:#eff6ff;color:#1d4ed8;font-weight:500;white-space:nowrap">${val}</td>`
+        }
+        val = raw[h] !== undefined ? raw[h] : ''
+        const field = TX_HEADER_MAP[h]
+        const isNum = field && numericKeys.has(field)
+        const align = isNum ? 'right' : 'left'
+        const displayVal = (isNum && val !== '' && val !== null) ? fmt(val) : (val ?? '')
+        const color = isNum ? '#111827' : '#374151'
+        return `<td style="padding:5px 8px;border:1px solid #e5e7eb;font-size:11px;text-align:${align};color:${color};white-space:nowrap">${displayVal}</td>`
+      }).join('')
+      return `<tr style="background:${bg}">${cells}</tr>`
+    }).join('')
+
+    // 합계 행
+    const tfootCells = showHeaders.map((h, i) => {
+      const field = TX_HEADER_MAP[h]
+      const isNum = field && numericKeys.has(field)
+      if (i === 0) return `<td style="padding:6px 10px;border:1px solid #d1d5db;font-size:11px;font-weight:700;text-align:center;background:#e5e7eb" colspan="${hasCats?2:1}">합 계</td>`
+      if (hasCats && i === 1) return ''
+      if (!isNum) return `<td style="padding:6px 10px;border:1px solid #d1d5db;background:#e5e7eb"></td>`
+      const sum = items.reduce((s, it) => s + Number(it[field]||0), 0)
+      return `<td style="padding:6px 10px;border:1px solid #d1d5db;font-size:11px;font-weight:700;text-align:right;background:#e5e7eb">${fmt(sum)}</td>`
+    }).join('')
+    const tfoot = `<tr>${tfootCells}</tr>`
 
     if (prevEl) prevEl.innerHTML = `
     <div class="bg-white border border-gray-200 rounded-xl p-4">
       <div class="flex items-center gap-2 mb-3">
         <i class="fas fa-check-circle text-green-500"></i>
         <span class="text-sm font-bold text-green-700">파싱 성공</span>
-        <span class="text-xs text-gray-400">· 설정 변경 후 파일을 다시 선택하면 재파싱됩니다</span>
+        <span class="text-xs text-gray-400 ml-1">· 헤더 자동 감지 완료 (${parsed.headerRowIdx+1}행)</span>
       </div>
       ${summaryHtml}
       <div class="flex flex-wrap gap-1.5 mb-3">${catBadges}</div>
-      <div class="text-xs font-semibold text-gray-600 mb-1">📋 전체 품목 (${totalItems}개)</div>
-      <div style="max-height:320px;overflow-y:auto;border-radius:8px;border:1px solid #e5e7eb">
-        <table class="w-full border-collapse text-xs">
+      <div class="text-xs font-semibold text-gray-600 mb-1.5">📋 전체 품목 (${totalItems}개)</div>
+      <div style="max-height:360px;overflow:auto;border-radius:8px;border:1px solid #e5e7eb">
+        <table style="width:max-content;min-width:100%;border-collapse:collapse">
           <thead style="position:sticky;top:0;z-index:1">${thead}</thead>
           <tbody>${tbody}</tbody>
           <tfoot>${tfoot}</tfoot>
@@ -20620,45 +20572,59 @@ window.txPreviewInvoiceFile = async function() {
   if (prevEl) { prevEl.style.display = 'block'; prevEl.innerHTML = `<div class="text-center py-4 text-gray-400"><i class="fas fa-spinner fa-spin"></i> 파싱 중...</div>` }
 
   try {
-    const parsed = await txParseInvoiceExcel(file, skipRows, catMode, cols)
+    const parsed = await txParseInvoiceExcel(file)
     window._invParsedData = parsed
 
     // 저장 버튼 활성화
     const saveBtn = document.getElementById('invUpSaveBtn')
     if (saveBtn) { saveBtn.disabled = false; saveBtn.style.cursor = 'pointer'; saveBtn.style.opacity = '1' }
 
-    // 미리보기 렌더링
-    const totalItems = parsed.items.length
-    const totalAmt   = parsed.items.reduce((s,i) => s + (Number(i.total)||0), 0)
+    // 미리보기 렌더링 (원본 헤더 그대로)
+    const items    = parsed.items || []
+    const headers  = parsed.headers || []
+    const totalItems = items.length
+    const totalAmt   = items.reduce((s,i) => s + (Number(i.total)||0), 0)
+    const fmt = n => Number(n||0).toLocaleString()
+    const hasCats = parsed.categories?.length > 1
+    const showHdrs = hasCats ? ['분류', ...headers] : headers
+    const numericKeys = new Set(['quantity','unit_price','amount','tax_amount','total'])
+
+    const theadCells = showHdrs.map(h => {
+      const field = TX_HEADER_MAP?.[h]
+      const align = field && numericKeys.has(field) ? 'right' : (h==='분류'?'center':'left')
+      return `<th style="padding:5px 8px;text-align:${align};color:#166534;font-size:11px;white-space:nowrap">${h}</th>`
+    }).join('')
+
+    const tbodyRows = items.map((item, ri) => {
+      const raw = item._raw || {}
+      const cells = showHdrs.map(h => {
+        if (h === '분류') return `<td style="padding:4px 8px;color:#1d4ed8;font-size:10px;white-space:nowrap">${item.supplier_category||''}</td>`
+        const field = TX_HEADER_MAP?.[h]
+        const isNum = field && numericKeys.has(field)
+        const val = raw[h] !== undefined ? raw[h] : ''
+        const display = (isNum && val!==''&&val!==null) ? fmt(val) : (val??'')
+        const align = isNum ? 'right' : 'left'
+        return `<td style="padding:4px 8px;text-align:${align};color:${isNum?'#111827':'#374151'};font-size:10px;white-space:nowrap">${display}</td>`
+      }).join('')
+      return `<tr style="border-top:1px solid #f0fdf4;background:${ri%2===0?'#fff':'#f9faf9'}">${cells}</tr>`
+    }).join('')
 
     if (prevEl) prevEl.innerHTML = `
     <div style="background:#f0fdf4;border-radius:10px;padding:14px;border:1px solid #bbf7d0">
-      <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:10px">
+      <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:8px">
         <i class="fas fa-check-circle mr-1"></i> 파싱 성공 · ${totalItems}개 품목 · 총 ${(totalAmt/10000).toFixed(1)}만원
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-        ${parsed.categories.map((cat,i) => `
-          <span style="background:${INV_COLORS[i%INV_COLORS.length]}20;color:${INV_COLORS[i%INV_COLORS.length]};font-size:11px;padding:2px 10px;border-radius:12px;font-weight:600">
+        ${(parsed.categories||[]).map((cat,i) => {
+          const colors=['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6']
+          return `<span style="background:${colors[i%6]}20;color:${colors[i%6]};font-size:11px;padding:2px 10px;border-radius:12px;font-weight:600">
             ${cat.name} ${cat.item_count}개 · ${(Number(cat.total)/10000).toFixed(1)}만
-          </span>`).join('')}
+          </span>`}).join('')}
       </div>
-      <div style="max-height:200px;overflow-y:auto;border-radius:8px;border:1px solid #d1fae5">
-        <table style="width:100%;font-size:10px;border-collapse:collapse">
-          <thead><tr style="background:#dcfce7">
-            <th style="padding:4px 8px;text-align:left;color:#166534">분류</th>
-            <th style="padding:4px 8px;text-align:left;color:#166534">품목명</th>
-            <th style="padding:4px 8px;text-align:right;color:#166534">수량</th>
-            <th style="padding:4px 8px;text-align:right;color:#166534">합계</th>
-          </thead>
-          <tbody>
-            ${parsed.items.slice(0,30).map(it => `<tr style="border-top:1px solid #f0fdf4">
-              <td style="padding:3px 8px;color:#6b7280">${it.supplier_category||''}</td>
-              <td style="padding:3px 8px;color:#374151">${it.item_name||''}</td>
-              <td style="padding:3px 8px;text-align:right;color:#374151">${it.quantity}</td>
-              <td style="padding:3px 8px;text-align:right;color:#1d4ed8;font-weight:600">${Number(it.total).toLocaleString()}</td>
-            </tr>`).join('')}
-            ${totalItems > 30 ? `<tr><td colspan="4" style="padding:4px 8px;text-align:center;color:#9ca3af">... ${totalItems - 30}개 더 있음</td></tr>` : ''}
-          </tbody>
+      <div style="max-height:240px;overflow:auto;border-radius:8px;border:1px solid #d1fae5">
+        <table style="width:max-content;min-width:100%;border-collapse:collapse">
+          <thead style="position:sticky;top:0;background:#dcfce7"><tr>${theadCells}</tr></thead>
+          <tbody>${tbodyRows}</tbody>
         </table>
       </div>
     </div>`
@@ -20669,8 +20635,34 @@ window.txPreviewInvoiceFile = async function() {
   }
 }
 
-// ── 엑셀 파싱 엔진 (SheetJS) ─────────────────────────────────
-async function txParseInvoiceExcel(file, skipRows, catMode, cols) {
+// ── 헤더 행 자동 감지 ──
+function txDetectHeaderRow(rawRows) {
+  const keyHeaders = ['품목명','품명','상품명','수량','금액','합계','단가','평균단가','공급가']
+  for (let i = 0; i < Math.min(15, rawRows.length); i++) {
+    const row = rawRows[i]
+    const rowTexts = row.map(c => String(c||'').trim())
+    const matchCount = keyHeaders.filter(k => rowTexts.some(t => t.includes(k))).length
+    if (matchCount >= 2) return i  // 2개 이상 키워드 → 헤더 행
+  }
+  return 5  // 기본값
+}
+
+// ── 컬럼 자동 매핑 ──
+function txAutoMapCols(headerRow) {
+  const colMap = {}  // fieldName → colIndex
+  headerRow.forEach((cell, idx) => {
+    const text = String(cell||'').trim()
+    for (const [keyword, field] of Object.entries(TX_HEADER_MAP)) {
+      if (text === keyword || text.includes(keyword)) {
+        if (!colMap[field]) colMap[field] = idx  // 첫 번째 매칭 우선
+      }
+    }
+  })
+  return colMap
+}
+
+// ── 메인 파싱 함수 (헤더 자동 감지 버전) ──
+async function txParseInvoiceExcel(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = e => {
@@ -20681,129 +20673,121 @@ async function txParseInvoiceExcel(file, skipRows, catMode, cols) {
         const ws = wb.Sheets[wb.SheetNames[0]]
         const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
+        // 1) 헤더 행 자동 감지
+        const headerRowIdx = txDetectHeaderRow(rawRows)
+        const headerRow    = rawRows[headerRowIdx] || []
+
+        // 2) 컬럼 자동 매핑
+        const colMap = txAutoMapCols(headerRow)
+
+        // 3) 원본 헤더 텍스트 저장 (미리보기용)
+        const displayHeaders = headerRow.map(c => String(c||'').trim()).filter(Boolean)
+
+        // 4) 데이터 행 순회
         const items = []
+        let pending = []        // 소계 그룹 대기 품목
         const categoriesMap = {}
-        let currentCategory = ''
         let catOrder = 0
 
-        for (let i = skipRows; i < rawRows.length; i++) {
+        const getVal = (row, field, defaultVal='') => {
+          const idx = colMap[field]
+          return idx !== undefined ? row[idx] : defaultVal
+        }
+
+        const isSubtotalRow = (row) => {
+          const texts = row.map(c => String(c||'').trim())
+          return texts.some(t => t === '소계' || t === '합 계' || /^소계/.test(t))
+        }
+        const isTotalRow = (row) => {
+          const texts = row.map(c => String(c||'').trim())
+          return texts.some(t => t === '합계' || t === '총합계' || t === '총계')
+            && !texts.some(t => /^\d{5,}/.test(t))  // 품목코드 없으면
+        }
+        const isPageRow = (row) => /^\d+\/\d+$/.test(String(row[0]||'').trim())
+        const isDataRow = (row) => {
+          const codeVal = String(row[colMap['item_code'] ?? 0] || '').trim()
+          const nameVal = String(row[colMap['item_name'] ?? 1] || '').trim()
+          return /^\d{5,}/.test(codeVal) && nameVal  // 5자리 이상 숫자 코드 + 품명 있음
+        }
+
+        for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
           const row = rawRows[i]
-          const cellA = String(row[0] || '').trim()
-          const cellB = String(row[1] || '').trim()
+          if (!row.some(c => c !== '' && c !== null)) continue  // 완전 빈 행
 
-          // ── 분류 행 감지 ──
-          if (catMode === 'subtotal') {
-            // "소계" 패턴: B열에 "소계" 텍스트
-            if (cellB === '소계' || cellB.includes('소계')) {
-              // A열이 분류명
-              if (cellA) {
-                if (!categoriesMap[cellA]) categoriesMap[cellA] = { name: cellA, sort_order: catOrder++, items: [] }
-                // 소계 금액 업데이트
-                categoriesMap[cellA].amount = Number(row[cols.amt] || 0)
-                categoriesMap[cellA].vat    = Number(row[cols.vat] || 0)
-                categoriesMap[cellA].total  = Number(row[cols.total] || 0)
+          if (isPageRow(row)) continue
+          if (isTotalRow(row)) continue
+
+          if (isSubtotalRow(row)) {
+            // 소계 행 → 현재 그룹의 분류명 결정
+            const catName = String(row[0]||'').trim() || '기타'
+            pending.forEach(p => { p.supplier_category = catName })
+            if (!categoriesMap[catName]) {
+              categoriesMap[catName] = {
+                name: catName, sort_order: catOrder++,
+                amount: Number(getVal(row,'amount',0)),
+                tax_amount: Number(getVal(row,'tax_amount',0)),
+                total:  Number(getVal(row,'total',0))
               }
-              continue
             }
-            // 합계 행 건너뛰기
-            if (cellA === '합계' || cellA.includes('합계') || cellB === '합계') continue
-            // 페이지 번호 행 건너뛰기 (예: "1/1")
-            if (/^\d+\/\d+$/.test(cellA)) continue
-            // 품목 행 (A열이 숫자로 시작하는 코드)
-            if (/^\d/.test(cellA) && cellB) {
-              // 현재 분류 찾기: items를 역순으로 보고 마지막 분류 기준
-              const item = {
-                item_code: cellA,
-                item_name: String(row[cols.name] || '').trim(),
-                spec:      String(row[cols.spec]  || '').trim(),
-                unit:      String(row[cols.unit]  || '').trim(),
-                quantity:  Number(row[cols.qty]   || 0),
-                unit_price: Number(row[cols.price] || 0),
-                amount:    Number(row[cols.amt]   || 0),
-                tax_amount: Number(row[cols.vat]  || 0),
-                total:     Number(row[cols.total] || 0),
-                supplier_category: currentCategory
-              }
-              // currentCategory 결정: 직전 소계보다 아래에 있는 품목은 다음 분류
-              // → 실제로는 소계 전에 나오는 품목들이 해당 분류에 속함
-              items.push(item)
-              if (currentCategory && !categoriesMap[currentCategory]) {
-                categoriesMap[currentCategory] = { name: currentCategory, sort_order: catOrder++, items: [] }
-              }
-              if (currentCategory) categoriesMap[currentCategory].items.push(item)
-            }
-          } else {
-            // 분류 없음 또는 별도 컬럼
-            if (!/^\d/.test(cellA) || !cellB) continue
-            if (cellA === '합계') continue
+            items.push(...pending)
+            pending = []
+            continue
+          }
+
+          if (isDataRow(row)) {
+            const rawItem = {}
+            // 원본 헤더 기준으로 모든 컬럼 저장
+            headerRow.forEach((h, idx) => {
+              const key = String(h||'').trim()
+              if (key) rawItem[key] = row[idx]
+            })
+
             const item = {
-              item_code: cellA,
-              item_name: String(row[cols.name] || '').trim(),
-              spec:      String(row[cols.spec]  || '').trim(),
-              unit:      String(row[cols.unit]  || '').trim(),
-              quantity:  Number(row[cols.qty]   || 0),
-              unit_price: Number(row[cols.price] || 0),
-              amount:    Number(row[cols.amt]   || 0),
-              tax_amount: Number(row[cols.vat]  || 0),
-              total:     Number(row[cols.total] || 0),
-              supplier_category: catMode === 'category_col' ? String(row[cols.code - 1] || '') : ''
+              item_code:  String(getVal(row,'item_code','')).trim(),
+              item_name:  String(getVal(row,'item_name','')).trim(),
+              spec:       String(getVal(row,'spec','')).trim(),
+              unit:       String(getVal(row,'unit','')).trim(),
+              quantity:   Number(getVal(row,'quantity',0)),
+              unit_price: Number(getVal(row,'unit_price',0)),
+              amount:     Number(getVal(row,'amount',0)),
+              tax_amount: Number(getVal(row,'tax_amount',0)),
+              total:      Number(getVal(row,'total',0)),
+              supplier_category: '',
+              _raw: rawItem,  // 원본 컬럼값 (미리보기용)
             }
-            items.push(item)
+            pending.push(item)
           }
         }
 
-        // ── 소계 기반일 때 분류 재매핑 ──
-        // 소계 행이 나오기 전 품목들을 해당 분류에 매핑
-        if (catMode === 'subtotal') {
-          // 재파싱: 소계 위의 품목들이 그 분류에 속함
-          let currentCat = ''
-          const itemsReParsed = []
-          const catsSeen = []
-
-          // 분류-품목 관계를 재구성
-          // rawRows를 다시 순회하면서 소계 행 직전 그룹 품목에 분류 할당
-          let pending = []
-          for (let i = skipRows; i < rawRows.length; i++) {
-            const row = rawRows[i]
-            const cA = String(row[0] || '').trim()
-            const cB = String(row[1] || '').trim()
-            if (cB === '소계' || cB.includes('소계')) {
-              const catName = cA || '기타'
-              pending.forEach(p => { p.supplier_category = catName })
-              catsSeen.push(catName)
-              itemsReParsed.push(...pending)
-              pending = []
-            } else if (/^\d/.test(cA) && cB && cA !== '합계' && !/^\d+\/\d+$/.test(cA)) {
-              pending.push({
-                item_code: cA,
-                item_name: String(row[cols.name] || '').trim(),
-                spec:      String(row[cols.spec]  || '').trim(),
-                unit:      String(row[cols.unit]  || '').trim(),
-                quantity:  Number(row[cols.qty]   || 0),
-                unit_price: Number(row[cols.price] || 0),
-                amount:    Number(row[cols.amt]   || 0),
-                tax_amount: Number(row[cols.vat]  || 0),
-                total:     Number(row[cols.total] || 0),
-                supplier_category: ''
-              })
-            }
-          }
-          // 남은 pending (분류 없는 마지막 항목)
-          pending.forEach(p => { p.supplier_category = '기타'; itemsReParsed.push(p) })
-
-          const finalCategories = Object.keys(categoriesMap).map(k => ({
-            name:       k,
-            item_count: itemsReParsed.filter(it => it.supplier_category === k).length,
-            amount:     categoriesMap[k].amount || itemsReParsed.filter(it=>it.supplier_category===k).reduce((s,i)=>s+(i.amount||0),0),
-            vat:        categoriesMap[k].vat    || itemsReParsed.filter(it=>it.supplier_category===k).reduce((s,i)=>s+(i.tax_amount||0),0),
-            total:      categoriesMap[k].total  || itemsReParsed.filter(it=>it.supplier_category===k).reduce((s,i)=>s+(i.total||0),0),
-          }))
-
-          resolve({ items: itemsReParsed, categories: finalCategories })
-        } else {
-          const finalCategories = []
-          resolve({ items, categories: finalCategories })
+        // 남은 pending → 분류 없음
+        if (pending.length > 0) {
+          const lastCat = Object.keys(categoriesMap).length > 0 ? '기타' : ''
+          pending.forEach(p => { p.supplier_category = lastCat })
+          items.push(...pending)
         }
+
+        // 5) 카테고리 목록 생성
+        const hasCats = Object.keys(categoriesMap).length > 0
+        const finalCategories = hasCats
+          ? Object.values(categoriesMap).map(cat => ({
+              name:       cat.name,
+              item_count: items.filter(it => it.supplier_category === cat.name).length,
+              amount:     cat.amount  || items.filter(it=>it.supplier_category===cat.name).reduce((s,i)=>s+i.amount,0),
+              vat:        cat.tax_amount || items.filter(it=>it.supplier_category===cat.name).reduce((s,i)=>s+i.tax_amount,0),
+              total:      cat.total   || items.filter(it=>it.supplier_category===cat.name).reduce((s,i)=>s+i.total,0),
+            }))
+          : [{ name:'전체', item_count:items.length,
+               amount: items.reduce((s,i)=>s+i.amount,0),
+               vat:    items.reduce((s,i)=>s+i.tax_amount,0),
+               total:  items.reduce((s,i)=>s+i.total,0) }]
+
+        resolve({
+          items,
+          categories: finalCategories,
+          headers: displayHeaders,   // 원본 헤더 (미리보기용)
+          headerRowIdx,
+          colMap
+        })
       } catch(err) { reject(err) }
     }
     reader.onerror = () => reject(new Error('파일 읽기 실패'))
