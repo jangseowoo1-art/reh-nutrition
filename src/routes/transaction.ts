@@ -1284,7 +1284,7 @@ txRouter.get('/vendors-for-invoice', async (c) => {
       FROM vendors v
       LEFT JOIN hospital_invoice_vendors hiv
         ON hiv.hospital_id = v.hospital_id AND hiv.vendor_id = v.id AND hiv.is_active = 1
-      WHERE v.hospital_id = ?
+      WHERE v.hospital_id = ? AND v.is_active = 1
       ORDER BY v.sort_order, v.id
     `).bind(hospitalId).all<any>()
     return c.json({ ok: true, vendors: rows.results || [] })
