@@ -1104,16 +1104,30 @@ txRouter.get('/invoice/list', async (c) => {
 })
 
 // ── 분류별 집계 분석 ───────────────────────────────────────────
-// GET /invoice/category-summary?hospital_id=&vendor_name=&year=&month=
+// GET /invoice/category-summary?hospital_id=&vendor_name=&year=&month=&date_from=&date_to=
 txRouter.get('/invoice/category-summary', async (c) => {
   try {
     const hospitalId = await resolveHospitalId(c)
     const vendorName = c.req.query('vendor_name') || ''
     const year  = c.req.query('year')  || ''
     const month = c.req.query('month') || ''
+    const dateFrom = c.req.query('date_from') || ''
+    const dateTo   = c.req.query('date_to')   || ''
 
     if (!vendorName || !year || !month) {
       return c.json({ ok: false, error: '업체명/연도/월 필수' }, 400)
+    }
+
+    // 날짜 범위 또는 연/월 필터 구성
+    let whereClause = 'hospital_id=? AND vendor_name=?'
+    let baseParams: any[] = [hospitalId, vendorName]
+    if (dateFrom && dateTo) {
+      // transaction_date 컬럼이 있으면 사용, 없으면 document_year/month fallback
+      whereClause += ` AND document_year||'-'||printf('%02d',document_month)||'-01' >= ? AND document_year||'-'||printf('%02d',document_month)||'-28' <= ?`
+      baseParams.push(dateFrom.substring(0,7) + '-01', dateTo.substring(0,7) + '-28')
+    } else {
+      whereClause += ` AND document_year=? AND document_month=?`
+      baseParams.push(Number(year), Number(month))
     }
 
     // 분류별 합계
@@ -1124,11 +1138,10 @@ txRouter.get('/invoice/category-summary', async (c) => {
              SUM(tax_amount) as total_vat,
              SUM(amount + tax_amount) as grand_total
       FROM transaction_items
-      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
-        AND supplier_category != ''
+      WHERE ${whereClause} AND supplier_category != ''
       GROUP BY supplier_category
       ORDER BY grand_total DESC
-    `).bind(hospitalId, vendorName, Number(year), Number(month)).all<any>()
+    `).bind(...baseParams).all<any>()
 
     // 분류별 TOP5 품목
     const topItems = await c.env.DB.prepare(`
@@ -1136,20 +1149,20 @@ txRouter.get('/invoice/category-summary', async (c) => {
              (amount + tax_amount) as total,
              ROW_NUMBER() OVER (PARTITION BY supplier_category ORDER BY amount DESC) as rn
       FROM transaction_items
-      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
-        AND supplier_category != ''
+      WHERE ${whereClause} AND supplier_category != ''
       ORDER BY supplier_category, amount DESC
-    `).bind(hospitalId, vendorName, Number(year), Number(month)).all<any>()
+    `).bind(...baseParams).all<any>()
 
-    // 전체 합계
+    // 전체 합계 (과세/면세 구분 포함)
     const totalRow = await c.env.DB.prepare(`
       SELECT COUNT(*) as item_count,
              SUM(amount) as total_amount,
              SUM(tax_amount) as total_vat,
-             SUM(amount + tax_amount) as grand_total
+             SUM(amount + tax_amount) as grand_total,
+             SUM(CASE WHEN tax_amount > 0 THEN amount ELSE 0 END) as taxable_amount
       FROM transaction_items
-      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
-    `).bind(hospitalId, vendorName, Number(year), Number(month)).first<any>()
+      WHERE ${whereClause}
+    `).bind(...baseParams).first<any>()
 
     return c.json({
       ok: true,
@@ -1245,7 +1258,7 @@ txRouter.get('/invoice/monthly-trend', async (c) => {
 })
 
 // ── 특정 월 전체 품목 목록 ─────────────────────────────────────
-// GET /invoice/items?hospital_id=&vendor_name=&year=&month=&category=
+// GET /invoice/items?hospital_id=&vendor_name=&year=&month=&category=&date_from=&date_to=
 txRouter.get('/invoice/items', async (c) => {
   try {
     const hospitalId = await resolveHospitalId(c)
@@ -1253,20 +1266,58 @@ txRouter.get('/invoice/items', async (c) => {
     const year  = Number(c.req.query('year')  || 0)
     const month = Number(c.req.query('month') || 0)
     const category = c.req.query('category') || ''
+    const dateFrom = c.req.query('date_from') || ''
+    const dateTo   = c.req.query('date_to')   || ''
 
-    let sql = `
+    let whereClause = 'hospital_id=? AND vendor_name=?'
+    const params: any[] = [hospitalId, vendorName]
+    if (dateFrom && dateTo) {
+      whereClause += ` AND document_year||'-'||printf('%02d',document_month)||'-01' >= ? AND document_year||'-'||printf('%02d',document_month)||'-28' <= ?`
+      params.push(dateFrom.substring(0,7) + '-01', dateTo.substring(0,7) + '-28')
+    } else {
+      whereClause += ` AND document_year=? AND document_month=?`
+      params.push(year, month)
+    }
+    if (category) { whereClause += ` AND supplier_category=?`; params.push(category) }
+
+    const sql = `
       SELECT id, item_code, item_name, spec, unit, quantity, unit_price,
              amount, tax_amount, (amount+tax_amount) as total,
-             supplier_category, tax_type
+             supplier_category, tax_type, document_year, document_month
       FROM transaction_items
-      WHERE hospital_id=? AND vendor_name=? AND document_year=? AND document_month=?
+      WHERE ${whereClause}
+      ORDER BY supplier_category, amount DESC
     `
-    const params: any[] = [hospitalId, vendorName, year, month]
-    if (category) { sql += ` AND supplier_category=?`; params.push(category) }
-    sql += ` ORDER BY supplier_category, amount DESC`
-
     const rows = await c.env.DB.prepare(sql).bind(...params).all<any>()
     return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// GET /invoice/period-detect?vendor_name=&hospital_id= - 업로드된 명세서 기간 자동 감지
+txRouter.get('/invoice/period-detect', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    if (!vendorName) return c.json({ ok: false, error: '업체명 필수' }, 400)
+
+    const row = await c.env.DB.prepare(`
+      SELECT MIN(document_year) as min_year, MIN(document_month) as min_month,
+             MAX(document_year) as max_year, MAX(document_month) as max_month
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name=?
+    `).bind(hospitalId, vendorName).first<any>()
+
+    if (!row || !row.min_year) {
+      return c.json({ ok: false, error: '데이터 없음' })
+    }
+    const startDate = `${row.max_year}-${String(row.max_month).padStart(2,'0')}-01`
+    const lastDay = new Date(Number(row.max_year), Number(row.max_month), 0).getDate()
+    const endDate = `${row.max_year}-${String(row.max_month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
+    return c.json({ ok: true, start_date: startDate, end_date: endDate,
+      min_year: row.min_year, min_month: row.min_month,
+      max_year: row.max_year, max_month: row.max_month })
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
   }
@@ -1289,6 +1340,126 @@ txRouter.get('/invoice/vendors', async (c) => {
       ORDER BY total_amount DESC
     `).bind(hospitalId).all<any>()
     return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 주요 식재료 단가 분석: 거래명세서 기반 품목 단가 이력 ──────
+// GET /invoice/ingredient-price-history?item_names=쌀,닭고기&months=12
+txRouter.get('/invoice/ingredient-price-history', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const itemNamesRaw = c.req.query('item_names') || ''
+    const months = Number(c.req.query('months') || '12')
+    const itemNames = itemNamesRaw.split(',').map(s => s.trim()).filter(Boolean)
+
+    if (itemNames.length === 0) {
+      return c.json({ ok: true, data: [] })
+    }
+
+    // 각 품목에 대한 월별 단가 이력 (가장 많이 발주된 품목 기준으로)
+    const placeholders = itemNames.map(() => '?').join(',')
+    const rows = await c.env.DB.prepare(`
+      SELECT item_name, vendor_name, document_year, document_month,
+             AVG(unit_price) as avg_price,
+             SUM(quantity) as total_qty,
+             SUM(amount) as total_amount,
+             COUNT(*) as order_count,
+             MAX(created_at) as last_ordered_at
+      FROM transaction_items
+      WHERE hospital_id=? AND item_name IN (${placeholders})
+        AND unit_price > 0 AND quantity > 0
+      GROUP BY item_name, vendor_name, document_year, document_month
+      ORDER BY document_year DESC, document_month DESC, item_name
+      LIMIT ?
+    `).bind(hospitalId, ...itemNames, months * itemNames.length * 5).all<any>()
+
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 주요 식재료: 거래명세서에서 자동 Top20 품목 추출 ──────────
+// GET /invoice/top-items?months=6
+txRouter.get('/invoice/top-items', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const months = Number(c.req.query('months') || '6')
+
+    // 최근 N개월 데이터에서 금액 기준 상위 품목
+    const rows = await c.env.DB.prepare(`
+      SELECT item_name,
+             SUM(quantity) as total_qty,
+             SUM(amount) as total_amount,
+             COUNT(DISTINCT vendor_name) as vendor_count,
+             COUNT(DISTINCT document_year||'-'||document_month) as month_count,
+             GROUP_CONCAT(DISTINCT vendor_name) as vendors,
+             MAX(unit) as unit,
+             AVG(CASE WHEN unit_price > 0 THEN unit_price END) as avg_price
+      FROM transaction_items
+      WHERE hospital_id=? AND item_name != '' AND quantity > 0
+      GROUP BY item_name
+      ORDER BY total_amount DESC
+      LIMIT 20
+    `).bind(hospitalId).all<any>()
+
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 월별 예산 대비 사용량 비교 ──────────────────────────────────
+// GET /invoice/monthly-budget-compare?months=6
+txRouter.get('/invoice/monthly-budget-compare', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const months = Number(c.req.query('months') || '6')
+
+    // 월별 발주 합계 (거래명세서 기반)
+    const txRows = await c.env.DB.prepare(`
+      SELECT document_year, document_month,
+             SUM(amount + tax_amount) as tx_total,
+             COUNT(DISTINCT vendor_name) as vendor_count,
+             COUNT(*) as item_count
+      FROM transaction_items
+      WHERE hospital_id=?
+      GROUP BY document_year, document_month
+      ORDER BY document_year DESC, document_month DESC
+      LIMIT ?
+    `).bind(hospitalId, months).all<any>()
+
+    // 예산 데이터 (monthly_settings 테이블)
+    const budgetRows = await c.env.DB.prepare(`
+      SELECT year, month, total_budget, meal_price
+      FROM monthly_settings
+      WHERE hospital_id=?
+      ORDER BY year DESC, month DESC
+      LIMIT ?
+    `).bind(hospitalId, months).all<any>()
+
+    const budgetMap: Record<string, any> = {}
+    for (const r of (budgetRows.results || [])) {
+      budgetMap[`${r.year}-${r.month}`] = r
+    }
+
+    const combined = (txRows.results || []).map((r: any) => {
+      const bk = `${r.document_year}-${r.document_month}`
+      const b = budgetMap[bk] || {}
+      return {
+        year: r.document_year,
+        month: r.document_month,
+        tx_total: r.tx_total,
+        vendor_count: r.vendor_count,
+        item_count: r.item_count,
+        total_budget: b.total_budget || 0,
+        usage_pct: b.total_budget > 0 ? Math.round(r.tx_total / b.total_budget * 1000) / 10 : null
+      }
+    })
+
+    return c.json({ ok: true, data: combined.reverse() })
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
   }
