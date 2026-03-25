@@ -18211,7 +18211,8 @@ async function renderTransactionAnalysis() {
         {id:'category',    icon:'fa-chart-pie',        label:'분류별 분석'},
         {id:'monthly',     icon:'fa-chart-bar',        label:'월별 분석'},
         {id:'cross',       icon:'fa-exchange-alt',     label:'발주 교차분석'},
-        {id:'ingredient',  icon:'fa-leaf',             label:'식재료 단가 분석'}
+        {id:'ingredient',  icon:'fa-leaf',             label:'식재료 단가 분석'},
+        {id:'annual',      icon:'fa-calendar-alt',     label:'연간/분기 보고서'}
       ].map(t => `
         <button id="txTab-${t.id}" onclick="txSwitchTab('${t.id}')"
           class="tx-tab flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${TXState.tab===t.id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}">
@@ -18254,6 +18255,7 @@ function txSwitchTab(tab) {
   else if (tab === 'monthly')     txRenderMonthlyTab(c)
   else if (tab === 'cross')       txRenderCrossTab(c)
   else if (tab === 'ingredient')  txRenderIngredientTab(c)
+  else if (tab === 'annual')      txRenderAnnualTab(c)
 }
 
 // ── 카테고리 로드 ─────────────────────────────────────────────────────
@@ -22616,6 +22618,370 @@ async function txRenderCrossTab(container) {
 // ══════════════════════════════════════════════════════════════════
 // TAB: 식재료 단가 분석 (거래명세서 기반)
 // ══════════════════════════════════════════════════════════════════
+// ── TAB 6: 연간/분기 보고서 ──────────────────────────────────────────────
+async function txRenderAnnualTab(container) {
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
+  const hParam = hospitalId ? `?hospital_id=${hospitalId}` : '?'
+  const hSep = hospitalId ? '&' : ''
+  const curYear = TXState.year || new Date().getFullYear()
+
+  container.innerHTML = `
+  <div class="space-y-4">
+    <!-- 헤더 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center justify-between flex-wrap gap-3">
+      <div>
+        <h2 class="font-bold text-gray-800 flex items-center gap-2">
+          <i class="fas fa-calendar-alt text-indigo-500"></i>연간/분기 거래명세서 분석 보고서
+        </h2>
+        <p class="text-xs text-gray-400 mt-0.5">연간 업체별·분류별 납품 현황 및 분기 비교 분석</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <select id="txAnnualYear" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm" onchange="txLoadAnnualReport()">
+          ${[curYear-1, curYear].map(y => `<option value="${y}" ${y===curYear?'selected':''}>${y}년</option>`).join('')}
+        </select>
+        <button onclick="txLoadAnnualReport()" class="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-indigo-700 flex items-center gap-1.5">
+          <i class="fas fa-sync-alt text-xs"></i>조회
+        </button>
+        <button onclick="txExportAnnualExcel()" class="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-green-700 flex items-center gap-1.5">
+          <i class="fas fa-file-excel text-xs"></i>엑셀 다운로드
+        </button>
+      </div>
+    </div>
+    <!-- 보고서 내용 -->
+    <div id="txAnnualContent">
+      <div class="text-center text-gray-400 py-16"><i class="fas fa-spinner fa-spin text-2xl mb-3 block"></i>데이터 불러오는 중...</div>
+    </div>
+  </div>`
+
+  await txLoadAnnualReport()
+}
+
+window.txLoadAnnualReport = async function() {
+  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
+  const hParam = hospitalId ? `?hospital_id=${hospitalId}` : '?'
+  const hSep = hospitalId ? '&' : ''
+  const year = parseInt(document.getElementById('txAnnualYear')?.value) || TXState.year || new Date().getFullYear()
+  const content = document.getElementById('txAnnualContent')
+  if (content) content.innerHTML = `<div class="text-center text-gray-400 py-12"><i class="fas fa-spinner fa-spin text-2xl"></i></div>`
+
+  try {
+    const res = await axios.get(`/api/transaction/invoice/annual-summary${hParam}${hSep}year=${year}`, { headers: authH })
+    const d = res.data
+    if (!d.ok) throw new Error(d.error)
+
+    window._txAnnualData = d
+    const fmt = v => (Number(v)||0).toLocaleString()
+    const fmtM = v => v >= 100000000 ? (v/100000000).toFixed(1)+'억' : v >= 10000 ? Math.round(v/10000)+'만' : fmt(v)
+
+    // 월별 전체 합계
+    const moTotals = {}
+    d.monthly.forEach(r => {
+      if (!moTotals[r.mo]) moTotals[r.mo] = 0
+      moTotals[r.mo] += Number(r.total_amount)||0
+    })
+    const grandTotal = Object.values(moTotals).reduce((s, v) => s + (v as number), 0)
+
+    // 분기별 합계
+    const qTotals = {1:0, 2:0, 3:0, 4:0}
+    d.quarterly.forEach((r:any) => {
+      qTotals[r.quarter as 1|2|3|4] = (qTotals[r.quarter as 1|2|3|4]||0) + (Number(r.total_amount)||0)
+    })
+
+    // 업체별 합계
+    const vendorMap: Record<string,number> = {}
+    d.vendors.forEach((r:any) => { vendorMap[r.vendor_name] = Number(r.total_amount)||0 })
+    const topVendors = d.vendors.slice(0, 5)
+
+    if (!content) return
+
+    content.innerHTML = `
+    <div class="space-y-4">
+
+      <!-- 연간 요약 카드 -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        ${[
+          { label: `${year}년 총 납품액`, val: fmtM(grandTotal)+'원', sub: `${fmt(grandTotal)}원`, icon: 'fa-won-sign', color: '#1d4ed8' },
+          { label: '1분기 (1~3월)', val: fmtM(qTotals[1])+'원', sub: `전체의 ${grandTotal > 0 ? Math.round(qTotals[1]/grandTotal*100) : 0}%`, icon: 'fa-chart-bar', color: '#059669' },
+          { label: '2분기 (4~6월)', val: fmtM(qTotals[2])+'원', sub: `전체의 ${grandTotal > 0 ? Math.round(qTotals[2]/grandTotal*100) : 0}%`, icon: 'fa-chart-bar', color: '#d97706' },
+          { label: '3·4분기 합계', val: fmtM(qTotals[3]+qTotals[4])+'원', sub: `전체의 ${grandTotal > 0 ? Math.round((qTotals[3]+qTotals[4])/grandTotal*100) : 0}%`, icon: 'fa-chart-bar', color: '#7c3aed' },
+        ].map(k => `
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <i class="fas ${k.icon} text-sm" style="color:${k.color}"></i>
+              <span class="text-xs text-gray-500">${k.label}</span>
+            </div>
+            <div class="text-lg font-bold" style="color:${k.color}">${k.val}</div>
+            <div class="text-xs text-gray-400 mt-0.5">${k.sub}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- 월별 납품 현황 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3">
+          <i class="fas fa-table text-indigo-500 mr-1"></i>${year}년 월별 납품 현황
+        </h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="bg-gray-50 text-gray-500">
+                <th class="text-left py-2 px-3">월</th>
+                <th class="text-right py-2 px-3">공급가액</th>
+                <th class="text-right py-2 px-3">부가세</th>
+                <th class="text-right py-2 px-3">합계</th>
+                <th class="text-left py-2 px-3">업체</th>
+                <th class="py-2 px-3">비중 바</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Array.from({length:12}, (_,i) => i+1).map(mo => {
+                const moRows = d.monthly.filter((r:any) => r.mo === mo)
+                const moTotal = moRows.reduce((s:number,r:any) => s+Number(r.total_amount||0), 0)
+                const moSupply = moRows.reduce((s:number,r:any) => s+Number(r.supply_amount||0), 0)
+                const moVat = moRows.reduce((s:number,r:any) => s+Number(r.vat_amount||0), 0)
+                const vendors = moRows.map((r:any) => r.vendor_name).join(', ')
+                const pct = grandTotal > 0 ? Math.min(100, Math.round(moTotal/grandTotal*100)) : 0
+                const qLabel = mo <= 3 ? '1Q' : mo <= 6 ? '2Q' : mo <= 9 ? '3Q' : '4Q'
+                const qColor = mo <= 3 ? '#3b82f6' : mo <= 6 ? '#10b981' : mo <= 9 ? '#f59e0b' : '#8b5cf6'
+                return `<tr class="border-b border-gray-50 ${mo%2===0?'bg-gray-50/30':''}">
+                  <td class="py-2 px-3 font-medium text-gray-800">
+                    ${mo}월 <span style="font-size:9px;background:${qColor}22;color:${qColor};padding:1px 4px;border-radius:4px;font-weight:700">${qLabel}</span>
+                  </td>
+                  <td class="py-2 px-3 text-right text-gray-600">${moSupply > 0 ? fmt(moSupply)+'원' : '-'}</td>
+                  <td class="py-2 px-3 text-right text-gray-500">${moVat > 0 ? fmt(moVat)+'원' : '-'}</td>
+                  <td class="py-2 px-3 text-right font-bold text-gray-900">${moTotal > 0 ? fmt(moTotal)+'원' : '-'}</td>
+                  <td class="py-2 px-3 text-gray-500 text-xs max-w-xs truncate">${vendors || '-'}</td>
+                  <td class="py-2 px-3">
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <div style="background:#f3f4f6;border-radius:4px;height:8px;width:80px;overflow:hidden">
+                        <div style="height:100%;width:${pct}%;background:${qColor};border-radius:4px"></div>
+                      </div>
+                      <span style="font-size:10px;color:#9ca3af">${pct}%</span>
+                    </div>
+                  </td>
+                </tr>`
+              }).join('')}
+              <tr class="bg-indigo-50 font-bold">
+                <td class="py-2 px-3 text-indigo-700">합 계</td>
+                <td class="py-2 px-3 text-right text-gray-700">${fmt(d.monthly.reduce((s:number,r:any)=>s+Number(r.supply_amount||0),0))}원</td>
+                <td class="py-2 px-3 text-right text-gray-700">${fmt(d.monthly.reduce((s:number,r:any)=>s+Number(r.vat_amount||0),0))}원</td>
+                <td class="py-2 px-3 text-right text-indigo-700">${fmt(grandTotal)}원</td>
+                <td class="py-2 px-3"></td>
+                <td class="py-2 px-3 text-xs text-gray-500">100%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 분기별 업체 비교 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3">
+          <i class="fas fa-chart-bar text-purple-500 mr-1"></i>${year}년 분기별 업체 납품 비교
+        </h3>
+        ${d.quarterly.length === 0 ? `<div class="text-center text-gray-400 py-6 text-sm">데이터가 없습니다</div>` : `
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="bg-gray-50 text-gray-500">
+                <th class="text-left py-2 px-3">업체</th>
+                <th class="text-right py-2 px-3">1분기 (1~3월)</th>
+                <th class="text-right py-2 px-3">2분기 (4~6월)</th>
+                <th class="text-right py-2 px-3">3분기 (7~9월)</th>
+                <th class="text-right py-2 px-3">4분기 (10~12월)</th>
+                <th class="text-right py-2 px-3">연간 합계</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(() => {
+                const allVendors = [...new Set(d.quarterly.map((r:any) => r.vendor_name))]
+                return (allVendors as string[]).map((v, idx) => {
+                  const qData: Record<number,number> = {1:0, 2:0, 3:0, 4:0}
+                  d.quarterly.filter((r:any) => r.vendor_name === v).forEach((r:any) => {
+                    qData[r.quarter] = Number(r.total_amount)||0
+                  })
+                  const vTotal = Object.values(qData).reduce((s,v) => s+v, 0)
+                  return `<tr class="border-b border-gray-50 ${idx%2===0?'':'bg-gray-50/30'}">
+                    <td class="py-2 px-3 font-medium text-gray-800">${v}</td>
+                    ${[1,2,3,4].map(q => `<td class="py-2 px-3 text-right ${qData[q]>0?'text-gray-800':'text-gray-300'}">${qData[q]>0?fmt(qData[q])+'원':'-'}</td>`).join('')}
+                    <td class="py-2 px-3 text-right font-bold text-indigo-600">${fmt(vTotal)}원</td>
+                  </tr>`
+                }).join('')
+              })()}
+              <tr class="bg-indigo-50 font-bold">
+                <td class="py-2 px-3 text-indigo-700">합 계</td>
+                ${[1,2,3,4].map(q => `<td class="py-2 px-3 text-right text-gray-700">${fmt(qTotals[q])}원</td>`).join('')}
+                <td class="py-2 px-3 text-right text-indigo-700">${fmt(grandTotal)}원</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`}
+      </div>
+
+      <!-- 업체별 연간 비중 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <h3 class="font-bold text-gray-700 text-sm mb-3">
+          <i class="fas fa-truck text-blue-500 mr-1"></i>업체별 연간 납품 현황 (${year}년)
+        </h3>
+        ${d.vendors.length === 0 ? `<div class="text-center text-gray-400 py-6 text-sm">데이터가 없습니다</div>` : `
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="bg-gray-50 text-gray-500">
+                <th class="text-left py-2 px-3">업체명</th>
+                <th class="text-right py-2 px-3">납품월수</th>
+                <th class="text-right py-2 px-3">품목수</th>
+                <th class="text-right py-2 px-3">공급가액</th>
+                <th class="text-right py-2 px-3">부가세</th>
+                <th class="text-right py-2 px-3">합계금액</th>
+                <th class="text-right py-2 px-3">비중(%)</th>
+                <th class="py-2 px-3">비중 바</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(d.vendors as any[]).map((v, idx) => {
+                const pct = grandTotal > 0 ? Math.round(Number(v.total_amount)/grandTotal*1000)/10 : 0
+                const barColor = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'][idx % 5]
+                return `<tr class="border-b border-gray-50 ${idx%2===0?'':'bg-gray-50/30'}">
+                  <td class="py-2 px-3 font-medium text-gray-800">${v.vendor_name}</td>
+                  <td class="py-2 px-3 text-right text-gray-600">${v.active_months}개월</td>
+                  <td class="py-2 px-3 text-right text-gray-600">${fmt(v.item_count)}종</td>
+                  <td class="py-2 px-3 text-right text-gray-600">${fmt(v.supply_amount)}원</td>
+                  <td class="py-2 px-3 text-right text-gray-500">${fmt(v.vat_amount)}원</td>
+                  <td class="py-2 px-3 text-right font-bold text-gray-900">${fmt(v.total_amount)}원</td>
+                  <td class="py-2 px-3 text-right font-bold" style="color:${barColor}">${pct}%</td>
+                  <td class="py-2 px-3">
+                    <div style="background:#f3f4f6;border-radius:4px;height:8px;width:80px;overflow:hidden">
+                      <div style="height:100%;width:${Math.min(100,pct)}%;background:${barColor};border-radius:4px"></div>
+                    </div>
+                  </td>
+                </tr>`
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`}
+      </div>
+
+    </div>`
+
+  } catch(e: any) {
+    const content = document.getElementById('txAnnualContent')
+    if (content) content.innerHTML = `<div class="text-center text-red-400 py-12 text-sm"><i class="fas fa-exclamation-triangle mr-2"></i>데이터 로드 실패: ${e.message}</div>`
+  }
+}
+
+window.txExportAnnualExcel = async function() {
+  if (typeof XLSX === 'undefined') {
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    s.onload = () => showToast('라이브러리 로드 완료. 다시 클릭하세요.', 'info')
+    document.head.appendChild(s)
+    showToast('엑셀 라이브러리 로딩 중...', 'warning')
+    return
+  }
+
+  const d = window._txAnnualData
+  if (!d) { showToast('먼저 조회해주세요', 'warning'); return }
+
+  const year = d.year
+  const fmt = v => (Number(v)||0).toLocaleString()
+  const wb = XLSX.utils.book_new()
+  const merge = (rs, re, cs, ce) => ({ s: { r: rs, c: cs }, e: { r: re, c: ce } })
+
+  // 연간 요약 시트
+  const grandTotal = d.vendors.reduce((s, r) => s + (Number(r.total_amount)||0), 0)
+  const qTotals = {1:0, 2:0, 3:0, 4:0}
+  d.quarterly.forEach(r => { qTotals[r.quarter] = (qTotals[r.quarter]||0) + (Number(r.total_amount)||0) })
+
+  const s1 = [
+    [`◆ ${year}년 거래명세서 연간 분석 보고서`],
+    [`생성일시: ${new Date().toLocaleString('ko-KR')}`],
+    [''],
+    ['[연간 요약]'],
+    ['항목', '금액(원)', '비중(%)'],
+    ['연간 총 납품액', grandTotal, '100%'],
+    ['1분기 (1~3월)', qTotals[1], grandTotal > 0 ? (qTotals[1]/grandTotal*100).toFixed(1)+'%' : '-'],
+    ['2분기 (4~6월)', qTotals[2], grandTotal > 0 ? (qTotals[2]/grandTotal*100).toFixed(1)+'%' : '-'],
+    ['3분기 (7~9월)', qTotals[3], grandTotal > 0 ? (qTotals[3]/grandTotal*100).toFixed(1)+'%' : '-'],
+    ['4분기 (10~12월)', qTotals[4], grandTotal > 0 ? (qTotals[4]/grandTotal*100).toFixed(1)+'%' : '-'],
+    [''],
+    ['[업체별 연간 납품 현황]'],
+    ['업체명', '납품월수', '품목수', '공급가액(원)', '부가세(원)', '합계(원)', '비중(%)'],
+    ...d.vendors.map(v => [
+      v.vendor_name, v.active_months, v.item_count,
+      Number(v.supply_amount)||0, Number(v.vat_amount)||0, Number(v.total_amount)||0,
+      grandTotal > 0 ? ((Number(v.total_amount)||0)/grandTotal*100).toFixed(1)+'%' : '-'
+    ]),
+    ['합 계', '', d.vendors.reduce((s,v)=>s+(Number(v.item_count)||0),0),
+      d.vendors.reduce((s,v)=>s+(Number(v.supply_amount)||0),0),
+      d.vendors.reduce((s,v)=>s+(Number(v.vat_amount)||0),0),
+      grandTotal, '100%'
+    ]
+  ]
+  const ws1 = XLSX.utils.aoa_to_sheet(s1)
+  ws1['!cols'] = [{wch:22},{wch:16},{wch:12},{wch:14},{wch:12},{wch:14},{wch:10}]
+  ws1['!merges'] = [merge(0,0,0,6), merge(1,1,0,6)]
+  XLSX.utils.book_append_sheet(wb, ws1, '①연간요약')
+
+  // 월별 납품 현황 시트
+  const moTotals = {}
+  d.monthly.forEach(r => {
+    if (!moTotals[r.mo]) moTotals[r.mo] = { supply:0, vat:0, total:0, vendors:[] }
+    moTotals[r.mo].supply += Number(r.supply_amount)||0
+    moTotals[r.mo].vat += Number(r.vat_amount)||0
+    moTotals[r.mo].total += Number(r.total_amount)||0
+    if (!moTotals[r.mo].vendors.includes(r.vendor_name)) moTotals[r.mo].vendors.push(r.vendor_name)
+  })
+
+  const s2 = [
+    [`◆ ${year}년 월별 납품 현황`],
+    [`전체 ${Object.values(moTotals).filter(m => m.total > 0).length}개월 납품 실적`],
+    [''],
+    ['월', '분기', '공급가액(원)', '부가세(원)', '합계(원)', '업체수', '업체명', '비중(%)'],
+    ...Array.from({length:12}, (_,i) => {
+      const mo = i+1
+      const m = moTotals[mo] || { supply:0, vat:0, total:0, vendors:[] }
+      const q = mo <= 3 ? '1Q' : mo <= 6 ? '2Q' : mo <= 9 ? '3Q' : '4Q'
+      const pct = grandTotal > 0 ? (m.total/grandTotal*100).toFixed(1)+'%' : '-'
+      return [mo+'월', q, m.supply, m.vat, m.total, m.vendors.length, m.vendors.join(', '), pct]
+    }),
+    ['합 계', '',
+      d.monthly.reduce((s,r)=>s+(Number(r.supply_amount)||0),0),
+      d.monthly.reduce((s,r)=>s+(Number(r.vat_amount)||0),0),
+      grandTotal, '', '', '100%'
+    ]
+  ]
+  const ws2 = XLSX.utils.aoa_to_sheet(s2)
+  ws2['!cols'] = [{wch:6},{wch:5},{wch:14},{wch:12},{wch:14},{wch:6},{wch:30},{wch:8}]
+  ws2['!merges'] = [merge(0,0,0,7), merge(1,1,0,7)]
+  XLSX.utils.book_append_sheet(wb, ws2, '②월별납품현황')
+
+  // 분기별 업체 비교 시트
+  const allVendors = [...new Set(d.quarterly.map(r => r.vendor_name))]
+  const s3 = [
+    [`◆ ${year}년 분기별 업체 납품 비교`],
+    [''],
+    ['업체', '1분기(1~3월)', '2분기(4~6월)', '3분기(7~9월)', '4분기(10~12월)', '연간합계'],
+    ...allVendors.map(v => {
+      const qData = {1:0, 2:0, 3:0, 4:0}
+      d.quarterly.filter(r => r.vendor_name === v).forEach(r => { qData[r.quarter] = Number(r.total_amount)||0 })
+      const vTotal = Object.values(qData).reduce((s,v)=>s+v,0)
+      return [v, qData[1], qData[2], qData[3], qData[4], vTotal]
+    }),
+    ['합 계', qTotals[1], qTotals[2], qTotals[3], qTotals[4], grandTotal]
+  ]
+  const ws3 = XLSX.utils.aoa_to_sheet(s3)
+  ws3['!cols'] = [{wch:20},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}]
+  ws3['!merges'] = [merge(0,0,0,5)]
+  XLSX.utils.book_append_sheet(wb, ws3, '③분기별업체비교')
+
+  XLSX.writeFile(wb, `거래명세서_연간분석_${year}.xlsx`)
+  showToast(`✅ ${year}년 연간 보고서 다운로드 완료 (3개 시트)`, 'success')
+}
+
+// ── TAB 5: 식재료 단가 분석 ──────────────────────────────────────────────
 async function txRenderIngredientTab(container) {
   const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
@@ -23124,7 +23490,7 @@ window.txIngLoadHistory = async function() {
   if (area) area.innerHTML = `<div class="text-center text-gray-400 py-6"><i class="fas fa-spinner fa-spin"></i></div>`
 
   try {
-    const namesParam = selected.join(',')
+    const namesParam = selected.join('||')
     const res = await axios.get(
       `/api/transaction/invoice/ingredient-price-history?item_names=${encodeURIComponent(namesParam)}&months=12${hParamAmp}`,
       { headers: authH }
@@ -23630,56 +23996,56 @@ async function txLoadCrossAnalysis() {
       <!-- 교차 분석 안내 -->
       <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-700 flex items-start gap-2">
         <i class="fas fa-info-circle mt-0.5"></i>
-        <div>발주 데이터와 거래명세서를 품목명 · 업체별로 매핑하여 수량 및 단가 차이를 분석합니다.
-        수량 차이 ±20% 이상 또는 단가 차이 ±10% 이상 시 경고가 표시됩니다.</div>
+        <div>발주 데이터(일별발주)와 거래명세서를 <strong>업체별</strong>로 매핑하여 금액 차이를 분석합니다.
+        금액 차이 ±10% 이상 시 경고, ±30% 이상 시 심각으로 표시됩니다.
+        <span class="block mt-1 text-blue-500 text-xs">※ 발주 업체와 명세서 업체명이 다를 경우 매칭되지 않을 수 있습니다.</span></div>
       </div>
 
       <!-- 교차 분석 테이블 -->
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <div class="flex items-center justify-between mb-3">
-          <h4 class="font-bold text-gray-700 text-sm">발주 vs 명세서 상세 비교</h4>
+          <h4 class="font-bold text-gray-700 text-sm">발주 vs 명세서 업체별 비교</h4>
           <div class="flex gap-2 text-xs">
-            <span class="px-2 py-0.5 bg-red-100 text-red-600 rounded-full">● 심각</span>
-            <span class="px-2 py-0.5 bg-yellow-100 text-yellow-600 rounded-full">● 경고</span>
+            <span class="px-2 py-0.5 bg-red-100 text-red-600 rounded-full">● 심각(≥30%)</span>
+            <span class="px-2 py-0.5 bg-yellow-100 text-yellow-600 rounded-full">● 경고(≥10%)</span>
             <span class="px-2 py-0.5 bg-green-100 text-green-600 rounded-full">● 정상</span>
           </div>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-xs">
             <thead><tr class="bg-gray-50">
-              <th class="text-left px-3 py-2 text-gray-500 border-b">품목명</th>
-              <th class="text-left px-3 py-2 text-gray-500 border-b">업체</th>
-              <th class="text-right px-3 py-2 text-gray-500 border-b">발주수량</th>
-              <th class="text-right px-3 py-2 text-gray-500 border-b">명세서수량</th>
-              <th class="text-right px-3 py-2 text-gray-500 border-b">수량차이</th>
-              <th class="text-right px-3 py-2 text-gray-500 border-b">발주단가</th>
-              <th class="text-right px-3 py-2 text-gray-500 border-b">명세서단가</th>
-              <th class="text-right px-3 py-2 text-gray-500 border-b">단가차이</th>
+              <th class="text-left px-3 py-2 text-gray-500 border-b">업체명</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">발주 총액</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">명세서 총액</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">차이금액</th>
+              <th class="text-right px-3 py-2 text-gray-500 border-b">차이율</th>
+              <th class="text-center px-3 py-2 text-gray-500 border-b">발주횟수</th>
+              <th class="text-center px-3 py-2 text-gray-500 border-b">명세서품목</th>
               <th class="text-center px-3 py-2 text-gray-500 border-b">상태</th>
             </tr></thead>
             <tbody>
               ${items.length === 0 ? `
-                <tr><td colspan="9" class="text-center text-gray-400 py-8">
+                <tr><td colspan="8" class="text-center text-gray-400 py-8">
                   발주 데이터 또는 명세서 데이터가 없습니다.
                 </td></tr>` :
-              items.map(item => `
+              items.map(item => {
+                const diff = item.amount_diff || 0
+                const fmt = v => (Number(v)||0).toLocaleString()
+                return `
                 <tr class="border-b border-gray-50 hover:bg-gray-50 ${
                   item.alert_level==='critical'?'bg-red-50/40':
                   item.alert_level==='warning' ?'bg-yellow-50/40':''}">
-                  <td class="px-3 py-2 font-medium text-gray-700">${item.item_name}</td>
-                  <td class="px-3 py-2 text-gray-500 text-xs">${item.vendor_name||'-'}</td>
-                  <td class="px-3 py-2 text-right">${(item.ordered_qty||0).toLocaleString()}</td>
-                  <td class="px-3 py-2 text-right">${(item.invoice_qty||0).toLocaleString()}</td>
-                  <td class="px-3 py-2 text-right font-medium ${item.qty_diff>0?'text-red-600':item.qty_diff<0?'text-blue-600':'text-gray-500'}">
-                    ${item.qty_diff>0?'+':''}${(item.qty_diff||0).toFixed(1)}
-                    ${item.qty_diff_pct ? `<span class="text-gray-400">(${item.qty_diff_pct}%)</span>` : ''}
+                  <td class="px-3 py-2 font-medium text-gray-700">${item.vendor_name||'-'}</td>
+                  <td class="px-3 py-2 text-right text-blue-700 font-medium">${item.ordered_amount > 0 ? fmt(item.ordered_amount)+'원' : '<span class="text-gray-300">-</span>'}</td>
+                  <td class="px-3 py-2 text-right text-green-700 font-medium">${item.invoice_amount > 0 ? fmt(item.invoice_amount)+'원' : '<span class="text-gray-300">-</span>'}</td>
+                  <td class="px-3 py-2 text-right font-bold ${diff>0?'text-blue-600':diff<0?'text-red-600':'text-gray-400'}">
+                    ${diff===0?'-':(diff>0?'+':'')+fmt(diff)+'원'}
                   </td>
-                  <td class="px-3 py-2 text-right">${(item.ordered_price||0).toLocaleString()}</td>
-                  <td class="px-3 py-2 text-right">${(item.invoice_price||0).toLocaleString()}</td>
-                  <td class="px-3 py-2 text-right font-medium ${item.price_diff>0?'text-red-600':item.price_diff<0?'text-blue-600':'text-gray-500'}">
-                    ${item.price_diff>0?'+':''}${(item.price_diff||0).toLocaleString()}
-                    ${item.price_diff_pct ? `<span class="text-gray-400">(${item.price_diff_pct}%)</span>` : ''}
+                  <td class="px-3 py-2 text-right ${Math.abs(item.amount_diff_pct||0)>=30?'text-red-600 font-bold':Math.abs(item.amount_diff_pct||0)>=10?'text-yellow-600':'text-gray-500'}">
+                    ${item.amount_diff_pct ? Math.abs(item.amount_diff_pct)+'%' : '-'}
                   </td>
+                  <td class="px-3 py-2 text-center text-gray-500">${item.order_count||0}회</td>
+                  <td class="px-3 py-2 text-center text-gray-500">${item.invoice_item_count||0}품목</td>
                   <td class="px-3 py-2 text-center">
                     <span class="px-2 py-0.5 rounded-full text-xs font-medium ${
                       item.alert_level==='critical'?'bg-red-100 text-red-600':
@@ -23687,9 +24053,9 @@ async function txLoadCrossAnalysis() {
                       'bg-green-100 text-green-600'}">
                       ${item.alert_level==='critical'?'심각':item.alert_level==='warning'?'경고':'정상'}
                     </span>
-                    ${item.alert_memo ? `<div class="text-gray-400 text-xs mt-0.5">${item.alert_memo}</div>` : ''}
+                    ${item.alert_memo ? `<div class="text-gray-400 text-xs mt-0.5 whitespace-nowrap">${item.alert_memo}</div>` : ''}
                   </td>
-                </tr>`).join('')}
+                </tr>`}).join('')}
             </tbody>
           </table>
         </div>

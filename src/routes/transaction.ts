@@ -1493,13 +1493,18 @@ txRouter.get('/invoice/vendors', async (c) => {
 })
 
 // ── 주요 식재료 단가 분석: 거래명세서 기반 품목 단가 이력 ──────
-// GET /invoice/ingredient-price-history?item_names=쌀,닭고기&months=12
+// GET /invoice/ingredient-price-history?item_names=쌀||닭고기&months=12
+// 구분자: || (품목명에 쉼표가 포함될 수 있어 || 사용)
 txRouter.get('/invoice/ingredient-price-history', async (c) => {
   try {
     const hospitalId = await resolveHospitalId(c)
     const itemNamesRaw = c.req.query('item_names') || ''
     const months = Number(c.req.query('months') || '12')
-    const itemNames = itemNamesRaw.split(',').map(s => s.trim()).filter(Boolean)
+    // 구분자 || 우선, 없으면 단순 콤마 (하위 호환)
+    const itemNames = (itemNamesRaw.includes('||')
+      ? itemNamesRaw.split('||')
+      : itemNamesRaw.split(',')
+    ).map(s => s.trim()).filter(Boolean)
 
     if (itemNames.length === 0) {
       return c.json({ ok: true, data: [] })
@@ -1931,6 +1936,88 @@ txRouter.post('/invoice-vendors/:id/upload-sync', async (c) => {
       WHERE id=? AND hospital_id=?
     `).bind(year, month, id, hospitalId).run()
     return c.json({ ok: true })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 4: 연간/분기 거래명세서 통계 API ────────────────────────────────────
+// GET /invoice/annual-summary?year=2026
+txRouter.get('/invoice/annual-summary', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const year = Number(c.req.query('year') || new Date().getFullYear())
+
+    // 월별 합계
+    const monthlyRows = await c.env.DB.prepare(`
+      SELECT document_month as mo,
+             vendor_name,
+             SUM(amount) as supply_amount,
+             SUM(tax_amount) as vat_amount,
+             SUM(amount + tax_amount) as total_amount,
+             COUNT(DISTINCT item_name) as item_count,
+             COUNT(*) as row_count
+      FROM transaction_items
+      WHERE hospital_id=? AND document_year=? AND amount > 0
+      GROUP BY document_month, vendor_name
+      ORDER BY document_month, vendor_name
+    `).bind(hospitalId, year).all<any>()
+
+    // 분기별 합계
+    const quarterlyRows = await c.env.DB.prepare(`
+      SELECT 
+        CASE 
+          WHEN document_month <= 3 THEN 1
+          WHEN document_month <= 6 THEN 2
+          WHEN document_month <= 9 THEN 3
+          ELSE 4
+        END as quarter,
+        vendor_name,
+        SUM(amount) as supply_amount,
+        SUM(tax_amount) as vat_amount,
+        SUM(amount + tax_amount) as total_amount,
+        COUNT(DISTINCT item_name) as item_count,
+        COUNT(*) as row_count
+      FROM transaction_items
+      WHERE hospital_id=? AND document_year=? AND amount > 0
+      GROUP BY quarter, vendor_name
+      ORDER BY quarter, vendor_name
+    `).bind(hospitalId, year).all<any>()
+
+    // 분류별 연간 합계
+    const categoryRows = await c.env.DB.prepare(`
+      SELECT document_month as mo,
+             supplier_category,
+             SUM(amount) as total_amount,
+             COUNT(DISTINCT item_name) as item_count
+      FROM transaction_items
+      WHERE hospital_id=? AND document_year=? AND amount > 0
+      GROUP BY document_month, supplier_category
+      ORDER BY document_month, total_amount DESC
+    `).bind(hospitalId, year).all<any>()
+
+    // 업체별 연간 합계
+    const vendorRows = await c.env.DB.prepare(`
+      SELECT vendor_name,
+             SUM(amount) as supply_amount,
+             SUM(tax_amount) as vat_amount,
+             SUM(amount + tax_amount) as total_amount,
+             COUNT(DISTINCT document_month) as active_months,
+             COUNT(DISTINCT item_name) as item_count
+      FROM transaction_items
+      WHERE hospital_id=? AND document_year=? AND amount > 0
+      GROUP BY vendor_name
+      ORDER BY total_amount DESC
+    `).bind(hospitalId, year).all<any>()
+
+    return c.json({
+      ok: true,
+      year,
+      monthly: monthlyRows.results || [],
+      quarterly: quarterlyRows.results || [],
+      categories: categoryRows.results || [],
+      vendors: vendorRows.results || []
+    })
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
   }
