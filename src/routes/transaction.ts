@@ -1936,5 +1936,214 @@ txRouter.post('/invoice-vendors/:id/upload-sync', async (c) => {
   }
 })
 
+// ── 0-1: 업체별 주요 식재료 단가 추이 (일/주/월별) ──────────────────────
+// GET /invoice/ingredient-price-trend?vendor_name=삼성웰스토리&item_name=계란&period=monthly&months=12
+txRouter.get('/invoice/ingredient-price-trend', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const itemNamesRaw = c.req.query('item_names') || ''
+    const period = c.req.query('period') || 'monthly' // daily | weekly | monthly
+    const months = Number(c.req.query('months') || '12')
+
+    // 12종 식재료 키워드 맵
+    const INGREDIENT_KEYWORDS: Record<string, string[]> = {
+      '쌀': ['쌀','백미','현미','잡곡','찹쌀'],
+      '닭고기': ['닭','닭가슴','닭다리','닭날개','닭안심','계육','broiler'],
+      '돼지고기': ['돼지','삼겹','목살','앞다리','뒷다리','등심','돈육'],
+      '쇠고기': ['쇠고기','소고기','한우','갈비','사태','불고기','국거리','牛'],
+      '두부': ['두부','순두부','연두부'],
+      '계란': ['계란','달걀','대란','중란','왕란'],
+      '양파': ['양파'],
+      '감자': ['감자'],
+      '당근': ['당근'],
+      '배추': ['배추','절임배추'],
+      '대파': ['대파','파'],
+      '마늘': ['마늘','깐마늘','다진마늘'],
+    }
+
+    // 분석 대상 품목 결정
+    let targetItems: string[] = []
+    if (itemNamesRaw) {
+      targetItems = itemNamesRaw.split(',').map(s => s.trim()).filter(Boolean)
+    } else {
+      targetItems = Object.keys(INGREDIENT_KEYWORDS)
+    }
+
+    // 각 식재료별 추이 데이터 조회
+    const results: Record<string, any[]> = {}
+
+    for (const ingName of targetItems) {
+      const keywords = INGREDIENT_KEYWORDS[ingName] || [ingName]
+      const likeConditions = keywords.map(() => `item_name LIKE ?`).join(' OR ')
+      const likeValues = keywords.map(k => `%${k}%`)
+
+      let vendorFilter = ''
+      const bindValues: any[] = [hospitalId, ...likeValues]
+
+      if (vendorName) {
+        vendorFilter = `AND (vendor_name = ? OR vendor_name LIKE ?)`
+        bindValues.push(vendorName, `%${vendorName.replace(/\s/g, '')}%`)
+      }
+
+      let sql = ''
+      if (period === 'daily') {
+        sql = `
+          SELECT 
+            COALESCE(date_from, document_year||'-'||printf('%02d',document_month)||'-01') as period_date,
+            vendor_name,
+            AVG(unit_price) as avg_price,
+            SUM(quantity) as total_qty,
+            SUM(amount) as total_amount,
+            COUNT(*) as order_count
+          FROM transaction_items
+          WHERE hospital_id=? AND unit_price > 0 AND (${likeConditions})
+            ${vendorFilter}
+          GROUP BY period_date, vendor_name
+          ORDER BY period_date DESC
+          LIMIT ?
+        `
+        bindValues.push(90) // 최근 90일
+      } else if (period === 'weekly') {
+        sql = `
+          SELECT 
+            document_year as yr,
+            CAST((CAST(strftime('%j', COALESCE(date_from, document_year||'-'||printf('%02d',document_month)||'-01')) AS INTEGER) - 1) / 7 + 1 AS INTEGER) as week_num,
+            vendor_name,
+            AVG(unit_price) as avg_price,
+            SUM(quantity) as total_qty,
+            SUM(amount) as total_amount,
+            COUNT(*) as order_count
+          FROM transaction_items
+          WHERE hospital_id=? AND unit_price > 0 AND (${likeConditions})
+            ${vendorFilter}
+          GROUP BY yr, week_num, vendor_name
+          ORDER BY yr DESC, week_num DESC
+          LIMIT ?
+        `
+        bindValues.push(52) // 최근 52주
+      } else {
+        // monthly (기본)
+        sql = `
+          SELECT 
+            document_year as yr,
+            document_month as mo,
+            vendor_name,
+            AVG(unit_price) as avg_price,
+            SUM(quantity) as total_qty,
+            SUM(amount) as total_amount,
+            COUNT(*) as order_count
+          FROM transaction_items
+          WHERE hospital_id=? AND unit_price > 0 AND (${likeConditions})
+            ${vendorFilter}
+          GROUP BY yr, mo, vendor_name
+          ORDER BY yr DESC, mo DESC
+          LIMIT ?
+        `
+        bindValues.push(months * 10)
+      }
+
+      const rows = await c.env.DB.prepare(sql).bind(...bindValues).all<any>()
+      results[ingName] = rows.results || []
+    }
+
+    // 업체 목록 (해당 병원에서 사용 중인 업체)
+    const vendorsRows = await c.env.DB.prepare(`
+      SELECT DISTINCT vendor_name, COUNT(*) as cnt
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name != ''
+      GROUP BY vendor_name
+      ORDER BY cnt DESC
+      LIMIT 20
+    `).bind(hospitalId).all<any>()
+
+    return c.json({ ok: true, data: results, vendors: vendorsRows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// ── 0-2: 업체별 주요품목 12종 단가 조회/저장 ──────────────────────────────
+// GET /invoice/vendor-ingredient-prices?vendor_name=삼성웰스토리&year=2026&month=3
+txRouter.get('/invoice/vendor-ingredient-prices', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const vendorName = c.req.query('vendor_name') || ''
+    const year = Number(c.req.query('year') || new Date().getFullYear())
+    const month = Number(c.req.query('month') || (new Date().getMonth() + 1))
+
+    const rows = await c.env.DB.prepare(`
+      SELECT ingredient_name, unit, unit_price, total_amount, total_quantity, vendor_name, source, memo
+      FROM ingredient_prices
+      WHERE hospital_id=? AND year=? AND month=? AND vendor_name=?
+      ORDER BY ingredient_name
+    `).bind(hospitalId, year, month, vendorName).all<any>()
+
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// POST /invoice/vendor-ingredient-prices - 업체별 단가 저장
+txRouter.post('/invoice/vendor-ingredient-prices', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const body = await c.req.json() as any
+    const { vendor_name, year, month, items } = body
+
+    if (!vendor_name || !year || !month || !Array.isArray(items)) {
+      return c.json({ ok: false, error: '필수 파라미터 누락' }, 400)
+    }
+
+    // 기존 데이터 삭제 후 재삽입
+    await c.env.DB.prepare(`
+      DELETE FROM ingredient_prices
+      WHERE hospital_id=? AND year=? AND month=? AND vendor_name=?
+    `).bind(hospitalId, year, month, vendor_name).run()
+
+    for (const item of items) {
+      if (!item.ingredient_name) continue
+      await c.env.DB.prepare(`
+        INSERT INTO ingredient_prices (hospital_id, year, month, ingredient_name, unit, unit_price, total_amount, total_quantity, vendor_name, source, memo, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, CURRENT_TIMESTAMP)
+      `).bind(
+        hospitalId, year, month,
+        item.ingredient_name, item.unit || 'kg',
+        Number(item.unit_price) || 0,
+        Number(item.total_amount) || 0,
+        Number(item.total_quantity) || 0,
+        vendor_name,
+        item.memo || ''
+      ).run()
+    }
+
+    return c.json({ ok: true, saved: items.length })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
+// GET /invoice/vendor-list - 해당 병원의 업체 목록
+txRouter.get('/invoice/vendor-list', async (c) => {
+  try {
+    const hospitalId = await resolveHospitalId(c)
+    const rows = await c.env.DB.prepare(`
+      SELECT DISTINCT vendor_name, 
+             MAX(document_year) as last_year, 
+             MAX(document_month) as last_month,
+             COUNT(DISTINCT document_year||'-'||document_month) as month_count
+      FROM transaction_items
+      WHERE hospital_id=? AND vendor_name != ''
+      GROUP BY vendor_name
+      ORDER BY last_year DESC, last_month DESC
+    `).bind(hospitalId).all<any>()
+
+    return c.json({ ok: true, data: rows.results || [] })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
 export default txRouter
 

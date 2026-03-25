@@ -17409,6 +17409,8 @@ async function renderCeoDashboard() {
 
     const safeHospitals = Array.isArray(hospitalsData) ? hospitalsData : []
     const safeExpenses  = Array.isArray(expensesData)  ? expensesData  : []
+    // AI 경고 클릭 이동용 병원 목록 전역 저장
+    window._ceoHospitals = safeHospitals
 
     console.log('[CEO] 6. HTML 렌더링 시작')
     const filterBarHtml = renderCeoFilterBar(f, careTypes, allHospitals)
@@ -17955,9 +17957,25 @@ function renderCeoAlerts(data) {
         const bg  = a.level==='danger' ? '#fef2f2' : '#fffbeb'
         const bc  = a.level==='danger' ? '#fecaca' : '#fde68a'
         const ic  = a.level==='danger' ? 'fa-exclamation-circle text-red-500' : 'fa-exclamation-triangle text-yellow-500'
-        return `<div class="flex items-start gap-2 p-3 rounded-lg text-sm mb-2" style="background:${bg};border:1px solid ${bc}">
+        // 경고 타입별 이동 대상 결정
+        const msg = a.message || ''
+        let targetPage = 'dashboard'
+        let targetHospId = a.hospitalId || ''
+        if (msg.includes('예산')) targetPage = 'orders'
+        else if (msg.includes('식단가')) targetPage = 'meals'
+        else if (msg.includes('검수')) targetPage = 'inspection'
+        else if (msg.includes('발주')) targetPage = 'orders'
+        else if (msg.includes('업체') || msg.includes('집중도')) targetPage = 'orders'
+        const clickAttr = targetHospId
+          ? `onclick="ceoAlertNavigate('${targetPage}',${targetHospId})" style="cursor:pointer"`
+          : `style="cursor:default"`
+        const arrowHtml = targetHospId
+          ? `<span style="margin-left:auto;font-size:11px;color:${a.level==='danger'?'#dc2626':'#d97706'};white-space:nowrap;padding-left:8px">이동 →</span>`
+          : ''
+        return `<div class="flex items-start gap-2 p-3 rounded-lg text-sm mb-2 hover:opacity-90 transition-opacity" style="background:${bg};border:1px solid ${bc}" ${clickAttr}>
           <i class="fas ${ic} mt-0.5 flex-shrink-0"></i>
           <span class="text-gray-700">${a.message}</span>
+          ${arrowHtml}
         </div>`
       }).join('')
 
@@ -18008,11 +18026,17 @@ function renderCeoExpenses(expenses, f) {
 
   return `
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 class="font-bold text-gray-800 text-sm flex items-center gap-1.5">
           <i class="fas fa-receipt text-indigo-500"></i> 지출 사용내역 조회
         </h2>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <!-- 병원 필터 -->
+          <select id="ceoExpenseHospital" onchange="ceoExpenseHospitalFilter()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
+            <option value="">전체 병원</option>
+            ${(window._ceoHospitals||[]).map(h => `<option value="${h.id}">${h.name||h.hospital_name||''}</option>`).join('')}
+          </select>
+          <!-- 유형 필터 -->
           <select id="ceoExpenseType" onchange="ceoExpenseTypeFilter()" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-gray-50">
             <option value="">전체 유형</option>
             ${EXPENSE_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
@@ -18044,21 +18068,45 @@ function renderCeoExpenses(expenses, f) {
   `
 }
 
-window.ceoExpenseTypeFilter = function() {
-  const type = document.getElementById('ceoExpenseType')?.value || ''
-  const f    = window._ceoFilter
-  const qs   = new URLSearchParams({
-    ...(f.hospitalId && { hospital_id: f.hospitalId }),
-    ...(type         && { expense_type: type })
+// AI 경고 클릭 → 해당 병원 페이지로 이동
+window.ceoAlertNavigate = function(targetPage, hospitalId) {
+  // 해당 병원 선택 후 해당 페이지로 이동
+  if (hospitalId) {
+    // 병원 계정이 아닌 관리자이므로, 해당 병원의 페이지로 이동
+    // renderDashboard/renderOrders 등은 App.currentHospital 기반이므로
+    // 관련 전역 변수를 먼저 설정
+    window._targetHospitalId = hospitalId
+  }
+  navigateTo(targetPage)
+  // 이동 후 토스트로 안내
+  setTimeout(() => {
+    const hName = (window._ceoHospitals || []).find(h => h.id == hospitalId)?.name || `병원 ID:${hospitalId}`
+    showToast(`📍 ${hName} · ${({orders:'발주 관리', meals:'식수 입력', inspection:'검수 관리', dashboard:'대시보드'}[targetPage]||targetPage)} 이동`, 'info')
+  }, 400)
+}
+
+// 지출 내역 공통 필터 함수
+function _ceoExpenseReload() {
+  const type     = document.getElementById('ceoExpenseType')?.value || ''
+  const hospSel  = document.getElementById('ceoExpenseHospital')?.value || ''
+  const f        = window._ceoFilter
+  const qs = new URLSearchParams({
+    ...(hospSel ? { hospital_id: hospSel } : f.hospitalId ? { hospital_id: f.hospitalId } : {}),
+    ...(type && { expense_type: type })
   }).toString()
   api('GET', `/api/ceo-dashboard/expenses/${f.year}/${f.month}${qs?`?${qs}`:''}`)
     .then(data => {
       const el = document.getElementById('ceoExpensesSection')
       if (el) el.innerHTML = renderCeoExpenses(data||[], f)
-      const sel = document.getElementById('ceoExpenseType')
-      if (sel) sel.value = type
+      // 선택 상태 복원
+      const tSel = document.getElementById('ceoExpenseType')
+      const hSel = document.getElementById('ceoExpenseHospital')
+      if (tSel) tSel.value = type
+      if (hSel) hSel.value = hospSel
     })
 }
+window.ceoExpenseTypeFilter     = _ceoExpenseReload
+window.ceoExpenseHospitalFilter = _ceoExpenseReload
 
 
 // ══════════════════════════════════════════════════════════════════════
@@ -18160,7 +18208,6 @@ async function renderTransactionAnalysis() {
     <div class="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
       ${[
         {id:'upload',      icon:'fa-cloud-upload-alt', label:'파일 업로드'},
-        {id:'preview',     icon:'fa-table',            label:'데이터 확인'},
         {id:'category',    icon:'fa-chart-pie',        label:'분류별 분석'},
         {id:'monthly',     icon:'fa-chart-bar',        label:'월별 분석'},
         {id:'cross',       icon:'fa-exchange-alt',     label:'발주 교차분석'},
@@ -18203,7 +18250,6 @@ function txSwitchTab(tab) {
   const c = document.getElementById('txTabContent')
   if (!c) return
   if (tab === 'upload')   txRenderUploadTab(c)
-  else if (tab === 'preview')     txRenderPreviewTab(c)
   else if (tab === 'category')    txRenderCategoryTab(c)
   else if (tab === 'monthly')     txRenderMonthlyTab(c)
   else if (tab === 'cross')       txRenderCrossTab(c)
@@ -19777,7 +19823,7 @@ async function txUploadFile() {
       TXState.currentFileId = res.data.file_id
       txLoadFileList()
       // 3초 후 데이터 확인 탭으로 자동 이동
-      setTimeout(() => txSwitchTab('preview'), 2000)
+      setTimeout(() => txSwitchTab('category'), 2000)
     } else {
       throw new Error(res.data.error || '저장 실패')
     }
@@ -20141,7 +20187,7 @@ async function txLoadFileList() {
 async function txViewFile(fileId, vendor, year, month) {
   TXState.currentFileId = fileId
   TXState.year = year; TXState.month = month
-  txSwitchTab('preview')
+  txSwitchTab('category')
 }
 
 // ── 파일 삭제 ─────────────────────────────────────────────────────────
@@ -21014,6 +21060,15 @@ window.txExportCategoryAnalysis = async function() {
 
   if (items.length === 0) { showToast('내보낼 데이터가 없습니다.', 'error'); return }
 
+  // 셀 스타일 헬퍼 (xlsx-style 없이 기본 구조만)
+  const NUM_FMT = '#,##0'
+  const PCT_FMT = '0.0"%"'
+  // 숫자 셀 생성 (포맷 적용)
+  const nc = (v, fmt) => ({ t: 'n', v: Number(v)||0, z: fmt || NUM_FMT })
+  const sc = (v) => ({ t: 's', v: String(v||'') })
+  // 병합 셀 정보 생성
+  const merge = (rs, re, cs, ce) => ({ s: { r: rs, c: cs }, e: { r: re, c: ce } })
+
   const wb = XLSX.utils.book_new()
   const grandTot = cats.reduce((s,c) => s + (Number(c.grand_total)||0), 0)
 
@@ -21026,15 +21081,28 @@ window.txExportCategoryAnalysis = async function() {
     return (Number(b.amount)||0) - (Number(a.amount)||0)
   })
 
+  // 보고서 제목/메타 섹션 공통 헬퍼
+  const reportHeader = (title, sub1, sub2) => [
+    [title],
+    [sub1 || ''],
+    [sub2 || ''],
+    ['']  // 빈 줄
+  ]
+
   // ─────────────────────────────────────────────
   // Sheet 1: 분류별 금액 상세 + 품목별 비중
   // ─────────────────────────────────────────────
-  const s1Rows = [
-    [`분류별 거래명세서 분석 보고서`],
-    [`업체: ${vendor}   기간: ${periodLabel}`],
-    [],
-    ['분류', '품목수', '공급가(원)', '부가세(원)', '합계(원)', '전체비중(%)', '분류내 TOP1 품목', 'TOP1 금액(원)', 'TOP1 비중(%)']
+  const s1Header = reportHeader(
+    `◆ 분류별 거래명세서 분석 보고서`,
+    `업체: ${vendor}   기간: ${periodLabel}`,
+    `생성일시: ${new Date().toLocaleString('ko-KR')}`
+  )
+  const s1ColHdr = [
+    '분류', '품목수', '공급가액(원)', '부가세(원)', '합계(원)',
+    '전체비중(%)', '분류내 TOP1 품목', 'TOP1 금액(원)', 'TOP1 비중(%)'
   ]
+  s1Header.push(s1ColHdr)
+
   cats.forEach(c => {
     const catAmt = Number(c.grand_total) || 0
     const pct = grandTot > 0 ? Math.round(catAmt / grandTot * 1000) / 10 : 0
@@ -21042,56 +21110,62 @@ window.txExportCategoryAnalysis = async function() {
     const top1 = catItems[0]
     const top1Amt = top1 ? Number(top1.amount) : 0
     const top1Pct = catAmt > 0 && top1 ? Math.round(top1Amt / catAmt * 1000) / 10 : 0
-    s1Rows.push([
+    s1Header.push([
       c.supplier_category || '미분류',
       Number(c.item_count) || 0,
       Number(c.total_amount) || 0,
       Number(c.total_vat) || 0,
-      catAmt,
-      pct,
+      catAmt, pct,
       top1 ? top1.item_name : '-',
-      top1Amt,
-      top1Pct
+      top1Amt, top1Pct
     ])
     // 해당 분류 품목 상세 (들여쓰기)
     catItems.forEach(it => {
       const itAmt = Number(it.amount) || 0
       const itPct = catAmt > 0 ? Math.round(itAmt / catAmt * 1000) / 10 : 0
-      s1Rows.push([
-        `  └ ${it.item_name || ''}`,
-        '',
-        itAmt,
-        Number(it.tax_amount)||0,
-        Number(it.total)||0,
-        '',
+      s1Header.push([
+        `  └ ${it.item_name || ''}`, '',
+        itAmt, Number(it.tax_amount)||0, Number(it.total)||0, '',
         `단가: ${(Number(it.unit_price)||0).toLocaleString()}원`,
         `수량: ${it.quantity||0}${it.unit||''}`,
         itPct
       ])
     })
-    s1Rows.push([])
+    s1Header.push([''])
   })
-  s1Rows.push(['합 계', items.length,
+  s1Header.push(['▶ 합 계', items.length,
     cats.reduce((s,c)=>s+(Number(c.total_amount)||0),0),
     cats.reduce((s,c)=>s+(Number(c.total_vat)||0),0),
     grandTot, 100, '', '', ''
   ])
-  const ws1 = XLSX.utils.aoa_to_sheet(s1Rows)
-  ws1['!cols'] = [{wch:20},{wch:7},{wch:14},{wch:12},{wch:14},{wch:9},{wch:26},{wch:14},{wch:9}]
+
+  const ws1 = XLSX.utils.aoa_to_sheet(s1Header)
+  ws1['!cols'] = [{wch:22},{wch:7},{wch:15},{wch:12},{wch:15},{wch:9},{wch:28},{wch:14},{wch:9}]
+  // 헤더행 병합 (제목 행)
+  ws1['!merges'] = [
+    merge(0, 0, 0, 8),  // 제목행 병합
+    merge(1, 1, 0, 8),  // 업체/기간 행 병합
+    merge(2, 2, 0, 8),  // 생성일시 병합
+  ]
   XLSX.utils.book_append_sheet(wb, ws1, '①분류별금액+품목비중')
 
   // ─────────────────────────────────────────────
   // Sheet 2: 분류별 금액 상세 (전체 품목 상세)
   // ─────────────────────────────────────────────
-  const s2Rows = [['분류', '품목코드', '품목명', '규격', '단위', '수량', '단가(원)', '금액(원)', '부가세(원)', '합계(원)', '과세구분']]
+  const s2Header = reportHeader(
+    `◆ 품목별 거래명세서 상세`,
+    `업체: ${vendor}   기간: ${periodLabel}`,
+    `전체 ${items.length}건 · 총 ${grandTot.toLocaleString()}원`
+  )
+  s2Header.push(['분류', '품목코드', '품목명', '규격', '단위', '수량', '단가(원)', '공급가(원)', '부가세(원)', '합계(원)', '과세구분'])
   sorted.forEach(it => {
-    s2Rows.push([
+    s2Header.push([
       it.supplier_category || '미분류',
       it.item_code || '',
       it.item_name || '',
       it.spec || '',
       it.unit || '',
-      it.quantity,
+      Number(it.quantity)||0,
       Number(it.unit_price) || 0,
       Number(it.amount) || 0,
       Number(it.tax_amount) || 0,
@@ -21099,45 +21173,43 @@ window.txExportCategoryAnalysis = async function() {
       (Number(it.tax_amount) || 0) > 0 ? '과세' : '면세'
     ])
   })
-  s2Rows.push([
-    '합 계', '', '', '', '',
-    sorted.reduce((s,i)=>s+(Number(i.quantity)||0),0),
-    '',
+  s2Header.push(['▶ 합 계', '', '', '', '',
+    sorted.reduce((s,i)=>s+(Number(i.quantity)||0),0), '',
     sorted.reduce((s,i)=>s+(Number(i.amount)||0),0),
     sorted.reduce((s,i)=>s+(Number(i.tax_amount)||0),0),
-    sorted.reduce((s,i)=>s+(Number(i.total)||0),0),
-    ''
+    sorted.reduce((s,i)=>s+(Number(i.total)||0),0), ''
   ])
-  const ws2 = XLSX.utils.aoa_to_sheet(s2Rows)
-  ws2['!cols'] = [{wch:14},{wch:13},{wch:24},{wch:28},{wch:6},{wch:7},{wch:12},{wch:12},{wch:10},{wch:12},{wch:7}]
-  XLSX.utils.book_append_sheet(wb, ws2, '②분류별금액상세')
+  const ws2 = XLSX.utils.aoa_to_sheet(s2Header)
+  ws2['!cols'] = [{wch:14},{wch:13},{wch:26},{wch:28},{wch:6},{wch:7},{wch:13},{wch:13},{wch:11},{wch:13},{wch:7}]
+  ws2['!merges'] = [merge(0,0,0,10), merge(1,1,0,10), merge(2,2,0,10)]
+  XLSX.utils.book_append_sheet(wb, ws2, '②품목별상세')
 
   // ─────────────────────────────────────────────
   // Sheet 3: 분류별 주요 품목 TOP5
   // ─────────────────────────────────────────────
-  const s3Rows = [['분류', '순위', '품목명', '수량', '단위', '단가(원)', '금액(원)', '분류내 비중(%)', '전체 비중(%)']]
+  const s3Header = reportHeader(
+    `◆ 분류별 주요 품목 TOP5`,
+    `업체: ${vendor}   기간: ${periodLabel}`,
+    `각 분류에서 금액 기준 상위 5개 품목`
+  )
+  s3Header.push(['분류', '순위', '품목명', '수량', '단위', '단가(원)', '금액(원)', '분류내비중(%)', '전체비중(%)'])
   cats.forEach(cat => {
     const catItems = sorted.filter(i => (i.supplier_category||'미분류') === (cat.supplier_category||'미분류'))
     const catTotal = catItems.reduce((s,i)=>s+(Number(i.amount)||0),0)
     catItems.slice(0,5).forEach((it, idx) => {
       const catPct = catTotal > 0 ? Math.round(Number(it.amount)/catTotal*1000)/10 : 0
       const totPct = grandTot > 0 ? Math.round(Number(it.amount)/grandTot*1000)/10 : 0
-      s3Rows.push([
+      s3Header.push([
         idx === 0 ? (cat.supplier_category||'미분류') : '',
-        idx+1,
-        it.item_name,
-        it.quantity,
-        it.unit||'',
-        Number(it.unit_price)||0,
-        Number(it.amount)||0,
-        catPct,
-        totPct
+        idx+1, it.item_name, Number(it.quantity)||0, it.unit||'',
+        Number(it.unit_price)||0, Number(it.amount)||0, catPct, totPct
       ])
     })
-    s3Rows.push([])
+    s3Header.push([''])
   })
-  const ws3 = XLSX.utils.aoa_to_sheet(s3Rows)
-  ws3['!cols'] = [{wch:14},{wch:5},{wch:26},{wch:7},{wch:6},{wch:12},{wch:12},{wch:12},{wch:10}]
+  const ws3 = XLSX.utils.aoa_to_sheet(s3Header)
+  ws3['!cols'] = [{wch:14},{wch:5},{wch:28},{wch:7},{wch:6},{wch:13},{wch:13},{wch:12},{wch:10}]
+  ws3['!merges'] = [merge(0,0,0,8), merge(1,1,0,8), merge(2,2,0,8)]
   XLSX.utils.book_append_sheet(wb, ws3, '③분류별TOP5품목')
 
   // ─────────────────────────────────────────────
@@ -21146,10 +21218,13 @@ window.txExportCategoryAnalysis = async function() {
   const allMonths = [...monthlyTotals].reverse()
   const allCatNames = [...new Set(monthlyByCat.map(r => r.supplier_category||'미분류'))]
 
-  const s4Header = ['연월', '전체합계(원)', ...allCatNames]
-  const s4Rows = [s4Header]
+  const s4Header2 = reportHeader(
+    `◆ 월별 분류별 금액 추이`,
+    `업체: ${vendor}   기간: ${periodLabel}`,
+    `월별 분류별 거래 금액 변화 추이 (최근 ${allMonths.length}개월)`
+  )
+  s4Header2.push(['연월', '전체합계(원)', ...allCatNames])
 
-  // 월별 × 분류별 데이터 집계
   const monthCatMap = {}
   monthlyByCat.forEach(r => {
     const k = `${r.document_year}-${String(r.document_month).padStart(2,'0')}`
@@ -21160,12 +21235,23 @@ window.txExportCategoryAnalysis = async function() {
     const k = `${m.document_year}-${String(m.document_month).padStart(2,'0')}`
     const row = [k, Number(m.grand_total)||0]
     allCatNames.forEach(cn => row.push(monthCatMap[k]?.[cn] || 0))
-    s4Rows.push(row)
+    s4Header2.push(row)
   })
+  // 합계 행
+  const s4TotRow = ['▶ 합계', allMonths.reduce((s,m)=>s+(Number(m.grand_total)||0),0)]
+  allCatNames.forEach(cn => {
+    s4TotRow.push(monthlyByCat.filter(r=>(r.supplier_category||'미분류')===cn).reduce((s,r)=>s+(Number(r.grand_total)||0),0))
+  })
+  s4Header2.push(s4TotRow)
 
-  const ws4 = XLSX.utils.aoa_to_sheet(s4Rows)
-  ws4['!cols'] = [{wch:10},{wch:14},...allCatNames.map(()=>({wch:14}))]
-  XLSX.utils.book_append_sheet(wb, ws4, '④월별분류별금액추이')
+  const ws4 = XLSX.utils.aoa_to_sheet(s4Header2)
+  ws4['!cols'] = [{wch:10},{wch:15},...allCatNames.map(()=>({wch:15}))]
+  ws4['!merges'] = [
+    merge(0, 0, 0, allCatNames.length + 1),
+    merge(1, 1, 0, allCatNames.length + 1),
+    merge(2, 2, 0, allCatNames.length + 1),
+  ]
+  XLSX.utils.book_append_sheet(wb, ws4, '④월별분류별추이')
 
   // ─────────────────────────────────────────────
   // Sheet 5: 해당 월 전체 사용률 분석 (예산 대비)
@@ -21174,30 +21260,36 @@ window.txExportCategoryAnalysis = async function() {
   const budgetRemain  = totalBudget - totalUsed
   const txUsedPct     = totalUsed > 0 ? Math.round(grandTot / totalUsed * 1000) / 10 : 0
 
-  const s5Rows = [
-    [`전체 사용률 분석 · ${periodLabel}`],
-    [`업체: ${vendor}`],
-    [],
-    ['항목', '금액(원)', '비율(%)'],
-    ['총 예산', totalBudget, 100],
-    ['전체 발주 사용액', totalUsed, budgetUsedPct],
-    ['잔여 예산', budgetRemain, totalBudget > 0 ? Math.round(budgetRemain/totalBudget*1000)/10 : 0],
-    [],
-    [`${vendor} 명세서 금액`, grandTot, txUsedPct > 0 ? txUsedPct : '-'],
-    [],
-    ['분류별 예산 대비 현황'],
-    ['분류', '금액(원)', '전체발주대비(%)', '예산대비(%)']
-  ]
+  const s5Hdr = reportHeader(
+    `◆ 월별 사용량 vs 예산 분석`,
+    `업체: ${vendor}   기간: ${periodLabel}`,
+    `발주 예산 대비 실제 사용금액 분석`
+  )
+  s5Hdr.push(['항목', '금액(원)', '비율(%)'])
+  s5Hdr.push(['[예산 현황]', '', ''])
+  s5Hdr.push(['  총 예산', totalBudget, '100%'])
+  s5Hdr.push(['  전체 발주 사용액', totalUsed, `${budgetUsedPct}%`])
+  s5Hdr.push(['  잔여 예산', budgetRemain, totalBudget > 0 ? `${Math.round(budgetRemain/totalBudget*1000)/10}%` : '-'])
+  s5Hdr.push([''])
+  s5Hdr.push([`  ${vendor} 명세서 금액`, grandTot, txUsedPct > 0 ? `${txUsedPct}%` : '-'])
+  s5Hdr.push([''])
+  s5Hdr.push(['[분류별 예산 대비 현황]', '', ''])
+  s5Hdr.push(['분류', '금액(원)', '전체발주대비(%)', '예산대비(%)'])
   cats.forEach(c => {
     const catAmt = Number(c.grand_total) || 0
     const vsUsed = totalUsed > 0 ? Math.round(catAmt/totalUsed*1000)/10 : 0
     const vsBudget = totalBudget > 0 ? Math.round(catAmt/totalBudget*1000)/10 : 0
-    s5Rows.push([c.supplier_category||'미분류', catAmt, vsUsed, vsBudget])
+    s5Hdr.push([c.supplier_category||'미분류', catAmt, vsUsed, vsBudget])
   })
+  s5Hdr.push(['▶ 합 계', grandTot,
+    totalUsed > 0 ? Math.round(grandTot/totalUsed*1000)/10 : '-',
+    totalBudget > 0 ? Math.round(grandTot/totalBudget*1000)/10 : '-'
+  ])
 
-  const ws5 = XLSX.utils.aoa_to_sheet(s5Rows)
-  ws5['!cols'] = [{wch:20},{wch:14},{wch:14},{wch:12}]
-  XLSX.utils.book_append_sheet(wb, ws5, '⑤사용률분석')
+  const ws5 = XLSX.utils.aoa_to_sheet(s5Hdr)
+  ws5['!cols'] = [{wch:24},{wch:16},{wch:14},{wch:12}]
+  ws5['!merges'] = [merge(0,0,0,3), merge(1,1,0,3), merge(2,2,0,3)]
+  XLSX.utils.book_append_sheet(wb, ws5, '⑤사용률vs예산분석')
 
   // ─────────────────────────────────────────────
   // Sheet 6: 수량 기준 주요 사용 품목 TOP10
@@ -21207,36 +21299,31 @@ window.txExportCategoryAnalysis = async function() {
     .sort((a,b) => (Number(b.quantity)||0) - (Number(a.quantity)||0))
     .slice(0, 10)
 
-  const s6Rows = [
-    ['수량 기준 주요 사용 품목 TOP10'],
-    [`업체: ${vendor}   기간: ${periodLabel}`],
-    [],
-    ['순위', '품목명', '분류', '규격', '단위', '수량', '단가(원)', '금액(원)', '전체 수량비중(%)']
-  ]
+  const s6Hdr = reportHeader(
+    `◆ 수량 기준 주요 사용 품목 TOP10`,
+    `업체: ${vendor}   기간: ${periodLabel}`,
+    `전체 ${items.length}개 품목 중 수량 기준 상위 10개 품목`
+  )
+  s6Hdr.push(['순위', '품목명', '분류', '규격', '단위', '수량', '단가(원)', '금액(원)', '수량비중(%)'])
   const totalQty = items.reduce((s,i)=>s+(Number(i.quantity)||0),0)
   byQty.forEach((it, idx) => {
     const qty = Number(it.quantity) || 0
     const qtyPct = totalQty > 0 ? Math.round(qty/totalQty*1000)/10 : 0
-    s6Rows.push([
-      idx+1,
-      it.item_name||'',
-      it.supplier_category||'미분류',
-      it.spec||'',
-      it.unit||'',
-      qty,
-      Number(it.unit_price)||0,
-      Number(it.amount)||0,
-      qtyPct
+    s6Hdr.push([
+      idx+1, it.item_name||'', it.supplier_category||'미분류',
+      it.spec||'', it.unit||'', qty,
+      Number(it.unit_price)||0, Number(it.amount)||0, qtyPct
     ])
   })
-  s6Rows.push([])
-  s6Rows.push(['합계', '', '', '', '',
+  s6Hdr.push([''])
+  s6Hdr.push(['▶ 합계', '', '', '', '',
     byQty.reduce((s,i)=>s+(Number(i.quantity)||0),0), '',
     byQty.reduce((s,i)=>s+(Number(i.amount)||0),0), ''
   ])
 
-  const ws6 = XLSX.utils.aoa_to_sheet(s6Rows)
-  ws6['!cols'] = [{wch:5},{wch:26},{wch:12},{wch:24},{wch:6},{wch:8},{wch:12},{wch:12},{wch:12}]
+  const ws6 = XLSX.utils.aoa_to_sheet(s6Hdr)
+  ws6['!cols'] = [{wch:5},{wch:28},{wch:12},{wch:24},{wch:6},{wch:8},{wch:13},{wch:13},{wch:10}]
+  ws6['!merges'] = [merge(0,0,0,8), merge(1,1,0,8), merge(2,2,0,8)]
   XLSX.utils.book_append_sheet(wb, ws6, '⑥수량기준TOP10')
 
   // 파일 저장 - 날짜 범위 사용 시 파일명에도 반영
@@ -21245,7 +21332,7 @@ window.txExportCategoryAnalysis = async function() {
     : `${year}${mm}`
   const fname = `분류별분석_${vendor}_${rangeStr}.xlsx`
   XLSX.writeFile(wb, fname)
-  showToast(`✅ 엑셀 다운로드 완료: ${fname} (6개 시트)`, 'success')
+  showToast(`✅ 엑셀 다운로드 완료: ${fname} (6개 시트 보고서 형식)`, 'success')
 }
 
 // ── 명세서 업로드 모달 (분류별 분석용) - 업체 카드 선택 방식 ────
@@ -22547,11 +22634,11 @@ async function txRenderIngredientTab(container) {
       <div class="flex gap-2">
         <button onclick="txIngSwitchSubTab('tx')" id="txIngSubTab-tx"
           class="px-3 py-1.5 rounded-lg text-sm font-medium bg-green-600 text-white">
-          <i class="fas fa-file-invoice mr-1"></i>거래명세서 분석
+          <i class="fas fa-chart-line mr-1"></i>단가 추이 분석
         </button>
         <button onclick="txIngSwitchSubTab('manual')" id="txIngSubTab-manual"
           class="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 text-gray-600">
-          <i class="fas fa-edit mr-1"></i>수동 단가 입력
+          <i class="fas fa-store mr-1"></i>주요품목 분석
         </button>
       </div>
     </div>
@@ -22597,15 +22684,21 @@ async function txIngLoadTxTab(authH, hParam, hParamAmp) {
   sub.innerHTML = `<div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin text-2xl"></i></div>`
 
   try {
-    // 병렬 로드: Top 품목, 월별 예산 비교
-    const [topRes, budgetRes] = await Promise.all([
+    // 병렬 로드: Top 품목, 월별 예산 비교, 업체 목록, 단가 추이
+    const [topRes, budgetRes, vendorRes, trendRes] = await Promise.all([
       axios.get(`/api/transaction/invoice/top-items${hParam}`, { headers: authH }),
       axios.get(`/api/transaction/invoice/monthly-budget-compare${hParam}${hParam ? '&' : '?'}months=6`, { headers: authH })
-        .catch(() => ({ data: { ok: false, data: [] } }))
+        .catch(() => ({ data: { ok: false, data: [] } })),
+      axios.get(`/api/transaction/invoice/vendor-list${hParam}`, { headers: authH })
+        .catch(() => ({ data: { ok: true, data: [] } })),
+      axios.get(`/api/transaction/invoice/ingredient-price-trend${hParam}${hParam ? '&' : '?'}period=monthly&months=12`, { headers: authH })
+        .catch(() => ({ data: { ok: true, data: {} } }))
     ])
 
     const topItems = topRes.data.data || []
     const budgetData = budgetRes.data.data || []
+    const vendorList = (vendorRes.data.data || []).map(v => v.vendor_name)
+    const trendData = trendRes.data.data || {}
 
     // 선택된 품목 (기본: Top12)
     const defaultSelected = topItems.slice(0, 12).map(i => i.item_name)
@@ -22614,8 +22707,52 @@ async function txIngLoadTxTab(authH, hParam, hParamAmp) {
     const fmt = v => (Number(v)||0).toLocaleString()
     const fmtK = v => v >= 10000 ? Math.round(v/10000)+'만' : fmt(v)
 
+    // 12종 식재료 기본 목록 (단가 추이 그래프용)
+    const MAIN_INGREDIENTS = ['쌀','닭고기','돼지고기','쇠고기','두부','계란','양파','감자','당근','배추','대파','마늘']
+
+    // 단가 추이 그래프 데이터 정리
+    const trendIngNames = Object.keys(trendData).filter(k => {
+      const arr = trendData[k] || []
+      return arr.length > 0 && arr.some(r => Number(r.avg_price) > 0)
+    })
+
+    // 업체별 색상
+    const vendorColors = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16']
+
     sub.innerHTML = `
     <div class="space-y-4">
+
+      <!-- ⓪ 주요 식재료 단가 추이 그래프 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 class="font-bold text-gray-700 text-sm">
+            <i class="fas fa-chart-line text-green-500 mr-1"></i>주요 식재료 단가 추이
+            <span class="text-xs font-normal text-gray-400 ml-1">(명세서 날짜 기준 · 업체별)</span>
+          </h3>
+          <div class="flex items-center gap-2">
+            <select id="txTrendPeriod" class="border border-gray-200 rounded px-2 py-1 text-xs" onchange="txLoadIngTrend()">
+              <option value="monthly">월별</option>
+              <option value="weekly">주별</option>
+            </select>
+            <select id="txTrendVendor" class="border border-gray-200 rounded px-2 py-1 text-xs" onchange="txLoadIngTrend()">
+              <option value="">전체 업체</option>
+              ${vendorList.map(v => `<option value="${v}">${v}</option>`).join('')}
+            </select>
+            <select id="txTrendIngredient" class="border border-gray-200 rounded px-2 py-1 text-xs" onchange="txLoadIngTrend()">
+              ${MAIN_INGREDIENTS.map((n,i) => `<option value="${n}" ${i===4?'selected':''}>${n}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div id="txTrendChartArea" style="min-height:220px">
+          ${trendIngNames.length === 0 ?
+            `<div class="text-center text-gray-400 py-12 text-sm"><i class="fas fa-chart-line text-3xl mb-3 block opacity-30"></i>거래명세서를 업로드하면 단가 추이가 표시됩니다</div>` :
+            `<canvas id="txTrendChart" style="max-height:220px"></canvas>`
+          }
+        </div>
+        <!-- 단가 요약 카드 -->
+        <div id="txTrendSummary" class="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
+        </div>
+      </div>
 
       <!-- ① 품목 선택 패널 -->
       <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
@@ -22748,6 +22885,14 @@ async function txIngLoadTxTab(authH, hParam, hParamAmp) {
     window._txIngTopItems = topItems
     window._txIngAuthH = authH
     window._txIngHParamAmp = hParamAmp
+    window._txIngTrendData = trendData
+    window._txIngVendorList = vendorList
+    window._txIngHParam = hParam
+
+    // 초기 그래프 렌더링 (계란 기본 선택)
+    if (trendIngNames.length > 0) {
+      setTimeout(() => txRenderTrendChart(trendData, '계란', '', 'monthly', vendorList), 100)
+    }
 
   } catch(e) {
     const sub = document.getElementById('txIngSubContent')
@@ -22825,6 +22970,147 @@ window.txIngRemoveCustom = function(itemName, idx) {
     if (i >= 0) window._txIngSelectedItems.splice(i, 1)
   }
   document.getElementById(`txIngChip-${idx}`)?.remove()
+}
+
+// ── 단가 추이 그래프 렌더링 ──────────────────────────────────────────
+window.txLoadIngTrend = async function() {
+  const period = document.getElementById('txTrendPeriod')?.value || 'monthly'
+  const vendor = document.getElementById('txTrendVendor')?.value || ''
+  const ingName = document.getElementById('txTrendIngredient')?.value || '계란'
+  const authH = window._txIngAuthH || { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hParam = window._txIngHParam || ''
+
+  const area = document.getElementById('txTrendChartArea')
+  if (area) area.innerHTML = `<div class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i></div>`
+
+  try {
+    const vendorQ = vendor ? `&vendor_name=${encodeURIComponent(vendor)}` : ''
+    const res = await axios.get(
+      `/api/transaction/invoice/ingredient-price-trend${hParam}${hParam?'&':'?'}period=${period}&months=12&item_names=${encodeURIComponent(ingName)}${vendorQ}`,
+      { headers: authH }
+    )
+    const data = res.data.data || {}
+    const vendorList = window._txIngVendorList || []
+    txRenderTrendChart(data, ingName, vendor, period, vendorList)
+  } catch(e) {
+    const area = document.getElementById('txTrendChartArea')
+    if (area) area.innerHTML = `<div class="text-center text-red-400 py-8 text-sm">조회 실패: ${e.message}</div>`
+  }
+}
+
+function txRenderTrendChart(trendData, ingName, filterVendor, period, vendorList) {
+  const area = document.getElementById('txTrendChartArea')
+  const summaryArea = document.getElementById('txTrendSummary')
+  if (!area) return
+
+  const rows = trendData[ingName] || []
+  if (rows.length === 0) {
+    area.innerHTML = `<div class="text-center text-gray-400 py-10 text-sm">
+      <i class="fas fa-info-circle mr-1"></i><strong>${ingName}</strong> 단가 데이터가 없습니다. 거래명세서를 업로드해 주세요.
+    </div>`
+    if (summaryArea) summaryArea.innerHTML = ''
+    return
+  }
+
+  // 업체별 그룹화
+  const vendorMap = {}
+  rows.forEach(r => {
+    const v = r.vendor_name || '기타'
+    if (filterVendor && v !== filterVendor && !v.replace(/\s/g,'').includes(filterVendor.replace(/\s/g,''))) return
+    if (!vendorMap[v]) vendorMap[v] = []
+    vendorMap[v].push(r)
+  })
+
+  // 기간 라벨 정리 (월별)
+  const allPeriods = [...new Set(rows.map(r =>
+    period === 'daily' ? (r.period_date||'') :
+    period === 'weekly' ? `${r.yr}년 ${r.week_num}주` :
+    `${r.yr}.${String(r.mo).padStart(2,'0')}`
+  ))].sort()
+
+  const vendorColors = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16']
+  const datasets = Object.entries(vendorMap).map(([vendor, vRows], idx) => {
+    const priceMap = {}
+    vRows.forEach(r => {
+      const key = period === 'daily' ? (r.period_date||'') :
+                  period === 'weekly' ? `${r.yr}년 ${r.week_num}주` :
+                  `${r.yr}.${String(r.mo).padStart(2,'0')}`
+      priceMap[key] = Math.round(Number(r.avg_price)||0)
+    })
+    return {
+      label: vendor,
+      data: allPeriods.map(p => priceMap[p] || null),
+      borderColor: vendorColors[idx % vendorColors.length],
+      backgroundColor: vendorColors[idx % vendorColors.length] + '22',
+      tension: 0.3,
+      fill: false,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+      spanGaps: true
+    }
+  })
+
+  area.innerHTML = `<canvas id="txTrendChart" style="max-height:240px"></canvas>`
+  const ctx = document.getElementById('txTrendChart')?.getContext('2d')
+  if (!ctx) return
+
+  // 기존 차트 destroy
+  if (window._txTrendChartInstance) {
+    try { window._txTrendChartInstance.destroy() } catch(e) {}
+  }
+
+  window._txTrendChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: { labels: allPeriods, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { font: { size: 11 }, boxWidth: 14 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${(ctx.raw||0).toLocaleString()}원`
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+        y: {
+          ticks: {
+            font: { size: 10 },
+            callback: v => v >= 10000 ? Math.round(v/1000)+'천원' : v.toLocaleString()+'원'
+          }
+        }
+      }
+    }
+  })
+
+  // 요약 카드
+  if (summaryArea) {
+    const allPrices = rows.filter(r => Number(r.avg_price) > 0).map(r => Number(r.avg_price))
+    const avgPrice = allPrices.length ? Math.round(allPrices.reduce((s,v)=>s+v,0)/allPrices.length) : 0
+    const maxPrice = allPrices.length ? Math.max(...allPrices) : 0
+    const minPrice = allPrices.length ? Math.min(...allPrices) : 0
+    const latestRow = rows[0]
+    const latestPrice = latestRow ? Math.round(Number(latestRow.avg_price)||0) : 0
+    const prevRow = rows[1]
+    const prevPrice = prevRow ? Math.round(Number(prevRow.avg_price)||0) : 0
+    const diff = prevPrice > 0 ? latestPrice - prevPrice : 0
+    const diffPct = prevPrice > 0 ? ((diff/prevPrice)*100).toFixed(1) : null
+
+    summaryArea.innerHTML = [
+      { label: '최근 단가', val: latestPrice > 0 ? latestPrice.toLocaleString()+'원' : '-', color: '#1d4ed8',
+        sub: diffPct ? `<span style="color:${diff>0?'#dc2626':'#16a34a'}">${diff>0?'▲':'▼'}${Math.abs(diff).toLocaleString()}원(${diffPct}%)</span>` : '' },
+      { label: '평균 단가', val: avgPrice > 0 ? avgPrice.toLocaleString()+'원' : '-', color: '#374151', sub: `${allPrices.length}건 평균` },
+      { label: '최저 단가', val: minPrice > 0 ? minPrice.toLocaleString()+'원' : '-', color: '#16a34a', sub: '기간 내 최저' },
+      { label: '최고 단가', val: maxPrice > 0 ? maxPrice.toLocaleString()+'원' : '-', color: '#dc2626', sub: '기간 내 최고' },
+    ].map(k => `<div class="bg-gray-50 rounded-lg p-2.5 text-center">
+      <div class="text-xs text-gray-400">${k.label}</div>
+      <div class="text-sm font-bold mt-0.5" style="color:${k.color}">${k.val}</div>
+      <div class="text-xs text-gray-400 mt-0.5">${k.sub||''}</div>
+    </div>`).join('')
+  }
 }
 
 window.txIngLoadHistory = async function() {
@@ -22957,7 +23243,7 @@ window.txIngLoadHistory = async function() {
   }
 }
 
-// ── 수동 단가 입력 탭 (기존 식재료 단가 입력 UI) ────────────────
+// ── 주요품목 분석 탭 (업체별 12종 단가 관리) ────────────────
 async function txIngLoadManualTab(authH, hospitalId) {
   const sub = document.getElementById('txIngSubContent')
   if (!sub) return
@@ -22965,48 +23251,33 @@ async function txIngLoadManualTab(authH, hospitalId) {
 
   const year  = TXState.year  || new Date().getFullYear()
   const month = TXState.month || (new Date().getMonth() + 1)
+  const hParam = hospitalId ? `?hospital_id=${hospitalId}` : ''
 
   try {
-    const hQuery = hospitalId ? `?hospitalId=${hospitalId}` : ''
-    const prevM = month === 1 ? 12 : month - 1
-    const prevY = month === 1 ? year - 1 : year
-    const [data, prevData, prevYData] = await Promise.all([
-      axios.get(`/api/settings/ingredient-prices/${year}/${month}${hQuery}`, { headers: authH }).then(r=>r.data).catch(()=>[]),
-      axios.get(`/api/settings/ingredient-prices/${prevY}/${prevM}${hQuery}`, { headers: authH }).then(r=>r.data).catch(()=>[]),
-      axios.get(`/api/settings/ingredient-prices/${year-1}/${month}${hQuery}`, { headers: authH }).then(r=>r.data).catch(()=>[]),
-    ])
+    // 업체 목록 가져오기
+    const vendorRes = await axios.get(`/api/transaction/invoice/vendor-list${hParam}`, { headers: authH })
+      .catch(() => ({ data: { ok: true, data: [] } }))
+    const vendors = (vendorRes.data.data || []).map(v => v.vendor_name)
 
-    const DEFAULT_INGREDIENTS = [
-      { name: '쌀', unit: 'kg' }, { name: '닭고기', unit: 'kg' }, { name: '돼지고기', unit: 'kg' },
-      { name: '두부', unit: 'kg' }, { name: '계란', unit: '개' }, { name: '양파', unit: 'kg' },
-      { name: '감자', unit: 'kg' }, { name: '당근', unit: 'kg' }, { name: '배추', unit: 'kg' },
-      { name: '양배추', unit: 'kg' }, { name: '대파', unit: 'kg' }, { name: '마늘', unit: 'kg' },
-    ]
-
-    const eMap = {}, pMap = {}, pyMap = {}
-    ;(data||[]).forEach(r => { eMap[r.ingredient_name] = r })
-    ;(prevData||[]).forEach(r => { pMap[r.ingredient_name] = r })
-    ;(prevYData||[]).forEach(r => { pyMap[r.ingredient_name] = r })
-
-    const allNames = [...new Set([...DEFAULT_INGREDIENTS.map(d=>d.name), ...(data||[]).map(r=>r.ingredient_name)])]
-    const rows = allNames.map(name => {
-      const def = DEFAULT_INGREDIENTS.find(d=>d.name===name) || { name, unit:'kg' }
-      const ex  = eMap[name] || {}
-      const prev = pMap[name] || {}
-      const pyR  = pyMap[name] || {}
-      return { name, unit: ex.unit || def.unit, price: ex.unit_price || '', prevPrice: prev.unit_price || 0, prevYearPrice: pyR.unit_price || 0, memo: ex.memo || '',
-               source: ex.source || '', totalAmount: ex.total_amount || 0, totalQty: ex.total_quantity || 0, vendorName: ex.vendor_name || '' }
-    })
-
-    const prevMLabel = `${prevY}년 ${prevM}월`
-    const prevYLabel = `${year-1}년 ${month}월`
+    window._txIngManualHospitalId = hospitalId
+    window._txIngManualAuthH = authH
+    window._txIngManualYear = year
+    window._txIngManualMonth = month
+    window._txIngManualVendors = vendors
+    window._txIngManualSelectedVendor = window._txIngManualSelectedVendor || vendors[0] || ''
 
     sub.innerHTML = `
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-      <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
-        <div class="flex items-center gap-3">
-          <h3 class="font-bold text-gray-800 text-sm"><i class="fas fa-edit text-green-500 mr-1"></i>${year}년 ${month}월 단가 입력</h3>
-          <div class="flex gap-1">
+    <div class="space-y-4">
+      <!-- 헤더: 연월 선택 + 업체 탭 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div>
+            <h3 class="font-bold text-gray-800 text-sm flex items-center gap-2">
+              <i class="fas fa-store text-green-500"></i>주요품목 단가 분석 (업체별)
+            </h3>
+            <p class="text-xs text-gray-400 mt-0.5">업체마다 동일 품목이라도 가격이 다르므로 업체별 개별 관리</p>
+          </div>
+          <div class="flex items-center gap-2">
             <select id="txIngYearSel" class="border border-gray-200 rounded px-2 py-1 text-xs" onchange="txIngReloadManual()">
               ${[year-1, year].map(y => `<option value="${y}" ${y===year?'selected':''}>${y}년</option>`).join('')}
             </select>
@@ -23015,17 +23286,133 @@ async function txIngLoadManualTab(authH, hospitalId) {
             </select>
           </div>
         </div>
+        <!-- 업체 탭 버튼 -->
+        <div class="flex flex-wrap gap-2" id="txIngVendorTabs">
+          ${vendors.length === 0 ?
+            `<div class="text-sm text-gray-400"><i class="fas fa-info-circle mr-1"></i>거래명세서를 업로드하면 업체 탭이 생성됩니다</div>` :
+            vendors.map((v, i) => `
+              <button onclick="txIngSelectVendorTab('${v.replace(/'/g,"\\'")}')"
+                id="txIngVTab-${i}"
+                class="px-4 py-2 rounded-lg text-sm font-medium border transition-all ${window._txIngManualSelectedVendor===v ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:border-green-400'}">
+                <i class="fas fa-truck mr-1 text-xs"></i>${v}
+              </button>
+            `).join('')
+          }
+        </div>
+      </div>
+      <!-- 업체별 단가 테이블 영역 -->
+      <div id="txIngVendorContent">
+        <div class="text-center text-gray-400 py-8 text-sm"><i class="fas fa-spinner fa-spin"></i></div>
+      </div>
+    </div>`
+
+    // 선택된 업체 단가 로드
+    if (window._txIngManualSelectedVendor) {
+      await txIngLoadVendorPrices(authH, hospitalId, year, month, window._txIngManualSelectedVendor)
+    } else if (vendors.length === 0) {
+      document.getElementById('txIngVendorContent').innerHTML = `
+        <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-8 text-center text-gray-400">
+          <i class="fas fa-truck text-4xl mb-3 block opacity-30"></i>
+          <div class="text-sm">거래명세서를 업로드하면 업체별 탭이 자동 생성됩니다</div>
+        </div>`
+    }
+
+  } catch(e) {
+    if (sub) sub.innerHTML = `<div class="text-center text-red-400 py-8 text-sm">로드 실패: ${e.message}</div>`
+  }
+}
+
+window.txIngSelectVendorTab = async function(vendorName) {
+  window._txIngManualSelectedVendor = vendorName
+  // 탭 버튼 스타일 갱신
+  const tabs = document.getElementById('txIngVendorTabs')
+  if (tabs) {
+    tabs.querySelectorAll('button').forEach(btn => {
+      const isActive = btn.textContent.trim().replace(/^[^ ]+ /,'').startsWith(vendorName)
+      btn.className = `px-4 py-2 rounded-lg text-sm font-medium border transition-all ${isActive ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200 hover:border-green-400'}`
+    })
+  }
+  const authH = window._txIngManualAuthH || { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hospitalId = window._txIngManualHospitalId
+  const year = window._txIngManualYear || TXState.year
+  const month = window._txIngManualMonth || TXState.month
+  await txIngLoadVendorPrices(authH, hospitalId, year, month, vendorName)
+}
+
+async function txIngLoadVendorPrices(authH, hospitalId, year, month, vendorName) {
+  const content = document.getElementById('txIngVendorContent')
+  if (!content) return
+  content.innerHTML = `<div class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i></div>`
+
+  try {
+    const hParam = hospitalId ? `?hospital_id=${hospitalId}` : '?'
+    const sep = hospitalId ? '&' : ''
+    const prevM = month === 1 ? 12 : month - 1
+    const prevY = month === 1 ? year - 1 : year
+
+    // 현재월 + 전월 + 전년동월 데이터
+    const [curRes, prevRes, prevYRes] = await Promise.all([
+      axios.get(`/api/transaction/invoice/vendor-ingredient-prices${hParam}${sep}vendor_name=${encodeURIComponent(vendorName)}&year=${year}&month=${month}`, { headers: authH })
+        .then(r => r.data.data || []).catch(() => []),
+      axios.get(`/api/transaction/invoice/vendor-ingredient-prices${hParam}${sep}vendor_name=${encodeURIComponent(vendorName)}&year=${prevY}&month=${prevM}`, { headers: authH })
+        .then(r => r.data.data || []).catch(() => []),
+      axios.get(`/api/transaction/invoice/vendor-ingredient-prices${hParam}${sep}vendor_name=${encodeURIComponent(vendorName)}&year=${year-1}&month=${month}`, { headers: authH })
+        .then(r => r.data.data || []).catch(() => []),
+    ])
+
+    const DEFAULT_INGREDIENTS = [
+      { name: '쌀', unit: 'kg' }, { name: '닭고기', unit: 'kg' }, { name: '돼지고기', unit: 'kg' },
+      { name: '쇠고기', unit: 'kg' }, { name: '두부', unit: 'kg' }, { name: '계란', unit: '개' },
+      { name: '양파', unit: 'kg' }, { name: '감자', unit: 'kg' }, { name: '당근', unit: 'kg' },
+      { name: '배추', unit: 'kg' }, { name: '대파', unit: 'kg' }, { name: '마늘', unit: 'kg' },
+    ]
+
+    const curMap = {}, prevMap = {}, prevYMap = {}
+    curRes.forEach(r => { curMap[r.ingredient_name] = r })
+    prevRes.forEach(r => { prevMap[r.ingredient_name] = r })
+    prevYRes.forEach(r => { prevYMap[r.ingredient_name] = r })
+
+    const allNames = [...new Set([...DEFAULT_INGREDIENTS.map(d=>d.name), ...curRes.map(r=>r.ingredient_name)])]
+    const rows = allNames.map(name => {
+      const def = DEFAULT_INGREDIENTS.find(d=>d.name===name) || { name, unit:'kg' }
+      const ex   = curMap[name]  || {}
+      const prev = prevMap[name] || {}
+      const pyR  = prevYMap[name]|| {}
+      return {
+        name, unit: ex.unit || def.unit,
+        price: ex.unit_price || '',
+        amount: ex.total_amount || 0,
+        qty: ex.total_quantity || 0,
+        prevPrice: prev.unit_price || 0,
+        prevYearPrice: pyR.unit_price || 0,
+        memo: ex.memo || '',
+        source: ex.source || ''
+      }
+    })
+
+    const prevMLabel = `${prevY}년 ${prevM}월`
+    const prevYLabel = `${year-1}년 ${month}월`
+
+    content.innerHTML = `
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <i class="fas fa-truck text-green-500"></i>
+          <span class="font-bold text-gray-800 text-sm">${vendorName} · ${year}년 ${month}월 주요품목 단가</span>
+          <span class="text-xs text-gray-400">(12종 고정 + 추가 가능)</span>
+        </div>
         <div class="flex gap-2">
-          <button onclick="txIngAddRow()" class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded hover:bg-gray-200">
+          <button onclick="txIngAddVendorRow()" class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded hover:bg-gray-200">
             <i class="fas fa-plus mr-1"></i>품목 추가
           </button>
-          <button onclick="txIngSaveManual(${year},${month},${hospitalId||'null'})" class="text-xs bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">
+          <button onclick="txIngSaveVendorPrices('${vendorName.replace(/'/g,"\\'")}',${year},${month},'${hospitalId||''}')"
+            class="text-xs bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">
             <i class="fas fa-save mr-1"></i>저장
           </button>
         </div>
       </div>
       <div class="overflow-x-auto">
-        <table class="w-full text-xs" id="txIngManualTable">
+        <table class="w-full text-xs" id="txIngVendorTable">
           <thead>
             <tr class="bg-gray-50 text-gray-500">
               <th class="text-left py-2 px-3">식재료명</th>
@@ -23038,65 +23425,65 @@ async function txIngLoadManualTab(authH, hospitalId) {
               <th class="text-right py-2 px-3">전년 대비</th>
             </tr>
           </thead>
-          <tbody id="txIngManualTbody">
-            ${rows.map((r,i) => txIngBuildManualRow(i, r)).join('')}
+          <tbody id="txIngVendorTbody">
+            ${rows.map((r, i) => txIngBuildVendorRow(i, r)).join('')}
           </tbody>
         </table>
       </div>
     </div>`
 
-    window._txIngManualRows = rows
-    window._txIngManualHospitalId = hospitalId
+    window._txIngVendorRows = rows
+    window._txIngVendorName = vendorName
 
   } catch(e) {
-    if (sub) sub.innerHTML = `<div class="text-center text-red-400 py-8 text-sm">로드 실패: ${e.message}</div>`
+    if (content) content.innerHTML = `<div class="text-center text-red-400 py-8 text-sm">로드 실패: ${e.message}</div>`
   }
 }
 
-function txIngBuildManualRow(i, r) {
+function txIngBuildVendorRow(i, r) {
   const diff = (cur, prev) => {
     if (!cur || !prev) return '<span class="text-gray-300">-</span>'
     const d = cur - prev, p = ((d/prev)*100).toFixed(1)
     return `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원(${p}%)</span>`
   }
   const isAuto = r.source === 'auto'
-  const autoBadge = isAuto
-    ? `<span style="font-size:9px;background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 4px;margin-left:2px;font-weight:600">자동</span>`
-    : ''
-  const amountCell = isAuto && r.totalAmount > 0
-    ? `<div style="color:#374151;font-size:11px">${r.totalAmount.toLocaleString()}원</div><div style="color:#9ca3af;font-size:9px">${r.totalQty > 0 ? r.totalQty + r.unit : ''}</div>`
+  const autoBadge = isAuto ? `<span style="font-size:9px;background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 4px;margin-left:2px;font-weight:600">자동</span>` : ''
+  const amountCell = r.amount > 0
+    ? `<div style="color:#374151;font-size:11px">${r.amount.toLocaleString()}원</div><div style="color:#9ca3af;font-size:9px">${r.qty > 0 ? r.qty + r.unit : ''}</div>`
     : '<span style="color:#d1d5db">-</span>'
 
-  return `<tr class="border-b border-gray-50" data-ing-idx="${i}" style="${r.price&&r.prevPrice?(r.price>r.prevPrice?'background:#fff5f5':r.price<r.prevPrice?'background:#f0fdf4':''):''}">
+  const rowBg = r.price && r.prevPrice ? (r.price > r.prevPrice ? '#fff5f5' : r.price < r.prevPrice ? '#f0fdf4' : '') : ''
+
+  return `<tr class="border-b border-gray-50" data-vendor-row="${i}" style="${rowBg ? 'background:'+rowBg : ''}">
     <td class="py-1.5 px-3">
       <div style="display:flex;align-items:center">
-        <input type="text" id="txIng-name-${i}" value="${r.name||''}" class="border border-gray-200 rounded px-2 py-1 text-xs w-20">
+        <input type="text" id="txVIng-name-${i}" value="${r.name||''}" class="border border-gray-200 rounded px-2 py-1 text-xs w-20">
         ${autoBadge}
       </div>
     </td>
     <td class="py-1.5 px-3 text-center">
-      <select id="txIng-unit-${i}" class="border border-gray-200 rounded px-1 py-1 text-xs">
+      <select id="txVIng-unit-${i}" class="border border-gray-200 rounded px-1 py-1 text-xs">
         ${['kg','개','박스','묶음','L','봉','팩'].map(u=>`<option value="${u}" ${r.unit===u?'selected':''}>${u}</option>`).join('')}
       </select>
     </td>
     <td class="py-1.5 px-3">
-      <input type="number" id="txIng-price-${i}" value="${r.price||''}" placeholder="0"
+      <input type="number" id="txVIng-price-${i}" value="${r.price||''}" placeholder="0"
         class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right"
-        oninput="txIngRefreshRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})">
+        oninput="txIngRefreshVendorRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})">
     </td>
     <td class="py-1.5 px-3 text-right">${amountCell}</td>
     <td class="py-1.5 px-3 text-right text-gray-400">${r.prevPrice > 0 ? r.prevPrice.toLocaleString()+'원' : '-'}</td>
-    <td class="py-1.5 px-3 text-right" id="txIng-diff-${i}">${diff(r.price, r.prevPrice)}</td>
+    <td class="py-1.5 px-3 text-right" id="txVIng-diff-${i}">${diff(r.price, r.prevPrice)}</td>
     <td class="py-1.5 px-3 text-right text-gray-400">${r.prevYearPrice > 0 ? r.prevYearPrice.toLocaleString()+'원' : '-'}</td>
-    <td class="py-1.5 px-3 text-right" id="txIng-diffy-${i}">${diff(r.price, r.prevYearPrice)}</td>
+    <td class="py-1.5 px-3 text-right" id="txVIng-diffy-${i}">${diff(r.price, r.prevYearPrice)}</td>
   </tr>`
 }
 
-window.txIngRefreshRow = function(i, prevPrice, prevYearPrice) {
-  const cur = parseInt(document.getElementById(`txIng-price-${i}`)?.value||0)||0
-  const diffEl  = document.getElementById(`txIng-diff-${i}`)
-  const diffYEl = document.getElementById(`txIng-diffy-${i}`)
-  const rowEl   = document.querySelector(`tr[data-ing-idx="${i}"]`)
+window.txIngRefreshVendorRow = function(i, prevPrice, prevYearPrice) {
+  const cur = parseInt(document.getElementById(`txVIng-price-${i}`)?.value||0)||0
+  const diffEl  = document.getElementById(`txVIng-diff-${i}`)
+  const diffYEl = document.getElementById(`txVIng-diffy-${i}`)
+  const rowEl   = document.querySelector(`tr[data-vendor-row="${i}"]`)
   const makeDiff = (cur, prev) => {
     if (!cur || !prev) return '<span class="text-gray-300">-</span>'
     const d = cur - prev, p = ((d/prev)*100).toFixed(1)
@@ -23107,49 +23494,101 @@ window.txIngRefreshRow = function(i, prevPrice, prevYearPrice) {
   if (rowEl && cur > 0 && prevPrice > 0) rowEl.style.background = cur > prevPrice ? '#fff5f5' : cur < prevPrice ? '#f0fdf4' : ''
 }
 
-window.txIngAddRow = function() {
-  const tbody = document.getElementById('txIngManualTbody')
+window.txIngAddVendorRow = function() {
+  const tbody = document.getElementById('txIngVendorTbody')
   if (!tbody) return
   const idx = tbody.querySelectorAll('tr').length
-  tbody.insertAdjacentHTML('beforeend', txIngBuildManualRow(idx, { name:'', unit:'kg', price:'', prevPrice:0, prevYearPrice:0 }))
+  tbody.insertAdjacentHTML('beforeend', txIngBuildVendorRow(idx, { name:'', unit:'kg', price:'', prevPrice:0, prevYearPrice:0, amount:0, qty:0 }))
 }
 
-window.txIngReloadManual = function() {
-  const y = parseInt(document.getElementById('txIngYearSel')?.value) || TXState.year
-  const m = parseInt(document.getElementById('txIngMonthSel')?.value) || TXState.month
-  TXState.year  = y
-  TXState.month = m
-  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
-  txIngLoadManualTab(authH, window._txIngManualHospitalId)
-}
-
-window.txIngSaveManual = async function(year, month, hospitalId) {
-  const tbody = document.getElementById('txIngManualTbody')
+window.txIngSaveVendorPrices = async function(vendorName, year, month, hospitalId) {
+  const tbody = document.getElementById('txIngVendorTbody')
   if (!tbody) return
-  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
-  const trs = tbody.querySelectorAll('tr[data-ing-idx]')
+  const authH = window._txIngManualAuthH || { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const trs = tbody.querySelectorAll('tr[data-vendor-row]')
   const items = []
   trs.forEach(tr => {
-    const i = tr.dataset.ingIdx
-    const name  = document.getElementById(`txIng-name-${i}`)?.value?.trim()
-    const unit  = document.getElementById(`txIng-unit-${i}`)?.value || 'kg'
-    const price = parseInt(document.getElementById(`txIng-price-${i}`)?.value||0)||0
-    if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price, memo: '' })
+    const i = tr.dataset.vendorRow
+    const name  = document.getElementById(`txVIng-name-${i}`)?.value?.trim()
+    const unit  = document.getElementById(`txVIng-unit-${i}`)?.value || 'kg'
+    const price = parseInt(document.getElementById(`txVIng-price-${i}`)?.value||0)||0
+    if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price })
   })
   if (!items.length) { showToast('입력된 단가가 없습니다', 'warning'); return }
+
   try {
-    const res = await axios.post('/api/settings/ingredient-prices', {
-      year, month, items,
-      hospitalId: hospitalId || undefined
+    const hParam = hospitalId ? `?hospital_id=${hospitalId}` : ''
+    const res = await axios.post(`/api/transaction/invoice/vendor-ingredient-prices${hParam}`, {
+      vendor_name: vendorName, year, month, items
     }, { headers: authH })
-    if (res.data?.success) {
-      showToast(`${res.data.saved}건 저장됨`, 'success')
-      txIngReloadManual()
+    if (res.data?.ok) {
+      showToast(`${res.data.saved}건 저장됨 (${vendorName})`, 'success')
     } else {
       showToast('저장 실패', 'error')
     }
   } catch(e) {
     showToast('저장 실패: ' + e.message, 'error')
+  }
+}
+
+window.txIngReloadManual = function() {
+  const y = parseInt(document.getElementById('txIngYearSel')?.value) || TXState.year
+  const m = parseInt(document.getElementById('txIngMonthSel')?.value) || TXState.month
+  window._txIngManualYear = y
+  window._txIngManualMonth = m
+  TXState.year  = y
+  TXState.month = m
+  const authH = window._txIngManualAuthH || { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hospitalId = window._txIngManualHospitalId
+  if (window._txIngManualSelectedVendor) {
+    txIngLoadVendorPrices(authH, hospitalId, y, m, window._txIngManualSelectedVendor)
+  }
+}
+
+// ─── (구버전 호환용 – txIngBuildManualRow, txIngRefreshRow, txIngAddRow, txIngSaveManual 유지) ────
+const txIngBuildManualRow_COMPAT = function(i, r) {
+  const diff = (cur, prev) => {
+    if (!cur || !prev) return '<span class="text-gray-300">-</span>'
+    const d = cur - prev, p = ((d/prev)*100).toFixed(1)
+    return `<span style="color:${d>0?'#dc2626':d<0?'#16a34a':'#6b7280'};font-weight:700">${d>0?'▲':'▼'} ${Math.abs(d).toLocaleString()}원(${p}%)</span>`
+  }
+  return `<tr class="border-b border-gray-50" data-ing-idx="${i}">
+    <td class="py-1.5 px-3"><input type="text" id="txIng-name-${i}" value="${r.name||''}" class="border border-gray-200 rounded px-2 py-1 text-xs w-20"></td>
+    <td class="py-1.5 px-3 text-center"><select id="txIng-unit-${i}" class="border border-gray-200 rounded px-1 py-1 text-xs">
+      ${['kg','개','박스','묶음','L','봉','팩'].map(u=>`<option value="${u}" ${r.unit===u?'selected':''}>${u}</option>`).join('')}
+    </select></td>
+    <td class="py-1.5 px-3"><input type="number" id="txIng-price-${i}" value="${r.price||''}" placeholder="0" class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right" oninput="txIngRefreshRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})"></td>
+    <td class="py-1.5 px-3 text-right">${r.amount > 0 ? r.amount.toLocaleString()+'원' : '-'}</td>
+    <td class="py-1.5 px-3 text-right text-gray-400">${r.prevPrice > 0 ? r.prevPrice.toLocaleString()+'원' : '-'}</td>
+    <td class="py-1.5 px-3 text-right" id="txIng-diff-${i}">${diff(r.price, r.prevPrice)}</td>
+    <td class="py-1.5 px-3 text-right text-gray-400">${r.prevYearPrice > 0 ? r.prevYearPrice.toLocaleString()+'원' : '-'}</td>
+    <td class="py-1.5 px-3 text-right" id="txIng-diffy-${i}">${diff(r.price, r.prevYearPrice)}</td>
+  </tr>`
+}
+
+const _txIngBuildManualRowOLD = window.txIngBuildManualRow || txIngBuildManualRow_COMPAT
+
+window.txIngBuildManualRow = _txIngBuildManualRowOLD
+
+window.txIngReloadManual = function() {
+  const y = parseInt(document.getElementById('txIngYearSel')?.value) || TXState.year
+  const m = parseInt(document.getElementById('txIngMonthSel')?.value) || TXState.month
+  window._txIngManualYear = y
+  window._txIngManualMonth = m
+  TXState.year  = y
+  TXState.month = m
+  const authH = window._txIngManualAuthH || { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  const hospitalId = window._txIngManualHospitalId
+  if (window._txIngManualSelectedVendor) {
+    txIngLoadVendorPrices(authH, hospitalId, y, m, window._txIngManualSelectedVendor)
+  }
+}
+
+window.txIngSaveManual = async function(year, month, hospitalId) {
+  // 구버전 저장 함수 – 현재는 txIngSaveVendorPrices로 대체됨
+  const vendor = window._txIngManualSelectedVendor || ''
+  if (vendor) {
+    return txIngSaveVendorPrices(vendor, year, month, hospitalId)
   }
 }
 
