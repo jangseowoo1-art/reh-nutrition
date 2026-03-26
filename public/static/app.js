@@ -16154,31 +16154,23 @@ async function exportReportPDF(hospitalName, year, month) {
 //  거래명세서 분석 PDF 보고서 출력
 // ══════════════════════════════════════════════════════════════════
 async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
-  showToast('거래명세서 분석 PDF 생성 중... (15~40초 소요)', 'info')
+  showToast('PDF 생성 중... (10~30초 소요)', 'info')
 
-  /* ── 스크립트 로더 ──────────────────────────────────────── */
-  async function loadScript(src) {
-    if (document.querySelector(`script[src="${src}"]`)) {
-      await new Promise(r => setTimeout(r, 300)); return
-    }
-    return new Promise((resolve, reject) => {
+  // ── jsPDF 로드 ──────────────────────────────────────────
+  if (!window.jspdf) {
+    await new Promise((res, rej) => {
       const s = document.createElement('script')
-      s.src = src; s.onload = () => setTimeout(resolve, 300); s.onerror = reject
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+      s.onload = () => setTimeout(res, 200); s.onerror = rej
       document.head.appendChild(s)
     })
   }
-  await loadScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js')
-  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
 
-  /* ── 데이터 로드 ────────────────────────────────────────── */
+  // ── 데이터 로드 ─────────────────────────────────────────
   const authH     = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   const hParam    = hospitalId ? `?hospital_id=${hospitalId}` : ''
   const hParamAmp = hospitalId ? `&hospital_id=${hospitalId}` : ''
   const mm        = String(month).padStart(2, '0')
-  const fmtW   = v => (Number(v)||0).toLocaleString() + '원'
-  const fmtK   = v => { const n=Number(v)||0; return n>=100000000?(n/100000000).toFixed(1)+'억':n>=10000?(n/10000).toFixed(0)+'만':n.toLocaleString() }
-  const fmtPct = v => (Number(v)||0).toFixed(1) + '%'
-  const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#f97316','#06b6d4','#84cc16','#ec4899','#14b8a6']
 
   let vendors = [], budgetSummary = {}
   try { const r = await axios.get(`/api/transaction/invoice/vendors${hParam}`, {headers:authH}); vendors = r.data.data||[] } catch(e){}
@@ -16198,369 +16190,439 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
   const totalBudget = Number(budgetSummary.total_budget)||0
   const totalUsed   = Number(budgetSummary.total_used)||0
   const grandTotal  = vendorData.reduce((s,v) => s+(Number(v.total.grand_total)||0), 0)
+  const usagePct    = totalBudget > 0 ? (totalUsed/totalBudget*100) : 0
+  const remainBudget= totalBudget - totalUsed
 
-  /* ── PDF 초기화 ─────────────────────────────────────────── */
+  // ── jsPDF 초기화 ────────────────────────────────────────
   const { jsPDF } = window.jspdf
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' })
-  const A4W = 210, A4H = 297
+  const W=210, H=297
+  const ML=14, MR=196, MT=14  // 마진
+  const CW = MR - ML           // 콘텐츠 폭 182mm
   let pageNum = 0
 
-  /* ── 공통 CSS ───────────────────────────────────────────── */
-  const BASE_CSS = `
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
-      * { box-sizing:border-box; margin:0; padding:0; font-family:'Noto Sans KR','Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',sans-serif; }
-      body,html { background:#fff; }
-      .page { width:794px; padding:28px 32px; background:#fff; font-size:11px; color:#1f2937; line-height:1.5; }
-      table { width:100%; border-collapse:collapse; }
-      th,td { padding:5px 8px; }
-      th { text-align:center; font-weight:700; }
-      .r { text-align:right; } .c { text-align:center; }
-      .bar { height:12px; border-radius:6px; background:#e5e7eb; overflow:hidden; }
-      .bar-in { height:100%; border-radius:6px; }
-      h2.sec { border-bottom:3px solid #6366f1; padding-bottom:6px; margin-bottom:14px; color:#4338ca; font-size:14px; }
-    </style>`
+  // ── 공통 헬퍼 ───────────────────────────────────────────
+  const fmtK = v => { const n=Number(v)||0; if(n>=100000000) return (n/100000000).toFixed(1)+'억원'; if(n>=10000) return Math.round(n/10000).toLocaleString()+'만원'; return n.toLocaleString()+'원' }
+  const fmtPct = v => (Number(v)||0).toFixed(1)+'%'
+  const COLORS6 = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#f97316']
 
-  /* ── 캡처 헬퍼 ──────────────────────────────────────────── */
-  async function renderPage(htmlContent) {
-    // ── 완전히 숨긴 컨테이너: opacity:0 + pointer-events:none
-    //    position:absolute + top:0 → 레이아웃 계산은 되지만 사용자에게 안 보임
-    const host = document.createElement('div')
-    host.style.cssText = [
-      'position:absolute',
-      'top:0',
-      'left:0',
-      'width:794px',
-      'opacity:0',
-      'pointer-events:none',
-      'z-index:-999',
-      'background:#fff',
-      'overflow:visible'
-    ].join(';')
-    host.innerHTML = htmlContent
-    document.body.appendChild(host)
+  // hex → [r,g,b]
+  function hexRgb(h) {
+    const c = h.replace('#','')
+    return [parseInt(c.slice(0,2),16), parseInt(c.slice(2,4),16), parseInt(c.slice(4,6),16)]
+  }
+  function setFill(hex)   { const [r,g,b]=hexRgb(hex); doc.setFillColor(r,g,b) }
+  function setDraw(hex)   { const [r,g,b]=hexRgb(hex); doc.setDrawColor(r,g,b) }
+  function setTxt(hex)    { const [r,g,b]=hexRgb(hex); doc.setTextColor(r,g,b) }
 
-    // 폰트 및 레이아웃 완전 대기
-    await document.fonts.ready
-    await new Promise(r => setTimeout(r, 600))
-
-    const el = host.firstElementChild || host
-    const elH = Math.max(el.scrollHeight, el.offsetHeight, 200)
-
-    let canvas
-    try {
-      // opacity:0 상태에서도 html2canvas는 레이아웃 기반으로 캡처 가능
-      canvas = await window.html2canvas(el, {
-        scale:           2,
-        useCORS:         true,
-        allowTaint:      true,
-        backgroundColor: '#ffffff',
-        logging:         false,
-        scrollX:         0,
-        scrollY:         0,
-        x:               0,
-        y:               0,
-        width:           794,
-        height:          elH,
-        windowWidth:     794,
-        windowHeight:    elH
-      })
-    } finally {
-      document.body.removeChild(host)
-    }
-
+  function newPage() {
     if (pageNum > 0) doc.addPage()
     pageNum++
-
-    const imgData = canvas.toDataURL('image/jpeg', 0.92)
-    const imgW    = A4W - 16
-    const ratio   = canvas.height / canvas.width
-    let   imgH    = ratio * imgW
-    const maxH    = A4H - 24
-    if (imgH > maxH) imgH = maxH
-
-    doc.addImage(imgData, 'JPEG', 8, 10, imgW, imgH)
-    doc.setFontSize(7); doc.setTextColor(150)
-    doc.text(`- ${pageNum} -`, A4W/2, A4H - 5, { align:'center' })
+    // 페이지 번호
+    doc.setFontSize(7); setTxt('#9ca3af')
+    doc.text(`${pageNum}`, W/2, H-5, {align:'center'})
+    doc.setFontSize(9); setTxt('#1f2937')
+    return MT
   }
 
-  /* ══════════════════════════════════════════════════════════
-     PAGE 1: 표지
-     ══════════════════════════════════════════════════════════ */
-  const usagePct    = totalBudget > 0 ? (totalUsed/totalBudget*100) : 0
-  const remainBudget = totalBudget - totalUsed
+  // 섹션 헤더 (색상 바 + 텍스트)
+  function sectionHeader(y, title, color='#4338ca') {
+    setFill(color); doc.rect(ML, y, 4, 5, 'F')
+    setTxt(color); doc.setFontSize(11); doc.setFont(undefined,'bold')
+    doc.text(title, ML+6, y+4)
+    doc.setFont(undefined,'normal'); setTxt('#1f2937')
+    return y + 9
+  }
 
-  await renderPage(`${BASE_CSS}
-  <div class="page" style="background:linear-gradient(160deg,#1e1b4b 0%,#312e81 50%,#4338ca 100%);color:#fff;min-height:1123px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
-    <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:20px;padding:48px 56px;width:680px;">
-      <div style="font-size:12px;letter-spacing:4px;color:#a5b4fc;margin-bottom:16px;">HOSPITAL FOOD COST REPORT</div>
-      <div style="font-size:30px;font-weight:900;margin-bottom:8px;line-height:1.2;">거래명세서<br>분석 보고서</div>
-      <div style="width:60px;height:4px;background:#818cf8;border-radius:2px;margin:20px auto;"></div>
-      <div style="font-size:15px;color:#c7d2fe;margin-bottom:32px;">${hospitalName}</div>
+  // 가로 구분선
+  function hLine(y, color='#e5e7eb') {
+    setDraw(color); doc.setLineWidth(0.2)
+    doc.line(ML, y, MR, y)
+    return y + 2
+  }
 
-      <div style="display:flex;gap:16px;justify-content:center;margin-bottom:32px;">
-        <div style="background:rgba(255,255,255,0.12);border-radius:12px;padding:16px 24px;min-width:130px;">
-          <div style="font-size:10px;color:#a5b4fc;margin-bottom:4px;">분석 기간</div>
-          <div style="font-size:16px;font-weight:700;">${year}년 ${mm}월</div>
-        </div>
-        <div style="background:rgba(255,255,255,0.12);border-radius:12px;padding:16px 24px;min-width:130px;">
-          <div style="font-size:10px;color:#a5b4fc;margin-bottom:4px;">거래 업체</div>
-          <div style="font-size:16px;font-weight:700;">${vendors.length}개사</div>
-        </div>
-        <div style="background:rgba(255,255,255,0.12);border-radius:12px;padding:16px 24px;min-width:130px;">
-          <div style="font-size:10px;color:#a5b4fc;margin-bottom:4px;">총 발주금액</div>
-          <div style="font-size:16px;font-weight:700;">${fmtK(grandTotal)}원</div>
-        </div>
-      </div>
+  // 테이블 행 그리기
+  // cols: [{w, align, bold}]
+  function tableRow(y, cells, cols, bgHex, textHex='#1f2937', rowH=6) {
+    if (bgHex) { setFill(bgHex); doc.rect(ML, y, CW, rowH, 'F') }
+    setTxt(textHex)
+    let x = ML
+    cells.forEach((cell, i) => {
+      const col = cols[i] || {}
+      const cw  = col.w || 20
+      const align = col.align || 'left'
+      const fs = col.fs || 8
+      doc.setFontSize(fs)
+      if (col.bold) doc.setFont(undefined,'bold')
+      else doc.setFont(undefined,'normal')
+      const tx = align==='right' ? x+cw-1 : align==='center' ? x+cw/2 : x+1
+      const txt = String(cell||'')
+      doc.text(txt, tx, y+rowH-1.5, {align})
+      x += cw
+    })
+    setDraw('#d1d5db'); doc.setLineWidth(0.15)
+    doc.line(ML, y+rowH, ML+CW, y+rowH)
+    return y + rowH
+  }
 
-      ${vendors.length > 0 ? `
-      <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:16px;text-align:left;">
-        <div style="font-size:10px;color:#a5b4fc;margin-bottom:10px;">■ 거래 업체 목록</div>
-        ${vendors.slice(0,6).map((v,i) => `
-          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
-            <div style="width:22px;height:22px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;">${i+1}</div>
-            <div style="flex:1;font-size:11px;">${v.vendor_name}</div>
-          </div>`).join('')}
-      </div>` : ''}
+  // 가로 막대 그래프
+  function barChart(y, pct, color, bh=4) {
+    const bw = CW - 60
+    setFill('#f3f4f6'); doc.rect(ML+58, y, bw, bh, 'F')
+    setFill(color)
+    doc.rect(ML+58, y, Math.max(bw * Math.min(pct,100) / 100, 0), bh, 'F')
+    return y + bh + 2
+  }
 
-      <div style="margin-top:28px;font-size:10px;color:#818cf8;">생성일: ${new Date().toLocaleDateString('ko-KR', {year:'numeric',month:'long',day:'numeric'})}</div>
-    </div>
-  </div>`)
+  // ══════════════════════════════════════════════════════
+  // PAGE 1: 표지
+  // ══════════════════════════════════════════════════════
+  let y = newPage()
 
-  /* ══════════════════════════════════════════════════════════
-     PAGE 2: 운영 종합 현황
-     ══════════════════════════════════════════════════════════ */
-  await renderPage(`${BASE_CSS}
-  <div class="page">
-    <h2 class="sec">📊 운영 종합 현황</h2>
-    <div style="color:#6b7280;font-size:10px;margin-bottom:16px;">${year}년 ${mm}월 | ${hospitalName}</div>
+  // 상단 배너
+  setFill('#1e1b4b'); doc.rect(0, 0, W, 55, 'F')
+  setFill('#4338ca'); doc.rect(0, 45, W, 12, 'F')
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
-      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px;text-align:center;">
-        <div style="font-size:10px;color:#166534;margin-bottom:4px;">총 예산</div>
-        <div style="font-size:17px;font-weight:900;color:#15803d;">${fmtK(totalBudget)}원</div>
-      </div>
-      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:14px;text-align:center;">
-        <div style="font-size:10px;color:#92400e;margin-bottom:4px;">총 발주금액</div>
-        <div style="font-size:17px;font-weight:900;color:#d97706;">${fmtK(totalUsed)}원</div>
-      </div>
-      <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:14px;text-align:center;">
-        <div style="font-size:10px;color:#1e40af;margin-bottom:4px;">잔여 예산</div>
-        <div style="font-size:17px;font-weight:900;color:#2563eb;">${fmtK(remainBudget)}원</div>
-      </div>
-    </div>
+  // 서브타이틀
+  setTxt('#a5b4fc'); doc.setFontSize(8); doc.setFont(undefined,'normal')
+  doc.text('HOSPITAL FOOD COST REPORT', W/2, 18, {align:'center'})
 
-    ${totalBudget > 0 ? `
-    <div style="background:#f9fafb;border-radius:10px;padding:16px;margin-bottom:20px;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-        <span style="font-size:11px;font-weight:700;color:#374151;">예산 대비 사용률</span>
-        <span style="font-size:13px;font-weight:900;color:${usagePct>=100?'#dc2626':usagePct>=80?'#d97706':'#059669'};">${fmtPct(usagePct)}</span>
-      </div>
-      <div class="bar" style="height:18px;">
-        <div class="bar-in" style="width:${Math.min(usagePct,100)}%;background:${usagePct>=100?'#dc2626':usagePct>=80?'#f59e0b':'#10b981'};"></div>
-      </div>
-    </div>` : ''}
+  // 메인 타이틀
+  setTxt('#ffffff'); doc.setFontSize(20); doc.setFont(undefined,'bold')
+  doc.text('거래명세서 분석 보고서', W/2, 30, {align:'center'})
 
-    <h3 style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px;">업체별 발주 현황</h3>
-    <table>
-      <thead>
-        <tr style="background:#4338ca;color:#fff;">
-          <th class="c" style="width:36px;padding:7px;">No</th>
-          <th style="text-align:left;padding:7px;">업체명</th>
-          <th class="r" style="padding:7px;">발주금액</th>
-          <th class="r" style="padding:7px;">비중</th>
-          <th style="width:120px;padding:7px;">비중 그래프</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${vendorData.map((v, i) => {
-          const amt   = Number(v.total.grand_total)||0
-          const share = grandTotal>0 ? (amt/grandTotal*100) : 0
-          const bg    = i%2===0 ? '#fff' : '#f8f7ff'
-          return `<tr style="background:${bg};">
-            <td class="c" style="padding:6px 7px;color:#6366f1;font-weight:700;">${i+1}</td>
-            <td style="padding:6px 7px;font-weight:600;">${v.name}</td>
-            <td class="r" style="padding:6px 7px;font-weight:700;">${fmtK(amt)}원</td>
-            <td class="r" style="padding:6px 7px;color:#6366f1;">${fmtPct(share)}</td>
-            <td style="padding:6px 7px;">
-              <div class="bar"><div class="bar-in" style="width:${share}%;background:${COLORS[i%COLORS.length]};"></div></div>
-            </td>
-          </tr>`
-        }).join('')}
-        <tr style="background:#4338ca;color:#fff;font-weight:900;">
-          <td colspan="2" class="c" style="padding:7px;">합계</td>
-          <td class="r" style="padding:7px;">${fmtK(grandTotal)}원</td>
-          <td class="r" style="padding:7px;">100%</td>
-          <td></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>`)
+  // 부제
+  setTxt('#c7d2fe'); doc.setFontSize(10); doc.setFont(undefined,'normal')
+  doc.text(`${hospitalName}`, W/2, 42, {align:'center'})
 
-  /* ══════════════════════════════════════════════════════════
-     PAGE 3+: 업체별 분석
-     ══════════════════════════════════════════════════════════ */
+  // KPI 카드 3개
+  const kpis = [
+    { label:'분석 기간',   value:`${year}년 ${mm}월` },
+    { label:'거래 업체',   value:`${vendors.length}개사` },
+    { label:'총 발주금액', value:fmtK(grandTotal) }
+  ]
+  const kW = 55, kH = 20, kY = 62
+  kpis.forEach((k, i) => {
+    const kX = ML + i * (kW + 8)
+    setFill('#f0f4ff'); doc.roundedRect(kX, kY, kW, kH, 2, 2, 'F')
+    setTxt('#6366f1'); doc.setFontSize(7)
+    doc.text(k.label, kX + kW/2, kY + 6, {align:'center'})
+    setTxt('#1e1b4b'); doc.setFontSize(11); doc.setFont(undefined,'bold')
+    doc.text(k.value, kX + kW/2, kY + 14, {align:'center'})
+    doc.setFont(undefined,'normal')
+  })
+
+  y = kY + kH + 10
+
+  // 업체 목록
+  if (vendors.length > 0) {
+    setTxt('#374151'); doc.setFontSize(9); doc.setFont(undefined,'bold')
+    doc.text('거래 업체 목록', ML, y); y += 6
+    vendors.slice(0,6).forEach((v, i) => {
+      const [r2,g2,b2] = hexRgb(COLORS6[i%6])
+      doc.setFillColor(r2,g2,b2); doc.circle(ML+3, y+2, 2.5, 'F')
+      setTxt('#ffffff'); doc.setFontSize(7); doc.setFont(undefined,'bold')
+      doc.text(String(i+1), ML+3, y+3.5, {align:'center'})
+      setTxt('#1f2937'); doc.setFontSize(9); doc.setFont(undefined,'normal')
+      doc.text(v.vendor_name, ML+8, y+4)
+      y += 8
+    })
+  }
+
+  // 생성일
+  y = H - 20
+  hLine(y); y += 3
+  setTxt('#9ca3af'); doc.setFontSize(7)
+  doc.text(`생성일: ${new Date().toLocaleDateString('ko-KR')}  |  ${hospitalName} 거래명세서 분석`, W/2, y+4, {align:'center'})
+
+  // ══════════════════════════════════════════════════════
+  // PAGE 2: 운영 종합 현황
+  // ══════════════════════════════════════════════════════
+  y = newPage()
+  y = sectionHeader(y, '운영 종합 현황', '#4338ca'); y += 2
+
+  setTxt('#6b7280'); doc.setFontSize(7)
+  doc.text(`${year}년 ${mm}월  |  ${hospitalName}`, ML, y); y += 6
+
+  // 예산 KPI 3개
+  const bkpis = [
+    { label:'총 예산',    value:fmtK(totalBudget), bg:'#f0fdf4', tc:'#15803d', lc:'#166534' },
+    { label:'총 발주금액', value:fmtK(totalUsed),   bg:'#fef3c7', tc:'#d97706', lc:'#92400e' },
+    { label:'잔여 예산',  value:fmtK(remainBudget), bg:'#eff6ff', tc:'#2563eb', lc:'#1e40af' }
+  ]
+  const bkW=56, bkH=18
+  bkpis.forEach((k, i) => {
+    const kX = ML + i*(bkW+7)
+    setFill(k.bg); doc.roundedRect(kX, y, bkW, bkH, 2, 2, 'F')
+    setTxt(k.lc); doc.setFontSize(7)
+    doc.text(k.label, kX+bkW/2, y+6, {align:'center'})
+    setTxt(k.tc); doc.setFontSize(10); doc.setFont(undefined,'bold')
+    doc.text(k.value, kX+bkW/2, y+14, {align:'center'})
+    doc.setFont(undefined,'normal')
+  })
+  y += bkH + 6
+
+  // 사용률 바
+  if (totalBudget > 0) {
+    const barColor = usagePct>=100?'#dc2626':usagePct>=80?'#f59e0b':'#10b981'
+    setTxt('#374151'); doc.setFontSize(8); doc.setFont(undefined,'bold')
+    doc.text('예산 대비 사용률', ML, y+3)
+    setTxt(barColor); doc.setFontSize(10); doc.setFont(undefined,'bold')
+    doc.text(fmtPct(usagePct), MR, y+3, {align:'right'})
+    doc.setFont(undefined,'normal'); y += 6
+    setFill('#e5e7eb'); doc.rect(ML, y, CW, 5, 'F')
+    setFill(barColor); doc.rect(ML, y, CW * Math.min(usagePct,100)/100, 5, 'F')
+    y += 10
+  }
+
+  // 업체별 현황 테이블
+  setTxt('#374151'); doc.setFontSize(9); doc.setFont(undefined,'bold')
+  doc.text('업체별 발주 현황', ML, y); y += 4
+  const tCols = [
+    {w:10, align:'center', bold:true, fs:8},
+    {w:72, align:'left',   bold:false,fs:8},
+    {w:44, align:'right',  bold:true, fs:8},
+    {w:24, align:'right',  bold:false,fs:8},
+    {w:32, align:'left',   bold:false,fs:7}
+  ]
+  y = tableRow(y, ['No','업체명','발주금액','비중','비중 그래프'], tCols, '#4338ca', '#ffffff', 7)
+  vendorData.forEach((v, i) => {
+    const amt   = Number(v.total.grand_total)||0
+    const share = grandTotal>0?(amt/grandTotal*100):0
+    const bg    = i%2===0?'#ffffff':'#f8f7ff'
+    // 비중 그래프 텍스트 대신 막대로
+    const barW  = 30 * share/100
+    setFill(bg); doc.rect(ML, y, CW, 6, 'F')
+    // No
+    setTxt(COLORS6[i%6]); doc.setFontSize(8); doc.setFont(undefined,'bold')
+    doc.text(String(i+1), ML+5, y+4.5, {align:'center'})
+    // 업체명
+    setTxt('#1f2937'); doc.setFont(undefined,'normal')
+    doc.text(v.name.length>18?v.name.slice(0,18)+'…':v.name, ML+11, y+4.5)
+    // 금액
+    doc.setFont(undefined,'bold')
+    doc.text(fmtK(amt), ML+10+72, y+4.5, {align:'right'})
+    // 비중
+    setTxt('#6366f1'); doc.setFont(undefined,'normal')
+    doc.text(fmtPct(share), ML+10+72+24, y+4.5, {align:'right'})
+    // 막대
+    setFill('#e5e7eb'); doc.rect(ML+10+72+25, y+1.5, 30, 3, 'F')
+    setFill(COLORS6[i%6]); doc.rect(ML+10+72+25, y+1.5, barW, 3, 'F')
+    setDraw('#d1d5db'); doc.setLineWidth(0.15); doc.line(ML, y+6, MR, y+6)
+    y += 6
+  })
+  // 합계
+  setFill('#4338ca'); doc.rect(ML, y, CW, 6, 'F')
+  setTxt('#ffffff'); doc.setFontSize(8); doc.setFont(undefined,'bold')
+  doc.text('합계', ML+CW/2, y+4.5, {align:'center'})
+  doc.text(fmtK(grandTotal), ML+10+72, y+4.5, {align:'right'})
+  doc.text('100%', ML+10+72+24, y+4.5, {align:'right'})
+  y += 10
+
+  // ══════════════════════════════════════════════════════
+  // PAGE 3+: 업체별 분석
+  // ══════════════════════════════════════════════════════
   for (let vi = 0; vi < vendorData.length; vi++) {
     const v      = vendorData[vi]
     const vTotal = Number(v.total.grand_total)||0
-    const color  = COLORS[vi % COLORS.length]
-    const top5items = (v.items||[]).sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,5)
-    const top5qty   = (v.items||[]).sort((a,b)=>(Number(b.total_quantity)||0)-(Number(a.total_quantity)||0)).slice(0,5)
+    const color  = COLORS6[vi % 6]
 
-    await renderPage(`${BASE_CSS}
-    <div class="page">
-      <div style="background:${color};color:#fff;border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
-        <div>
-          <div style="font-size:10px;opacity:0.8;margin-bottom:2px;">업체 ${vi+1} / ${vendorData.length}</div>
-          <div style="font-size:17px;font-weight:900;">${v.name}</div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-size:10px;opacity:0.8;">발주 총액</div>
-          <div style="font-size:18px;font-weight:900;">${fmtK(vTotal)}원</div>
-        </div>
-      </div>
+    y = newPage()
 
-      <h2 class="sec" style="border-color:${color};color:#1f2937;">분류별 발주 현황</h2>
-      <table style="margin-bottom:18px;">
-        <thead>
-          <tr style="background:${color};color:#fff;">
-            <th style="text-align:left;padding:7px;">분류</th>
-            <th class="r" style="padding:7px;">금액</th>
-            <th class="r" style="padding:7px;">비중</th>
-            <th style="width:130px;padding:7px;">비중 그래프</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${(v.cats||[]).map((c,ci) => {
-            const amt   = Number(c.total_amount)||0
-            const share = vTotal>0?(amt/vTotal*100):0
-            return `<tr style="background:${ci%2===0?'#fff':'#f9fafb'};">
-              <td style="padding:6px 7px;font-weight:600;">${c.category_name||'기타'}</td>
-              <td class="r" style="padding:6px 7px;font-weight:700;">${fmtK(amt)}원</td>
-              <td class="r" style="padding:6px 7px;">${fmtPct(share)}</td>
-              <td style="padding:6px 7px;"><div class="bar"><div class="bar-in" style="width:${share}%;background:${color};"></div></div></td>
-            </tr>`
-          }).join('')}
-          <tr style="background:${color};color:#fff;font-weight:900;">
-            <td style="padding:7px;">합계</td>
-            <td class="r" style="padding:7px;">${fmtK(vTotal)}원</td>
-            <td class="r" style="padding:7px;">100%</td><td></td>
-          </tr>
-        </tbody>
-      </table>
+    // 업체 헤더 배너
+    const [r3,g3,b3] = hexRgb(color)
+    doc.setFillColor(r3,g3,b3); doc.rect(ML, y, CW, 14, 'F')
+    setTxt('#ffffff')
+    doc.setFontSize(7); doc.setFont(undefined,'normal')
+    doc.text(`업체 ${vi+1} / ${vendorData.length}`, ML+3, y+5)
+    doc.setFontSize(12); doc.setFont(undefined,'bold')
+    doc.text(v.name, ML+3, y+11)
+    doc.setFontSize(8); doc.setFont(undefined,'normal')
+    doc.text(fmtK(vTotal), MR-2, y+11, {align:'right'})
+    y += 18
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div>
-          <h3 style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid ${color};">금액 TOP 5 품목</h3>
-          <table>
-            <thead><tr style="background:#f3f4f6;"><th class="c" style="padding:5px;width:28px;">순위</th><th style="text-align:left;padding:5px;">품목명</th><th class="r" style="padding:5px;">금액</th></tr></thead>
-            <tbody>
-              ${top5items.map((item,ii)=>{
-                const medals=['🥇','🥈','🥉']
-                return `<tr style="background:${ii%2===0?'#fff':'#f9fafb'};">
-                  <td class="c" style="padding:5px;font-size:13px;">${medals[ii]||ii+1}</td>
-                  <td style="padding:5px;font-size:10px;">${item.item_name||''}</td>
-                  <td class="r" style="padding:5px;font-weight:700;color:${color};">${fmtK(Number(item.total_amount)||0)}원</td>
-                </tr>`
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-        <div>
-          <h3 style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid ${color};">수량 TOP 5 품목</h3>
-          <table>
-            <thead><tr style="background:#f3f4f6;"><th class="c" style="padding:5px;width:28px;">순위</th><th style="text-align:left;padding:5px;">품목명</th><th class="r" style="padding:5px;">수량</th></tr></thead>
-            <tbody>
-              ${top5qty.map((item,ii)=>{
-                const medals=['🥇','🥈','🥉']
-                return `<tr style="background:${ii%2===0?'#fff':'#f9fafb'};">
-                  <td class="c" style="padding:5px;font-size:13px;">${medals[ii]||ii+1}</td>
-                  <td style="padding:5px;font-size:10px;">${item.item_name||''}</td>
-                  <td class="r" style="padding:5px;font-weight:700;color:${color};">${(Number(item.total_quantity)||0).toLocaleString()}</td>
-                </tr>`
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>`)
+    // 분류별 현황
+    y = sectionHeader(y, '분류별 발주 현황', color); y += 1
+    const catCols = [
+      {w:74, align:'left',  bold:false, fs:8},
+      {w:44, align:'right', bold:true,  fs:8},
+      {w:24, align:'right', bold:false, fs:8},
+      {w:40, align:'left',  bold:false, fs:7}
+    ]
+    y = tableRow(y, ['분류','금액','비중','비중 그래프'], catCols, color, '#ffffff', 6)
+    ;(v.cats||[]).forEach((c, ci) => {
+      const amt   = Number(c.total_amount)||0
+      const share = vTotal>0?(amt/vTotal*100):0
+      const bg    = ci%2===0?'#ffffff':'#f9fafb'
+      setFill(bg); doc.rect(ML, y, CW, 6, 'F')
+      setTxt('#1f2937'); doc.setFontSize(8); doc.setFont(undefined,'normal')
+      const cn = (c.category_name||'기타')
+      doc.text(cn.length>16?cn.slice(0,16)+'…':cn, ML+1, y+4.5)
+      doc.setFont(undefined,'bold')
+      doc.text(fmtK(amt), ML+74+44, y+4.5, {align:'right'})
+      setTxt('#6b7280'); doc.setFont(undefined,'normal')
+      doc.text(fmtPct(share), ML+74+44+24, y+4.5, {align:'right'})
+      // 막대
+      const bw2 = 38*share/100
+      setFill('#e5e7eb'); doc.rect(ML+74+44+25, y+2, 38, 2.5, 'F')
+      setFill(color); doc.rect(ML+74+44+25, y+2, bw2, 2.5, 'F')
+      setDraw('#d1d5db'); doc.setLineWidth(0.15); doc.line(ML, y+6, MR, y+6)
+      y += 6
+    })
+    // 합계행
+    setFill(color); doc.rect(ML, y, CW, 6, 'F')
+    setTxt('#ffffff'); doc.setFontSize(8); doc.setFont(undefined,'bold')
+    doc.text('합계', ML+37, y+4.5, {align:'center'})
+    doc.text(fmtK(vTotal), ML+74+44, y+4.5, {align:'right'})
+    doc.text('100%', ML+74+44+24, y+4.5, {align:'right'})
+    y += 10
+
+    // TOP 5 품목 (금액/수량 나란히)
+    const top5amt = (v.items||[]).slice().sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,5)
+    const top5qty = (v.items||[]).slice().sort((a,b)=>(Number(b.total_quantity)||0)-(Number(a.total_quantity)||0)).slice(0,5)
+
+    const halfW = (CW-6)/2
+    const medals = ['🥇','🥈','🥉']
+
+    // 왼쪽: 금액 TOP5
+    y2Left = y
+    setTxt(color); doc.setFontSize(9); doc.setFont(undefined,'bold')
+    doc.text('금액 TOP 5', ML, y2Left); y2Left += 5
+    const itemCols1 = [{w:8,align:'center',bold:true,fs:9},{w:halfW-24,align:'left',bold:false,fs:7},{w:16,align:'right',bold:true,fs:7}]
+    top5amt.forEach((item, ii) => {
+      const bg = ii===0?'#fffbeb':ii%2===0?'#ffffff':'#f9fafb'
+      setFill(bg); doc.rect(ML, y2Left, halfW, 5.5, 'F')
+      setTxt('#1f2937')
+      doc.setFontSize(7); doc.setFont(undefined,'bold')
+      doc.text(String(ii+1), ML+4, y2Left+4, {align:'center'})
+      doc.setFont(undefined,'normal')
+      const nm = (item.item_name||'').slice(0,12)
+      doc.text(nm, ML+9, y2Left+4)
+      setTxt(color); doc.setFont(undefined,'bold')
+      doc.text(fmtK(Number(item.total_amount)||0), ML+halfW-1, y2Left+4, {align:'right'})
+      setDraw('#e5e7eb'); doc.setLineWidth(0.1); doc.line(ML, y2Left+5.5, ML+halfW, y2Left+5.5)
+      y2Left += 5.5
+    })
+
+    // 오른쪽: 수량 TOP5
+    let y2Right = y
+    const rx = ML + halfW + 6
+    setTxt(color); doc.setFontSize(9); doc.setFont(undefined,'bold')
+    doc.text('수량 TOP 5', rx, y2Right); y2Right += 5
+    top5qty.forEach((item, ii) => {
+      const bg = ii===0?'#fffbeb':ii%2===0?'#ffffff':'#f9fafb'
+      setFill(bg); doc.rect(rx, y2Right, halfW, 5.5, 'F')
+      setTxt('#1f2937')
+      doc.setFontSize(7); doc.setFont(undefined,'bold')
+      doc.text(String(ii+1), rx+4, y2Right+4, {align:'center'})
+      doc.setFont(undefined,'normal')
+      const nm = (item.item_name||'').slice(0,12)
+      doc.text(nm, rx+9, y2Right+4)
+      setTxt(color); doc.setFont(undefined,'bold')
+      const qty = Number(item.total_quantity)||0
+      doc.text(qty.toLocaleString(), rx+halfW-1, y2Right+4, {align:'right'})
+      setDraw('#e5e7eb'); doc.setLineWidth(0.1); doc.line(rx, y2Right+5.5, rx+halfW, y2Right+5.5)
+      y2Right += 5.5
+    })
+
+    y = Math.max(y2Left, y2Right) + 4
   }
 
-  /* ══════════════════════════════════════════════════════════
-     LAST PAGE: 운영 인사이트
-     ══════════════════════════════════════════════════════════ */
-  // 전체 품목 수집 (금액 기준 TOP 12)
+  // ══════════════════════════════════════════════════════
+  // LAST PAGE: 인사이트 & TOP 12
+  // ══════════════════════════════════════════════════════
+  y = newPage()
+  y = sectionHeader(y, '운영 인사이트 및 절감 전략', '#1e1b4b'); y += 2
+
+  // 주요 카드 2개
+  const iW = (CW-8)/2
+  // 주요 업체
+  const topVendor = vendorData.slice().sort((a,b)=>(Number(b.total.grand_total)||0)-(Number(a.total.grand_total)||0))[0]
+  setFill('#fef3c7'); doc.roundedRect(ML, y, iW, 20, 2, 2, 'F')
+  setFill('#f59e0b'); doc.rect(ML, y, 3, 20, 'F')
+  setTxt('#92400e'); doc.setFontSize(7); doc.setFont(undefined,'bold')
+  doc.text('주요 발주 업체', ML+5, y+6)
+  setTxt('#1f2937'); doc.setFontSize(9); doc.setFont(undefined,'bold')
+  doc.text(topVendor?.name||'-', ML+5, y+13)
+  setTxt('#6b7280'); doc.setFontSize(7); doc.setFont(undefined,'normal')
+  doc.text(fmtK(topVendor?.total?.grand_total||0), ML+5, y+19)
+
+  // 예산 집행
+  const rx2 = ML+iW+8
+  setFill('#f0fdf4'); doc.roundedRect(rx2, y, iW, 20, 2, 2, 'F')
+  setFill('#10b981'); doc.rect(rx2, y, 3, 20, 'F')
+  setTxt('#166534'); doc.setFontSize(7); doc.setFont(undefined,'bold')
+  doc.text('예산 집행 현황', rx2+5, y+6)
+  setTxt('#1f2937'); doc.setFontSize(9); doc.setFont(undefined,'bold')
+  doc.text(fmtPct(usagePct)+' 집행', rx2+5, y+13)
+  setTxt('#6b7280'); doc.setFontSize(7); doc.setFont(undefined,'normal')
+  doc.text(`잔여 ${fmtK(remainBudget)}`, rx2+5, y+19)
+  y += 26
+
+  // TOP 12 품목 테이블
+  setTxt('#374151'); doc.setFontSize(9); doc.setFont(undefined,'bold')
+  doc.text('주요 발주 품목 TOP 12 (금액 기준)', ML, y); y += 5
+
   const allItems = vendorData.flatMap(v => v.items||[])
-  const topItems = allItems.sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,12)
-  const allAmountByVendor = vendorData.map(v => ({
-    name: v.name,
-    total: Number(v.total.grand_total)||0,
-    topCat: (v.cats||[]).sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0))[0]
-  }))
-  const highestVendor = allAmountByVendor.sort((a,b)=>b.total-a.total)[0]
+    .sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,12)
 
-  await renderPage(`${BASE_CSS}
-  <div class="page">
-    <h2 class="sec">💡 운영 인사이트 및 절감 전략</h2>
-    <div style="color:#6b7280;font-size:10px;margin-bottom:16px;">${year}년 ${mm}월 | ${hospitalName}</div>
+  const t12Cols = [
+    {w:10, align:'center', bold:true,  fs:8},
+    {w:70, align:'left',   bold:false, fs:7},
+    {w:38, align:'right',  bold:true,  fs:7},
+    {w:28, align:'right',  bold:false, fs:7},
+    {w:36, align:'right',  bold:false, fs:7}
+  ]
+  y = tableRow(y, ['순위','품목명','발주금액','수량','단가'], t12Cols, '#1e1b4b', '#ffffff', 6)
+  allItems.forEach((item, i) => {
+    const amt   = Number(item.total_amount)||0
+    const qty   = Number(item.total_quantity)||0
+    const unitP = qty>0?(amt/qty):0
+    const bg    = i<3?'#fffbeb':i%2===0?'#ffffff':'#f9fafb'
+    setFill(bg); doc.rect(ML, y, CW, 5.5, 'F')
+    // 순위
+    if (i<3) setTxt(['#d97706','#9ca3af','#92400e'][i])
+    else setTxt('#6b7280')
+    doc.setFontSize(8); doc.setFont(undefined,'bold')
+    doc.text(String(i+1), ML+5, y+4, {align:'center'})
+    // 품목명
+    setTxt('#1f2937'); doc.setFont(undefined, i<3?'bold':'normal')
+    const nm = (item.item_name||'').slice(0,18)
+    doc.setFontSize(7)
+    doc.text(nm, ML+11, y+4)
+    // 금액
+    setTxt('#4338ca'); doc.setFont(undefined,'bold')
+    doc.text(fmtK(amt), ML+10+70+38, y+4, {align:'right'})
+    // 수량
+    setTxt('#374141'); doc.setFont(undefined,'normal')
+    doc.text(qty.toLocaleString(), ML+10+70+38+28, y+4, {align:'right'})
+    // 단가
+    setTxt('#6b7280')
+    doc.text(fmtK(unitP), ML+10+70+38+28+36, y+4, {align:'right'})
+    setDraw('#d1d5db'); doc.setLineWidth(0.12); doc.line(ML, y+5.5, MR, y+5.5)
+    y += 5.5
+  })
+  y += 6
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;">
-      <div style="background:#fef3c7;border-left:4px solid #f59e0b;border-radius:8px;padding:12px;">
-        <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:6px;">⚠️ 주요 발주 업체</div>
-        <div style="font-size:12px;font-weight:700;color:#1f2937;">${highestVendor?.name||'-'}</div>
-        <div style="font-size:10px;color:#6b7280;margin-top:2px;">발주금액: ${fmtK(highestVendor?.total||0)}원</div>
-        <div style="font-size:10px;color:#6b7280;">비중: ${fmtPct(grandTotal>0?((highestVendor?.total||0)/grandTotal*100):0)}</div>
-      </div>
-      <div style="background:#f0fdf4;border-left:4px solid #10b981;border-radius:8px;padding:12px;">
-        <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:6px;">📈 예산 집행 현황</div>
-        <div style="font-size:12px;font-weight:700;color:#1f2937;">${fmtPct(usagePct)} 집행</div>
-        <div style="font-size:10px;color:#6b7280;margin-top:2px;">사용: ${fmtK(totalUsed)}원</div>
-        <div style="font-size:10px;color:#6b7280;">잔여: ${fmtK(remainBudget)}원</div>
-      </div>
-    </div>
+  // 절감 전략
+  if (y < H-50) {
+    y = sectionHeader(y, '절감 전략 가이드', '#2563eb'); y += 2
+    const tips = [
+      '주요 발주 품목의 대체 식재료 활용으로 5~15% 절감 가능합니다.',
+      '계절성 식재료(채소류) 가격 하락 시기에 집중 구매를 권고합니다.',
+      '복수 업체 가격 비교를 통한 단가 협상 및 경쟁 입찰을 권고합니다.',
+      '대량 구매 할인 적용 가능 품목을 파악하여 묶음 발주를 검토하세요.',
+      usagePct>90 ? '예산 소진율이 높습니다. 잔여 기간 발주량 조정을 권고합니다.' : ''
+    ].filter(Boolean)
+    setFill('#eff6ff'); doc.rect(ML, y, CW, tips.length*7+6, 'F')
+    setTxt('#1e40af')
+    tips.forEach((tip, i) => {
+      doc.setFontSize(8); doc.setFont(undefined,'normal')
+      doc.text(`• ${tip}`, ML+4, y+6+i*7)
+    })
+  }
 
-    <h3 style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px;">주요 발주 품목 TOP 12 (금액 기준)</h3>
-    <table>
-      <thead>
-        <tr style="background:#1e1b4b;color:#fff;">
-          <th class="c" style="padding:6px;width:36px;">순위</th>
-          <th style="text-align:left;padding:6px;">품목명</th>
-          <th class="r" style="padding:6px;">발주금액</th>
-          <th class="r" style="padding:6px;">수량</th>
-          <th class="r" style="padding:6px;">단가</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${topItems.map((item,i)=>{
-          const amt = Number(item.total_amount)||0
-          const qty = Number(item.total_quantity)||0
-          const unitP = qty>0?(amt/qty):0
-          const bg = i<3?'#fffbeb':i%2===0?'#fff':'#f9fafb'
-          const rank = i<3?['🥇','🥈','🥉'][i]:String(i+1)
-          return `<tr style="background:${bg};">
-            <td class="c" style="padding:5px;font-size:${i<3?'13':'11'}px;">${rank}</td>
-            <td style="padding:5px;font-weight:${i<3?'700':'400'};">${item.item_name||''}</td>
-            <td class="r" style="padding:5px;font-weight:700;color:#4338ca;">${fmtK(amt)}원</td>
-            <td class="r" style="padding:5px;">${qty.toLocaleString()}</td>
-            <td class="r" style="padding:5px;color:#6b7280;">${fmtK(unitP)}원</td>
-          </tr>`
-        }).join('')}
-      </tbody>
-    </table>
-
-    <div style="background:#eff6ff;border-radius:10px;padding:14px;margin-top:16px;">
-      <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">📋 절감 전략 가이드</div>
-      <ul style="list-style:none;padding:0;">
-        ${usagePct>90?'<li style="padding:3px 0;font-size:10px;">⚡ 예산 소진율이 높습니다. 잔여 기간 발주량 조정을 권고합니다.</li>':''}
-        <li style="padding:3px 0;font-size:10px;">🔄 주요 발주 품목의 대체 식재료 활용으로 5~15% 절감 가능</li>
-        <li style="padding:3px 0;font-size:10px;">📅 계절성 식재료(채소류) 가격 하락 시기 집중 구매 권고</li>
-        <li style="padding:3px 0;font-size:10px;">🏪 복수 업체 가격 비교를 통한 단가 협상 및 경쟁 입찰 권고</li>
-        <li style="padding:3px 0;font-size:10px;">📦 대량 구매 할인 적용 가능 품목 파악 및 묶음 발주 검토</li>
-      </ul>
-    </div>
-  </div>`)
-
-  /* ── PDF 저장 ────────────────────────────────────────────── */
+  // ── 저장 ────────────────────────────────────────────────
   doc.save(`${hospitalName}_${year}년${mm}월_거래명세서분석보고서.pdf`)
   showToast(`✅ PDF 보고서 생성 완료! (${pageNum}페이지)`, 'success')
 }
