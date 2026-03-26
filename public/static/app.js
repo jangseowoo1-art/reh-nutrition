@@ -16204,9 +16204,20 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
   const A4W=210, A4H=297
   let pageNum = 0
 
-  // ── 임시 렌더링 컨테이너 (뷰포트 내, 화면 보임 상태) ──
+  // ── 임시 렌더링 컨테이너 (화면 완전히 밖, 사용자에게 비표시) ──
   const wrap = document.createElement('div')
-  wrap.style.cssText = 'position:fixed;top:0;left:0;width:794px;height:auto;background:white;z-index:99999;overflow:hidden;pointer-events:none'
+  wrap.style.cssText = [
+    'position:absolute',
+    'top:-99999px',      // 화면 완전히 밖 (스크롤 위치와 무관)
+    'left:0',
+    'width:794px',
+    'height:auto',
+    'background:white',
+    'z-index:-9999',
+    'visibility:hidden', // 완전 숨김 (레이아웃은 유지)
+    'pointer-events:none',
+    'overflow:visible',
+  ].join(';')
   document.body.appendChild(wrap)
 
   // ── html→PDF 캡처 헬퍼 ──────────────────────────
@@ -16214,8 +16225,14 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     wrap.innerHTML = htmlStr
     // 폰트 로드 대기
     await document.fonts.ready
-    await new Promise(r => setTimeout(r, 350))
+    await new Promise(r => setTimeout(r, 300))
     const el = wrap.firstElementChild
+
+    // html2canvas는 visibility:hidden 요소 캡처 불가 → 캡처 직전만 잠깐 노출
+    // (top:-99999px 이므로 사용자에게는 절대 보이지 않음)
+    wrap.style.visibility = 'visible'
+    await new Promise(r => setTimeout(r, 50))
+
     const canvas = await window.html2canvas(el, {
       scale: 2,
       useCORS: true,
@@ -16223,10 +16240,13 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
       backgroundColor: '#ffffff',
       logging: false,
       scrollX: 0,
-      scrollY: 0,
+      scrollY: -99999,  // wrap이 top:-99999px 위치에 있으므로 보정
       windowWidth: 794,
       windowHeight: el.scrollHeight
     })
+
+    // 캡처 완료 즉시 다시 숨김
+    wrap.style.visibility = 'hidden'
     const imgData = canvas.toDataURL('image/jpeg', 0.93)
     if (pageNum > 0) doc.addPage()
     pageNum++
