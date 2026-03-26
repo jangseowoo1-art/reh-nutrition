@@ -337,7 +337,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260325b"></script>
+<script src="/static/app.js?v=20260326a"></script>
 </body>
 </html>`
 }

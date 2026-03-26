@@ -12906,6 +12906,8 @@ async function renderReport(selectedHospitalId = null) {
     const h = hospitals.find(x => x.id == selectedHospitalId)
     hospitalName = h?.name || ''
   }
+  // PDF 버튼에서 안전하게 병원명을 참조하기 위한 전역 저장
+  window._txPdfHn = hospitalName
 
   const reportYear = App.currentYear
   const reportMonth = App.currentMonth
@@ -13069,7 +13071,7 @@ async function renderReport(selectedHospitalId = null) {
       <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa">
         <i class="fas fa-file-pdf mr-1"></i>PDF 보고서
       </button>
-      <button onclick="exportTxAnalysisPDF('${hospitalName}',${reportYear},${reportMonth},${targetHospitalId})" class="btn btn-sm" style="background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd">
+      <button onclick="(function(){window._txPdfParams={hn:window._txPdfHn,yr:${reportYear},mo:${reportMonth},hid:${targetHospitalId||'null'}};exportTxAnalysisPDF(window._txPdfParams.hn,window._txPdfParams.yr,window._txPdfParams.mo,window._txPdfParams.hid==='null'?null:window._txPdfParams.hid)})()" class="btn btn-sm" style="background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd">
         <i class="fas fa-chart-bar mr-1"></i>거래명세서 분석 PDF
       </button>
     </div>
@@ -16155,364 +16157,381 @@ async function exportReportPDF(hospitalName, year, month) {
 // ══════════════════════════════════════════════════════════════════
 async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
   showToast('PDF 생성 중... (10~20초 소요)', 'info')
+  console.log('[PDF] 시작 - 병원:', hospitalName, '연도:', year, '월:', month, '병원ID:', hospitalId)
+
+  // ── 1. jsPDF + autotable 동적 로드 ──────────────────────────
+  function _loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      if (document.querySelector('script[src="' + src + '"]')) { resolve(); return; }
+      var s = document.createElement('script')
+      s.src = src
+      s.onload = resolve
+      s.onerror = function() { reject(new Error('스크립트 로드 실패: ' + src)) }
+      document.head.appendChild(s)
+    })
+  }
 
   try {
-    /* ── 1. jsPDF + autotable 로드 ──────────────────────────── */
-    async function loadSc(src) {
-      if (document.querySelector(`script[src="${src}"]`)) return
-      await new Promise((ok, ng) => {
-        const s = document.createElement('script')
-        s.src = src; s.onload = ok; s.onerror = ng
-        document.head.appendChild(s)
-      })
-    }
-    await loadSc('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
-    await loadSc('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js')
+    await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+  } catch(e) {
+    showToast('PDF 라이브러리 로드 실패 (네트워크 확인)', 'error')
+    return
+  }
+  try {
+    await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js')
+  } catch(e) {
+    showToast('PDF 테이블 플러그인 로드 실패', 'error')
+    return
+  }
 
-    /* ── 2. NanumGothic TTF 폰트 embed ──────────────────────── */
-    if (window._nanumFontB64 === undefined) {
-      window._nanumFontB64 = null
-      try {
-        const resp = await fetch('/static/NanumGothic.ttf')
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        const buf = await resp.arrayBuffer()
-        const u8  = new Uint8Array(buf)
-        let b64 = ''
-        const chunk = 8192
-        for (let i = 0; i < u8.length; i += chunk) {
-          b64 += btoa(String.fromCharCode(...u8.slice(i, i + chunk)))
-        }
-        window._nanumFontB64 = b64
-        console.log('[PDF] NanumGothic 폰트 로드 완료, size:', b64.length)
-      } catch(e) {
-        console.warn('[PDF] 폰트 로드 실패, 기본 폰트 사용:', e)
-        window._nanumFontB64 = null
-      }
-    }
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    console.error('[PDF] window.jspdf 없음:', window.jspdf)
+    showToast('PDF 라이브러리 초기화 실패 (콘솔 확인)', 'error')
+    return
+  }
+  console.log('[PDF] jsPDF 로드 성공')
 
-    /* ── 3. 데이터 로드 ─────────────────────────────────────── */
-    const authH     = { Authorization: `Bearer ${localStorage.getItem('token')}` }
-    const hParam    = hospitalId ? `?hospital_id=${hospitalId}` : ''
-    const hParamAmp = hospitalId ? `&hospital_id=${hospitalId}` : ''
-    const mm        = String(month).padStart(2, '0')
-
-    let vendors = [], budgetSummary = {}
-    try { const r = await axios.get(`/api/transaction/invoice/vendors${hParam}`,{headers:authH}); vendors=r.data.data||[] } catch(e){ console.warn('vendors 로드 실패',e) }
+  // ── 2. NanumGothic TTF 폰트 embed ──────────────────────────
+  if (window._nanumFontB64 === undefined) {
+    window._nanumFontB64 = null
     try {
-      const r = await axios.get(`/api/dashboard/summary/${year}/${month}?hospitalId=${hospitalId||''}`,{headers:authH})
-      budgetSummary=r.data.summary||{}
-    } catch(e){ console.warn('budgetSummary 로드 실패',e) }
-
-    const vendorData = []
-    for (const v of vendors.slice(0,6)) {
-      try {
-        const [catR,itemR] = await Promise.all([
-          axios.get(`/api/transaction/invoice/category-summary?vendor_name=${encodeURIComponent(v.vendor_name)}&year=${year}&month=${month}${hParamAmp}`,{headers:authH}),
-          axios.get(`/api/transaction/invoice/items?vendor_name=${encodeURIComponent(v.vendor_name)}&year=${year}&month=${month}${hParamAmp}`,{headers:authH})
-        ])
-        vendorData.push({name:v.vendor_name, cats:catR.data.categories||[], total:catR.data.total||{}, items:itemR.data.data||[]})
-      } catch(e) { vendorData.push({name:v.vendor_name,cats:[],total:{},items:[]}) }
-    }
-
-    const totalBudget  = Number(budgetSummary.total_budget)||0
-    const totalUsed    = Number(budgetSummary.total_used)||0
-    const grandTotal   = vendorData.reduce((s,v)=>s+(Number(v.total.grand_total)||0),0)
-    const usagePct     = totalBudget>0?(totalUsed/totalBudget*100):0
-    const remainBudget = totalBudget - totalUsed
-
-    /* ── 4. jsPDF 초기화 ────────────────────────────────────── */
-    const { jsPDF } = window.jspdf
-    const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' })
-
-    // 한글 폰트 등록 (TTF → base64)
-    const FONT_NAME = 'NanumGothic'
-    let useKorFont = false
-    if (window._nanumFontB64) {
-      try {
-        doc.addFileToVFS('NanumGothic.ttf', window._nanumFontB64)
-        doc.addFont('NanumGothic.ttf', FONT_NAME, 'normal')
-        doc.addFont('NanumGothic.ttf', FONT_NAME, 'bold')
-        doc.setFont(FONT_NAME, 'normal')
-        useKorFont = true
-        console.log('[PDF] 한글 폰트 등록 성공')
-      } catch(e) {
-        console.warn('[PDF] 한글 폰트 등록 실패:', e)
+      var resp = await fetch('/static/NanumGothic.ttf')
+      if (!resp.ok) throw new Error('HTTP ' + resp.status)
+      var buf = await resp.arrayBuffer()
+      var u8 = new Uint8Array(buf)
+      var b64 = ''
+      var chunk = 8192
+      for (var i = 0; i < u8.length; i += chunk) {
+        b64 += btoa(String.fromCharCode.apply(null, u8.slice(i, i + chunk)))
       }
+      window._nanumFontB64 = b64
+      console.log('[PDF] NanumGothic 폰트 로드 완료, size:', b64.length)
+    } catch(e) {
+      console.warn('[PDF] 폰트 로드 실패:', e.message)
+      window._nanumFontB64 = null
     }
+  }
 
-    const W=210, H=297, ML=14, MR=196, CW=182
-    let pageNum=0
+  // ── 3. 데이터 로드 ───────────────────────────────────────────
+  var authH     = { Authorization: 'Bearer ' + localStorage.getItem('token') }
+  var hParam    = hospitalId ? '?hospital_id=' + hospitalId : ''
+  var hParamAmp = hospitalId ? '&hospital_id=' + hospitalId : ''
+  var mm        = String(month).padStart(2, '0')
 
-    /* ── 5. 헬퍼 함수 ───────────────────────────────────────── */
-    const fmtK = v => {
-      const n=Number(v)||0
-      if(n>=100000000) return (n/100000000).toFixed(1)+'억원'
-      if(n>=10000000)  return Math.round(n/10000)+'만원'
-      if(n>=10000)     return Math.round(n/1000)+'천원'
-      return n.toLocaleString()+'원'
-    }
-    const fmtN = v => (Number(v)||0).toLocaleString()
+  var vendors = []
+  var budgetSummary = {}
 
-    // 색상 파서 (#rrggbb → [r,g,b])
-    const hr = hex => {
-      const h=hex.replace('#','')
-      return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]
-    }
-    // fill color
-    const sf = hex => { const [r,g,b]=hr(hex); doc.setFillColor(r,g,b) }
-    // stroke color
-    const sd = hex => { const [r,g,b]=hr(hex); doc.setDrawColor(r,g,b) }
-    // text color
-    const st = hex => { const [r,g,b]=hr(hex); doc.setTextColor(r,g,b) }
-    // font size + bold
-    const fnt = (sz, bold=false) => {
-      doc.setFontSize(sz)
-      if (useKorFont) {
-        doc.setFont(FONT_NAME, bold ? 'bold' : 'normal')
-      } else {
-        doc.setFont('helvetica', bold ? 'bold' : 'normal')
-      }
-    }
+  try {
+    var r1 = await axios.get('/api/transaction/invoice/vendors' + hParam, {headers: authH})
+    vendors = (r1.data && r1.data.data) ? r1.data.data : []
+  } catch(e) { console.warn('[PDF] vendors 로드 실패:', e.message) }
 
-    const COLS6 = ['#4338ca','#0891b2','#059669','#d97706','#dc2626','#7c3aed']
+  try {
+    var r2 = await axios.get('/api/dashboard/summary/' + year + '/' + month + '?hospitalId=' + (hospitalId||''), {headers: authH})
+    budgetSummary = (r2.data && r2.data.summary) ? r2.data.summary : {}
+  } catch(e) { console.warn('[PDF] budgetSummary 로드 실패:', e.message) }
 
-    function newPage() {
-      if(pageNum>0) doc.addPage()
-      pageNum++
-      fnt(7); st('#9ca3af')
-      doc.text(String(pageNum), W/2, H-4, {align:'center'})
-      fnt(9); st('#1f2937')
-      return 14
-    }
-
-    function secHead(y, title, color='#4338ca') {
-      sf(color); doc.rect(ML,y,3,6,'F')
-      st(color); fnt(11,true); doc.text(title, ML+5, y+4.5)
-      fnt(9,false); st('#1f2937')
-      return y+10
-    }
-
-    /* autoTable 공통 옵션 */
-    function tblOpts(startY, head, body, colStyles, headBg='#4338ca') {
-      const [hr2,hg,hb] = hr(headBg)
-      const fontName = useKorFont ? FONT_NAME : 'helvetica'
-      doc.autoTable({
-        startY,
-        head: [head],
-        body,
-        styles: {
-          font: fontName,
-          fontSize: 8,
-          cellPadding: 2,
-          textColor: [31,41,55],
-          lineColor: [209,213,219],
-          lineWidth: 0.15,
-          overflow: 'ellipsize'
-        },
-        headStyles: {
-          fillColor: [hr2,hg,hb],
-          textColor: [255,255,255],
-          fontStyle: useKorFont ? 'normal' : 'bold',
-          font: fontName,
-          fontSize: 8
-        },
-        alternateRowStyles: { fillColor: [249,250,251] },
-        columnStyles: colStyles,
-        margin: { left: ML, right: 14 },
-        tableWidth: CW
+  var vendorData = []
+  for (var vi = 0; vi < Math.min(vendors.length, 6); vi++) {
+    var v = vendors[vi]
+    try {
+      var vName = encodeURIComponent(v.vendor_name)
+      var catR = await axios.get('/api/transaction/invoice/category-summary?vendor_name=' + vName + '&year=' + year + '&month=' + month + hParamAmp, {headers: authH})
+      var itemR = await axios.get('/api/transaction/invoice/items?vendor_name=' + vName + '&year=' + year + '&month=' + month + hParamAmp, {headers: authH})
+      vendorData.push({
+        name: v.vendor_name,
+        cats: (catR.data && catR.data.categories) ? catR.data.categories : [],
+        total: (catR.data && catR.data.total) ? catR.data.total : {},
+        items: (itemR.data && itemR.data.data) ? itemR.data.data : []
       })
-      return doc.lastAutoTable.finalY + 4
+    } catch(e) {
+      vendorData.push({name: v.vendor_name, cats: [], total: {}, items: []})
     }
+  }
 
-    /* ═══════════════════════════════════════════════════════
-       PAGE 1 : 표지
-    ═══════════════════════════════════════════════════════ */
-    let y = newPage()
+  var totalBudget  = Number(budgetSummary.total_budget) || 0
+  var totalUsed    = Number(budgetSummary.total_used) || 0
+  var grandTotal   = vendorData.reduce(function(s,v){ return s + (Number(v.total.grand_total)||0) }, 0)
+  var usagePct     = totalBudget > 0 ? (totalUsed / totalBudget * 100) : 0
+  var remainBudget = totalBudget - totalUsed
 
-    // 헤더 배너
-    sf('#1e1b4b'); doc.rect(0,0,W,52,'F')
-    sf('#4338ca'); doc.rect(0,44,W,10,'F')
+  // ── 4. jsPDF 초기화 ──────────────────────────────────────────
+  var jsPDF = window.jspdf.jsPDF
+  var doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
-    fnt(7); st('#a5b4fc')
-    doc.text('HOSPITAL FOOD COST REPORT', W/2, 16, {align:'center'})
+  var FONT_NAME = 'NanumGothic'
+  var useKorFont = false
+  console.log('[PDF] 폰트 B64 상태:', window._nanumFontB64 ? ('길이=' + window._nanumFontB64.length) : '없음(null)')
+  if (window._nanumFontB64) {
+    try {
+      doc.addFileToVFS('NanumGothic.ttf', window._nanumFontB64)
+      doc.addFont('NanumGothic.ttf', FONT_NAME, 'normal')
+      doc.addFont('NanumGothic.ttf', FONT_NAME, 'bold')
+      doc.setFont(FONT_NAME, 'normal')
+      useKorFont = true
+      console.log('[PDF] 한글 폰트 등록 성공')
+    } catch(e) {
+      console.warn('[PDF] 한글 폰트 등록 실패:', e.message, e.stack)
+    }
+  }
 
-    fnt(22,true); st('#ffffff')
-    doc.text('거래명세서 분석 보고서', W/2, 30, {align:'center'})
+  var W=210, H=297, ML=14, MR=196, CW=182
+  var pageNum = 0
 
-    fnt(11,false); st('#c7d2fe')
-    doc.text(hospitalName||'', W/2, 42, {align:'center'})
+  // ── 5. 헬퍼 ─────────────────────────────────────────────────
+  function fmtK(v) {
+    var n = Number(v) || 0
+    if (n >= 100000000) return (n/100000000).toFixed(1) + '억원'
+    if (n >= 10000000)  return Math.round(n/10000) + '만원'
+    if (n >= 10000)     return Math.round(n/1000) + '천원'
+    return n.toLocaleString() + '원'
+  }
+  function fmtN(v) { return (Number(v)||0).toLocaleString() }
 
-    // KPI 카드
-    const kpis=[
-      {lb:'분석 기간',   vl:`${year}년 ${mm}월`},
-      {lb:'거래 업체',   vl:`${vendors.length}개사`},
-      {lb:'총 발주금액', vl:fmtK(grandTotal)}
-    ]
-    const kW=55,kH=22,kY=58
-    kpis.forEach((k,i)=>{
-      const kX=ML+i*(kW+8)
-      sf('#f0f4ff'); doc.roundedRect(kX,kY,kW,kH,2,2,'F')
-      fnt(7); st('#6366f1'); doc.text(k.lb, kX+kW/2, kY+7, {align:'center'})
-      fnt(12,true); st('#1e1b4b'); doc.text(k.vl, kX+kW/2, kY+16, {align:'center'})
+  function hr(hex) {
+    var h = hex.replace('#','')
+    return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]
+  }
+  function sf(hex) { var c=hr(hex); doc.setFillColor(c[0],c[1],c[2]) }
+  function sd(hex) { var c=hr(hex); doc.setDrawColor(c[0],c[1],c[2]) }
+  function st(hex) { var c=hr(hex); doc.setTextColor(c[0],c[1],c[2]) }
+  function fnt(sz, bold) {
+    doc.setFontSize(sz)
+    if (useKorFont) {
+      doc.setFont(FONT_NAME, bold ? 'bold' : 'normal')
+    } else {
+      doc.setFont('helvetica', bold ? 'bold' : 'normal')
+    }
+  }
+
+  var COLS6 = ['#4338ca','#0891b2','#059669','#d97706','#dc2626','#7c3aed']
+
+  function newPage() {
+    if (pageNum > 0) doc.addPage()
+    pageNum++
+    fnt(7, false); st('#9ca3af')
+    doc.text(String(pageNum), W/2, H-4, {align:'center'})
+    fnt(9, false); st('#1f2937')
+    return 14
+  }
+
+  function secHead(y, title, color) {
+    color = color || '#4338ca'
+    sf(color); doc.rect(ML, y, 3, 6, 'F')
+    st(color); fnt(11, true); doc.text(title, ML+5, y+4.5)
+    fnt(9, false); st('#1f2937')
+    return y + 10
+  }
+
+  function tblOpts(startY, head, body, colStyles, headBg) {
+    headBg = headBg || '#4338ca'
+    var hc = hr(headBg)
+    var fontName = useKorFont ? FONT_NAME : 'helvetica'
+    doc.autoTable({
+      startY: startY,
+      head: [head],
+      body: body,
+      styles: {
+        font: fontName,
+        fontSize: 8,
+        cellPadding: 2,
+        textColor: [31,41,55],
+        lineColor: [209,213,219],
+        lineWidth: 0.15,
+        overflow: 'ellipsize'
+      },
+      headStyles: {
+        fillColor: hc,
+        textColor: [255,255,255],
+        font: fontName,
+        fontStyle: 'normal',
+        fontSize: 8
+      },
+      alternateRowStyles: { fillColor: [249,250,251] },
+      columnStyles: colStyles || {},
+      margin: { left: ML, right: 14 },
+      tableWidth: CW
     })
-    y = kY+kH+8
+    return doc.lastAutoTable.finalY + 4
+  }
 
-    // 업체 목록
-    if(vendors.length>0){
-      fnt(9,true); st('#374151'); doc.text('거래 업체 목록', ML, y); y+=6
-      vendors.slice(0,6).forEach((v,i)=>{
-        const [r2,g2,b2]=hr(COLS6[i%6])
-        doc.setFillColor(r2,g2,b2); doc.circle(ML+3,y+2,2.5,'F')
-        fnt(7,true); st('#ffffff'); doc.text(String(i+1),ML+3,y+3.2,{align:'center'})
-        fnt(9,false); st('#1f2937'); doc.text(v.vendor_name||'', ML+8, y+3.5)
-        y+=8
-      })
+  // ── PAGE 1: 표지 ─────────────────────────────────────────────
+  var y = newPage()
+  sf('#1e1b4b'); doc.rect(0, 0, W, 52, 'F')
+  sf('#4338ca'); doc.rect(0, 44, W, 10, 'F')
+  fnt(7, false); st('#a5b4fc')
+  doc.text('HOSPITAL FOOD COST REPORT', W/2, 16, {align:'center'})
+  fnt(22, true); st('#ffffff')
+  doc.text('거래명세서 분석 보고서', W/2, 30, {align:'center'})
+  fnt(11, false); st('#c7d2fe')
+  doc.text(String(hospitalName||''), W/2, 42, {align:'center'})
+
+  var kpis = [
+    {lb:'분석 기간',   vl: year + '년 ' + mm + '월'},
+    {lb:'거래 업체',   vl: vendors.length + '개사'},
+    {lb:'총 발주금액', vl: fmtK(grandTotal)}
+  ]
+  var kW=55, kH=22, kY=58
+  for (var ki=0; ki<kpis.length; ki++) {
+    var kX = ML + ki * (kW + 8)
+    sf('#f0f4ff'); doc.roundedRect(kX, kY, kW, kH, 2, 2, 'F')
+    fnt(7, false); st('#6366f1'); doc.text(kpis[ki].lb, kX+kW/2, kY+7, {align:'center'})
+    fnt(12, true); st('#1e1b4b'); doc.text(String(kpis[ki].vl), kX+kW/2, kY+16, {align:'center'})
+  }
+  y = kY + kH + 8
+
+  if (vendors.length > 0) {
+    fnt(9, true); st('#374151'); doc.text('거래 업체 목록', ML, y); y += 6
+    for (var vli=0; vli<Math.min(vendors.length,6); vli++) {
+      var vc = hr(COLS6[vli%6])
+      doc.setFillColor(vc[0],vc[1],vc[2]); doc.circle(ML+3, y+2, 2.5, 'F')
+      fnt(7, true); st('#ffffff'); doc.text(String(vli+1), ML+3, y+3.2, {align:'center'})
+      fnt(9, false); st('#1f2937'); doc.text(String(vendors[vli].vendor_name||''), ML+8, y+3.5)
+      y += 8
     }
+  }
+  sd('#e5e7eb'); doc.setLineWidth(0.3); doc.line(ML, H-18, MR, H-18)
+  fnt(7, false); st('#9ca3af')
+  doc.text('생성일: ' + new Date().toLocaleDateString('ko-KR') + '   |   ' + String(hospitalName||''), W/2, H-12, {align:'center'})
 
-    // 하단 생성일
-    sd('#e5e7eb'); doc.setLineWidth(0.3); doc.line(ML,H-18,MR,H-18)
-    fnt(7); st('#9ca3af')
-    doc.text(`생성일: ${new Date().toLocaleDateString('ko-KR')}   |   ${hospitalName||''}`, W/2, H-12, {align:'center'})
+  // ── PAGE 2: 운영 종합 현황 ────────────────────────────────────
+  y = newPage()
+  y = secHead(y, '운영 종합 현황')
+  fnt(7, false); st('#6b7280')
+  doc.text(year + '년 ' + mm + '월  |  ' + String(hospitalName||''), ML, y); y += 7
 
-    /* ═══════════════════════════════════════════════════════
-       PAGE 2 : 운영 종합 현황
-    ═══════════════════════════════════════════════════════ */
-    y = newPage()
-    y = secHead(y, '운영 종합 현황')
-    fnt(7); st('#6b7280'); doc.text(`${year}년 ${mm}월  |  ${hospitalName||''}`, ML, y); y+=7
+  var bkpis = [
+    {lb:'총 예산',    vl:fmtK(totalBudget),  bg:'#f0fdf4',tc:'#15803d',lc:'#166534'},
+    {lb:'총 발주금액', vl:fmtK(totalUsed),    bg:'#fef3c7',tc:'#d97706',lc:'#92400e'},
+    {lb:'잔여 예산',  vl:fmtK(remainBudget), bg:'#eff6ff',tc:'#1d4ed8',lc:'#1e3a8a'}
+  ]
+  var bW=54, bH=20
+  for (var bi=0; bi<bkpis.length; bi++) {
+    var bX = ML + bi * (bW + 10)
+    sf(bkpis[bi].bg); doc.roundedRect(bX, y, bW, bH, 2, 2, 'F')
+    fnt(7, false); st(bkpis[bi].lc); doc.text(bkpis[bi].lb, bX+bW/2, y+7, {align:'center'})
+    fnt(11, true); st(bkpis[bi].tc); doc.text(String(bkpis[bi].vl), bX+bW/2, y+15, {align:'center'})
+  }
+  y += bH + 6
 
-    // 예산 KPI 3개
-    const bkpis=[
-      {lb:'총 예산',    vl:fmtK(totalBudget),  bg:'#f0fdf4',tc:'#15803d',lc:'#166534'},
-      {lb:'총 발주금액', vl:fmtK(totalUsed),    bg:'#fef3c7',tc:'#d97706',lc:'#92400e'},
-      {lb:'잔여 예산',  vl:fmtK(remainBudget), bg:'#eff6ff',tc:'#1d4ed8',lc:'#1e3a8a'}
-    ]
-    const bW=54,bH=20
-    bkpis.forEach((k,i)=>{
-      const bX=ML+i*(bW+10)
-      sf(k.bg); doc.roundedRect(bX,y,bW,bH,2,2,'F')
-      fnt(7); st(k.lc); doc.text(k.lb, bX+bW/2, y+7, {align:'center'})
-      fnt(11,true); st(k.tc); doc.text(k.vl, bX+bW/2, y+15, {align:'center'})
-    })
-    y+=bH+6
+  fnt(8, true); st('#374151'); doc.text('예산 사용률: ' + usagePct.toFixed(1) + '%', ML, y); y += 5
+  sd('#e5e7eb'); doc.setLineWidth(0.5); doc.roundedRect(ML, y, CW, 6, 1, 1, 'S')
+  var barW = Math.min(CW * usagePct / 100, CW)
+  var barColor = usagePct > 90 ? '#dc2626' : usagePct > 70 ? '#d97706' : '#059669'
+  sf(barColor); doc.roundedRect(ML, y, Math.max(barW, 0.1), 6, 1, 1, 'F')
+  y += 10
 
-    // 사용률 바
-    fnt(8,true); st('#374151'); doc.text(`예산 사용률: ${usagePct.toFixed(1)}%`, ML, y); y+=5
-    sd('#e5e7eb'); doc.setLineWidth(0.5); doc.roundedRect(ML,y,CW,6,1,1,'S')
-    const barW = Math.min(CW * usagePct/100, CW)
-    const barColor = usagePct>90?'#dc2626':usagePct>70?'#d97706':'#059669'
-    sf(barColor); doc.roundedRect(ML,y,barW,6,1,1,'F')
-    y+=10
-
-    // 업체별 현황 테이블
-    if(vendorData.length>0){
-      y = secHead(y, '업체별 현황')
-      const tHead = ['업체명','카테고리수','총 발주금액','비중(%)']
-      const tBody = vendorData.map(v=>[
-        v.name||'',
-        String(v.cats.length),
-        fmtN(v.total.grand_total||0)+'원',
-        grandTotal>0?(Number(v.total.grand_total||0)/grandTotal*100).toFixed(1)+'%':'0%'
-      ])
-      y = tblOpts(y, tHead, tBody, {
-        0:{cellWidth:70},1:{cellWidth:24,halign:'center'},2:{cellWidth:50,halign:'right'},3:{cellWidth:30,halign:'center'}
-      })
-    }
-
-    /* ═══════════════════════════════════════════════════════
-       PAGE 3~N : 업체별 상세
-    ═══════════════════════════════════════════════════════ */
-    vendorData.forEach((v,vi)=>{
-      y = newPage()
-      const col = COLS6[vi%6]
-      y = secHead(y, `${v.name} 상세 분석`, col)
-      fnt(7); st('#6b7280')
-      doc.text(`총 발주금액: ${fmtN(v.total.grand_total||0)}원  |  카테고리 수: ${v.cats.length}개`, ML, y)
-      y+=7
-
-      // 카테고리별 현황 테이블
-      if(v.cats.length>0){
-        fnt(9,true); st('#374151'); doc.text('카테고리별 현황', ML, y); y+=4
-        const cHead = ['카테고리','총금액','수량','단가평균']
-        const cBody = v.cats.map(c=>[
-          c.category_name||c.category||'기타',
-          fmtN(c.total_amount||0)+'원',
-          fmtN(c.total_qty||0),
-          c.total_qty>0?fmtN(Math.round((c.total_amount||0)/(c.total_qty||1)))+'원':'-'
-        ])
-        y = tblOpts(y, cHead, cBody, {
-          0:{cellWidth:60},1:{cellWidth:44,halign:'right'},2:{cellWidth:30,halign:'right'},3:{cellWidth:40,halign:'right'}
-        }, col)
-      }
-
-      // 금액 TOP5 품목
-      const top5amt = [...(v.items||[])].sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,5)
-      if(top5amt.length>0){
-        y+=2
-        fnt(9,true); st('#374151'); doc.text('금액 TOP 5 품목', ML, y); y+=4
-        const iHead = ['품목명','단가','수량','합계']
-        const iBody = top5amt.map(it=>[
-          it.item_name||'',
-          fmtN(it.unit_price||0)+'원',
-          fmtN(it.total_qty||0),
-          fmtN(it.total_amount||0)+'원'
-        ])
-        y = tblOpts(y, iHead, iBody, {
-          0:{cellWidth:76},1:{cellWidth:36,halign:'right'},2:{cellWidth:24,halign:'right'},3:{cellWidth:38,halign:'right'}
-        }, col)
-      }
-    })
-
-    /* ═══════════════════════════════════════════════════════
-       마지막 페이지: 인사이트
-    ═══════════════════════════════════════════════════════ */
-    y = newPage()
-    y = secHead(y, '주요 인사이트 및 절감 전략')
-
-    // 전체 품목 통합
-    const allItems = vendorData.flatMap(v=>(v.items||[]).map(it=>({...it, vendor:v.name})))
-
-    // 금액 TOP 품목
-    const topAmt = [...allItems].sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,8)
-    if(topAmt.length>0){
-      fnt(9,true); st('#374151'); doc.text('발주금액 TOP 8 품목', ML, y); y+=4
-      const tHead = ['품목명','업체','단가','수량','합계']
-      const tBody = topAmt.map(it=>[
-        it.item_name||'',
-        it.vendor||'',
-        fmtN(it.unit_price||0)+'원',
-        fmtN(it.total_qty||0),
-        fmtN(it.total_amount||0)+'원'
-      ])
-      y = tblOpts(y, tHead, tBody, {
-        0:{cellWidth:56},1:{cellWidth:36},2:{cellWidth:32,halign:'right'},3:{cellWidth:22,halign:'right'},4:{cellWidth:28,halign:'right'}
-      })
-    }
-
-    // 절감 전략 박스
-    if(y < H-60){
-      y = secHead(y, '절감 전략 가이드', '#059669')
-      const tips=[
-        '발주 금액 상위 품목은 가격 협상 우선 대상입니다.',
-        '동일 품목의 업체별 단가 차이를 정기적으로 비교하세요.',
-        '계절별 제철 식재료 활용으로 원가를 절감할 수 있습니다.',
-        '대량 구매 시 업체와 단가 협약 체결을 검토하세요.',
-        '월별 사용 추이를 분석하여 과잉 발주를 방지하세요.'
+  if (vendorData.length > 0) {
+    y = secHead(y, '업체별 현황')
+    var th2 = ['업체명','카테고리수','총 발주금액','비중(%)']
+    var tb2 = vendorData.map(function(vd) {
+      return [
+        String(vd.name||''),
+        String(vd.cats.length),
+        fmtN(vd.total.grand_total||0) + '원',
+        grandTotal > 0 ? (Number(vd.total.grand_total||0)/grandTotal*100).toFixed(1) + '%' : '0%'
       ]
-      sf('#f0fdf4'); doc.rect(ML,y,CW,tips.length*7+6,'F')
-      fnt(8,false); st('#1e40af')
-      tips.forEach((tip,i)=>{ doc.text(`• ${tip}`,ML+4,y+7+i*7) })
+    })
+    y = tblOpts(y, th2, tb2, {0:{cellWidth:70},1:{cellWidth:24,halign:'center'},2:{cellWidth:50,halign:'right'},3:{cellWidth:30,halign:'center'}})
+  }
+
+  // ── PAGE 3~N: 업체별 상세 ──────────────────────────────────────
+  for (var vdi=0; vdi<vendorData.length; vdi++) {
+    var vd = vendorData[vdi]
+    y = newPage()
+    var col = COLS6[vdi%6]
+    y = secHead(y, String(vd.name||'') + ' 상세 분석', col)
+    fnt(7, false); st('#6b7280')
+    doc.text('총 발주금액: ' + fmtN(vd.total.grand_total||0) + '원  |  카테고리 수: ' + vd.cats.length + '개', ML, y)
+    y += 7
+
+    if (vd.cats.length > 0) {
+      fnt(9, true); st('#374151'); doc.text('카테고리별 현황', ML, y); y += 4
+      var cHead = ['카테고리','총금액','수량','단가평균']
+      var cBody = vd.cats.map(function(c) {
+        var avg = c.total_qty > 0 ? fmtN(Math.round((c.total_amount||0)/(c.total_qty||1))) + '원' : '-'
+        return [
+          String(c.category_name||c.category||'기타'),
+          fmtN(c.total_amount||0) + '원',
+          fmtN(c.total_qty||0),
+          avg
+        ]
+      })
+      y = tblOpts(y, cHead, cBody, {0:{cellWidth:60},1:{cellWidth:44,halign:'right'},2:{cellWidth:30,halign:'right'},3:{cellWidth:40,halign:'right'}}, col)
     }
 
-    /* ── 저장 ─────────────────────────────────────────────── */
-    doc.save(`${hospitalName}_${year}년${mm}월_거래명세서분석보고서.pdf`)
-    showToast(`✅ PDF 보고서 생성 완료! (${pageNum}페이지)`, 'success')
+    var top5 = (vd.items||[]).slice().sort(function(a,b){ return (Number(b.total_amount)||0)-(Number(a.total_amount)||0) }).slice(0,5)
+    if (top5.length > 0) {
+      y += 2
+      fnt(9, true); st('#374151'); doc.text('금액 TOP 5 품목', ML, y); y += 4
+      var iHead = ['품목명','단가','수량','합계']
+      var iBody = top5.map(function(it) {
+        return [
+          String(it.item_name||''),
+          fmtN(it.unit_price||0) + '원',
+          fmtN(it.total_qty||0),
+          fmtN(it.total_amount||0) + '원'
+        ]
+      })
+      y = tblOpts(y, iHead, iBody, {0:{cellWidth:76},1:{cellWidth:36,halign:'right'},2:{cellWidth:24,halign:'right'},3:{cellWidth:38,halign:'right'}}, col)
+    }
+  }
 
-  } catch(err) {
-    console.error('[PDF] 생성 오류:', err)
-    showToast(`PDF 생성 실패: ${err.message}`, 'error')
+  // ── 마지막 페이지: 인사이트 ────────────────────────────────────
+  y = newPage()
+  y = secHead(y, '주요 인사이트 및 절감 전략')
+
+  var allItems = []
+  for (var ai=0; ai<vendorData.length; ai++) {
+    var vname = vendorData[ai].name
+    var its = vendorData[ai].items || []
+    for (var ii=0; ii<its.length; ii++) {
+      allItems.push(Object.assign({}, its[ii], {vendor: vname}))
+    }
+  }
+
+  var topAmt = allItems.slice().sort(function(a,b){ return (Number(b.total_amount)||0)-(Number(a.total_amount)||0) }).slice(0,8)
+  if (topAmt.length > 0) {
+    fnt(9, true); st('#374151'); doc.text('발주금액 TOP 8 품목', ML, y); y += 4
+    var tHead3 = ['품목명','업체','단가','수량','합계']
+    var tBody3 = topAmt.map(function(it) {
+      return [
+        String(it.item_name||''),
+        String(it.vendor||''),
+        fmtN(it.unit_price||0) + '원',
+        fmtN(it.total_qty||0),
+        fmtN(it.total_amount||0) + '원'
+      ]
+    })
+    y = tblOpts(y, tHead3, tBody3, {0:{cellWidth:56},1:{cellWidth:36},2:{cellWidth:32,halign:'right'},3:{cellWidth:22,halign:'right'},4:{cellWidth:28,halign:'right'}})
+  }
+
+  if (y < H - 60) {
+    y = secHead(y, '절감 전략 가이드', '#059669')
+    var tips = [
+      '발주 금액 상위 품목은 가격 협상 우선 대상입니다.',
+      '동일 품목의 업체별 단가 차이를 정기적으로 비교하세요.',
+      '계절별 제철 식재료 활용으로 원가를 절감할 수 있습니다.',
+      '대량 구매 시 업체와 단가 협약 체결을 검토하세요.',
+      '월별 사용 추이를 분석하여 과잉 발주를 방지하세요.'
+    ]
+    sf('#f0fdf4'); doc.rect(ML, y, CW, tips.length*7+6, 'F')
+    fnt(8, false); st('#1e40af')
+    for (var ti=0; ti<tips.length; ti++) {
+      doc.text('• ' + tips[ti], ML+4, y+7+ti*7)
+    }
+  }
+
+  // ── 저장 ─────────────────────────────────────────────────────
+  try {
+    doc.save(String(hospitalName||'병원') + '_' + year + '년' + mm + '월_거래명세서분석보고서.pdf')
+    showToast('✅ PDF 보고서 생성 완료! (' + pageNum + '페이지)', 'success')
+  } catch(saveErr) {
+    console.error('[PDF] doc.save 오류:', saveErr)
+    showToast('PDF 저장 오류: ' + saveErr.message, 'error')
   }
 }
+window._exportTxAnalysisPDFError = null
 // ══════════════════════════════════════════════════════════════════
 //  법인카드 상세입력 모달
 // ══════════════════════════════════════════════════════════════════
