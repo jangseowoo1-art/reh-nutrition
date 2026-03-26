@@ -16206,15 +16206,19 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
 
   // ── 임시 렌더링 컨테이너 (화면 완전히 밖, 사용자에게 비표시) ──
   const wrap = document.createElement('div')
+  // ── 오프스크린 렌더링: 화면 밖에 배치 후 캡처 직전만 잠깐 onscreen
+  //    position:fixed + left:-9999px → 어떤 스크롤에도 노출 안됨
+  //    캡처 시: 순간적으로 left:0 이동 (z-index:-1 이므로 UI 뒤에 가려짐)
+  //    캡처 후: 즉시 left:-9999px 복원
   wrap.style.cssText = [
-    'position:absolute',
-    'top:-99999px',      // 화면 완전히 밖 (스크롤 위치와 무관)
-    'left:0',
+    'position:fixed',
+    'top:0',
+    'left:-9999px',
     'width:794px',
     'height:auto',
+    'min-height:200px',
     'background:white',
-    'z-index:-9999',
-    'visibility:hidden', // 완전 숨김 (레이아웃은 유지)
+    'z-index:-1',        // 모든 UI 아래 → 설령 잠깐 이동해도 안 보임
     'pointer-events:none',
     'overflow:visible',
   ].join(';')
@@ -16223,16 +16227,17 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
   // ── html→PDF 캡처 헬퍼 ──────────────────────────
   async function htmlToPage(htmlStr) {
     wrap.innerHTML = htmlStr
-    // 폰트 로드 대기
+    // 폰트/이미지 로드 대기
     await document.fonts.ready
-    await new Promise(r => setTimeout(r, 300))
+    await new Promise(r => setTimeout(r, 320))
     const el = wrap.firstElementChild
 
-    // html2canvas는 visibility:hidden 요소 캡처 불가 → 캡처 직전만 잠깐 노출
-    // (top:-99999px 이므로 사용자에게는 절대 보이지 않음)
-    wrap.style.visibility = 'visible'
-    await new Promise(r => setTimeout(r, 50))
+    // 캡처 직전: 화면 좌측 맨 뒤쪽으로 이동 (z-index:-1 → UI에 가려짐)
+    wrap.style.left = '0px'
+    await new Promise(r => setTimeout(r, 30))
 
+    // el 기준으로 직접 캡처 (scroll 보정 없이)
+    const rect = el.getBoundingClientRect()
     const canvas = await window.html2canvas(el, {
       scale: 2,
       useCORS: true,
@@ -16240,13 +16245,17 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
       backgroundColor: '#ffffff',
       logging: false,
       scrollX: 0,
-      scrollY: -99999,  // wrap이 top:-99999px 위치에 있으므로 보정
-      windowWidth: 794,
-      windowHeight: el.scrollHeight
+      scrollY: 0,
+      x: rect.left,
+      y: rect.top,
+      width:  Math.ceil(rect.width)  || 794,
+      height: Math.ceil(rect.height) || 1123,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight
     })
 
-    // 캡처 완료 즉시 다시 숨김
-    wrap.style.visibility = 'hidden'
+    // 캡처 완료 즉시 다시 화면 밖으로
+    wrap.style.left = '-9999px'
     const imgData = canvas.toDataURL('image/jpeg', 0.93)
     if (pageNum > 0) doc.addPage()
     pageNum++
