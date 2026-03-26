@@ -21057,26 +21057,26 @@ window.txFilterInvItems = function(keyword) {
 window.txExportCategoryAnalysis = async function() {
   if (typeof XLSX === 'undefined') {
     const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js'
     s.onload = () => { showToast('라이브러리 로드 완료. 다시 클릭해주세요.', 'info') }
     document.head.appendChild(s)
     showToast('엑셀 라이브러리 로딩 중...', 'warning')
     return
   }
 
-  const items        = window._invAllItems    || []
-  const cats         = window._invCategories  || []
-  const monthlyTotals= window._invMonthlyTotals || []
-  const monthlyByCat = window._invMonthlyByCat  || []
-  const vendor  = TXState._invVendor || ''
-  const year    = TXState._invYear   || ''
-  const month   = TXState._invMonth  || ''
-  const dateFrom = window._invDateFrom || TXState._invDateFrom || ''
-  const dateTo   = window._invDateTo   || TXState._invDateTo   || ''
+  const items         = window._invAllItems     || []
+  const cats          = window._invCategories   || []
+  const monthlyTotals = window._invMonthlyTotals || []
+  const monthlyByCat  = window._invMonthlyByCat  || []
+  const vendor      = TXState._invVendor || ''
+  const year        = TXState._invYear   || ''
+  const month       = TXState._invMonth  || ''
+  const dateFrom    = window._invDateFrom || TXState._invDateFrom || ''
+  const dateTo      = window._invDateTo   || TXState._invDateTo   || ''
   const totalBudget = window._invBudgetTotal || 0
   const totalUsed   = window._invBudgetUsed  || 0
+  const hospName    = TXState.selectedHospitalName || window._adminHospitalName || ''
 
-  // 기간 레이블 결정
   const mm = String(month).padStart(2,'0')
   const periodLabel = dateFrom && dateTo && (dateFrom !== `${year}-${mm}-01` || dateTo !== `${year}-${mm}-${String(new Date(Number(year),Number(month),0).getDate()).padStart(2,'0')}`)
     ? `${dateFrom} ~ ${dateTo}`
@@ -21084,279 +21084,534 @@ window.txExportCategoryAnalysis = async function() {
 
   if (items.length === 0) { showToast('내보낼 데이터가 없습니다.', 'error'); return }
 
-  // 셀 스타일 헬퍼 (xlsx-style 없이 기본 구조만)
-  const NUM_FMT = '#,##0'
-  const PCT_FMT = '0.0"%"'
-  // 숫자 셀 생성 (포맷 적용)
-  const nc = (v, fmt) => ({ t: 'n', v: Number(v)||0, z: fmt || NUM_FMT })
-  const sc = (v) => ({ t: 's', v: String(v||'') })
-  // 병합 셀 정보 생성
-  const merge = (rs, re, cs, ce) => ({ s: { r: rs, c: cs }, e: { r: re, c: ce } })
+  showToast('보고서 생성 중...', 'info')
+
+  // ══════════════════════════════════════════════════════════════
+  //  스타일 정의 헬퍼
+  // ══════════════════════════════════════════════════════════════
+  const FMT_NUM  = '#,##0'
+  const FMT_PCT  = '0.0"%"'
+  const FMT_WON  = '#,##0"원"'
+
+  // 기본 폰트
+  const FONT_BASE  = { name: '맑은 고딕', sz: 10 }
+  const FONT_BOLD  = { name: '맑은 고딕', sz: 10, bold: true }
+  const FONT_TITLE = { name: '맑은 고딕', sz: 16, bold: true, color: { rgb: '1E3A5F' } }
+  const FONT_SUB   = { name: '맑은 고딕', sz: 10, italic: true, color: { rgb: '555555' } }
+  const FONT_HDR   = { name: '맑은 고딕', sz: 10, bold: true, color: { rgb: 'FFFFFF' } }
+  const FONT_SEC   = { name: '맑은 고딕', sz: 11, bold: true, color: { rgb: '1E3A5F' } }
+
+  // 배경색 팔레트
+  const BG_TITLE   = { fgColor: { rgb: '1E3A5F' } }  // 진한 남색 (제목)
+  const BG_HDR     = { fgColor: { rgb: '2E6DA4' } }  // 파랑 (헤더)
+  const BG_HDR2    = { fgColor: { rgb: '4A90C4' } }  // 연파랑 (보조 헤더)
+  const BG_SEC     = { fgColor: { rgb: 'EBF3FB' } }  // 섹션 배경
+  const BG_CAT     = { fgColor: { rgb: 'D6E8F7' } }  // 분류행 배경
+  const BG_SUM     = { fgColor: { rgb: 'FFF3CD' } }  // 합계행 (노랑)
+  const BG_SUM2    = { fgColor: { rgb: 'E8F5E9' } }  // 합계행2 (초록)
+  const BG_ODD     = { fgColor: { rgb: 'FAFAFA' } }  // 홀수행
+  const BG_EVEN    = { fgColor: { rgb: 'FFFFFF' } }  // 짝수행
+  const BG_META    = { fgColor: { rgb: 'F0F7FF' } }  // 메타정보 배경
+  const BG_TOP1    = { fgColor: { rgb: 'FFF8E1' } }  // TOP1 금액강조
+
+  // 테두리
+  const BD_THIN  = { style: 'thin',   color: { rgb: 'CCCCCC' } }
+  const BD_MED   = { style: 'medium', color: { rgb: '2E6DA4' } }
+  const BD_THICK = { style: 'thick',  color: { rgb: '1E3A5F' } }
+  const border = (t,r,b,l) => ({ top:t, right:r, bottom:b, left:l })
+  const BD_ALL_THIN = border(BD_THIN, BD_THIN, BD_THIN, BD_THIN)
+  const BD_ALL_MED  = border(BD_MED,  BD_MED,  BD_MED,  BD_MED)
+
+  // 정렬
+  const AL_CC = { horizontal:'center',  vertical:'center',  wrapText:false }
+  const AL_LC = { horizontal:'left',    vertical:'center',  wrapText:false }
+  const AL_RC = { horizontal:'right',   vertical:'center',  wrapText:false }
+  const AL_CW = { horizontal:'center',  vertical:'center',  wrapText:true  }
+
+  // 셀 생성자
+  const CS = (v, s) => ({ v, s })                                     // 문자열 셀
+  const CN = (v, fmt, s) => ({ v: Number(v)||0, t:'n', z: fmt||FMT_NUM, s })  // 숫자 셀
+  const CB = (v, s) => ({ v, s })                                     // 공백 셀
+  const merge = (rs, re, cs, ce) => ({ s:{r:rs,c:cs}, e:{r:re,c:ce} })
+
+  // 스타일 결합
+  const ST = (font, fill, alignment, border) => ({
+    font: font||FONT_BASE, fill: fill||{}, alignment: alignment||AL_LC,
+    border: border||BD_ALL_THIN
+  })
+
+  // 자주 쓰는 스타일 조합
+  const S_TITLE  = ST(FONT_TITLE, BG_TITLE, AL_CC, BD_ALL_MED)
+  const S_META   = ST(FONT_SUB,  BG_META,  AL_LC, BD_ALL_THIN)
+  const S_HDR    = ST(FONT_HDR,  BG_HDR,   AL_CC, BD_ALL_MED)
+  const S_HDR2   = ST(FONT_HDR,  BG_HDR2,  AL_CC, BD_ALL_MED)
+  const S_SEC    = ST(FONT_SEC,  BG_SEC,   AL_LC, border(BD_MED,BD_THIN,BD_THIN,BD_MED))
+  const S_CAT    = ST(FONT_BOLD, BG_CAT,   AL_LC, BD_ALL_THIN)
+  const S_CAT_N  = (fmt) => ({ ...ST(FONT_BOLD, BG_CAT, AL_RC, BD_ALL_THIN), z: fmt||FMT_NUM })
+  const S_SUM    = ST(FONT_BOLD, BG_SUM,   AL_LC, BD_ALL_MED)
+  const S_SUM_N  = (fmt) => ({ ...ST(FONT_BOLD, BG_SUM, AL_RC, BD_ALL_MED),  z: fmt||FMT_NUM })
+  const S_SUM2   = ST(FONT_BOLD, BG_SUM2,  AL_LC, BD_ALL_MED)
+  const S_SUM2_N = (fmt) => ({ ...ST(FONT_BOLD, BG_SUM2, AL_RC, BD_ALL_MED), z: fmt||FMT_NUM })
+  const S_BODY   = (odd) => ST(FONT_BASE, odd?BG_ODD:BG_EVEN, AL_LC, BD_ALL_THIN)
+  const S_BODY_N = (odd, fmt) => ({ ...ST(FONT_BASE, odd?BG_ODD:BG_EVEN, AL_RC, BD_ALL_THIN), z: fmt||FMT_NUM })
+  const S_BODY_C = (odd) => ST(FONT_BASE, odd?BG_ODD:BG_EVEN, AL_CC, BD_ALL_THIN)
+  const S_BOLD   = ST(FONT_BOLD, BG_ODD,  AL_LC, BD_ALL_THIN)
+  const S_BOLD_N = (fmt) => ({ ...ST(FONT_BOLD, BG_ODD, AL_RC, BD_ALL_THIN), z: fmt||FMT_NUM })
+  const S_EMPTY  = { font:FONT_BASE, fill:{}, border:{}, alignment:AL_LC }
+  const S_TOP1   = ST(FONT_BOLD, BG_TOP1, AL_LC, BD_ALL_THIN)
+  const S_TOP1_N = (fmt) => ({ ...ST(FONT_BOLD, BG_TOP1, AL_RC, BD_ALL_THIN), z: fmt||FMT_NUM })
+
+  // ── 워크시트 직접 빌드 헬퍼 ──────────────────────────────────
+  const makeWS = (rows, cols, merges) => {
+    const ws = {}
+    let maxC = 0
+    rows.forEach((row, r) => {
+      row.forEach((cell, c) => {
+        if (c > maxC) maxC = c
+        if (cell == null) return
+        const ref = XLSX.utils.encode_cell({r, c})
+        if (typeof cell === 'object' && 'v' in cell) {
+          ws[ref] = { v: cell.v, t: cell.t||(typeof cell.v==='number'?'n':'s'), z: cell.z, s: cell.s }
+        } else {
+          ws[ref] = { v: cell, t: typeof cell==='number'?'n':'s', s: {} }
+        }
+      })
+    })
+    ws['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:rows.length-1, c:maxC}})
+    if (cols)   ws['!cols']   = cols
+    if (merges) ws['!merges'] = merges
+    return ws
+  }
+
+  const grandTot  = cats.reduce((s,c)=>s+(Number(c.grand_total)||0), 0)
+  const catOrder  = cats.map(c=>c.supplier_category||'미분류')
+  const sorted    = [...items].sort((a,b)=>{
+    const ai = catOrder.indexOf(a.supplier_category||'미분류')
+    const bi = catOrder.indexOf(b.supplier_category||'미분류')
+    return ai!==bi ? ai-bi : (Number(b.amount)||0)-(Number(a.amount)||0)
+  })
 
   const wb = XLSX.utils.book_new()
-  const grandTot = cats.reduce((s,c) => s + (Number(c.grand_total)||0), 0)
+  const nowStr = new Date().toLocaleString('ko-KR')
 
-  // 분류 순서대로 정렬된 품목
-  const catOrder = cats.map(c => c.supplier_category || '미분류')
-  const sorted = [...items].sort((a, b) => {
-    const ai = catOrder.indexOf(a.supplier_category || '미분류')
-    const bi = catOrder.indexOf(b.supplier_category || '미분류')
-    if (ai !== bi) return ai - bi
-    return (Number(b.amount)||0) - (Number(a.amount)||0)
-  })
+  // ══════════════════════════════════════════════════════════════
+  //  Sheet 1: 종합 요약 보고서
+  // ══════════════════════════════════════════════════════════════
+  const NCOL1 = 7  // 시트1 열 수
+  ;(() => {
+    const rows = []
+    const merges = []
+    let r = 0
 
-  // 보고서 제목/메타 섹션 공통 헬퍼
-  const reportHeader = (title, sub1, sub2) => [
-    [title],
-    [sub1 || ''],
-    [sub2 || ''],
-    ['']  // 빈 줄
-  ]
+    // ── 제목 영역 ──
+    rows.push([CS(`${year}년 ${month}월 거래명세서 분류별 분석 보고서`, S_TITLE)])
+    merges.push(merge(r,r,0,NCOL1-1)); r++
 
-  // ─────────────────────────────────────────────
-  // Sheet 1: 분류별 금액 상세 + 품목별 비중
-  // ─────────────────────────────────────────────
-  const s1Header = reportHeader(
-    `◆ 분류별 거래명세서 분석 보고서`,
-    `업체: ${vendor}   기간: ${periodLabel}`,
-    `생성일시: ${new Date().toLocaleString('ko-KR')}`
-  )
-  const s1ColHdr = [
-    '분류', '품목수', '공급가액(원)', '부가세(원)', '합계(원)',
-    '전체비중(%)', '분류내 TOP1 품목', 'TOP1 금액(원)', 'TOP1 비중(%)'
-  ]
-  s1Header.push(s1ColHdr)
+    rows.push([CS(`업체: ${vendor}`, S_META)])
+    merges.push(merge(r,r,0,NCOL1-1)); r++
+    rows.push([CS(`병원: ${hospName||'-'}   |   기준: ${periodLabel}   |   생성일시: ${nowStr}`, S_META)])
+    merges.push(merge(r,r,0,NCOL1-1)); r++
+    rows.push(Array(NCOL1).fill(CS('',S_EMPTY))); r++   // 빈 줄
 
-  cats.forEach(c => {
-    const catAmt = Number(c.grand_total) || 0
-    const pct = grandTot > 0 ? Math.round(catAmt / grandTot * 1000) / 10 : 0
-    const catItems = sorted.filter(i => (i.supplier_category||'미분류') === (c.supplier_category||'미분류'))
-    const top1 = catItems[0]
-    const top1Amt = top1 ? Number(top1.amount) : 0
-    const top1Pct = catAmt > 0 && top1 ? Math.round(top1Amt / catAmt * 1000) / 10 : 0
-    s1Header.push([
-      c.supplier_category || '미분류',
-      Number(c.item_count) || 0,
-      Number(c.total_amount) || 0,
-      Number(c.total_vat) || 0,
-      catAmt, pct,
-      top1 ? top1.item_name : '-',
-      top1Amt, top1Pct
-    ])
-    // 해당 분류 품목 상세 (들여쓰기)
-    catItems.forEach(it => {
-      const itAmt = Number(it.amount) || 0
-      const itPct = catAmt > 0 ? Math.round(itAmt / catAmt * 1000) / 10 : 0
-      s1Header.push([
-        `  └ ${it.item_name || ''}`, '',
-        itAmt, Number(it.tax_amount)||0, Number(it.total)||0, '',
-        `단가: ${(Number(it.unit_price)||0).toLocaleString()}원`,
-        `수량: ${it.quantity||0}${it.unit||''}`,
-        itPct
-      ])
+    // ── 섹션1: 총괄 요약 ──
+    rows.push([CS('【 1. 총괄 요약 】', S_SEC)])
+    merges.push(merge(r,r,0,NCOL1-1)); r++
+
+    rows.push([
+      CS('구분', S_HDR), CS('금액', S_HDR), CS('비율(%)', S_HDR),
+      CS('품목수', S_HDR), CS('비고', S_HDR),
+      CS('', S_HDR), CS('', S_HDR)
+    ]); r++
+
+    let odd = true
+    const addSumRow = (label, amt, pct, cnt, note, sSt, nSt) => {
+      rows.push([
+        CS(label, sSt||S_BODY(odd)),
+        CN(amt, FMT_WON, nSt||S_BODY_N(odd, FMT_WON)),
+        CN(pct, FMT_PCT, nSt||S_BODY_N(odd, FMT_PCT)),
+        CN(cnt, '#,##0', nSt||S_BODY_N(odd,'#,##0')),
+        CS(note||'', S_BODY(odd)),
+        CS('', S_BODY(odd)), CS('', S_BODY(odd))
+      ]); odd=!odd; r++
+    }
+    addSumRow('명세서 총 합계', grandTot, 100, items.length, `${cats.length}개 분류`, S_SUM, S_SUM_N)
+    cats.forEach(c=>{
+      const amt = Number(c.grand_total)||0
+      const pct = grandTot>0 ? Math.round(amt/grandTot*1000)/10 : 0
+      addSumRow(`  ${c.supplier_category||'미분류'}`, amt, pct, Number(c.item_count)||0, '', S_BODY(odd), S_BODY_N(odd))
     })
-    s1Header.push([''])
-  })
-  s1Header.push(['▶ 합 계', items.length,
-    cats.reduce((s,c)=>s+(Number(c.total_amount)||0),0),
-    cats.reduce((s,c)=>s+(Number(c.total_vat)||0),0),
-    grandTot, 100, '', '', ''
-  ])
+    if (totalBudget>0) {
+      rows.push(Array(NCOL1).fill(CS('',S_EMPTY))); r++
+      addSumRow('총 예산', totalBudget, 100, 0, '', S_SUM2, S_SUM2_N)
+      addSumRow('전체 발주액', totalUsed, totalBudget>0?Math.round(totalUsed/totalBudget*1000)/10:0, 0, '예산 대비', S_BODY(odd), S_BODY_N(odd))
+      addSumRow('명세서 금액', grandTot, totalBudget>0?Math.round(grandTot/totalBudget*1000)/10:0, 0, '예산 대비', S_BODY(odd), S_BODY_N(odd))
+      const remain = totalBudget - totalUsed
+      addSumRow('잔여 예산', remain, totalBudget>0?Math.round(remain/totalBudget*1000)/10:0, 0, remain<0?'⚠ 예산 초과':'', remain<0?S_SUM:S_BODY(odd), remain<0?S_SUM_N:S_BODY_N(odd))
+    }
 
-  const ws1 = XLSX.utils.aoa_to_sheet(s1Header)
-  ws1['!cols'] = [{wch:22},{wch:7},{wch:15},{wch:12},{wch:15},{wch:9},{wch:28},{wch:14},{wch:9}]
-  // 헤더행 병합 (제목 행)
-  ws1['!merges'] = [
-    merge(0, 0, 0, 8),  // 제목행 병합
-    merge(1, 1, 0, 8),  // 업체/기간 행 병합
-    merge(2, 2, 0, 8),  // 생성일시 병합
-  ]
-  XLSX.utils.book_append_sheet(wb, ws1, '①분류별금액+품목비중')
+    rows.push(Array(NCOL1).fill(CS('',S_EMPTY))); r++
 
-  // ─────────────────────────────────────────────
-  // Sheet 2: 분류별 금액 상세 (전체 품목 상세)
-  // ─────────────────────────────────────────────
-  const s2Header = reportHeader(
-    `◆ 품목별 거래명세서 상세`,
-    `업체: ${vendor}   기간: ${periodLabel}`,
-    `전체 ${items.length}건 · 총 ${grandTot.toLocaleString()}원`
-  )
-  s2Header.push(['분류', '품목코드', '품목명', '규격', '단위', '수량', '단가(원)', '공급가(원)', '부가세(원)', '합계(원)', '과세구분'])
-  sorted.forEach(it => {
-    s2Header.push([
-      it.supplier_category || '미분류',
-      it.item_code || '',
-      it.item_name || '',
-      it.spec || '',
-      it.unit || '',
-      Number(it.quantity)||0,
-      Number(it.unit_price) || 0,
-      Number(it.amount) || 0,
-      Number(it.tax_amount) || 0,
-      Number(it.total) || 0,
-      (Number(it.tax_amount) || 0) > 0 ? '과세' : '면세'
-    ])
-  })
-  s2Header.push(['▶ 합 계', '', '', '', '',
-    sorted.reduce((s,i)=>s+(Number(i.quantity)||0),0), '',
-    sorted.reduce((s,i)=>s+(Number(i.amount)||0),0),
-    sorted.reduce((s,i)=>s+(Number(i.tax_amount)||0),0),
-    sorted.reduce((s,i)=>s+(Number(i.total)||0),0), ''
-  ])
-  const ws2 = XLSX.utils.aoa_to_sheet(s2Header)
-  ws2['!cols'] = [{wch:14},{wch:13},{wch:26},{wch:28},{wch:6},{wch:7},{wch:13},{wch:13},{wch:11},{wch:13},{wch:7}]
-  ws2['!merges'] = [merge(0,0,0,10), merge(1,1,0,10), merge(2,2,0,10)]
-  XLSX.utils.book_append_sheet(wb, ws2, '②품목별상세')
+    // ── 섹션2: 분류별 TOP 품목 ──
+    rows.push([CS('【 2. 분류별 상위 품목 요약 】', S_SEC)])
+    merges.push(merge(r,r,0,NCOL1-1)); r++
 
-  // ─────────────────────────────────────────────
-  // Sheet 3: 분류별 주요 품목 TOP5
-  // ─────────────────────────────────────────────
-  const s3Header = reportHeader(
-    `◆ 분류별 주요 품목 TOP5`,
-    `업체: ${vendor}   기간: ${periodLabel}`,
-    `각 분류에서 금액 기준 상위 5개 품목`
-  )
-  s3Header.push(['분류', '순위', '품목명', '수량', '단위', '단가(원)', '금액(원)', '분류내비중(%)', '전체비중(%)'])
-  cats.forEach(cat => {
-    const catItems = sorted.filter(i => (i.supplier_category||'미분류') === (cat.supplier_category||'미분류'))
-    const catTotal = catItems.reduce((s,i)=>s+(Number(i.amount)||0),0)
-    catItems.slice(0,5).forEach((it, idx) => {
-      const catPct = catTotal > 0 ? Math.round(Number(it.amount)/catTotal*1000)/10 : 0
-      const totPct = grandTot > 0 ? Math.round(Number(it.amount)/grandTot*1000)/10 : 0
-      s3Header.push([
-        idx === 0 ? (cat.supplier_category||'미분류') : '',
-        idx+1, it.item_name, Number(it.quantity)||0, it.unit||'',
-        Number(it.unit_price)||0, Number(it.amount)||0, catPct, totPct
-      ])
+    rows.push([
+      CS('분류', S_HDR), CS('TOP 품목명', S_HDR), CS('수량', S_HDR),
+      CS('단가', S_HDR), CS('금액', S_HDR), CS('분류내비중', S_HDR), CS('전체비중', S_HDR)
+    ]); r++
+
+    let odd2 = true
+    cats.forEach(c=>{
+      const catItems = sorted.filter(i=>(i.supplier_category||'미분류')===(c.supplier_category||'미분류'))
+      const catTot = Number(c.grand_total)||0
+      catItems.slice(0,3).forEach((it,idx)=>{
+        const amt = Number(it.amount)||0
+        const catPct = catTot>0 ? Math.round(amt/catTot*1000)/10 : 0
+        const totPct = grandTot>0 ? Math.round(amt/grandTot*1000)/10 : 0
+        const st  = idx===0 ? S_CAT    : S_BODY(odd2)
+        const stN = idx===0 ? (fmt=>({...S_CAT_N(fmt)})) : (fmt=>S_BODY_N(odd2,fmt))
+        rows.push([
+          CS(idx===0?(c.supplier_category||'미분류'):'', st),
+          CS(`${idx+1}. ${it.item_name||''}`, idx===0?S_TOP1:S_BODY(odd2)),
+          CN(it.quantity||0, '#,##0.#', stN('#,##0.#')),
+          CN(it.unit_price||0, FMT_WON, stN(FMT_WON)),
+          CN(amt, FMT_WON, idx===0?S_TOP1_N(FMT_WON):stN(FMT_WON)),
+          CN(catPct, FMT_PCT, stN(FMT_PCT)),
+          CN(totPct, FMT_PCT, stN(FMT_PCT))
+        ]); r++
+      })
+      odd2=!odd2
     })
-    s3Header.push([''])
-  })
-  const ws3 = XLSX.utils.aoa_to_sheet(s3Header)
-  ws3['!cols'] = [{wch:14},{wch:5},{wch:28},{wch:7},{wch:6},{wch:13},{wch:13},{wch:12},{wch:10}]
-  ws3['!merges'] = [merge(0,0,0,8), merge(1,1,0,8), merge(2,2,0,8)]
-  XLSX.utils.book_append_sheet(wb, ws3, '③분류별TOP5품목')
 
-  // ─────────────────────────────────────────────
-  // Sheet 4: 월별 분류별 금액 추이 (크로스탭)
-  // ─────────────────────────────────────────────
-  const allMonths = [...monthlyTotals].reverse()
-  const allCatNames = [...new Set(monthlyByCat.map(r => r.supplier_category||'미분류'))]
+    const ws1 = makeWS(rows,
+      [{wch:18},{wch:32},{wch:9},{wch:14},{wch:15},{wch:12},{wch:10}],
+      merges)
+    ws1['!rows'] = [{hpx:30},{hpx:20},{hpx:20},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb, ws1, '①요약보고서')
+  })()
 
-  const s4Header2 = reportHeader(
-    `◆ 월별 분류별 금액 추이`,
-    `업체: ${vendor}   기간: ${periodLabel}`,
-    `월별 분류별 거래 금액 변화 추이 (최근 ${allMonths.length}개월)`
-  )
-  s4Header2.push(['연월', '전체합계(원)', ...allCatNames])
+  // ══════════════════════════════════════════════════════════════
+  //  Sheet 2: 품목별 전체 상세
+  // ══════════════════════════════════════════════════════════════
+  const NCOL2 = 11
+  ;(() => {
+    const rows = []
+    const merges = []
+    let r = 0
 
-  const monthCatMap = {}
-  monthlyByCat.forEach(r => {
-    const k = `${r.document_year}-${String(r.document_month).padStart(2,'0')}`
-    if (!monthCatMap[k]) monthCatMap[k] = {}
-    monthCatMap[k][r.supplier_category||'미분류'] = Number(r.grand_total)||0
-  })
-  allMonths.forEach(m => {
-    const k = `${m.document_year}-${String(m.document_month).padStart(2,'0')}`
-    const row = [k, Number(m.grand_total)||0]
-    allCatNames.forEach(cn => row.push(monthCatMap[k]?.[cn] || 0))
-    s4Header2.push(row)
-  })
-  // 합계 행
-  const s4TotRow = ['▶ 합계', allMonths.reduce((s,m)=>s+(Number(m.grand_total)||0),0)]
-  allCatNames.forEach(cn => {
-    s4TotRow.push(monthlyByCat.filter(r=>(r.supplier_category||'미분류')===cn).reduce((s,r)=>s+(Number(r.grand_total)||0),0))
-  })
-  s4Header2.push(s4TotRow)
+    rows.push([CS('품목별 거래명세서 전체 상세', S_TITLE)])
+    merges.push(merge(r,r,0,NCOL2-1)); r++
+    rows.push([CS(`업체: ${vendor}   |   기간: ${periodLabel}   |   병원: ${hospName||'-'}`, S_META)])
+    merges.push(merge(r,r,0,NCOL2-1)); r++
+    rows.push([CS(`전체 ${items.length}건  /  총 공급가 ${grandTot.toLocaleString()}원  /  생성: ${nowStr}`, S_META)])
+    merges.push(merge(r,r,0,NCOL2-1)); r++
+    rows.push(Array(NCOL2).fill(CS('',S_EMPTY))); r++
 
-  const ws4 = XLSX.utils.aoa_to_sheet(s4Header2)
-  ws4['!cols'] = [{wch:10},{wch:15},...allCatNames.map(()=>({wch:15}))]
-  ws4['!merges'] = [
-    merge(0, 0, 0, allCatNames.length + 1),
-    merge(1, 1, 0, allCatNames.length + 1),
-    merge(2, 2, 0, allCatNames.length + 1),
-  ]
-  XLSX.utils.book_append_sheet(wb, ws4, '④월별분류별추이')
+    // 헤더
+    rows.push([
+      CS('분류', S_HDR), CS('품목코드', S_HDR), CS('품목명', S_HDR), CS('규격', S_HDR),
+      CS('단위', S_HDR), CS('수량', S_HDR), CS('단가', S_HDR),
+      CS('공급가액', S_HDR), CS('부가세', S_HDR), CS('합계', S_HDR), CS('과세', S_HDR)
+    ]); r++
 
-  // ─────────────────────────────────────────────
-  // Sheet 5: 해당 월 전체 사용률 분석 (예산 대비)
-  // ─────────────────────────────────────────────
-  const budgetUsedPct = totalBudget > 0 ? Math.round(totalUsed / totalBudget * 1000) / 10 : 0
-  const budgetRemain  = totalBudget - totalUsed
-  const txUsedPct     = totalUsed > 0 ? Math.round(grandTot / totalUsed * 1000) / 10 : 0
+    let prevCat = null
+    let catSubTotAmt = 0, catSubTotVat = 0, catSubTotTot = 0, catSubCnt = 0, catStartR = r
+    let odd = true
 
-  const s5Hdr = reportHeader(
-    `◆ 월별 사용량 vs 예산 분석`,
-    `업체: ${vendor}   기간: ${periodLabel}`,
-    `발주 예산 대비 실제 사용금액 분석`
-  )
-  s5Hdr.push(['항목', '금액(원)', '비율(%)'])
-  s5Hdr.push(['[예산 현황]', '', ''])
-  s5Hdr.push(['  총 예산', totalBudget, '100%'])
-  s5Hdr.push(['  전체 발주 사용액', totalUsed, `${budgetUsedPct}%`])
-  s5Hdr.push(['  잔여 예산', budgetRemain, totalBudget > 0 ? `${Math.round(budgetRemain/totalBudget*1000)/10}%` : '-'])
-  s5Hdr.push([''])
-  s5Hdr.push([`  ${vendor} 명세서 금액`, grandTot, txUsedPct > 0 ? `${txUsedPct}%` : '-'])
-  s5Hdr.push([''])
-  s5Hdr.push(['[분류별 예산 대비 현황]', '', ''])
-  s5Hdr.push(['분류', '금액(원)', '전체발주대비(%)', '예산대비(%)'])
-  cats.forEach(c => {
-    const catAmt = Number(c.grand_total) || 0
-    const vsUsed = totalUsed > 0 ? Math.round(catAmt/totalUsed*1000)/10 : 0
-    const vsBudget = totalBudget > 0 ? Math.round(catAmt/totalBudget*1000)/10 : 0
-    s5Hdr.push([c.supplier_category||'미분류', catAmt, vsUsed, vsBudget])
-  })
-  s5Hdr.push(['▶ 합 계', grandTot,
-    totalUsed > 0 ? Math.round(grandTot/totalUsed*1000)/10 : '-',
-    totalBudget > 0 ? Math.round(grandTot/totalBudget*1000)/10 : '-'
-  ])
+    const flushCat = (catName, cnt, amt, vat, tot, startR, endR) => {
+      // 분류 소계 행 삽입
+      rows.push([
+        CS(`◀ ${catName} 소계`, S_SUM), CS('', S_SUM),
+        CS(`${cnt}품목`, S_SUM), CS('', S_SUM), CS('', S_SUM),
+        CS('', S_SUM),
+        CS('', S_SUM),
+        CN(amt, FMT_WON, S_SUM_N(FMT_WON)),
+        CN(vat, FMT_WON, S_SUM_N(FMT_WON)),
+        CN(tot, FMT_WON, S_SUM_N(FMT_WON)),
+        CS('', S_SUM)
+      ])
+      merges.push(merge(rows.length-1,rows.length-1,0,1))
+    }
 
-  const ws5 = XLSX.utils.aoa_to_sheet(s5Hdr)
-  ws5['!cols'] = [{wch:24},{wch:16},{wch:14},{wch:12}]
-  ws5['!merges'] = [merge(0,0,0,3), merge(1,1,0,3), merge(2,2,0,3)]
-  XLSX.utils.book_append_sheet(wb, ws5, '⑤사용률vs예산분석')
+    sorted.forEach((it, idx) => {
+      const cat = it.supplier_category||'미분류'
+      if (prevCat !== null && prevCat !== cat) {
+        flushCat(prevCat, catSubCnt, catSubTotAmt, catSubTotVat, catSubTotTot, catStartR, r)
+        r++
+        rows.push(Array(NCOL2).fill(CS('',S_EMPTY))); r++
+        catSubTotAmt=0; catSubTotVat=0; catSubTotTot=0; catSubCnt=0; odd=true
+        // 분류 헤더행 (구분선 역할)
+        const catHdrRow = Array(NCOL2).fill(CS('',S_CAT))
+        catHdrRow[0] = CS(`▣ ${cat}`, S_CAT)
+        rows.push(catHdrRow)
+        merges.push(merge(r,r,0,NCOL2-1)); r++
+        catStartR = r
+      } else if (prevCat === null) {
+        const catHdrRow = Array(NCOL2).fill(CS('',S_CAT))
+        catHdrRow[0] = CS(`▣ ${cat}`, S_CAT)
+        rows.push(catHdrRow)
+        merges.push(merge(r,r,0,NCOL2-1)); r++
+        catStartR = r
+      }
+      prevCat = cat
+      const amt = Number(it.amount)||0
+      const vat = Number(it.tax_amount)||0
+      const tot = Number(it.total)||0
+      catSubTotAmt += amt; catSubTotVat += vat; catSubTotTot += tot; catSubCnt++
 
-  // ─────────────────────────────────────────────
-  // Sheet 6: 수량 기준 주요 사용 품목 TOP10
-  // ─────────────────────────────────────────────
-  const byQty = [...items]
-    .filter(i => (Number(i.quantity)||0) > 0)
-    .sort((a,b) => (Number(b.quantity)||0) - (Number(a.quantity)||0))
-    .slice(0, 10)
+      rows.push([
+        CS(cat, S_BODY_C(odd)),
+        CS(it.item_code||'', S_BODY(odd)),
+        CS(it.item_name||'', S_BODY(odd)),
+        CS(it.spec||'', S_BODY(odd)),
+        CS(it.unit||'', S_BODY_C(odd)),
+        CN(it.quantity||0, '#,##0.##', S_BODY_N(odd,'#,##0.##')),
+        CN(it.unit_price||0, FMT_WON, S_BODY_N(odd,FMT_WON)),
+        CN(amt, FMT_WON, S_BODY_N(odd,FMT_WON)),
+        CN(vat, FMT_WON, S_BODY_N(odd,FMT_WON)),
+        CN(tot, FMT_WON, S_BODY_N(odd,FMT_WON)),
+        CS(vat>0?'과세':'면세', S_BODY_C(odd))
+      ]); odd=!odd; r++
+    })
+    // 마지막 분류 소계
+    if (prevCat) {
+      flushCat(prevCat, catSubCnt, catSubTotAmt, catSubTotVat, catSubTotTot, catStartR, r); r++
+    }
 
-  const s6Hdr = reportHeader(
-    `◆ 수량 기준 주요 사용 품목 TOP10`,
-    `업체: ${vendor}   기간: ${periodLabel}`,
-    `전체 ${items.length}개 품목 중 수량 기준 상위 10개 품목`
-  )
-  s6Hdr.push(['순위', '품목명', '분류', '규격', '단위', '수량', '단가(원)', '금액(원)', '수량비중(%)'])
-  const totalQty = items.reduce((s,i)=>s+(Number(i.quantity)||0),0)
-  byQty.forEach((it, idx) => {
-    const qty = Number(it.quantity) || 0
-    const qtyPct = totalQty > 0 ? Math.round(qty/totalQty*1000)/10 : 0
-    s6Hdr.push([
-      idx+1, it.item_name||'', it.supplier_category||'미분류',
-      it.spec||'', it.unit||'', qty,
-      Number(it.unit_price)||0, Number(it.amount)||0, qtyPct
+    rows.push(Array(NCOL2).fill(CS('',S_EMPTY))); r++
+
+    // 전체 합계
+    rows.push([
+      CS('【 전체 합계 】', S_SUM2), CS('', S_SUM2),
+      CS(`총 ${items.length}품목`, S_SUM2), CS('', S_SUM2), CS('', S_SUM2),
+      CN(sorted.reduce((s,i)=>s+(Number(i.quantity)||0),0),'#,##0.##',S_SUM2_N('#,##0.##')),
+      CS('', S_SUM2),
+      CN(sorted.reduce((s,i)=>s+(Number(i.amount)||0),0),   FMT_WON, S_SUM2_N(FMT_WON)),
+      CN(sorted.reduce((s,i)=>s+(Number(i.tax_amount)||0),0),FMT_WON, S_SUM2_N(FMT_WON)),
+      CN(sorted.reduce((s,i)=>s+(Number(i.total)||0),0),    FMT_WON, S_SUM2_N(FMT_WON)),
+      CS('', S_SUM2)
     ])
-  })
-  s6Hdr.push([''])
-  s6Hdr.push(['▶ 합계', '', '', '', '',
-    byQty.reduce((s,i)=>s+(Number(i.quantity)||0),0), '',
-    byQty.reduce((s,i)=>s+(Number(i.amount)||0),0), ''
-  ])
+    merges.push(merge(rows.length-1,rows.length-1,0,1))
+    merges.push(merge(rows.length-1,rows.length-1,2,4))
 
-  const ws6 = XLSX.utils.aoa_to_sheet(s6Hdr)
-  ws6['!cols'] = [{wch:5},{wch:28},{wch:12},{wch:24},{wch:6},{wch:8},{wch:13},{wch:13},{wch:10}]
-  ws6['!merges'] = [merge(0,0,0,8), merge(1,1,0,8), merge(2,2,0,8)]
-  XLSX.utils.book_append_sheet(wb, ws6, '⑥수량기준TOP10')
+    const ws2 = makeWS(rows,
+      [{wch:14},{wch:13},{wch:28},{wch:22},{wch:6},{wch:8},{wch:14},{wch:14},{wch:12},{wch:14},{wch:6}],
+      merges)
+    ws2['!rows'] = [{hpx:28},{hpx:18},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb, ws2, '②품목별전체상세')
+  })()
 
-  // 파일 저장 - 날짜 범위 사용 시 파일명에도 반영
+  // ══════════════════════════════════════════════════════════════
+  //  Sheet 3: 분류별 TOP5 품목
+  // ══════════════════════════════════════════════════════════════
+  const NCOL3 = 9
+  ;(() => {
+    const rows = []
+    const merges = []
+    let r = 0
+
+    rows.push([CS('분류별 주요 품목 TOP 5', S_TITLE)])
+    merges.push(merge(r,r,0,NCOL3-1)); r++
+    rows.push([CS(`업체: ${vendor}   |   기간: ${periodLabel}   |   금액 기준 상위 5개 품목`, S_META)])
+    merges.push(merge(r,r,0,NCOL3-1)); r++
+    rows.push(Array(NCOL3).fill(CS('',S_EMPTY))); r++
+
+    cats.forEach(cat=>{
+      const catItems = sorted.filter(i=>(i.supplier_category||'미분류')===(cat.supplier_category||'미분류'))
+      const catTot = catItems.reduce((s,i)=>s+(Number(i.amount)||0),0)
+      const catPctOfTotal = grandTot>0?Math.round(catTot/grandTot*1000)/10:0
+
+      // 분류 헤더
+      const catLabelRow = Array(NCOL3).fill(CS('',S_CAT))
+      catLabelRow[0] = CS(`▣ ${cat.supplier_category||'미분류'}`, S_CAT)
+      catLabelRow[7] = CS(`합계: ${catTot.toLocaleString()}원`, {...S_CAT, alignment:AL_RC})
+      catLabelRow[8] = CS(`전체의 ${catPctOfTotal}%`, {...S_CAT, alignment:AL_CC})
+      rows.push(catLabelRow); merges.push(merge(r,r,0,6)); r++
+
+      // 컬럼 헤더
+      rows.push([
+        CS('순위',S_HDR2), CS('품목명',S_HDR2), CS('규격',S_HDR2), CS('단위',S_HDR2),
+        CS('수량',S_HDR2), CS('단가',S_HDR2), CS('금액',S_HDR2),
+        CS('분류내 비중',S_HDR2), CS('전체 비중',S_HDR2)
+      ]); r++
+
+      catItems.slice(0,5).forEach((it,idx)=>{
+        const amt = Number(it.amount)||0
+        const catPct = catTot>0?Math.round(amt/catTot*1000)/10:0
+        const totPct = grandTot>0?Math.round(amt/grandTot*1000)/10:0
+        const st  = idx===0 ? S_TOP1   : S_BODY(idx%2===0)
+        const stN = idx===0 ? S_TOP1_N : (fmt=>S_BODY_N(idx%2===0,fmt))
+        rows.push([
+          CS(`${idx+1}위`, {...st, alignment:AL_CC}),
+          CS(it.item_name||'', st),
+          CS(it.spec||'', st),
+          CS(it.unit||'', {...st, alignment:AL_CC}),
+          CN(it.quantity||0,'#,##0.#', stN('#,##0.#')),
+          CN(it.unit_price||0, FMT_WON, stN(FMT_WON)),
+          CN(amt, FMT_WON, stN(FMT_WON)),
+          CN(catPct, FMT_PCT, stN(FMT_PCT)),
+          CN(totPct, FMT_PCT, stN(FMT_PCT))
+        ]); r++
+      })
+
+      // 분류 소계
+      rows.push([
+        CS('소계', S_SUM), CS('', S_SUM), CS('', S_SUM), CS('', S_SUM), CS('', S_SUM), CS('', S_SUM),
+        CN(catTot, FMT_WON, S_SUM_N(FMT_WON)),
+        CN(catPctOfTotal, FMT_PCT, S_SUM_N(FMT_PCT)),
+        CS('', S_SUM)
+      ]); merges.push(merge(r,r,0,5)); r++
+      rows.push(Array(NCOL3).fill(CS('',S_EMPTY))); r++
+    })
+
+    // 전체 합계
+    rows.push([
+      CS('전체 합계', S_SUM2), CS('', S_SUM2), CS('', S_SUM2), CS('', S_SUM2), CS('', S_SUM2), CS('', S_SUM2),
+      CN(grandTot, FMT_WON, S_SUM2_N(FMT_WON)),
+      CN(100, FMT_PCT, S_SUM2_N(FMT_PCT)),
+      CS('', S_SUM2)
+    ]); merges.push(merge(rows.length-1,rows.length-1,0,5))
+
+    const ws3 = makeWS(rows,
+      [{wch:6},{wch:30},{wch:22},{wch:6},{wch:9},{wch:14},{wch:15},{wch:12},{wch:10}],
+      merges)
+    ws3['!rows'] = [{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb, ws3, '③분류별TOP5')
+  })()
+
+  // ══════════════════════════════════════════════════════════════
+  //  Sheet 4: 월별 분류별 추이
+  // ══════════════════════════════════════════════════════════════
+  ;(() => {
+    const allMonths  = [...monthlyTotals].reverse()
+    const allCatNms  = [...new Set(monthlyByCat.map(r=>r.supplier_category||'미분류'))]
+    const NCOL4 = allCatNms.length + 2
+
+    const rows = []
+    const merges = []
+    let r = 0
+
+    rows.push([CS('월별 분류별 금액 추이', S_TITLE)])
+    merges.push(merge(r,r,0,NCOL4-1)); r++
+    rows.push([CS(`업체: ${vendor}   |   기간: ${periodLabel}   |   최근 ${allMonths.length}개월`, S_META)])
+    merges.push(merge(r,r,0,NCOL4-1)); r++
+    rows.push(Array(NCOL4).fill(CS('',S_EMPTY))); r++
+
+    rows.push([CS('연월', S_HDR), CS('전체합계', S_HDR), ...allCatNms.map(n=>CS(n,S_HDR))]); r++
+
+    const monthCatMap = {}
+    monthlyByCat.forEach(rec=>{
+      const k = `${rec.document_year}-${String(rec.document_month).padStart(2,'0')}`
+      if(!monthCatMap[k]) monthCatMap[k]={}
+      monthCatMap[k][rec.supplier_category||'미분류'] = Number(rec.grand_total)||0
+    })
+
+    allMonths.forEach((m,idx)=>{
+      const k = `${m.document_year}-${String(m.document_month).padStart(2,'0')}`
+      const odd = idx%2===0
+      rows.push([
+        CS(k, S_BODY_C(odd)),
+        CN(Number(m.grand_total)||0, FMT_WON, S_BOLD_N(FMT_WON)),
+        ...allCatNms.map(cn=>CN(monthCatMap[k]?.[cn]||0, FMT_WON, S_BODY_N(odd,FMT_WON)))
+      ]); r++
+    })
+
+    // 합계 행
+    const catSums = allCatNms.map(cn=>monthlyByCat.filter(rec=>(rec.supplier_category||'미분류')===cn).reduce((s,rec)=>s+(Number(rec.grand_total)||0),0))
+    rows.push([
+      CS('합  계', S_SUM2),
+      CN(allMonths.reduce((s,m)=>s+(Number(m.grand_total)||0),0), FMT_WON, S_SUM2_N(FMT_WON)),
+      ...catSums.map(v=>CN(v, FMT_WON, S_SUM2_N(FMT_WON)))
+    ])
+
+    const ws4 = makeWS(rows,
+      [{wch:12},{wch:16},...allCatNms.map(()=>({wch:16}))],
+      merges)
+    ws4['!rows'] = [{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb, ws4, '④월별분류별추이')
+  })()
+
+  // ══════════════════════════════════════════════════════════════
+  //  Sheet 5: 예산 대비 분석
+  // ══════════════════════════════════════════════════════════════
+  const NCOL5 = 5
+  ;(() => {
+    const rows = []
+    const merges = []
+    let r = 0
+
+    rows.push([CS('예산 대비 사용 분석', S_TITLE)])
+    merges.push(merge(r,r,0,NCOL5-1)); r++
+    rows.push([CS(`업체: ${vendor}   |   기간: ${periodLabel}   |   병원: ${hospName||'-'}`, S_META)])
+    merges.push(merge(r,r,0,NCOL5-1)); r++
+    rows.push(Array(NCOL5).fill(CS('',S_EMPTY))); r++
+
+    const budgetUsedPct = totalBudget>0 ? Math.round(totalUsed/totalBudget*1000)/10 : 0
+    const remain = totalBudget - totalUsed
+    const remainPct = totalBudget>0 ? Math.round(remain/totalBudget*1000)/10 : 0
+    const txPct = totalBudget>0 ? Math.round(grandTot/totalBudget*1000)/10 : 0
+
+    // 예산 현황
+    rows.push([CS('【 예산 현황 】', S_SEC)])
+    merges.push(merge(r,r,0,NCOL5-1)); r++
+    rows.push([CS('항목',S_HDR), CS('금액',S_HDR), CS('비율(%)',S_HDR), CS('비교',S_HDR), CS('비고',S_HDR)]); r++
+
+    const addRow = (label, amt, pct, cmp, note, st, stN) => {
+      rows.push([
+        CS(label, st||S_BODY(r%2===0)),
+        CN(amt, FMT_WON, stN||S_BODY_N(r%2===0,FMT_WON)),
+        CN(pct, FMT_PCT, stN||S_BODY_N(r%2===0,FMT_PCT)),
+        CS(cmp||'', st||S_BODY(r%2===0)),
+        CS(note||'', st||S_BODY(r%2===0))
+      ]); r++
+    }
+
+    addRow('총 예산', totalBudget, 100, '-', '', S_SUM2, S_SUM2_N)
+    addRow('전체 발주 사용액', totalUsed, budgetUsedPct, `잔여 ${remainPct}%`, totalUsed>totalBudget?'⚠ 초과':'정상',
+      totalUsed>totalBudget?S_SUM:S_BODY(true), totalUsed>totalBudget?S_SUM_N:S_BODY_N(true))
+    addRow('잔여 예산', remain, remainPct, '', remain<0?'⚠ 초과':'', remain<0?S_SUM:S_BODY(false), remain<0?S_SUM_N:S_BODY_N(false))
+    addRow(`${vendor} 명세서 금액`, grandTot, txPct, `발주의 ${totalUsed>0?Math.round(grandTot/totalUsed*1000)/10:0}%`, '', S_BOLD, S_BOLD_N)
+
+    rows.push(Array(NCOL5).fill(CS('',S_EMPTY))); r++
+
+    // 분류별 예산 대비
+    rows.push([CS('【 분류별 사용 현황 】', S_SEC)])
+    merges.push(merge(r,r,0,NCOL5-1)); r++
+    rows.push([CS('분류',S_HDR), CS('명세서금액',S_HDR), CS('전체비중',S_HDR), CS('발주대비',S_HDR), CS('예산대비',S_HDR)]); r++
+
+    cats.forEach((c,idx)=>{
+      const amt = Number(c.grand_total)||0
+      const vsGrand = grandTot>0 ? Math.round(amt/grandTot*1000)/10 : 0
+      const vsUsed  = totalUsed>0 ? Math.round(amt/totalUsed*1000)/10 : 0
+      const vsBudget= totalBudget>0 ? Math.round(amt/totalBudget*1000)/10 : 0
+      rows.push([
+        CS(c.supplier_category||'미분류', S_BODY(idx%2===0)),
+        CN(amt, FMT_WON, S_BODY_N(idx%2===0,FMT_WON)),
+        CN(vsGrand, FMT_PCT, S_BODY_N(idx%2===0,FMT_PCT)),
+        CN(vsUsed,  FMT_PCT, S_BODY_N(idx%2===0,FMT_PCT)),
+        CN(vsBudget,FMT_PCT, S_BODY_N(idx%2===0,FMT_PCT))
+      ]); r++
+    })
+    rows.push([
+      CS('합  계', S_SUM2),
+      CN(grandTot, FMT_WON, S_SUM2_N(FMT_WON)),
+      CN(100, FMT_PCT, S_SUM2_N(FMT_PCT)),
+      CN(totalUsed>0?Math.round(grandTot/totalUsed*1000)/10:0, FMT_PCT, S_SUM2_N(FMT_PCT)),
+      CN(txPct, FMT_PCT, S_SUM2_N(FMT_PCT))
+    ])
+
+    const ws5 = makeWS(rows, [{wch:24},{wch:16},{wch:12},{wch:14},{wch:12}], merges)
+    ws5['!rows'] = [{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb, ws5, '⑤예산대비분석')
+  })()
+
+  // ── 파일 저장 ──────────────────────────────────────────────
   const rangeStr = dateFrom && dateTo && dateFrom !== `${year}-${mm}-01`
     ? `${dateFrom.replace(/-/g,'')}~${dateTo.replace(/-/g,'')}`
     : `${year}${mm}`
-  const fname = `분류별분석_${vendor}_${rangeStr}.xlsx`
+  const fname = `거래명세서분석보고서_${vendor}_${rangeStr}.xlsx`
   XLSX.writeFile(wb, fname)
-  showToast(`✅ 엑셀 다운로드 완료: ${fname} (6개 시트 보고서 형식)`, 'success')
+  showToast(`✅ 보고서 다운로드 완료: ${fname}`, 'success')
 }
 
 // ── 명세서 업로드 모달 (분류별 분석용) - 업체 카드 선택 방식 ────
@@ -22309,6 +22564,9 @@ async function txRenderMonthlyTab(container) {
       <button onclick="txLoadVendorMonthlyTrend()" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5">
         <i class="fas fa-chart-line text-xs"></i> 추이 분석
       </button>
+      <button id="monthlyExcelBtn" onclick="txExportMonthlyTrendExcel()" class="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-1.5" style="display:none">
+        <i class="fas fa-file-excel text-xs"></i> 엑셀 다운로드
+      </button>
     </div>
 
     <!-- 분석 결과 -->
@@ -22355,6 +22613,13 @@ function txRenderVendorMonthlyTrend(el, vendor, trendData) {
   const monthlyByCat    = trendData.monthly_by_category || []
   const categories      = trendData.categories || []
   const catComparison   = trendData.category_comparison || []
+
+  // 전역 저장 (엑셀 다운로드용)
+  window._monthlyTrendVendor  = vendor
+  window._monthlyTrendData    = trendData
+  window._monthlyTrendTotal   = monthlyTotal
+  window._monthlyTrendByCat   = monthlyByCat
+  window._monthlyTrendCatComp = catComparison
 
   if (monthlyTotal.length === 0) {
     el.innerHTML = `<div class="bg-white rounded-xl p-10 text-center text-gray-400 border border-gray-100">
@@ -22605,7 +22870,136 @@ function txRenderVendorMonthlyTrend(el, vendor, trendData) {
       })
     }
   }, 50)
+
+  // 엑셀 버튼 표시
+  const excelBtn = document.getElementById('monthlyExcelBtn')
+  if (excelBtn) excelBtn.style.display = 'flex'
 }
+
+// ── 월별 추이 분석 엑셀 다운로드 ──────────────────────────────────────
+window.txExportMonthlyTrendExcel = async function() {
+  const vendor      = window._monthlyTrendVendor || ''
+  const monthlyTotal= window._monthlyTrendTotal  || []
+  const monthlyByCat= window._monthlyTrendByCat  || []
+  const catComp     = window._monthlyTrendCatComp|| []
+  const hospName    = TXState.selectedHospitalName || window._adminHospitalName || ''
+  const nowStr      = new Date().toLocaleString('ko-KR')
+
+  if (!monthlyTotal.length) { showToast('분석 데이터가 없습니다. 먼저 추이 분석을 실행하세요.', 'warning'); return }
+
+  showToast('보고서 생성 중...', 'info')
+  const wb = XLSX.utils.book_new()
+
+  // 스타일 팔레트 (공통 체계)
+  const FMT_WON = '#,##0"원"', FMT_PCT = '0.0"%"', FMT_NUM = '#,##0'
+  const F_BASE = {name:'맑은 고딕',sz:10}, F_BOLD = {name:'맑은 고딕',sz:10,bold:true}
+  const F_TITLE= {name:'맑은 고딕',sz:15,bold:true,color:{rgb:'1E3A5F'}}
+  const F_SUB  = {name:'맑은 고딕',sz:10,italic:true,color:{rgb:'555555'}}
+  const F_HDR  = {name:'맑은 고딕',sz:10,bold:true,color:{rgb:'FFFFFF'}}
+  const F_SEC  = {name:'맑은 고딕',sz:11,bold:true,color:{rgb:'1E3A5F'}}
+  const BG_TITLE={fgColor:{rgb:'1E3A5F'}}, BG_HDR={fgColor:{rgb:'2E6DA4'}}
+  const BG_SEC={fgColor:{rgb:'EBF3FB'}}, BG_SUM={fgColor:{rgb:'FFF3CD'}}
+  const BG_SUM2={fgColor:{rgb:'E8F5E9'}}, BG_META={fgColor:{rgb:'F0F7FF'}}
+  const BG_ODD={fgColor:{rgb:'FAFAFA'}}, BG_EVEN={fgColor:{rgb:'FFFFFF'}}
+  const BD_T={style:'thin',color:{rgb:'CCCCCC'}}, BD_M={style:'medium',color:{rgb:'2E6DA4'}}
+  const bdr=(t,r,b,l)=>({top:t,right:r,bottom:b,left:l})
+  const BD_A=bdr(BD_T,BD_T,BD_T,BD_T), BD_AM=bdr(BD_M,BD_M,BD_M,BD_M)
+  const AL_C={horizontal:'center',vertical:'center'}, AL_L={horizontal:'left',vertical:'center'}, AL_R={horizontal:'right',vertical:'center'}
+  const ST=(f,bg,al,bd)=>({font:f||F_BASE,fill:bg||{},alignment:al||AL_L,border:bd||BD_A})
+  const CS=(v,s)=>({v,s}), CN=(v,fmt,s)=>({v:Number(v)||0,t:'n',z:fmt||FMT_NUM,s})
+  const mrg=(rs,re,cs,ce)=>({s:{r:rs,c:cs},e:{r:re,c:ce}})
+  const S_TITLE=ST(F_TITLE,BG_TITLE,AL_C,BD_AM), S_META=ST(F_SUB,BG_META,AL_L,BD_A)
+  const S_HDR=ST(F_HDR,BG_HDR,AL_C,BD_AM), S_SEC=ST(F_SEC,BG_SEC,AL_L,bdr(BD_M,BD_T,BD_T,BD_M))
+  const S_SUM=ST(F_BOLD,BG_SUM,AL_L,BD_AM), S_SUM_N=(fmt)=>({...ST(F_BOLD,BG_SUM,AL_R,BD_AM),z:fmt||FMT_NUM})
+  const S_SUM2=ST(F_BOLD,BG_SUM2,AL_L,BD_AM), S_SUM2_N=(fmt)=>({...ST(F_BOLD,BG_SUM2,AL_R,BD_AM),z:fmt||FMT_NUM})
+  const S_BODY=(odd)=>ST(F_BASE,odd?BG_ODD:BG_EVEN,AL_L,BD_A)
+  const S_BODY_N=(odd,fmt)=>({...ST(F_BASE,odd?BG_ODD:BG_EVEN,AL_R,BD_A),z:fmt||FMT_NUM})
+  const S_BODY_C=(odd)=>ST(F_BASE,odd?BG_ODD:BG_EVEN,AL_C,BD_A)
+  const S_BOLD_N=(fmt)=>({...ST(F_BOLD,BG_ODD,AL_R,BD_A),z:fmt||FMT_NUM})
+  const S_EMPTY={font:F_BASE,fill:{},border:{},alignment:AL_L}
+
+  const makeWS=(rows,cols,merges)=>{
+    const ws={};let maxC=0
+    rows.forEach((row,r)=>{row.forEach((cell,c)=>{if(c>maxC)maxC=c;if(cell==null)return;const ref=XLSX.utils.encode_cell({r,c});if(typeof cell==='object'&&'v' in cell){ws[ref]={v:cell.v,t:cell.t||(typeof cell.v==='number'?'n':'s'),z:cell.z,s:cell.s}}else{ws[ref]={v:cell,t:typeof cell==='number'?'n':'s',s:{}}}})})
+    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:rows.length-1,c:maxC}});if(cols)ws['!cols']=cols;if(merges)ws['!merges']=merges;return ws
+  }
+
+  const labels = monthlyTotal.map(r=>`${r.document_year}.${String(r.document_month).padStart(2,'0')}`)
+  const catNames = [...new Set(monthlyByCat.map(r=>r.supplier_category))].filter(Boolean)
+  const grandTotal = monthlyTotal.reduce((s,r)=>s+(Number(r.grand_total)||0),0)
+  const periodLabel = labels.length>0 ? `${labels[0]} ~ ${labels[labels.length-1]}` : '-'
+
+  // Sheet 1: 월별 총액 추이
+  ;(()=>{
+    const NCOL=5, rows=[], merges=[];let r=0
+    rows.push([CS(`${vendor} 월별 납품 추이 분석 보고서`,S_TITLE)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS(`병원: ${hospName||'-'}   |   업체: ${vendor}   |   기간: ${periodLabel}   |   생성일시: ${nowStr}`,S_META)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+    rows.push([CS('【 월별 납품 총액 추이 】',S_SEC)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS('연월',S_HDR),CS('납품액',S_HDR),CS('전월대비',S_HDR),CS('증감율(%)',S_HDR),CS('품목수',S_HDR)]); r++
+    monthlyTotal.forEach((m,i)=>{
+      const cur=Number(m.grand_total)||0
+      const prev=i>0?Number(monthlyTotal[i-1].grand_total)||0:null
+      const diff=prev!=null?cur-prev:null
+      const pct=prev!=null&&prev>0?Math.round((cur-prev)/prev*1000)/10:null
+      const label=`${m.document_year}.${String(m.document_month).padStart(2,'0')}`
+      const odd=i%2===0
+      rows.push([CS(label,S_BODY_C(odd)),CN(cur,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(diff||0,FMT_WON,diff!=null?(diff>0?({...S_BODY_N(odd,FMT_WON),font:{...F_BASE,color:{rgb:'CC0000'}}}):({...S_BODY_N(odd,FMT_WON),font:{...F_BASE,color:{rgb:'006633'}}})):S_BODY_N(odd,FMT_WON)),CN(pct||0,FMT_PCT,S_BODY_N(odd,FMT_PCT)),CN(Number(m.item_count)||0,'#,##0',S_BODY_C(odd))]); r++
+    })
+    rows.push([CS('합  계',S_SUM2),CN(grandTotal,FMT_WON,S_SUM2_N(FMT_WON)),CS('',S_SUM2),CS('',S_SUM2),CN(monthlyTotal.reduce((s,m)=>s+(Number(m.item_count)||0),0),'#,##0',S_SUM2_N('#,##0'))]); r++
+    const ws1=makeWS(rows,[{wch:12},{wch:16},{wch:14},{wch:12},{wch:9}],merges)
+    ws1['!rows']=[{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb,ws1,'①월별총액추이')
+  })()
+
+  // Sheet 2: 분류별 월별 추이
+  ;(()=>{
+    const NCOL=catNames.length+2, rows=[], merges=[];let r=0
+    rows.push([CS(`${vendor} 분류별 월별 납품 추이`,S_TITLE)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS(`병원: ${hospName||'-'}   |   기간: ${periodLabel}   |   생성일시: ${nowStr}`,S_META)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+    rows.push([CS('연월',S_HDR),CS('전체합계',S_HDR),...catNames.map(n=>CS(n,S_HDR))]); r++
+    monthlyTotal.forEach((m,i)=>{
+      const label=`${m.document_year}.${String(m.document_month).padStart(2,'0')}`
+      const odd=i%2===0
+      const catVals=catNames.map(cn=>{
+        const rec=monthlyByCat.find(x=>x.supplier_category===cn&&x.document_year===m.document_year&&x.document_month===m.document_month)
+        return Number(rec?.grand_total)||0
+      })
+      rows.push([CS(label,S_BODY_C(odd)),CN(Number(m.grand_total)||0,FMT_WON,S_BOLD_N(FMT_WON)),...catVals.map(v=>CN(v,FMT_WON,S_BODY_N(odd,FMT_WON)))]); r++
+    })
+    const catSums=catNames.map(cn=>monthlyByCat.filter(x=>x.supplier_category===cn).reduce((s,x)=>s+(Number(x.grand_total)||0),0))
+    rows.push([CS('합  계',S_SUM2),CN(grandTotal,FMT_WON,S_SUM2_N(FMT_WON)),...catSums.map(v=>CN(v,FMT_WON,S_SUM2_N(FMT_WON)))]); r++
+    const ws2=makeWS(rows,[{wch:12},{wch:16},...catNames.map(()=>({wch:14}))],merges)
+    ws2['!rows']=[{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb,ws2,'②분류별월별추이')
+  })()
+
+  // Sheet 3: 전월 대비 분류별 비교
+  if (catComp.length>0) {
+    ;(()=>{
+      const NCOL=7, rows=[], merges=[];let r=0
+      rows.push([CS(`${vendor} 분류별 전월 대비 비교`,S_TITLE)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+      rows.push([CS(`병원: ${hospName||'-'}   |   생성일시: ${nowStr}`,S_META)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+      rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+      rows.push([CS('분류',S_HDR),CS('이번달',S_HDR),CS('이번달 품목수',S_HDR),CS('전월',S_HDR),CS('전월 품목수',S_HDR),CS('증감액',S_HDR),CS('증감율(%)',S_HDR)]); r++
+      let odd=true
+      catComp.forEach(cat=>{
+        const curr=Number(cat.curr_total)||0, prev=Number(cat.prev_total)||0
+        const diff=curr-prev, pct=Number(cat.change_pct)||0
+        rows.push([CS(cat.supplier_category,S_BODY(odd)),CN(curr,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(Number(cat.curr_count)||0,'#,##0',S_BODY_C(odd)),CN(prev,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(Number(cat.prev_count)||0,'#,##0',S_BODY_C(odd)),CN(diff,FMT_WON,diff>0?({...S_BODY_N(odd,FMT_WON),font:{...F_BASE,color:{rgb:'CC0000'}}}):({...S_BODY_N(odd,FMT_WON),font:{...F_BASE,color:{rgb:'006633'}}})),CN(pct,FMT_PCT,Math.abs(pct)>=10?({...S_BODY_N(odd,FMT_PCT),font:{...F_BOLD,color:{rgb:pct>0?'CC0000':'006633'}}}):S_BODY_N(odd,FMT_PCT))]); odd=!odd; r++
+      })
+      const ws3=makeWS(rows,[{wch:16},{wch:14},{wch:12},{wch:14},{wch:12},{wch:14},{wch:12}],merges)
+      ws3['!rows']=[{hpx:28},{hpx:18},{hpx:8}]
+      XLSX.utils.book_append_sheet(wb,ws3,'③전월대비비교')
+    })()
+  }
+
+  const fname=`거래명세서_월별추이보고서_${vendor}_${periodLabel.replace(/\./g,'').replace(' ~ ','~')}.xlsx`
+  XLSX.writeFile(wb,fname)
+  showToast(`✅ 월별 추이 보고서 다운로드: ${fname}`,'success')
+}
+
 // ════════════════════════════════════════
 // TAB 4: 발주 교차 분석
 // ════════════════════════════════════════
@@ -22626,6 +23020,9 @@ async function txRenderCrossTab(container) {
       </div>
       <button onclick="txLoadCrossAnalysis()" class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 flex items-center gap-1.5 transition">
         <i class="fas fa-sync-alt"></i> 재조회
+      </button>
+      <button id="crossExcelBtn" onclick="txExportCrossAnalysisExcel()" class="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 flex items-center gap-1.5 transition" style="display:none">
+        <i class="fas fa-file-excel"></i> 엑셀 다운로드
       </button>
     </div>
     <div id="txCrossContent">
@@ -22917,112 +23314,199 @@ window.txLoadAnnualReport = async function() {
 }
 
 window.txExportAnnualExcel = async function() {
-  if (typeof XLSX === 'undefined') {
-    const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    s.onload = () => showToast('라이브러리 로드 완료. 다시 클릭하세요.', 'info')
-    document.head.appendChild(s)
-    showToast('엑셀 라이브러리 로딩 중...', 'warning')
-    return
-  }
-
   const d = window._txAnnualData
   if (!d) { showToast('먼저 조회해주세요', 'warning'); return }
 
-  const year = d.year
-  const fmt = v => (Number(v)||0).toLocaleString()
+  const year     = d.year
+  const hospName = TXState.selectedHospitalName || window._adminHospitalName || ''
+  const nowStr   = new Date().toLocaleString('ko-KR')
   const wb = XLSX.utils.book_new()
-  const merge = (rs, re, cs, ce) => ({ s: { r: rs, c: cs }, e: { r: re, c: ce } })
 
-  // 연간 요약 시트
+  const FMT_NUM = '#,##0'
+  const FMT_WON = '#,##0\"원\"'
+  const FMT_PCT = '0.0\"%\"'
+
+  const FONT_BASE  = { name: '맑은 고딕', sz: 10 }
+  const FONT_BOLD  = { name: '맑은 고딕', sz: 10, bold: true }
+  const FONT_TITLE = { name: '맑은 고딕', sz: 16, bold: true, color: { rgb: '1E3A5F' } }
+  const FONT_SUB   = { name: '맑은 고딕', sz: 10, italic: true, color: { rgb: '555555' } }
+  const FONT_HDR   = { name: '맑은 고딕', sz: 10, bold: true, color: { rgb: 'FFFFFF' } }
+  const FONT_SEC   = { name: '맑은 고딕', sz: 11, bold: true, color: { rgb: '1E3A5F' } }
+  const FONT_Q     = { name: '맑은 고딕', sz: 10, bold: true, color: { rgb: 'FFFFFF' } }
+
+  const BG_TITLE = { fgColor: { rgb: '1E3A5F' } }
+  const BG_HDR   = { fgColor: { rgb: '2E6DA4' } }
+  const BG_SEC   = { fgColor: { rgb: 'EBF3FB' } }
+  const BG_SUM   = { fgColor: { rgb: 'FFF3CD' } }
+  const BG_SUM2  = { fgColor: { rgb: 'E8F5E9' } }
+  const BG_META  = { fgColor: { rgb: 'F0F7FF' } }
+  const BG_ODD   = { fgColor: { rgb: 'FAFAFA' } }
+  const BG_EVEN  = { fgColor: { rgb: 'FFFFFF' } }
+  const BG_Q1    = { fgColor: { rgb: '1565C0' } }
+  const BG_Q2    = { fgColor: { rgb: '2E7D32' } }
+  const BG_Q3    = { fgColor: { rgb: 'E65100' } }
+  const BG_Q4    = { fgColor: { rgb: '6A1B9A' } }
+
+  const BD_THIN  = { style: 'thin',   color: { rgb: 'CCCCCC' } }
+  const BD_MED   = { style: 'medium', color: { rgb: '2E6DA4' } }
+  const bdr  = (t,r,b,l) => ({ top:t, right:r, bottom:b, left:l })
+  const BD_ALL_THIN = bdr(BD_THIN, BD_THIN, BD_THIN, BD_THIN)
+  const BD_ALL_MED  = bdr(BD_MED,  BD_MED,  BD_MED,  BD_MED)
+
+  const AL_CC = { horizontal:'center', vertical:'center' }
+  const AL_LC = { horizontal:'left',   vertical:'center' }
+  const AL_RC = { horizontal:'right',  vertical:'center' }
+
+  const ST  = (font, fill, align, border) => ({ font:font||FONT_BASE, fill:fill||{}, alignment:align||AL_LC, border:border||BD_ALL_THIN })
+  const CS  = (v, s) => ({ v, s })
+  const CN  = (v, fmt, s) => ({ v: Number(v)||0, t:'n', z: fmt||FMT_NUM, s })
+  const mrg = (rs,re,cs,ce) => ({ s:{r:rs,c:cs}, e:{r:re,c:ce} })
+
+  const S_TITLE  = ST(FONT_TITLE, BG_TITLE, AL_CC, BD_ALL_MED)
+  const S_META   = ST(FONT_SUB,  BG_META,  AL_LC, BD_ALL_THIN)
+  const S_HDR    = ST(FONT_HDR,  BG_HDR,   AL_CC, BD_ALL_MED)
+  const S_SEC    = ST(FONT_SEC,  BG_SEC,   AL_LC, bdr(BD_MED,BD_THIN,BD_THIN,BD_MED))
+  const S_SUM    = ST(FONT_BOLD, BG_SUM,   AL_LC, BD_ALL_MED)
+  const S_SUM_N  = (fmt) => ({ ...ST(FONT_BOLD, BG_SUM, AL_RC, BD_ALL_MED), z:fmt||FMT_NUM })
+  const S_SUM2   = ST(FONT_BOLD, BG_SUM2,  AL_LC, BD_ALL_MED)
+  const S_SUM2_N = (fmt) => ({ ...ST(FONT_BOLD, BG_SUM2, AL_RC, BD_ALL_MED), z:fmt||FMT_NUM })
+  const S_BODY   = (odd) => ST(FONT_BASE, odd?BG_ODD:BG_EVEN, AL_LC, BD_ALL_THIN)
+  const S_BODY_N = (odd,fmt) => ({ ...ST(FONT_BASE, odd?BG_ODD:BG_EVEN, AL_RC, BD_ALL_THIN), z:fmt||FMT_NUM })
+  const S_BODY_C = (odd) => ST(FONT_BASE, odd?BG_ODD:BG_EVEN, AL_CC, BD_ALL_THIN)
+  const S_BOLD   = ST(FONT_BOLD, BG_ODD, AL_LC, BD_ALL_THIN)
+  const S_BOLD_N = (fmt) => ({ ...ST(FONT_BOLD, BG_ODD, AL_RC, BD_ALL_THIN), z:fmt||FMT_NUM })
+  const S_EMPTY  = { font:FONT_BASE, fill:{}, border:{}, alignment:AL_LC }
+  const S_Q      = (bg) => ST(FONT_Q, bg, AL_CC, BD_ALL_MED)
+  const S_Q_N    = (bg,fmt) => ({ ...ST(FONT_Q, bg, AL_RC, BD_ALL_MED), z:fmt||FMT_NUM })
+
+  const makeWS = (rows, cols, merges) => {
+    const ws = {}
+    let maxC = 0
+    rows.forEach((row, r) => {
+      row.forEach((cell, c) => {
+        if (c > maxC) maxC = c
+        if (cell == null) return
+        const ref = XLSX.utils.encode_cell({r, c})
+        if (typeof cell === 'object' && 'v' in cell) {
+          ws[ref] = { v: cell.v, t: cell.t||(typeof cell.v==='number'?'n':'s'), z: cell.z, s: cell.s }
+        } else {
+          ws[ref] = { v: cell, t: typeof cell==='number'?'n':'s', s: {} }
+        }
+      })
+    })
+    ws['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:rows.length-1, c:maxC}})
+    if (cols)   ws['!cols']   = cols
+    if (merges) ws['!merges'] = merges
+    return ws
+  }
+
   const grandTotal = d.vendors.reduce((s, r) => s + (Number(r.total_amount)||0), 0)
   const qTotals = {1:0, 2:0, 3:0, 4:0}
   d.quarterly.forEach(r => { qTotals[r.quarter] = (qTotals[r.quarter]||0) + (Number(r.total_amount)||0) })
 
-  const s1 = [
-    [`◆ ${year}년 거래명세서 연간 분석 보고서`],
-    [`생성일시: ${new Date().toLocaleString('ko-KR')}`],
-    [''],
-    ['[연간 요약]'],
-    ['항목', '금액(원)', '비중(%)'],
-    ['연간 총 납품액', grandTotal, '100%'],
-    ['1분기 (1~3월)', qTotals[1], grandTotal > 0 ? (qTotals[1]/grandTotal*100).toFixed(1)+'%' : '-'],
-    ['2분기 (4~6월)', qTotals[2], grandTotal > 0 ? (qTotals[2]/grandTotal*100).toFixed(1)+'%' : '-'],
-    ['3분기 (7~9월)', qTotals[3], grandTotal > 0 ? (qTotals[3]/grandTotal*100).toFixed(1)+'%' : '-'],
-    ['4분기 (10~12월)', qTotals[4], grandTotal > 0 ? (qTotals[4]/grandTotal*100).toFixed(1)+'%' : '-'],
-    [''],
-    ['[업체별 연간 납품 현황]'],
-    ['업체명', '납품월수', '품목수', '공급가액(원)', '부가세(원)', '합계(원)', '비중(%)'],
-    ...d.vendors.map(v => [
-      v.vendor_name, v.active_months, v.item_count,
-      Number(v.supply_amount)||0, Number(v.vat_amount)||0, Number(v.total_amount)||0,
-      grandTotal > 0 ? ((Number(v.total_amount)||0)/grandTotal*100).toFixed(1)+'%' : '-'
-    ]),
-    ['합 계', '', d.vendors.reduce((s,v)=>s+(Number(v.item_count)||0),0),
-      d.vendors.reduce((s,v)=>s+(Number(v.supply_amount)||0),0),
-      d.vendors.reduce((s,v)=>s+(Number(v.vat_amount)||0),0),
-      grandTotal, '100%'
-    ]
-  ]
-  const ws1 = XLSX.utils.aoa_to_sheet(s1)
-  ws1['!cols'] = [{wch:22},{wch:16},{wch:12},{wch:14},{wch:12},{wch:14},{wch:10}]
-  ws1['!merges'] = [merge(0,0,0,6), merge(1,1,0,6)]
-  XLSX.utils.book_append_sheet(wb, ws1, '①연간요약')
+  showToast('보고서 생성 중...', 'info')
 
-  // 월별 납품 현황 시트
-  const moTotals = {}
-  d.monthly.forEach(r => {
-    if (!moTotals[r.mo]) moTotals[r.mo] = { supply:0, vat:0, total:0, vendors:[] }
-    moTotals[r.mo].supply += Number(r.supply_amount)||0
-    moTotals[r.mo].vat += Number(r.vat_amount)||0
-    moTotals[r.mo].total += Number(r.total_amount)||0
-    if (!moTotals[r.mo].vendors.includes(r.vendor_name)) moTotals[r.mo].vendors.push(r.vendor_name)
-  })
+  // Sheet 1: 연간 요약
+  ;(() => {
+    const NCOL = 7
+    const rows = [], merges = []
+    let r = 0
 
-  const s2 = [
-    [`◆ ${year}년 월별 납품 현황`],
-    [`전체 ${Object.values(moTotals).filter(m => m.total > 0).length}개월 납품 실적`],
-    [''],
-    ['월', '분기', '공급가액(원)', '부가세(원)', '합계(원)', '업체수', '업체명', '비중(%)'],
-    ...Array.from({length:12}, (_,i) => {
-      const mo = i+1
-      const m = moTotals[mo] || { supply:0, vat:0, total:0, vendors:[] }
-      const q = mo <= 3 ? '1Q' : mo <= 6 ? '2Q' : mo <= 9 ? '3Q' : '4Q'
-      const pct = grandTotal > 0 ? (m.total/grandTotal*100).toFixed(1)+'%' : '-'
-      return [mo+'월', q, m.supply, m.vat, m.total, m.vendors.length, m.vendors.join(', '), pct]
-    }),
-    ['합 계', '',
-      d.monthly.reduce((s,r)=>s+(Number(r.supply_amount)||0),0),
-      d.monthly.reduce((s,r)=>s+(Number(r.vat_amount)||0),0),
-      grandTotal, '', '', '100%'
-    ]
-  ]
-  const ws2 = XLSX.utils.aoa_to_sheet(s2)
-  ws2['!cols'] = [{wch:6},{wch:5},{wch:14},{wch:12},{wch:14},{wch:6},{wch:30},{wch:8}]
-  ws2['!merges'] = [merge(0,0,0,7), merge(1,1,0,7)]
-  XLSX.utils.book_append_sheet(wb, ws2, '②월별납품현황')
+    rows.push([CS(`${year}년 거래명세서 연간 분석 보고서`, S_TITLE)])
+    merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS(`병원: ${hospName||'-'}   |   기준연도: ${year}년   |   생성일시: ${nowStr}`, S_META)])
+    merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
 
-  // 분기별 업체 비교 시트
-  const allVendors = [...new Set(d.quarterly.map(r => r.vendor_name))]
-  const s3 = [
-    [`◆ ${year}년 분기별 업체 납품 비교`],
-    [''],
-    ['업체', '1분기(1~3월)', '2분기(4~6월)', '3분기(7~9월)', '4분기(10~12월)', '연간합계'],
-    ...allVendors.map(v => {
-      const qData = {1:0, 2:0, 3:0, 4:0}
-      d.quarterly.filter(r => r.vendor_name === v).forEach(r => { qData[r.quarter] = Number(r.total_amount)||0 })
-      const vTotal = Object.values(qData).reduce((s,v)=>s+v,0)
-      return [v, qData[1], qData[2], qData[3], qData[4], vTotal]
-    }),
-    ['합 계', qTotals[1], qTotals[2], qTotals[3], qTotals[4], grandTotal]
-  ]
-  const ws3 = XLSX.utils.aoa_to_sheet(s3)
-  ws3['!cols'] = [{wch:20},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}]
-  ws3['!merges'] = [merge(0,0,0,5)]
-  XLSX.utils.book_append_sheet(wb, ws3, '③분기별업체비교')
+    rows.push([CS('【 1. 연간 총괄 요약 】', S_SEC)])
+    merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS('구분',S_HDR),CS('금액',S_HDR),CS('비중(%)',S_HDR),CS('전분기대비',S_HDR),CS('비고',S_HDR),CS('',S_HDR),CS('',S_HDR)]); r++
+    rows.push([CS('연간 납품 총액',S_SUM),CN(grandTotal,FMT_WON,S_SUM_N(FMT_WON)),CN(100,FMT_PCT,S_SUM_N(FMT_PCT)),CS('-',{...ST(FONT_BOLD,BG_SUM,AL_CC,BD_ALL_MED)}),CS(d.vendors.length+'개 업체',S_SUM),CS('',S_SUM),CS('',S_SUM)]); r++
 
-  XLSX.writeFile(wb, `거래명세서_연간분석_${year}.xlsx`)
-  showToast(`✅ ${year}년 연간 보고서 다운로드 완료 (3개 시트)`, 'success')
+    const qColors=[BG_Q1,BG_Q2,BG_Q3,BG_Q4]
+    const qLabels=['1분기 (1~3월)','2분기 (4~6월)','3분기 (7~9월)','4분기 (10~12월)']
+    ;[1,2,3,4].forEach((q,i)=>{
+      const amt=qTotals[q], pct=grandTotal>0?Math.round(amt/grandTotal*1000)/10:0
+      const prevQ=q>1?qTotals[q-1]:null
+      const chg=prevQ!=null&&prevQ>0?Math.round((amt-prevQ)/prevQ*1000)/10:null
+      rows.push([CS(qLabels[i],S_Q(qColors[i])),CN(amt,FMT_WON,S_Q_N(qColors[i],FMT_WON)),CN(pct,FMT_PCT,S_Q_N(qColors[i],FMT_PCT)),CS(chg!=null?(chg>0?'+'+chg+'%':chg+'%'):'-',{...ST(FONT_Q,qColors[i],AL_CC,BD_ALL_MED)}),CS('',S_Q(qColors[i])),CS('',S_Q(qColors[i])),CS('',S_Q(qColors[i]))]); r++
+    })
+
+    rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+    rows.push([CS('【 2. 업체별 연간 납품 현황 】',S_SEC)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS('업체명',S_HDR),CS('납품월수',S_HDR),CS('품목수',S_HDR),CS('공급가액',S_HDR),CS('부가세',S_HDR),CS('합계금액',S_HDR),CS('비중(%)',S_HDR)]); r++
+
+    let odd=true
+    d.vendors.forEach(v=>{
+      const amt=Number(v.total_amount)||0, pct=grandTotal>0?Math.round(amt/grandTotal*1000)/10:0
+      rows.push([CS(v.vendor_name||'-',S_BODY(odd)),CN(v.active_months||0,'#,##0',S_BODY_C(odd)),CN(v.item_count||0,'#,##0',S_BODY_C(odd)),CN(Number(v.supply_amount)||0,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(Number(v.vat_amount)||0,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(amt,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(pct,FMT_PCT,S_BODY_N(odd,FMT_PCT))]); odd=!odd; r++
+    })
+    rows.push([CS('합  계',S_SUM2),CS('-',{...ST(FONT_BOLD,BG_SUM2,AL_CC,BD_ALL_MED)}),CN(d.vendors.reduce((s,v)=>s+(Number(v.item_count)||0),0),'#,##0',S_SUM2_N('#,##0')),CN(d.vendors.reduce((s,v)=>s+(Number(v.supply_amount)||0),0),FMT_WON,S_SUM2_N(FMT_WON)),CN(d.vendors.reduce((s,v)=>s+(Number(v.vat_amount)||0),0),FMT_WON,S_SUM2_N(FMT_WON)),CN(grandTotal,FMT_WON,S_SUM2_N(FMT_WON)),CN(100,FMT_PCT,S_SUM2_N(FMT_PCT))]); r++
+
+    const ws1=makeWS(rows,[{wch:22},{wch:10},{wch:9},{wch:16},{wch:14},{wch:16},{wch:10}],merges)
+    ws1['!rows']=[{hpx:32},{hpx:20},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb,ws1,'①연간요약')
+  })()
+
+  // Sheet 2: 월별 납품 현황
+  ;(() => {
+    const NCOL=8, rows=[], merges=[]
+    let r=0
+    const moTotals={}
+    d.monthly.forEach(rec=>{
+      if(!moTotals[rec.mo]) moTotals[rec.mo]={supply:0,vat:0,total:0,vendors:[]}
+      moTotals[rec.mo].supply+=Number(rec.supply_amount)||0
+      moTotals[rec.mo].vat+=Number(rec.vat_amount)||0
+      moTotals[rec.mo].total+=Number(rec.total_amount)||0
+      if(!moTotals[rec.mo].vendors.includes(rec.vendor_name)) moTotals[rec.mo].vendors.push(rec.vendor_name)
+    })
+    const activeMonths=Object.values(moTotals).filter(m=>m.total>0).length
+
+    rows.push([CS(`${year}년 월별 납품 현황`,S_TITLE)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS(`병원: ${hospName||'-'}   |   납품 실적 ${activeMonths}개월   |   생성일시: ${nowStr}`,S_META)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+    rows.push([CS('월',S_HDR),CS('분기',S_HDR),CS('공급가액',S_HDR),CS('부가세',S_HDR),CS('합계금액',S_HDR),CS('업체수',S_HDR),CS('업체명',S_HDR),CS('비중(%)',S_HDR)]); r++
+
+    const qBgArr=[BG_Q1,BG_Q1,BG_Q1,BG_Q2,BG_Q2,BG_Q2,BG_Q3,BG_Q3,BG_Q3,BG_Q4,BG_Q4,BG_Q4]
+    Array.from({length:12},(_,i)=>{
+      const mo=i+1, m=moTotals[mo]||{supply:0,vat:0,total:0,vendors:[]}, q=mo<=3?'1Q':mo<=6?'2Q':mo<=9?'3Q':'4Q'
+      const pct=grandTotal>0?Math.round(m.total/grandTotal*1000)/10:0, bg=qBgArr[i], odd=i%2===0
+      rows.push([CS(`${mo}월`,{...ST(FONT_Q,bg,AL_CC,BD_ALL_MED)}),CS(q,{...ST(FONT_Q,bg,AL_CC,BD_ALL_MED)}),CN(m.supply,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(m.vat,FMT_WON,S_BODY_N(odd,FMT_WON)),CN(m.total,FMT_WON,m.total>0?S_BOLD_N(FMT_WON):S_BODY_N(odd,FMT_WON)),CN(m.vendors.length,'#,##0',S_BODY_C(odd)),CS(m.vendors.join(', '),S_BODY(odd)),CN(pct,FMT_PCT,S_BODY_N(odd,FMT_PCT))]); r++
+    })
+    rows.push([CS('합  계',S_SUM2),CS('',S_SUM2),CN(d.monthly.reduce((s,x)=>s+(Number(x.supply_amount)||0),0),FMT_WON,S_SUM2_N(FMT_WON)),CN(d.monthly.reduce((s,x)=>s+(Number(x.vat_amount)||0),0),FMT_WON,S_SUM2_N(FMT_WON)),CN(grandTotal,FMT_WON,S_SUM2_N(FMT_WON)),CS('',S_SUM2),CS('',S_SUM2),CN(100,FMT_PCT,S_SUM2_N(FMT_PCT))]); merges.push(mrg(r,r,0,1)); r++
+
+    const ws2=makeWS(rows,[{wch:8},{wch:6},{wch:16},{wch:14},{wch:16},{wch:7},{wch:34},{wch:10}],merges)
+    ws2['!rows']=[{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb,ws2,'②월별납품현황')
+  })()
+
+  // Sheet 3: 분기별 업체 비교
+  ;(() => {
+    const allVendorNames=[...new Set(d.quarterly.map(r=>r.vendor_name))], NCOL=6, rows=[], merges=[]
+    let r=0
+
+    rows.push([CS(`${year}년 분기별 업체 납품 비교`,S_TITLE)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push([CS(`병원: ${hospName||'-'}   |   업체 ${allVendorNames.length}개   |   생성일시: ${nowStr}`,S_META)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+    rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+    rows.push([CS('업체명',S_HDR),CS('1분기 (1~3월)',S_Q(BG_Q1)),CS('2분기 (4~6월)',S_Q(BG_Q2)),CS('3분기 (7~9월)',S_Q(BG_Q3)),CS('4분기 (10~12월)',S_Q(BG_Q4)),CS('연간 합계',S_HDR)]); r++
+
+    let odd=true
+    allVendorNames.forEach(vname=>{
+      const qData={1:0,2:0,3:0,4:0}
+      d.quarterly.filter(x=>x.vendor_name===vname).forEach(x=>{qData[x.quarter]=Number(x.total_amount)||0})
+      const vTotal=Object.values(qData).reduce((s,v)=>s+v,0)
+      rows.push([CS(vname,S_BODY(odd)),CN(qData[1],FMT_WON,S_BODY_N(odd,FMT_WON)),CN(qData[2],FMT_WON,S_BODY_N(odd,FMT_WON)),CN(qData[3],FMT_WON,S_BODY_N(odd,FMT_WON)),CN(qData[4],FMT_WON,S_BODY_N(odd,FMT_WON)),CN(vTotal,FMT_WON,S_BOLD_N(FMT_WON))]); odd=!odd; r++
+    })
+    rows.push([CS('합  계',S_SUM2),CN(qTotals[1],FMT_WON,S_Q_N(BG_Q1,FMT_WON)),CN(qTotals[2],FMT_WON,S_Q_N(BG_Q2,FMT_WON)),CN(qTotals[3],FMT_WON,S_Q_N(BG_Q3,FMT_WON)),CN(qTotals[4],FMT_WON,S_Q_N(BG_Q4,FMT_WON)),CN(grandTotal,FMT_WON,S_SUM2_N(FMT_WON))]); r++
+
+    const ws3=makeWS(rows,[{wch:22},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16}],merges)
+    ws3['!rows']=[{hpx:28},{hpx:18},{hpx:8}]
+    XLSX.utils.book_append_sheet(wb,ws3,'③분기별업체비교')
+  })()
+
+  const fname=`거래명세서_연간분석보고서_${hospName||'병원'}_${year}년.xlsx`
+  XLSX.writeFile(wb,fname)
+  showToast(`✅ ${year}년 연간 보고서 다운로드: ${fname} (3개 시트)`,'success')
 }
 
 // ── TAB 5: 식재료 단가 분석 ──────────────────────────────────────────────
@@ -24016,6 +24500,16 @@ async function txLoadCrossAnalysis() {
     const s = d.summary || {}
     const items = d.discrepancies || []
 
+    // 전역 저장 (엑셀 다운로드용)
+    window._crossSummary = s
+    window._crossItems   = items
+    window._crossYear    = TXState.year
+    window._crossMonth   = TXState.month
+
+    // 엑셀 버튼 표시
+    const excelBtn = document.getElementById('crossExcelBtn')
+    if (excelBtn) excelBtn.style.display = 'flex'
+
     el.innerHTML = `
     <div class="space-y-4">
       <!-- 요약 -->
@@ -24123,6 +24617,117 @@ async function txLoadCrossAnalysis() {
       <p class="text-xs mt-1 text-gray-300">${e.message}</p>
     </div>`
   }
+}
+
+// ── 발주 교차분석 엑셀 다운로드 ──────────────────────────────────────
+window.txExportCrossAnalysisExcel = function() {
+  const s      = window._crossSummary || {}
+  const items  = window._crossItems   || []
+  const year   = window._crossYear    || TXState.year
+  const month  = window._crossMonth   || TXState.month
+  const hospName = TXState.selectedHospitalName || window._adminHospitalName || ''
+  const nowStr = new Date().toLocaleString('ko-KR')
+
+  if (!items.length) { showToast('교차분석 데이터가 없습니다. 먼저 분석을 실행하세요.', 'warning'); return }
+
+  showToast('보고서 생성 중...', 'info')
+  const wb = XLSX.utils.book_new()
+
+  const FMT_WON='#,##0"원"', FMT_PCT='0.0"%"', FMT_NUM='#,##0'
+  const F_BASE={name:'맑은 고딕',sz:10}, F_BOLD={name:'맑은 고딕',sz:10,bold:true}
+  const F_TITLE={name:'맑은 고딕',sz:15,bold:true,color:{rgb:'1E3A5F'}}
+  const F_SUB={name:'맑은 고딕',sz:10,italic:true,color:{rgb:'555555'}}
+  const F_HDR={name:'맑은 고딕',sz:10,bold:true,color:{rgb:'FFFFFF'}}
+  const F_SEC={name:'맑은 고딕',sz:11,bold:true,color:{rgb:'1E3A5F'}}
+  const BG_TITLE={fgColor:{rgb:'1E3A5F'}}, BG_HDR={fgColor:{rgb:'2E6DA4'}}
+  const BG_SEC={fgColor:{rgb:'EBF3FB'}}, BG_SUM={fgColor:{rgb:'FFF3CD'}}
+  const BG_SUM2={fgColor:{rgb:'E8F5E9'}}, BG_META={fgColor:{rgb:'F0F7FF'}}
+  const BG_ODD={fgColor:{rgb:'FAFAFA'}}, BG_EVEN={fgColor:{rgb:'FFFFFF'}}
+  const BG_RED={fgColor:{rgb:'FFE8E8'}}, BG_YELLOW={fgColor:{rgb:'FFFDE7'}}
+  const BD_T={style:'thin',color:{rgb:'CCCCCC'}}, BD_M={style:'medium',color:{rgb:'2E6DA4'}}
+  const bdr=(t,r,b,l)=>({top:t,right:r,bottom:b,left:l})
+  const BD_A=bdr(BD_T,BD_T,BD_T,BD_T), BD_AM=bdr(BD_M,BD_M,BD_M,BD_M)
+  const AL_C={horizontal:'center',vertical:'center'}, AL_L={horizontal:'left',vertical:'center'}, AL_R={horizontal:'right',vertical:'center'}
+  const ST=(f,bg,al,bd)=>({font:f||F_BASE,fill:bg||{},alignment:al||AL_L,border:bd||BD_A})
+  const CS=(v,s)=>({v,s}), CN=(v,fmt,s)=>({v:Number(v)||0,t:'n',z:fmt||FMT_NUM,s})
+  const mrg=(rs,re,cs,ce)=>({s:{r:rs,c:cs},e:{r:re,c:ce}})
+  const S_TITLE=ST(F_TITLE,BG_TITLE,AL_C,BD_AM), S_META=ST(F_SUB,BG_META,AL_L,BD_A)
+  const S_HDR=ST(F_HDR,BG_HDR,AL_C,BD_AM), S_SEC=ST(F_SEC,BG_SEC,AL_L,bdr(BD_M,BD_T,BD_T,BD_M))
+  const S_SUM=ST(F_BOLD,BG_SUM,AL_L,BD_AM), S_SUM_N=(fmt)=>({...ST(F_BOLD,BG_SUM,AL_R,BD_AM),z:fmt||FMT_NUM})
+  const S_SUM2=ST(F_BOLD,BG_SUM2,AL_L,BD_AM), S_SUM2_N=(fmt)=>({...ST(F_BOLD,BG_SUM2,AL_R,BD_AM),z:fmt||FMT_NUM})
+  const S_BODY=(odd)=>ST(F_BASE,odd?BG_ODD:BG_EVEN,AL_L,BD_A)
+  const S_BODY_N=(odd,fmt)=>({...ST(F_BASE,odd?BG_ODD:BG_EVEN,AL_R,BD_A),z:fmt||FMT_NUM})
+  const S_BODY_C=(odd)=>ST(F_BASE,odd?BG_ODD:BG_EVEN,AL_C,BD_A)
+  const S_EMPTY={font:F_BASE,fill:{},border:{},alignment:AL_L}
+  const S_CRIT=(fmt)=>({...ST(F_BOLD,BG_RED,AL_R,BD_AM),z:fmt||FMT_NUM})
+  const S_WARN=(fmt)=>({...ST(F_BOLD,BG_YELLOW,AL_R,BD_AM),z:fmt||FMT_NUM})
+
+  const makeWS=(rows,cols,merges)=>{
+    const ws={};let maxC=0
+    rows.forEach((row,r)=>{row.forEach((cell,c)=>{if(c>maxC)maxC=c;if(cell==null)return;const ref=XLSX.utils.encode_cell({r,c});if(typeof cell==='object'&&'v' in cell){ws[ref]={v:cell.v,t:cell.t||(typeof cell.v==='number'?'n':'s'),z:cell.z,s:cell.s}}else{ws[ref]={v:cell,t:typeof cell==='number'?'n':'s',s:{}}}})})
+    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:rows.length-1,c:maxC}});if(cols)ws['!cols']=cols;if(merges)ws['!merges']=merges;return ws
+  }
+
+  const NCOL=8, rows=[], merges=[];let r=0
+  const mm=String(month).padStart(2,'0')
+
+  rows.push([CS(`${year}년 ${mm}월 발주 vs 거래명세서 교차분석 보고서`,S_TITLE)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+  rows.push([CS(`병원: ${hospName||'-'}   |   기준: ${year}년 ${mm}월   |   생성일시: ${nowStr}`,S_META)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+  rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+
+  // 섹션1: 요약
+  rows.push([CS('【 1. 교차분석 요약 】',S_SEC)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+  rows.push([CS('항목',S_HDR),CS('금액',S_HDR),CS('비율/건수',S_HDR),CS('비고',S_HDR),CS('',S_HDR),CS('',S_HDR),CS('',S_HDR),CS('',S_HDR)]); r++
+  rows.push([CS('발주 총액',S_SUM),CN(s.total_order_amount||0,FMT_WON,S_SUM_N(FMT_WON)),CS('-',{...ST(F_BOLD,BG_SUM,AL_C,BD_AM)}),CS('발주 데이터 기준',S_SUM),CS('',S_SUM),CS('',S_SUM),CS('',S_SUM),CS('',S_SUM)]); r++
+  rows.push([CS('명세서 총액',S_SUM),CN(s.total_invoice_amount||0,FMT_WON,S_SUM_N(FMT_WON)),CS('-',{...ST(F_BOLD,BG_SUM,AL_C,BD_AM)}),CS('거래명세서 기준',S_SUM),CS('',S_SUM),CS('',S_SUM),CS('',S_SUM),CS('',S_SUM)]); r++
+  rows.push([CS('차이금액',{...S_SUM,font:{...F_BOLD,color:{rgb:((s.total_order_amount||0)-(s.total_invoice_amount||0))>0?'CC0000':'006633'}}}),CN((s.total_order_amount||0)-(s.total_invoice_amount||0),FMT_WON,S_SUM_N(FMT_WON)),CS('-',{...ST(F_BOLD,BG_SUM,AL_C,BD_AM)}),CS('발주-명세서',S_SUM),CS('',S_SUM),CS('',S_SUM),CS('',S_SUM),CS('',S_SUM)]); r++
+  rows.push([CS('경고 업체',ST(F_BOLD,BG_YELLOW,AL_L,BD_AM)),CN(s.warning_vendors||0,'#,##0',{...ST(F_BOLD,BG_YELLOW,AL_R,BD_AM),z:'#,##0'}),CS('건',{...ST(F_BOLD,BG_YELLOW,AL_C,BD_AM)}),CS('±10%~30% 차이',ST(F_BASE,BG_YELLOW,AL_L,BD_A)),CS('',ST(F_BASE,BG_YELLOW,AL_L,BD_A)),CS('',ST(F_BASE,BG_YELLOW,AL_L,BD_A)),CS('',ST(F_BASE,BG_YELLOW,AL_L,BD_A)),CS('',ST(F_BASE,BG_YELLOW,AL_L,BD_A))]); r++
+  rows.push([CS('심각 업체',ST(F_BOLD,BG_RED,AL_L,BD_AM)),CN(s.critical_vendors||0,'#,##0',{...ST(F_BOLD,BG_RED,AL_R,BD_AM),z:'#,##0'}),CS('건',{...ST(F_BOLD,BG_RED,AL_C,BD_AM)}),CS('±30% 이상 차이',ST(F_BASE,BG_RED,AL_L,BD_A)),CS('',ST(F_BASE,BG_RED,AL_L,BD_A)),CS('',ST(F_BASE,BG_RED,AL_L,BD_A)),CS('',ST(F_BASE,BG_RED,AL_L,BD_A)),CS('',ST(F_BASE,BG_RED,AL_L,BD_A))]); r++
+  rows.push(Array(NCOL).fill(CS('',S_EMPTY))); r++
+
+  // 섹션2: 업체별 상세
+  rows.push([CS('【 2. 업체별 교차분석 상세 】',S_SEC)]); merges.push(mrg(r,r,0,NCOL-1)); r++
+  rows.push([CS('업체명',S_HDR),CS('발주 총액',S_HDR),CS('명세서 총액',S_HDR),CS('차이금액',S_HDR),CS('차이율(%)',S_HDR),CS('발주횟수',S_HDR),CS('명세서품목',S_HDR),CS('상태',S_HDR)]); r++
+
+  items.forEach((item,i)=>{
+    const diff=item.amount_diff||0, pct=item.amount_diff_pct||0
+    const isCrit=item.alert_level==='critical', isWarn=item.alert_level==='warning'
+    const odd=i%2===0
+    const rowBg=isCrit?BG_RED:isWarn?BG_YELLOW:odd?BG_ODD:BG_EVEN
+    const stL=ST(isCrit||isWarn?F_BOLD:F_BASE,rowBg,AL_L,BD_A)
+    const stC=ST(isCrit||isWarn?F_BOLD:F_BASE,rowBg,AL_C,BD_A)
+    const stN=(fmt)=>({...ST(isCrit||isWarn?F_BOLD:F_BASE,rowBg,AL_R,BD_A),z:fmt||FMT_NUM})
+    const diffColor=diff>0?'CC0000':diff<0?'006633':'555555'
+    rows.push([
+      CS(item.vendor_name||'-',stL),
+      CN(item.ordered_amount||0,FMT_WON,stN(FMT_WON)),
+      CN(item.invoice_amount||0,FMT_WON,stN(FMT_WON)),
+      CN(diff,FMT_WON,{...stN(FMT_WON),font:{...(isCrit||isWarn?F_BOLD:F_BASE),color:{rgb:diffColor}}}),
+      CN(Math.abs(pct),FMT_PCT,{...stN(FMT_PCT),font:{...(isCrit||isWarn?F_BOLD:F_BASE),color:{rgb:isCrit?'CC0000':isWarn?'B45309':'555555'}}}),
+      CN(item.order_count||0,'#,##0',stC),
+      CN(item.invoice_item_count||0,'#,##0',stC),
+      CS(isCrit?'심각':isWarn?'경고':'정상',{...stC,font:{...stC.font,color:{rgb:isCrit?'CC0000':isWarn?'B45309':'006633'}}})
+    ]); r++
+  })
+
+  rows.push([
+    CS('합  계',S_SUM2),
+    CN(s.total_order_amount||0,FMT_WON,S_SUM2_N(FMT_WON)),
+    CN(s.total_invoice_amount||0,FMT_WON,S_SUM2_N(FMT_WON)),
+    CN((s.total_order_amount||0)-(s.total_invoice_amount||0),FMT_WON,S_SUM2_N(FMT_WON)),
+    CS('-',S_SUM2),
+    CN(items.reduce((a,x)=>a+(Number(x.order_count)||0),0),'#,##0',S_SUM2_N('#,##0')),
+    CN(items.reduce((a,x)=>a+(Number(x.invoice_item_count)||0),0),'#,##0',S_SUM2_N('#,##0')),
+    CS(`경고 ${s.warning_vendors||0} / 심각 ${s.critical_vendors||0}`,S_SUM2)
+  ]); r++
+
+  const ws=makeWS(rows,[{wch:22},{wch:16},{wch:16},{wch:16},{wch:12},{wch:9},{wch:10},{wch:10}],merges)
+  ws['!rows']=[{hpx:28},{hpx:18},{hpx:8}]
+  XLSX.utils.book_append_sheet(wb,ws,'①교차분석보고서')
+
+  const fname=`발주교차분석보고서_${hospName||'병원'}_${year}년${mm}월.xlsx`
+  XLSX.writeFile(wb,fname)
+  showToast(`✅ 교차분석 보고서 다운로드: ${fname}`,'success')
 }
 
 // ── 공통 UI 헬퍼 ─────────────────────────────────────────────────────
