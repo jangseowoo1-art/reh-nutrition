@@ -9557,15 +9557,26 @@ async function renderAdminDashboard() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const data = await api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`)
-  if (!data) return
+  let data
+  try {
+    data = await api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`)
+  } catch(e) {
+    content.innerHTML = `<div class="text-center text-red-400 py-16"><i class="fas fa-exclamation-triangle text-2xl mb-2 block"></i>데이터 로드 실패: ${e.message}</div>`
+    return
+  }
+  if (!data) {
+    content.innerHTML = `<div class="text-center text-gray-400 py-16"><i class="fas fa-exclamation-circle text-2xl mb-2 block"></i>데이터를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.<br><button onclick="renderAdminDashboard()" class="mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm">다시 시도</button></div>`
+    return
+  }
 
   const hospitals = data.hospitals || []
   const onlineCount = hospitals.filter(h => h.online).length
   const issueCount = hospitals.reduce((s,h) => s + h.issues.filter(i=>i.level==='danger').length, 0)
   const overCount = hospitals.filter(h => h.totalBudget > 0 && h.totalUsed > h.totalBudget).length
 
-  content.innerHTML = `
+  let renderedHtml
+  try {
+    renderedHtml = `
   <!-- 상단 요약 카드 4개 -->
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
     <div class="stat-card border-l-4 border-green-500">
@@ -10169,9 +10180,20 @@ async function renderAdminDashboard() {
       </table>
     </div>
   </div>`
+  } catch(renderErr) {
+    console.error('관리자 대시보드 렌더링 오류:', renderErr)
+    content.innerHTML = `<div class="text-center text-red-400 py-16 px-4">
+      <i class="fas fa-exclamation-triangle text-3xl mb-3 block"></i>
+      <div class="font-semibold text-lg mb-2">화면 렌더링 오류</div>
+      <div class="text-sm bg-red-50 border border-red-200 rounded-lg p-3 text-left font-mono text-red-700 mb-3">${renderErr.message}</div>
+      <button onclick="renderAdminDashboard()" class="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm">다시 시도</button>
+    </div>`
+    return
+  }
+  content.innerHTML = renderedHtml
 
   // 차트 렌더링
-  renderAdminCompareChart(hospitals)
+  try { renderAdminCompareChart(hospitals) } catch(e) { console.error('차트 렌더링 오류:', e) }
   switchAdminTab('cards')
 }
 
@@ -22681,20 +22703,42 @@ window.txLoadAnnualReport = async function() {
       if (!moTotals[r.mo]) moTotals[r.mo] = 0
       moTotals[r.mo] += Number(r.total_amount)||0
     })
-    const grandTotal = Object.values(moTotals).reduce((s, v) => s + (v as number), 0)
+    const grandTotal = Object.values(moTotals).reduce((s, v) => s + (Number(v)||0), 0)
 
     // 분기별 합계
     const qTotals = {1:0, 2:0, 3:0, 4:0}
-    d.quarterly.forEach((r:any) => {
-      qTotals[r.quarter as 1|2|3|4] = (qTotals[r.quarter as 1|2|3|4]||0) + (Number(r.total_amount)||0)
+    d.quarterly.forEach((r) => {
+      qTotals[r.quarter] = (qTotals[r.quarter]||0) + (Number(r.total_amount)||0)
     })
 
     // 업체별 합계
-    const vendorMap: Record<string,number> = {}
-    d.vendors.forEach((r:any) => { vendorMap[r.vendor_name] = Number(r.total_amount)||0 })
+    const vendorMap = {}
+    d.vendors.forEach((r) => { vendorMap[r.vendor_name] = Number(r.total_amount)||0 })
     const topVendors = d.vendors.slice(0, 5)
 
     if (!content) return
+
+    // 데이터가 없을 때 안내 화면 표시
+    if (grandTotal === 0 && d.monthly.length === 0) {
+      const hospName = TXState.selectedHospitalName || ''
+      content.innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm border border-orange-100 p-8 text-center">
+        <div class="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <i class="fas fa-calendar-alt text-orange-400 text-2xl"></i>
+        </div>
+        <h3 class="text-base font-bold text-gray-700 mb-2">
+          ${hospName ? `<span class="text-blue-600">${hospName}</span>의 ` : ''}${year}년 거래명세서 데이터가 없습니다
+        </h3>
+        <p class="text-sm text-gray-400 mb-4">
+          거래명세서 파일을 업로드하면 연간/분기별 분석 보고서가 자동으로 생성됩니다.
+        </p>
+        <button onclick="txSwitchTab('upload')"
+          class="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition">
+          <i class="fas fa-upload"></i> 거래명세서 업로드하기
+        </button>
+      </div>`
+      return
+    }
 
     content.innerHTML = `
     <div class="space-y-4">
@@ -22737,11 +22781,11 @@ window.txLoadAnnualReport = async function() {
             </thead>
             <tbody>
               ${Array.from({length:12}, (_,i) => i+1).map(mo => {
-                const moRows = d.monthly.filter((r:any) => r.mo === mo)
-                const moTotal = moRows.reduce((s:number,r:any) => s+Number(r.total_amount||0), 0)
-                const moSupply = moRows.reduce((s:number,r:any) => s+Number(r.supply_amount||0), 0)
-                const moVat = moRows.reduce((s:number,r:any) => s+Number(r.vat_amount||0), 0)
-                const vendors = moRows.map((r:any) => r.vendor_name).join(', ')
+                const moRows = d.monthly.filter((r) => r.mo === mo)
+                const moTotal = moRows.reduce((s,r) => s+Number(r.total_amount||0), 0)
+                const moSupply = moRows.reduce((s,r) => s+Number(r.supply_amount||0), 0)
+                const moVat = moRows.reduce((s,r) => s+Number(r.vat_amount||0), 0)
+                const vendors = moRows.map((r) => r.vendor_name).join(', ')
                 const pct = grandTotal > 0 ? Math.min(100, Math.round(moTotal/grandTotal*100)) : 0
                 const qLabel = mo <= 3 ? '1Q' : mo <= 6 ? '2Q' : mo <= 9 ? '3Q' : '4Q'
                 const qColor = mo <= 3 ? '#3b82f6' : mo <= 6 ? '#10b981' : mo <= 9 ? '#f59e0b' : '#8b5cf6'
@@ -22765,8 +22809,8 @@ window.txLoadAnnualReport = async function() {
               }).join('')}
               <tr class="bg-indigo-50 font-bold">
                 <td class="py-2 px-3 text-indigo-700">합 계</td>
-                <td class="py-2 px-3 text-right text-gray-700">${fmt(d.monthly.reduce((s:number,r:any)=>s+Number(r.supply_amount||0),0))}원</td>
-                <td class="py-2 px-3 text-right text-gray-700">${fmt(d.monthly.reduce((s:number,r:any)=>s+Number(r.vat_amount||0),0))}원</td>
+                <td class="py-2 px-3 text-right text-gray-700">${fmt(d.monthly.reduce((s,r)=>s+Number(r.supply_amount||0),0))}원</td>
+                <td class="py-2 px-3 text-right text-gray-700">${fmt(d.monthly.reduce((s,r)=>s+Number(r.vat_amount||0),0))}원</td>
                 <td class="py-2 px-3 text-right text-indigo-700">${fmt(grandTotal)}원</td>
                 <td class="py-2 px-3"></td>
                 <td class="py-2 px-3 text-xs text-gray-500">100%</td>
@@ -22796,10 +22840,10 @@ window.txLoadAnnualReport = async function() {
             </thead>
             <tbody>
               ${(() => {
-                const allVendors = [...new Set(d.quarterly.map((r:any) => r.vendor_name))]
-                return (allVendors as string[]).map((v, idx) => {
-                  const qData: Record<number,number> = {1:0, 2:0, 3:0, 4:0}
-                  d.quarterly.filter((r:any) => r.vendor_name === v).forEach((r:any) => {
+                const allVendors = [...new Set(d.quarterly.map((r) => r.vendor_name))]
+                return allVendors.map((v, idx) => {
+                  const qData = {1:0, 2:0, 3:0, 4:0}
+                  d.quarterly.filter((r) => r.vendor_name === v).forEach((r) => {
                     qData[r.quarter] = Number(r.total_amount)||0
                   })
                   const vTotal = Object.values(qData).reduce((s,v) => s+v, 0)
@@ -22841,7 +22885,7 @@ window.txLoadAnnualReport = async function() {
               </tr>
             </thead>
             <tbody>
-              ${(d.vendors as any[]).map((v, idx) => {
+              ${d.vendors.map((v, idx) => {
                 const pct = grandTotal > 0 ? Math.round(Number(v.total_amount)/grandTotal*1000)/10 : 0
                 const barColor = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'][idx % 5]
                 return `<tr class="border-b border-gray-50 ${idx%2===0?'':'bg-gray-50/30'}">
@@ -22866,7 +22910,7 @@ window.txLoadAnnualReport = async function() {
 
     </div>`
 
-  } catch(e: any) {
+  } catch(e) {
     const content = document.getElementById('txAnnualContent')
     if (content) content.innerHTML = `<div class="text-center text-red-400 py-12 text-sm"><i class="fas fa-exclamation-triangle mr-2"></i>데이터 로드 실패: ${e.message}</div>`
   }
@@ -23979,8 +24023,8 @@ async function txLoadCrossAnalysis() {
         ${[
           { label:'발주 총액',    val: (s.total_order_amount||0).toLocaleString()+'원',   icon:'fa-shopping-cart', color:'blue' },
           { label:'명세서 총액',  val: (s.total_invoice_amount||0).toLocaleString()+'원', icon:'fa-file-invoice',  color:'green' },
-          { label:'차이 항목',    val: (s.warning_items||0)+'건',                         icon:'fa-exclamation-triangle', color:'yellow' },
-          { label:'심각 항목',    val: (s.critical_items||0)+'건',                        icon:'fa-times-circle',  color:'red' }
+          { label:'경고 업체',    val: (s.warning_vendors||0)+'건',                    icon:'fa-exclamation-triangle', color:'yellow' },
+          { label:'심각 업체',    val: (s.critical_vendors||0)+'건',                   icon:'fa-times-circle',  color:'red' }
         ].map(k => `
           <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
             <div class="flex items-center gap-2 mb-2">
@@ -23993,13 +24037,23 @@ async function txLoadCrossAnalysis() {
           </div>`).join('')}
       </div>
 
+      <!-- 명세서 없음 안내 (invoice_amount 합계가 0일 때) -->
+      ${s.total_invoice_amount === 0 ? `
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800 flex items-start gap-2">
+        <i class="fas fa-folder-open text-amber-500 mt-0.5 text-base"></i>
+        <div>
+          <div class="font-semibold mb-1">거래명세서가 업로드되지 않았습니다</div>
+          <div class="text-xs text-amber-700">이 병원에는 아직 거래명세서 데이터가 없습니다. 거래명세서 탭에서 파일을 업로드하면 발주 금액과 비교 분석할 수 있습니다.</div>
+          <div class="text-xs text-amber-600 mt-1.5">※ 아래 목록은 발주 데이터만 있는 업체들입니다 (명세서 미업로드 상태)</div>
+        </div>
+      </div>` : `
       <!-- 교차 분석 안내 -->
       <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-700 flex items-start gap-2">
         <i class="fas fa-info-circle mt-0.5"></i>
         <div>발주 데이터(일별발주)와 거래명세서를 <strong>업체별</strong>로 매핑하여 금액 차이를 분석합니다.
         금액 차이 ±10% 이상 시 경고, ±30% 이상 시 심각으로 표시됩니다.
         <span class="block mt-1 text-blue-500 text-xs">※ 발주 업체와 명세서 업체명이 다를 경우 매칭되지 않을 수 있습니다.</span></div>
-      </div>
+      </div>`}
 
       <!-- 교차 분석 테이블 -->
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
