@@ -16154,356 +16154,331 @@ async function exportReportPDF(hospitalName, year, month) {
 //  거래명세서 분석 PDF 보고서 출력
 // ══════════════════════════════════════════════════════════════════
 async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
-  showToast('거래명세서 분석 PDF 생성 중... (10~30초 소요)', 'info')
+  showToast('거래명세서 분석 PDF 생성 중... (15~40초 소요)', 'info')
 
-  // ── 스크립트 로더 ──────────────────────────────
+  /* ── 스크립트 로더 ──────────────────────────────────────── */
   async function loadScript(src) {
-    if (document.querySelector(`script[src="${src}"]`) && (src.includes('html2canvas') ? !!window.html2canvas : !!window.jspdf)) return
+    if (document.querySelector(`script[src="${src}"]`)) {
+      await new Promise(r => setTimeout(r, 300)); return
+    }
     return new Promise((resolve, reject) => {
-      const s = document.createElement('script'); s.src = src
-      s.onload = () => setTimeout(resolve, 100); s.onerror = reject
+      const s = document.createElement('script')
+      s.src = src; s.onload = () => setTimeout(resolve, 300); s.onerror = reject
       document.head.appendChild(s)
     })
   }
   await loadScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js')
   await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
 
-  const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+  /* ── 데이터 로드 ────────────────────────────────────────── */
+  const authH     = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   const hParam    = hospitalId ? `?hospital_id=${hospitalId}` : ''
   const hParamAmp = hospitalId ? `&hospital_id=${hospitalId}` : ''
-  const mm = String(month).padStart(2,'0')
-  const fmtW  = v => (Number(v)||0).toLocaleString() + '원'
-  const fmtK  = v => { const n=Number(v)||0; return n>=100000000?(n/100000000).toFixed(1)+'억':n>=10000?(n/10000).toFixed(0)+'만원':n.toLocaleString()+'원' }
+  const mm        = String(month).padStart(2, '0')
+  const fmtW   = v => (Number(v)||0).toLocaleString() + '원'
+  const fmtK   = v => { const n=Number(v)||0; return n>=100000000?(n/100000000).toFixed(1)+'억':n>=10000?(n/10000).toFixed(0)+'만':n.toLocaleString() }
   const fmtPct = v => (Number(v)||0).toFixed(1) + '%'
   const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#f97316','#06b6d4','#84cc16','#ec4899','#14b8a6']
 
-  // ── 데이터 로드 ────────────────────────────────
-  let vendors = [], budgetSummary = {}, allCats = [], allItems = []
-  try { const r = await axios.get(`/api/transaction/invoice/vendors${hParam}`, {headers:authH}); vendors = r.data.data || [] } catch(e){}
-  try { const r = await axios.get(`/api/dashboard/summary/${year}/${month}?hospitalId=${hospitalId||''}`, {headers:authH}); budgetSummary = r.data.summary || {} } catch(e){}
+  let vendors = [], budgetSummary = {}
+  try { const r = await axios.get(`/api/transaction/invoice/vendors${hParam}`, {headers:authH}); vendors = r.data.data||[] } catch(e){}
+  try { const r = await axios.get(`/api/dashboard/summary/${year}/${month}?hospitalId=${hospitalId||''}`, {headers:authH}); budgetSummary = r.data.summary||{} } catch(e){}
 
-  // 업체별 분류/품목 데이터 로드
   const vendorData = []
-  for (const v of vendors.slice(0,6)) {
+  for (const v of vendors.slice(0, 6)) {
     try {
       const [catR, itemR] = await Promise.all([
         axios.get(`/api/transaction/invoice/category-summary?vendor_name=${encodeURIComponent(v.vendor_name)}&year=${year}&month=${month}${hParamAmp}`, {headers:authH}),
         axios.get(`/api/transaction/invoice/items?vendor_name=${encodeURIComponent(v.vendor_name)}&year=${year}&month=${month}${hParamAmp}`, {headers:authH})
       ])
       vendorData.push({ name: v.vendor_name, cats: catR.data.categories||[], total: catR.data.total||{}, items: itemR.data.data||[] })
-    } catch(e){ vendorData.push({ name:v.vendor_name, cats:[], total:{}, items:[] }) }
+    } catch(e) { vendorData.push({ name: v.vendor_name, cats:[], total:{}, items:[] }) }
   }
 
   const totalBudget = Number(budgetSummary.total_budget)||0
   const totalUsed   = Number(budgetSummary.total_used)||0
-  const grandTotal  = vendorData.reduce((s,v)=>s+(Number(v.total.grand_total)||0), 0)
+  const grandTotal  = vendorData.reduce((s,v) => s+(Number(v.total.grand_total)||0), 0)
 
-  // ── PDF 생성기 초기화 ──────────────────────────
+  /* ── PDF 초기화 ─────────────────────────────────────────── */
   const { jsPDF } = window.jspdf
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' })
-  const A4W=210, A4H=297
+  const A4W = 210, A4H = 297
   let pageNum = 0
 
-  // ── 임시 렌더링 컨테이너 (화면 완전히 밖, 사용자에게 비표시) ──
-  const wrap = document.createElement('div')
-  // ── 오프스크린 렌더링: 화면 밖에 배치 후 캡처 직전만 잠깐 onscreen
-  //    position:fixed + left:-9999px → 어떤 스크롤에도 노출 안됨
-  //    캡처 시: 순간적으로 left:0 이동 (z-index:-1 이므로 UI 뒤에 가려짐)
-  //    캡처 후: 즉시 left:-9999px 복원
-  wrap.style.cssText = [
-    'position:fixed',
-    'top:0',
-    'left:-9999px',
-    'width:794px',
-    'height:auto',
-    'min-height:200px',
-    'background:white',
-    'z-index:-1',        // 모든 UI 아래 → 설령 잠깐 이동해도 안 보임
-    'pointer-events:none',
-    'overflow:visible',
-  ].join(';')
-  document.body.appendChild(wrap)
+  /* ── 공통 CSS ───────────────────────────────────────────── */
+  const BASE_CSS = `
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
+      * { box-sizing:border-box; margin:0; padding:0; font-family:'Noto Sans KR','Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',sans-serif; }
+      body,html { background:#fff; }
+      .page { width:794px; padding:28px 32px; background:#fff; font-size:11px; color:#1f2937; line-height:1.5; }
+      table { width:100%; border-collapse:collapse; }
+      th,td { padding:5px 8px; }
+      th { text-align:center; font-weight:700; }
+      .r { text-align:right; } .c { text-align:center; }
+      .bar { height:12px; border-radius:6px; background:#e5e7eb; overflow:hidden; }
+      .bar-in { height:100%; border-radius:6px; }
+      h2.sec { border-bottom:3px solid #6366f1; padding-bottom:6px; margin-bottom:14px; color:#4338ca; font-size:14px; }
+    </style>`
 
-  // ── html→PDF 캡처 헬퍼 ──────────────────────────
-  async function htmlToPage(htmlStr) {
-    wrap.innerHTML = htmlStr
-    // 폰트/이미지 로드 대기
+  /* ── 캡처 헬퍼 ──────────────────────────────────────────── */
+  async function renderPage(htmlContent) {
+    // ── 완전히 숨긴 컨테이너: opacity:0 + pointer-events:none
+    //    position:absolute + top:0 → 레이아웃 계산은 되지만 사용자에게 안 보임
+    const host = document.createElement('div')
+    host.style.cssText = [
+      'position:absolute',
+      'top:0',
+      'left:0',
+      'width:794px',
+      'opacity:0',
+      'pointer-events:none',
+      'z-index:-999',
+      'background:#fff',
+      'overflow:visible'
+    ].join(';')
+    host.innerHTML = htmlContent
+    document.body.appendChild(host)
+
+    // 폰트 및 레이아웃 완전 대기
     await document.fonts.ready
-    await new Promise(r => setTimeout(r, 320))
-    const el = wrap.firstElementChild
+    await new Promise(r => setTimeout(r, 600))
 
-    // 캡처 직전: 화면 좌측 맨 뒤쪽으로 이동 (z-index:-1 → UI에 가려짐)
-    wrap.style.left = '0px'
-    await new Promise(r => setTimeout(r, 30))
+    const el = host.firstElementChild || host
+    const elH = Math.max(el.scrollHeight, el.offsetHeight, 200)
 
-    // el 기준으로 직접 캡처 (scroll 보정 없이)
-    const rect = el.getBoundingClientRect()
-    const canvas = await window.html2canvas(el, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      scrollX: 0,
-      scrollY: 0,
-      x: rect.left,
-      y: rect.top,
-      width:  Math.ceil(rect.width)  || 794,
-      height: Math.ceil(rect.height) || 1123,
-      windowWidth: window.innerWidth,
-      windowHeight: window.innerHeight
-    })
+    let canvas
+    try {
+      // opacity:0 상태에서도 html2canvas는 레이아웃 기반으로 캡처 가능
+      canvas = await window.html2canvas(el, {
+        scale:           2,
+        useCORS:         true,
+        allowTaint:      true,
+        backgroundColor: '#ffffff',
+        logging:         false,
+        scrollX:         0,
+        scrollY:         0,
+        x:               0,
+        y:               0,
+        width:           794,
+        height:          elH,
+        windowWidth:     794,
+        windowHeight:    elH
+      })
+    } finally {
+      document.body.removeChild(host)
+    }
 
-    // 캡처 완료 즉시 다시 화면 밖으로
-    wrap.style.left = '-9999px'
-    const imgData = canvas.toDataURL('image/jpeg', 0.93)
     if (pageNum > 0) doc.addPage()
     pageNum++
-    // 페이지 번호
-    doc.setFontSize(8); doc.setTextColor(160)
-    doc.text(`${pageNum}`, A4W/2, A4H-4, {align:'center'})
-    // 이미지 삽입 (A4 마진 10mm 사방)
-    const imgW = A4W - 20
-    const imgH = Math.min((canvas.height/canvas.width)*imgW, A4H-20)
-    doc.addImage(imgData, 'JPEG', 10, 10, imgW, imgH)
+
+    const imgData = canvas.toDataURL('image/jpeg', 0.92)
+    const imgW    = A4W - 16
+    const ratio   = canvas.height / canvas.width
+    let   imgH    = ratio * imgW
+    const maxH    = A4H - 24
+    if (imgH > maxH) imgH = maxH
+
+    doc.addImage(imgData, 'JPEG', 8, 10, imgW, imgH)
+    doc.setFontSize(7); doc.setTextColor(150)
+    doc.text(`- ${pageNum} -`, A4W/2, A4H - 5, { align:'center' })
   }
 
-  const BASE_STYLE = `
-    <style>
-      * { box-sizing:border-box; margin:0; padding:0; }
-      body { font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', 'NanumGothic', sans-serif; }
-      .page { width:774px; padding:24px 28px; background:white; font-family: 'Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic','맑은 고딕','NanumGothic',sans-serif; font-size:11px; color:#1f2937; }
-      .sec-hd { border-bottom:3px solid; padding-bottom:8px; margin-bottom:16px; }
-      table { width:100%; border-collapse:collapse; font-size:10px; }
-      th { padding:5px 8px; text-align:center; font-weight:700; }
-      td { padding:5px 8px; }
-      .num { text-align:right; }
-      .bar { height:12px; border-radius:6px; background:#e5e7eb; overflow:hidden; }
-      .bar-fill { height:100%; border-radius:6px; }
-    </style>
-  `
+  /* ══════════════════════════════════════════════════════════
+     PAGE 1: 표지
+     ══════════════════════════════════════════════════════════ */
+  const usagePct    = totalBudget > 0 ? (totalUsed/totalBudget*100) : 0
+  const remainBudget = totalBudget - totalUsed
 
-  // ══════════════════════════════════════════
-  // PAGE 1: 표지
-  // ══════════════════════════════════════════
-  await htmlToPage(`${BASE_STYLE}
-  <div class="page" style="padding:0;position:relative;height:1123px;overflow:hidden">
-    <!-- 상단 보라색 배너 -->
-    <div style="background:linear-gradient(135deg,#4c1d95,#6d28d9,#7c3aed);padding:60px 40px 40px;text-align:center;color:white">
-      <div style="font-size:11px;letter-spacing:4px;color:#c4b5fd;margin-bottom:12px;font-weight:600">HOSPITAL FOOD COST ANALYSIS</div>
-      <div style="font-size:28px;font-weight:800;margin-bottom:8px;line-height:1.3">거래명세서 분석 보고서</div>
-      <div style="font-size:16px;color:#ddd6fe;margin-bottom:6px">${hospitalName}</div>
-      <div style="font-size:14px;color:#c4b5fd">${year}년 ${month}월</div>
-    </div>
-    <!-- KPI 카드 -->
-    <div style="padding:32px 40px">
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:32px">
-        ${[
-          {label:'거래 업체 수', val: vendors.length+'개', color:'#7c3aed', bg:'#faf5ff'},
-          {label:'총 거래 금액', val: fmtK(grandTotal), color:'#1d4ed8', bg:'#eff6ff'},
-          {label:'총 예산', val: totalBudget>0?fmtK(totalBudget):'-', color:'#059669', bg:'#f0fdf4'},
-        ].map(k=>`
-          <div style="background:${k.bg};border-radius:12px;padding:18px;border-left:4px solid ${k.color}">
-            <div style="font-size:9px;color:#6b7280;margin-bottom:6px;font-weight:600;letter-spacing:1px">${k.label}</div>
-            <div style="font-size:22px;font-weight:800;color:${k.color}">${k.val}</div>
+  await renderPage(`${BASE_CSS}
+  <div class="page" style="background:linear-gradient(160deg,#1e1b4b 0%,#312e81 50%,#4338ca 100%);color:#fff;min-height:1123px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
+    <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:20px;padding:48px 56px;width:680px;">
+      <div style="font-size:12px;letter-spacing:4px;color:#a5b4fc;margin-bottom:16px;">HOSPITAL FOOD COST REPORT</div>
+      <div style="font-size:30px;font-weight:900;margin-bottom:8px;line-height:1.2;">거래명세서<br>분석 보고서</div>
+      <div style="width:60px;height:4px;background:#818cf8;border-radius:2px;margin:20px auto;"></div>
+      <div style="font-size:15px;color:#c7d2fe;margin-bottom:32px;">${hospitalName}</div>
+
+      <div style="display:flex;gap:16px;justify-content:center;margin-bottom:32px;">
+        <div style="background:rgba(255,255,255,0.12);border-radius:12px;padding:16px 24px;min-width:130px;">
+          <div style="font-size:10px;color:#a5b4fc;margin-bottom:4px;">분석 기간</div>
+          <div style="font-size:16px;font-weight:700;">${year}년 ${mm}월</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.12);border-radius:12px;padding:16px 24px;min-width:130px;">
+          <div style="font-size:10px;color:#a5b4fc;margin-bottom:4px;">거래 업체</div>
+          <div style="font-size:16px;font-weight:700;">${vendors.length}개사</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.12);border-radius:12px;padding:16px 24px;min-width:130px;">
+          <div style="font-size:10px;color:#a5b4fc;margin-bottom:4px;">총 발주금액</div>
+          <div style="font-size:16px;font-weight:700;">${fmtK(grandTotal)}원</div>
+        </div>
+      </div>
+
+      ${vendors.length > 0 ? `
+      <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:16px;text-align:left;">
+        <div style="font-size:10px;color:#a5b4fc;margin-bottom:10px;">■ 거래 업체 목록</div>
+        ${vendors.slice(0,6).map((v,i) => `
+          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="width:22px;height:22px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;">${i+1}</div>
+            <div style="flex:1;font-size:11px;">${v.vendor_name}</div>
           </div>`).join('')}
-      </div>
-      ${totalBudget>0?`
-      <div style="background:#f9fafb;border-radius:12px;padding:20px;margin-bottom:24px">
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:10px">예산 사용 현황</div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:10px;color:#6b7280">
-          <span>사용액: ${fmtK(totalUsed)}</span>
-          <span>${Math.min(100,Math.round(totalUsed/totalBudget*100))}%</span>
-        </div>
-        <div class="bar"><div class="bar-fill" style="width:${Math.min(100,Math.round(totalUsed/totalBudget*100))}%;background:${totalUsed>totalBudget*0.9?'#ef4444':totalUsed>totalBudget*0.7?'#f59e0b':'#6d28d9'}"></div></div>
-        <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:9px;color:#9ca3af">
-          <span>0원</span><span>예산: ${fmtK(totalBudget)}</span>
-        </div>
-      </div>`:''}
-      <!-- 업체 목록 -->
-      <div>
-        <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:10px">등록 업체 현황</div>
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
-          ${vendors.map((v,i)=>`
-            <div style="display:flex;align-items:center;gap:8px;background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px">
-              <div style="width:28px;height:28px;border-radius:50%;background:${COLORS[i%10]};display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:12px;flex-shrink:0">${i+1}</div>
-              <div>
-                <div style="font-weight:700;font-size:10px;color:#1f2937">${v.vendor_name}</div>
-                <div style="font-size:9px;color:#6b7280">${v.month_count||0}개월 데이터</div>
-              </div>
-            </div>`).join('')}
-        </div>
-      </div>
-    </div>
-    <!-- 하단 -->
-    <div style="position:absolute;bottom:0;left:0;right:0;background:#f3f4f6;padding:12px 40px;display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
-      <span>생성일시: ${new Date().toLocaleString('ko-KR')}</span>
-      <span>병원 급식 예산 관리 시스템</span>
+      </div>` : ''}
+
+      <div style="margin-top:28px;font-size:10px;color:#818cf8;">생성일: ${new Date().toLocaleDateString('ko-KR', {year:'numeric',month:'long',day:'numeric'})}</div>
     </div>
   </div>`)
 
-  // ══════════════════════════════════════════
-  // PAGE 2: 업체별 거래 현황 요약
-  // ══════════════════════════════════════════
-  if (vendorData.length > 0) {
-    await htmlToPage(`${BASE_STYLE}
-    <div class="page">
-      <div class="sec-hd" style="border-color:#6d28d9">
-        <div style="font-size:9px;color:#6d28d9;font-weight:700;letter-spacing:2px;margin-bottom:4px">SECTION 1</div>
-        <div style="font-size:18px;font-weight:800;color:#1f2937">${year}년 ${month}월 업체별 거래 현황 요약</div>
-        <div style="font-size:10px;color:#6b7280">${hospitalName} · 총 ${vendors.length}개 업체 · 합계 ${fmtW(grandTotal)}</div>
+  /* ══════════════════════════════════════════════════════════
+     PAGE 2: 운영 종합 현황
+     ══════════════════════════════════════════════════════════ */
+  await renderPage(`${BASE_CSS}
+  <div class="page">
+    <h2 class="sec">📊 운영 종합 현황</h2>
+    <div style="color:#6b7280;font-size:10px;margin-bottom:16px;">${year}년 ${mm}월 | ${hospitalName}</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
+      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:10px;color:#166534;margin-bottom:4px;">총 예산</div>
+        <div style="font-size:17px;font-weight:900;color:#15803d;">${fmtK(totalBudget)}원</div>
       </div>
-      <table>
+      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:10px;color:#92400e;margin-bottom:4px;">총 발주금액</div>
+        <div style="font-size:17px;font-weight:900;color:#d97706;">${fmtK(totalUsed)}원</div>
+      </div>
+      <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:10px;color:#1e40af;margin-bottom:4px;">잔여 예산</div>
+        <div style="font-size:17px;font-weight:900;color:#2563eb;">${fmtK(remainBudget)}원</div>
+      </div>
+    </div>
+
+    ${totalBudget > 0 ? `
+    <div style="background:#f9fafb;border-radius:10px;padding:16px;margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+        <span style="font-size:11px;font-weight:700;color:#374151;">예산 대비 사용률</span>
+        <span style="font-size:13px;font-weight:900;color:${usagePct>=100?'#dc2626':usagePct>=80?'#d97706':'#059669'};">${fmtPct(usagePct)}</span>
+      </div>
+      <div class="bar" style="height:18px;">
+        <div class="bar-in" style="width:${Math.min(usagePct,100)}%;background:${usagePct>=100?'#dc2626':usagePct>=80?'#f59e0b':'#10b981'};"></div>
+      </div>
+    </div>` : ''}
+
+    <h3 style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px;">업체별 발주 현황</h3>
+    <table>
+      <thead>
+        <tr style="background:#4338ca;color:#fff;">
+          <th class="c" style="width:36px;padding:7px;">No</th>
+          <th style="text-align:left;padding:7px;">업체명</th>
+          <th class="r" style="padding:7px;">발주금액</th>
+          <th class="r" style="padding:7px;">비중</th>
+          <th style="width:120px;padding:7px;">비중 그래프</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${vendorData.map((v, i) => {
+          const amt   = Number(v.total.grand_total)||0
+          const share = grandTotal>0 ? (amt/grandTotal*100) : 0
+          const bg    = i%2===0 ? '#fff' : '#f8f7ff'
+          return `<tr style="background:${bg};">
+            <td class="c" style="padding:6px 7px;color:#6366f1;font-weight:700;">${i+1}</td>
+            <td style="padding:6px 7px;font-weight:600;">${v.name}</td>
+            <td class="r" style="padding:6px 7px;font-weight:700;">${fmtK(amt)}원</td>
+            <td class="r" style="padding:6px 7px;color:#6366f1;">${fmtPct(share)}</td>
+            <td style="padding:6px 7px;">
+              <div class="bar"><div class="bar-in" style="width:${share}%;background:${COLORS[i%COLORS.length]};"></div></div>
+            </td>
+          </tr>`
+        }).join('')}
+        <tr style="background:#4338ca;color:#fff;font-weight:900;">
+          <td colspan="2" class="c" style="padding:7px;">합계</td>
+          <td class="r" style="padding:7px;">${fmtK(grandTotal)}원</td>
+          <td class="r" style="padding:7px;">100%</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>`)
+
+  /* ══════════════════════════════════════════════════════════
+     PAGE 3+: 업체별 분석
+     ══════════════════════════════════════════════════════════ */
+  for (let vi = 0; vi < vendorData.length; vi++) {
+    const v      = vendorData[vi]
+    const vTotal = Number(v.total.grand_total)||0
+    const color  = COLORS[vi % COLORS.length]
+    const top5items = (v.items||[]).sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,5)
+    const top5qty   = (v.items||[]).sort((a,b)=>(Number(b.total_quantity)||0)-(Number(a.total_quantity)||0)).slice(0,5)
+
+    await renderPage(`${BASE_CSS}
+    <div class="page">
+      <div style="background:${color};color:#fff;border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-size:10px;opacity:0.8;margin-bottom:2px;">업체 ${vi+1} / ${vendorData.length}</div>
+          <div style="font-size:17px;font-weight:900;">${v.name}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px;opacity:0.8;">발주 총액</div>
+          <div style="font-size:18px;font-weight:900;">${fmtK(vTotal)}원</div>
+        </div>
+      </div>
+
+      <h2 class="sec" style="border-color:${color};color:#1f2937;">분류별 발주 현황</h2>
+      <table style="margin-bottom:18px;">
         <thead>
-          <tr style="background:#6d28d9;color:white">
-            <th style="text-align:left;width:30px">순위</th>
-            <th style="text-align:left">업체명</th>
-            <th>품목 수</th>
-            <th>거래 금액</th>
-            <th>비중</th>
-            <th style="text-align:left;width:160px">비중 막대</th>
+          <tr style="background:${color};color:#fff;">
+            <th style="text-align:left;padding:7px;">분류</th>
+            <th class="r" style="padding:7px;">금액</th>
+            <th class="r" style="padding:7px;">비중</th>
+            <th style="width:130px;padding:7px;">비중 그래프</th>
           </tr>
         </thead>
         <tbody>
-          ${vendorData.map((v,i)=>{
-            const amt = Number(v.total.grand_total)||0
-            const pct = grandTotal>0?Math.round(amt/grandTotal*1000)/10:0
-            const itemCnt = v.items.length
-            return `<tr style="border-bottom:1px solid #f3f4f6;background:${i%2===0?'white':'#f9fafb'}">
-              <td style="text-align:center;font-weight:800;color:${COLORS[i%10]}">${i+1}</td>
-              <td><span style="font-weight:700">${v.name}</span></td>
-              <td class="num">${itemCnt}품목</td>
-              <td class="num;font-weight:700"><strong>${fmtW(amt)}</strong></td>
-              <td class="num" style="color:#6d28d9;font-weight:700">${pct}%</td>
-              <td style="padding:5px 8px">
-                <div class="bar"><div class="bar-fill" style="width:${pct}%;background:${COLORS[i%10]}"></div></div>
-              </td>
+          ${(v.cats||[]).map((c,ci) => {
+            const amt   = Number(c.total_amount)||0
+            const share = vTotal>0?(amt/vTotal*100):0
+            return `<tr style="background:${ci%2===0?'#fff':'#f9fafb'};">
+              <td style="padding:6px 7px;font-weight:600;">${c.category_name||'기타'}</td>
+              <td class="r" style="padding:6px 7px;font-weight:700;">${fmtK(amt)}원</td>
+              <td class="r" style="padding:6px 7px;">${fmtPct(share)}</td>
+              <td style="padding:6px 7px;"><div class="bar"><div class="bar-in" style="width:${share}%;background:${color};"></div></div></td>
             </tr>`
           }).join('')}
-          <tr style="background:#f3e8ff;font-weight:800;border-top:2px solid #6d28d9">
-            <td colspan="2" style="font-size:12px;color:#6d28d9">합 계</td>
-            <td class="num">${vendorData.reduce((s,v)=>s+v.items.length,0)}품목</td>
-            <td class="num" style="font-size:12px;color:#6d28d9">${fmtW(grandTotal)}</td>
-            <td class="num" style="color:#6d28d9">100%</td>
-            <td></td>
+          <tr style="background:${color};color:#fff;font-weight:900;">
+            <td style="padding:7px;">합계</td>
+            <td class="r" style="padding:7px;">${fmtK(vTotal)}원</td>
+            <td class="r" style="padding:7px;">100%</td><td></td>
           </tr>
         </tbody>
       </table>
-      ${totalBudget>0?`
-      <div style="margin-top:20px;background:#faf5ff;border:1px solid #c4b5fd;border-radius:10px;padding:16px">
-        <div style="font-size:11px;font-weight:700;color:#6d28d9;margin-bottom:10px">예산 대비 사용 현황</div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-          ${[
-            {label:'총 예산', val:fmtK(totalBudget), color:'#1d4ed8'},
-            {label:'총 사용액', val:fmtK(totalUsed), color:'#7c3aed'},
-            {label:'잔여 예산', val:fmtK(Math.max(0,totalBudget-totalUsed)), color:'#059669'},
-            {label:'사용률', val:totalBudget>0?Math.round(totalUsed/totalBudget*100)+'%':'-', color:totalUsed>totalBudget*0.9?'#dc2626':'#374151'},
-          ].map(k=>`<div style="text-align:center">
-            <div style="font-size:9px;color:#6b7280;margin-bottom:4px">${k.label}</div>
-            <div style="font-size:16px;font-weight:800;color:${k.color}">${k.val}</div>
-          </div>`).join('')}
-        </div>
-      </div>`:''}
-    </div>`)
-  }
 
-  // ══════════════════════════════════════════
-  // PAGE 3~N: 업체별 분류 분석 (업체당 1페이지)
-  // ══════════════════════════════════════════
-  for (let vi=0; vi<vendorData.length; vi++) {
-    const vd = vendorData[vi]
-    if (vd.cats.length===0 && vd.items.length===0) continue
-    const vTotal = Number(vd.total.grand_total)||0
-    const top5amt = [...vd.items].sort((a,b)=>(Number(b.amount)||0)-(Number(a.amount)||0)).slice(0,5)
-    const top5qty = [...vd.items].filter(i=>Number(i.quantity)>0).sort((a,b)=>(Number(b.quantity)||0)-(Number(a.quantity)||0)).slice(0,5)
-
-    // 분류별 비중 막대 (수평)
-    const catBars = vd.cats.map((c,i)=>{
-      const amt = Number(c.grand_total)||0
-      const pct = vTotal>0?Math.round(amt/vTotal*1000)/10:0
-      return `<div style="margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;font-size:9px;margin-bottom:2px">
-          <span style="font-weight:600;color:${COLORS[i%10]}">${c.supplier_category||'미분류'}</span>
-          <span style="color:#6b7280">${fmtW(amt)} (${pct}%)</span>
-        </div>
-        <div class="bar"><div class="bar-fill" style="width:${pct}%;background:${COLORS[i%10]}"></div></div>
-      </div>`
-    }).join('')
-
-    await htmlToPage(`${BASE_STYLE}
-    <div class="page">
-      <div class="sec-hd" style="border-color:${COLORS[vi%10]}">
-        <div style="font-size:9px;color:${COLORS[vi%10]};font-weight:700;letter-spacing:2px;margin-bottom:4px">SECTION ${vi+2} · 업체 분석</div>
-        <div style="font-size:17px;font-weight:800;color:#1f2937">${vd.name} · ${year}년 ${month}월 분류별 분석</div>
-        <div style="font-size:10px;color:#6b7280">총 ${vd.items.length}품목 · 합계 ${fmtW(vTotal)} · 전체 대비 ${grandTotal>0?fmtPct(vTotal/grandTotal*100):'0%'}</div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-        <!-- 좌: 분류별 상세 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
         <div>
-          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:10px">분류별 금액 및 비중</div>
+          <h3 style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid ${color};">금액 TOP 5 품목</h3>
           <table>
-            <thead><tr style="background:#f3f4f6">
-              <th style="text-align:left">분류</th>
-              <th>금액</th>
-              <th>비중</th>
-            </tr></thead>
+            <thead><tr style="background:#f3f4f6;"><th class="c" style="padding:5px;width:28px;">순위</th><th style="text-align:left;padding:5px;">품목명</th><th class="r" style="padding:5px;">금액</th></tr></thead>
             <tbody>
-              ${vd.cats.map((c,i)=>{
-                const amt=Number(c.grand_total)||0
-                const pct=vTotal>0?Math.round(amt/vTotal*1000)/10:0
-                return `<tr style="border-bottom:1px solid #f3f4f6">
-                  <td style="font-weight:600;color:${COLORS[i%10]}">${c.supplier_category||'미분류'}</td>
-                  <td class="num">${fmtW(amt)}</td>
-                  <td class="num" style="font-weight:700;color:${COLORS[i%10]}">${pct}%</td>
+              ${top5items.map((item,ii)=>{
+                const medals=['🥇','🥈','🥉']
+                return `<tr style="background:${ii%2===0?'#fff':'#f9fafb'};">
+                  <td class="c" style="padding:5px;font-size:13px;">${medals[ii]||ii+1}</td>
+                  <td style="padding:5px;font-size:10px;">${item.item_name||''}</td>
+                  <td class="r" style="padding:5px;font-weight:700;color:${color};">${fmtK(Number(item.total_amount)||0)}원</td>
                 </tr>`
               }).join('')}
-              <tr style="border-top:2px solid #e5e7eb;font-weight:800;background:#f9fafb">
-                <td>합 계</td>
-                <td class="num">${fmtW(vTotal)}</td>
-                <td class="num">100%</td>
-              </tr>
             </tbody>
           </table>
-          <div style="margin-top:14px">
-            <div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:8px">분류별 비중</div>
-            ${catBars}
-          </div>
         </div>
-        <!-- 우: TOP5 품목 -->
         <div>
-          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:10px">금액 기준 TOP 5 품목</div>
+          <h3 style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:4px;border-bottom:2px solid ${color};">수량 TOP 5 품목</h3>
           <table>
-            <thead><tr style="background:#f3f4f6">
-              <th style="width:30px">순위</th>
-              <th style="text-align:left">품목명</th>
-              <th>단가</th>
-              <th>금액</th>
-            </tr></thead>
+            <thead><tr style="background:#f3f4f6;"><th class="c" style="padding:5px;width:28px;">순위</th><th style="text-align:left;padding:5px;">품목명</th><th class="r" style="padding:5px;">수량</th></tr></thead>
             <tbody>
-              ${top5amt.map((it,i)=>`<tr style="border-bottom:1px solid #f3f4f6">
-                <td style="text-align:center;font-weight:800;color:${COLORS[i]}">${i+1}</td>
-                <td>${it.item_name||''}</td>
-                <td class="num">${fmtW(it.unit_price||0)}</td>
-                <td class="num;font-weight:700"><strong>${fmtW(it.amount)}</strong></td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-
-          <div style="font-size:11px;font-weight:700;color:#374151;margin:14px 0 10px">수량 기준 TOP 5 품목</div>
-          <table>
-            <thead><tr style="background:#f3f4f6">
-              <th style="width:30px">순위</th>
-              <th style="text-align:left">품목명</th>
-              <th>수량</th>
-              <th>단가</th>
-            </tr></thead>
-            <tbody>
-              ${top5qty.map((it,i)=>`<tr style="border-bottom:1px solid #f3f4f6">
-                <td style="text-align:center;font-weight:800;color:${COLORS[i]}">${i+1}</td>
-                <td>${it.item_name||''}</td>
-                <td class="num">${(Number(it.quantity)||0).toLocaleString()}${it.unit||''}</td>
-                <td class="num">${fmtW(it.unit_price||0)}</td>
-              </tr>`).join('')}
+              ${top5qty.map((item,ii)=>{
+                const medals=['🥇','🥈','🥉']
+                return `<tr style="background:${ii%2===0?'#fff':'#f9fafb'};">
+                  <td class="c" style="padding:5px;font-size:13px;">${medals[ii]||ii+1}</td>
+                  <td style="padding:5px;font-size:10px;">${item.item_name||''}</td>
+                  <td class="r" style="padding:5px;font-weight:700;color:${color};">${(Number(item.total_quantity)||0).toLocaleString()}</td>
+                </tr>`
+              }).join('')}
             </tbody>
           </table>
         </div>
@@ -16511,99 +16486,81 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     </div>`)
   }
 
-  // ══════════════════════════════════════════
-  // LAST PAGE: 운영 시사점 및 분석 요약
-  // ══════════════════════════════════════════
-  // 주요 분석 포인트 자동 생성
-  const insights = []
-  // 가장 높은 비중 업체
-  if (vendorData.length>0) {
-    const top = vendorData.reduce((a,b)=>(Number(a.total.grand_total)||0)>(Number(b.total.grand_total)||0)?a:b)
-    const topPct = grandTotal>0?Math.round((Number(top.total.grand_total)||0)/grandTotal*100):0
-    if (topPct>50) insights.push({type:'warn',icon:'⚠️',title:`${top.name} 업체 집중도 높음`,desc:`전체 거래금액의 ${topPct}%를 차지합니다. 다양한 업체 비교 검토를 권장합니다.`})
-    else insights.push({type:'info',icon:'📊',title:'업체별 거래 분산',desc:`${top.name}이 ${topPct}%로 주요 거래처입니다.`})
-  }
-  // 예산 초과 경고
-  if (totalBudget>0) {
-    const pct=totalUsed/totalBudget*100
-    if (pct>100) insights.push({type:'danger',icon:'🔴',title:'예산 초과',desc:`${year}년 ${month}월 예산 대비 ${Math.round(pct-100)}% 초과 사용되었습니다. 즉시 검토 필요합니다.`})
-    else if (pct>90) insights.push({type:'warn',icon:'🟡',title:'예산 소진 임박',desc:`예산의 ${Math.round(pct)}%를 사용하였습니다. 잔여 예산 관리가 필요합니다.`})
-    else insights.push({type:'good',icon:'✅',title:'예산 내 운영',desc:`예산의 ${Math.round(pct)}%를 사용 중입니다. 양호한 수준입니다.`})
-  }
-  // 품목 다양성
-  const totalItemCnt = vendorData.reduce((s,v)=>s+v.items.length,0)
-  insights.push({type:'info',icon:'📋',title:'식재료 다양성',desc:`총 ${totalItemCnt}개 품목이 분석되었습니다. 지속적인 단가 비교 분석을 통한 원가 절감을 권장합니다.`})
-  insights.push({type:'info',icon:'💡',title:'활용 권장 사항',desc:'월별 단가 추이 분석으로 계절성 품목(배추, 양파, 감자 등)의 가격 하락 시 사용 확대, 가격 급등 시 대체 식재료 검토를 권장합니다.'})
+  /* ══════════════════════════════════════════════════════════
+     LAST PAGE: 운영 인사이트
+     ══════════════════════════════════════════════════════════ */
+  // 전체 품목 수집 (금액 기준 TOP 12)
+  const allItems = vendorData.flatMap(v => v.items||[])
+  const topItems = allItems.sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0)).slice(0,12)
+  const allAmountByVendor = vendorData.map(v => ({
+    name: v.name,
+    total: Number(v.total.grand_total)||0,
+    topCat: (v.cats||[]).sort((a,b)=>(Number(b.total_amount)||0)-(Number(a.total_amount)||0))[0]
+  }))
+  const highestVendor = allAmountByVendor.sort((a,b)=>b.total-a.total)[0]
 
-  const insightColors = {warn:'#fef3c7',danger:'#fee2e2',good:'#d1fae5',info:'#eff6ff'}
-  const insightBorder = {warn:'#f59e0b',danger:'#ef4444',good:'#10b981',info:'#3b82f6'}
-
-  await htmlToPage(`${BASE_STYLE}
+  await renderPage(`${BASE_CSS}
   <div class="page">
-    <div class="sec-hd" style="border-color:#1d4ed8">
-      <div style="font-size:9px;color:#1d4ed8;font-weight:700;letter-spacing:2px;margin-bottom:4px">FINAL SECTION · 운영 시사점</div>
-      <div style="font-size:18px;font-weight:800;color:#1f2937">분석 요약 및 운영 권고사항</div>
-      <div style="font-size:10px;color:#6b7280">${hospitalName} · ${year}년 ${month}월 · 생성일: ${new Date().toLocaleString('ko-KR')}</div>
-    </div>
+    <h2 class="sec">💡 운영 인사이트 및 절감 전략</h2>
+    <div style="color:#6b7280;font-size:10px;margin-bottom:16px;">${year}년 ${mm}월 | ${hospitalName}</div>
 
-    <!-- 종합 KPI -->
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
-      ${[
-        {label:'거래 업체', val:vendors.length+'개', color:'#7c3aed'},
-        {label:'총 품목', val:totalItemCnt+'품목', color:'#1d4ed8'},
-        {label:'총 거래액', val:fmtK(grandTotal), color:'#059669'},
-        {label:'예산 사용률', val:totalBudget>0?Math.round(totalUsed/totalBudget*100)+'%':'-', color:totalUsed>totalBudget?'#dc2626':'#374151'},
-      ].map(k=>`<div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;text-align:center">
-        <div style="font-size:9px;color:#6b7280;margin-bottom:4px">${k.label}</div>
-        <div style="font-size:18px;font-weight:800;color:${k.color}">${k.val}</div>
-      </div>`).join('')}
-    </div>
-
-    <!-- 운영 시사점 -->
-    <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:10px">운영 시사점 및 권고사항</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
-      ${insights.map(ins=>`
-        <div style="background:${insightColors[ins.type]||'#f9fafb'};border-left:4px solid ${insightBorder[ins.type]||'#6b7280'};border-radius:0 8px 8px 0;padding:12px 16px">
-          <div style="font-weight:700;font-size:11px;color:#1f2937;margin-bottom:4px">${ins.icon} ${ins.title}</div>
-          <div style="font-size:10px;color:#4b5563;line-height:1.5">${ins.desc}</div>
-        </div>`).join('')}
-    </div>
-
-    <!-- 주요 품목 단가 분석 권고 -->
-    <div style="background:#f0fdf4;border:1px solid #a7f3d0;border-radius:10px;padding:16px;margin-bottom:16px">
-      <div style="font-size:11px;font-weight:700;color:#065f46;margin-bottom:8px">📌 주요 식재료 단가 분석 권고 품목</div>
-      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;font-size:9px;text-align:center">
-        ${['쌀','닭고기','돼지고기','쇠고기','두부','계란','양파','감자','당근','김치','배추','대파','마늘'].map(item=>`
-          <div style="background:white;border:1px solid #d1fae5;border-radius:6px;padding:6px 4px;font-weight:600;color:#065f46">${item}</div>
-        `).join('')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;">
+      <div style="background:#fef3c7;border-left:4px solid #f59e0b;border-radius:8px;padding:12px;">
+        <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:6px;">⚠️ 주요 발주 업체</div>
+        <div style="font-size:12px;font-weight:700;color:#1f2937;">${highestVendor?.name||'-'}</div>
+        <div style="font-size:10px;color:#6b7280;margin-top:2px;">발주금액: ${fmtK(highestVendor?.total||0)}원</div>
+        <div style="font-size:10px;color:#6b7280;">비중: ${fmtPct(grandTotal>0?((highestVendor?.total||0)/grandTotal*100):0)}</div>
       </div>
-      <div style="font-size:9px;color:#6b7280;margin-top:8px">※ 위 품목에 대해 월별 단가 추이 분석 및 업체 간 단가 비교를 지속적으로 수행하여 예산 절감 전략을 수립하세요.</div>
-    </div>
-
-    <!-- 분기별 전략 -->
-    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px">
-      <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px">📈 데이터 기반 식재료 운영 전략</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:9px;color:#374151">
-        <div style="background:white;border-radius:8px;padding:10px">
-          <div style="font-weight:700;color:#1d4ed8;margin-bottom:4px">단가 비교 분석</div>
-          <div style="line-height:1.6">• 동일 품목 업체별 단가 비교<br>• 전월/전년 대비 단가 변동 확인<br>• 가격 급등 품목 조기 파악</div>
-        </div>
-        <div style="background:white;border-radius:8px;padding:10px">
-          <div style="font-weight:700;color:#1d4ed8;margin-bottom:4px">예산 절감 전략</div>
-          <div style="line-height:1.6">• 제철 식재료 활용 극대화<br>• 가격 하락 품목 사용량 확대<br>• 대체 식재료 검토 및 식단 조정</div>
-        </div>
+      <div style="background:#f0fdf4;border-left:4px solid #10b981;border-radius:8px;padding:12px;">
+        <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:6px;">📈 예산 집행 현황</div>
+        <div style="font-size:12px;font-weight:700;color:#1f2937;">${fmtPct(usagePct)} 집행</div>
+        <div style="font-size:10px;color:#6b7280;margin-top:2px;">사용: ${fmtK(totalUsed)}원</div>
+        <div style="font-size:10px;color:#6b7280;">잔여: ${fmtK(remainBudget)}원</div>
       </div>
     </div>
 
-    <!-- 하단 서명 -->
-    <div style="margin-top:24px;border-top:1px solid #e5e7eb;padding-top:12px;display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
-      <span>이 보고서는 병원 급식 예산 관리 시스템에서 자동 생성되었습니다.</span>
-      <span>${new Date().toLocaleString('ko-KR')}</span>
+    <h3 style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px;">주요 발주 품목 TOP 12 (금액 기준)</h3>
+    <table>
+      <thead>
+        <tr style="background:#1e1b4b;color:#fff;">
+          <th class="c" style="padding:6px;width:36px;">순위</th>
+          <th style="text-align:left;padding:6px;">품목명</th>
+          <th class="r" style="padding:6px;">발주금액</th>
+          <th class="r" style="padding:6px;">수량</th>
+          <th class="r" style="padding:6px;">단가</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${topItems.map((item,i)=>{
+          const amt = Number(item.total_amount)||0
+          const qty = Number(item.total_quantity)||0
+          const unitP = qty>0?(amt/qty):0
+          const bg = i<3?'#fffbeb':i%2===0?'#fff':'#f9fafb'
+          const rank = i<3?['🥇','🥈','🥉'][i]:String(i+1)
+          return `<tr style="background:${bg};">
+            <td class="c" style="padding:5px;font-size:${i<3?'13':'11'}px;">${rank}</td>
+            <td style="padding:5px;font-weight:${i<3?'700':'400'};">${item.item_name||''}</td>
+            <td class="r" style="padding:5px;font-weight:700;color:#4338ca;">${fmtK(amt)}원</td>
+            <td class="r" style="padding:5px;">${qty.toLocaleString()}</td>
+            <td class="r" style="padding:5px;color:#6b7280;">${fmtK(unitP)}원</td>
+          </tr>`
+        }).join('')}
+      </tbody>
+    </table>
+
+    <div style="background:#eff6ff;border-radius:10px;padding:14px;margin-top:16px;">
+      <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">📋 절감 전략 가이드</div>
+      <ul style="list-style:none;padding:0;">
+        ${usagePct>90?'<li style="padding:3px 0;font-size:10px;">⚡ 예산 소진율이 높습니다. 잔여 기간 발주량 조정을 권고합니다.</li>':''}
+        <li style="padding:3px 0;font-size:10px;">🔄 주요 발주 품목의 대체 식재료 활용으로 5~15% 절감 가능</li>
+        <li style="padding:3px 0;font-size:10px;">📅 계절성 식재료(채소류) 가격 하락 시기 집중 구매 권고</li>
+        <li style="padding:3px 0;font-size:10px;">🏪 복수 업체 가격 비교를 통한 단가 협상 및 경쟁 입찰 권고</li>
+        <li style="padding:3px 0;font-size:10px;">📦 대량 구매 할인 적용 가능 품목 파악 및 묶음 발주 검토</li>
+      </ul>
     </div>
   </div>`)
 
-  // ── 정리 ──────────────────────────────────
-  wrap.remove()
+  /* ── PDF 저장 ────────────────────────────────────────────── */
   doc.save(`${hospitalName}_${year}년${mm}월_거래명세서분석보고서.pdf`)
   showToast(`✅ PDF 보고서 생성 완료! (${pageNum}페이지)`, 'success')
 }
