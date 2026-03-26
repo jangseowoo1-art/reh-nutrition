@@ -19715,21 +19715,40 @@ async function txDeleteTemplate(id) {
 async function txLoadHospitalSelector() {
   const sel = document.getElementById('txHospitalId')
   if (!sel) return
+
+  // 중복 이벤트 리스너 방지: onchange 방식 사용
+  sel.onchange = null
+
   try {
-    const res = await axios.get('/api/admin/hospitals',
-      { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
-    const hospitals = res.data || []
+    // api() 헬퍼 사용 (App.token 기반, 응답을 배열로 직접 반환)
+    const hospitals = await api('GET', '/api/admin/hospitals') || []
+
+    if (!Array.isArray(hospitals) || hospitals.length === 0) {
+      sel.innerHTML = '<option value="">등록된 병원이 없습니다</option>'
+      TXState.selectedHospitalId = null
+      TXState.selectedHospitalName = ''
+      TXState._hospitals = []
+      return
+    }
+
     // 기존에 선택된 병원이 있으면 유지, 없으면 첫 번째 병원
     const prevId = TXState.selectedHospitalId
     const defaultHosp = prevId && hospitals.find(h => h.id === prevId)
-      ? prevId : (hospitals.length > 0 ? hospitals[0].id : 1)
+      ? prevId : hospitals[0].id
+
     sel.innerHTML = hospitals.map(h =>
       `<option value="${h.id}" ${h.id === defaultHosp ? 'selected' : ''}>${h.name}</option>`
     ).join('')
+
     TXState.selectedHospitalId = defaultHosp
     TXState._hospitals = hospitals  // 병원 목록 캐시
 
-    sel.addEventListener('change', e => {
+    // 초기 병원명 저장
+    const initHosp = hospitals.find(h => h.id === defaultHosp)
+    TXState.selectedHospitalName = initHosp ? initHosp.name : ''
+
+    // 병원 변경 이벤트 (onchange로 중복 등록 방지)
+    sel.onchange = e => {
       TXState.selectedHospitalId = +e.target.value
       const hosp = (TXState._hospitals || []).find(h => h.id === TXState.selectedHospitalId)
       TXState.selectedHospitalName = hosp ? hosp.name : ''
@@ -19737,15 +19756,12 @@ async function txLoadHospitalSelector() {
       if (TXState.tab === 'upload') txUpLoadVendors()
       // 다른 탭 데이터도 병원 기준으로 갱신
       else txSwitchTab(TXState.tab)
-    })
-
-    // 초기 병원명 저장
-    const initHosp = hospitals.find(h => h.id === defaultHosp)
-    TXState.selectedHospitalName = initHosp ? initHosp.name : ''
+    }
   } catch(e) {
-    sel.innerHTML = '<option value="1">병원 1 (기본)</option>'
-    TXState.selectedHospitalId = 1
-    TXState.selectedHospitalName = '병원 1'
+    console.error('[txLoadHospitalSelector] 병원 목록 로드 실패:', e)
+    sel.innerHTML = '<option value="">병원 목록을 불러올 수 없습니다</option>'
+    TXState.selectedHospitalId = null
+    TXState.selectedHospitalName = ''
   }
 }
 
