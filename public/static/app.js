@@ -2845,21 +2845,29 @@ async function renderOrders() {
       const todayHighlight = isToday ? 'border-left:3px solid #2563eb !important;box-shadow:inset 3px 0 0 #2563eb;' : ''
       const pastOpacity = isPast && !isToday ? 'opacity:0.65;' : ''
 
-      // 카테고리별 일합계 (법인카드 업체는 catDailyMap에 없으므로 자동 제외됨)
-      const catTotals = hasCats ? patientCats.map(cat => {
-        return Object.entries(catDailyMap[dateStr] || {}).reduce((s, [vid, vMap]) => {
-          const vendorObj = vendors.find(vv => String(vv.id) === String(vid))
-          if (vendorObj && vendorObj.is_card_type) return s  // 법인카드 업체 제외
-          const r = vMap[cat.id] || {}
-          return s + (r.total || 0)
-        }, 0)
-      }) : []
-
-      // displayTotal: 카테고리 소계 합 + 법인카드 업체 금액 (updateDayTotal의 grandTotal과 동일하게)
+      // 법인카드 업체 일별 합계
       const cardTotalForDay = hasCats
         ? vendors.filter(v => v.is_card_type).reduce((s, v) => s + ((window._cardDailyMap?.[v.id]?.[dateStr]) || 0), 0)
         : 0
-      const displayTotal = hasCats ? catTotals.reduce((a,b)=>a+b,0) + cardTotalForDay : dayTotal
+
+      // 카테고리별 일합계
+      // 단일 카테고리인 경우: 법인카드 금액도 해당 카테고리에 포함 (항암=일발주 일치)
+      // 복수 카테고리인 경우: 법인카드는 별도 집계(카테고리 귀속 불명확)
+      const isSingleCat = hasCats && patientCats.length === 1
+      const catTotals = hasCats ? patientCats.map((cat, ci) => {
+        const catAmt = Object.entries(catDailyMap[dateStr] || {}).reduce((s, [vid, vMap]) => {
+          const vendorObj = vendors.find(vv => String(vv.id) === String(vid))
+          if (vendorObj && vendorObj.is_card_type) return s  // 법인카드는 별도 처리
+          const r = vMap[cat.id] || {}
+          return s + (r.total || 0)
+        }, 0)
+        // 단일 카테고리면 법인카드 금액도 이 카테고리에 포함
+        return catAmt + (isSingleCat ? cardTotalForDay : 0)
+      }) : []
+
+      // displayTotal: 카테고리 소계 합 (단일카테고리면 이미 법인카드 포함됨)
+      // 복수 카테고리면 법인카드 별도 추가
+      const displayTotal = hasCats ? catTotals.reduce((a,b)=>a+b,0) + (isSingleCat ? 0 : cardTotalForDay) : dayTotal
 
       // ── 요약 행 (날짜 1행) ──
       const summaryRowBg = isToday ? '#eff6ff' : (isPast ? '#fafafa' : 'white')
@@ -5971,12 +5979,18 @@ function updateDayTotal(date) {
       // 저장값 제거 후 DOM 값으로 교체
       catTotals[aep.catId] = (catTotals[aep.catId] || 0) - savedAmt + domAmt
     }
-    // 법인카드형 업체 금액도 grandTotal에 포함
+    // 법인카드형 업체 금액
     let cardTotalForDay = 0
     ;(window._ordersVendors || []).filter(v => v.is_card_type).forEach(v => {
       cardTotalForDay += (window._cardDailyMap?.[v.id]?.[date]) || 0
     })
-    const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0) + cardTotalForDay
+    // 단일 카테고리: 법인카드 금액을 해당 카테고리(catTotals)에 포함 → grandTotal에 중복 추가 안 함
+    // 복수 카테고리: 법인카드 카테고리 귀속 불명확 → 별도 합산
+    const isSingleCatU = patientCats.length === 1
+    if (isSingleCatU && patientCats[0]) {
+      catTotals[patientCats[0].id] = (catTotals[patientCats[0].id] || 0) + cardTotalForDay
+    }
+    const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0) + (isSingleCatU ? 0 : cardTotalForDay)
 
     const budget = window._ordersBudget
     const row = document.querySelector(`tr[data-date="${date}"]`)
@@ -6068,6 +6082,7 @@ function updateDayTotal(date) {
       const catSettings4 = (window._catSettingsMap || {})[cat.id] || {}
       const catDB4 = catSettings4.working_days > 0 ? Math.round((catSettings4.monthly_budget||0)/catSettings4.working_days) : 0
       const catAdjBudget4 = isCovered2 ? 0 : catDB4 * multidays2
+      // catTotals에 이미 단일카테고리 법인카드 포함됨 (updateDayTotal 위에서 처리)
       const catAmt4 = catTotals[cat.id] || 0
       const catPct4 = catAdjBudget4 > 0 ? Math.round(catAmt4/catAdjBudget4*100) : null
       const catOver4 = catPct4!==null&&catPct4>=100; const catWarn4 = catPct4!==null&&catPct4>=80&&!catOver4
