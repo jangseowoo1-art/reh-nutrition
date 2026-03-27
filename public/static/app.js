@@ -16220,9 +16220,18 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
 
     var vendors = []
     try {
-      var rv = await axios.get('/api/transaction/invoice/vendors' + hp, {headers: H})
+      // year/month 파라미터 반드시 포함 (없으면 API가 빈 배열 반환하는 버그 회피)
+      var vUrl = '/api/transaction/invoice/vendors?year=' + year + '&month=' + month + (hospitalId && hospitalId !== 'null' ? '&hospital_id=' + hospitalId : '')
+      var rv = await axios.get(vUrl, {headers: H})
       vendors = rv.data && rv.data.data ? rv.data.data : []
-      console.log('[PDF] vendors:', vendors.length, '개')
+      console.log('[PDF] vendors:', vendors.length, '개', 'url:', vUrl)
+      // 현재 연월에 데이터가 없으면 전체 기간으로 재시도
+      if (vendors.length === 0) {
+        var vUrl2 = '/api/transaction/invoice/vendors' + (hospitalId && hospitalId !== 'null' ? '?hospital_id=' + hospitalId : '')
+        var rv2 = await axios.get(vUrl2 || '/api/transaction/invoice/vendors', {headers: H})
+        vendors = rv2.data && rv2.data.data ? rv2.data.data : []
+        console.log('[PDF] vendors(전체기간):', vendors.length, '개')
+      }
     } catch(e) { console.warn('[PDF] vendors 실패:', e.message) }
 
     var bs = {}

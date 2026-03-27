@@ -19,10 +19,14 @@ async function resolveHospitalId(c: any, bodyHospitalId?: number | null): Promis
   const qHid = c.req.query?.('hospital_id')
   if (qHid && Number(qHid) > 0) return Number(qHid)
 
-  // 최후 fallback: DB에서 첫 번째 병원 ID 조회
+  // 최후 fallback: 거래명세서 데이터가 있는 첫 번째 병원 ID 조회
   try {
-    const first = await c.env.DB.prepare(`SELECT id FROM hospitals ORDER BY id LIMIT 1`).first<any>()
-    return first?.id || 1
+    const first = await c.env.DB.prepare(
+      `SELECT DISTINCT hospital_id FROM transaction_items ORDER BY hospital_id LIMIT 1`
+    ).first<any>()
+    if (first?.hospital_id) return Number(first.hospital_id)
+    const firstHosp = await c.env.DB.prepare(`SELECT id FROM hospitals ORDER BY id LIMIT 1`).first<any>()
+    return firstHosp?.id || 1
   } catch { return 1 }
 }
 
@@ -1254,7 +1258,9 @@ txRouter.get('/invoice/list', async (c) => {
 // GET /invoice/category-summary?hospital_id=&vendor_name=&year=&month=&date_from=&date_to=
 txRouter.get('/invoice/category-summary', async (c) => {
   try {
-    const hospitalId = await resolveHospitalId(c)
+    const user = (c as any).get('user')
+    const userHospitalId = user?.hospitalId ? Number(user.hospitalId) : null
+    const qHid = c.req.query?.('hospital_id')
     const vendorName = c.req.query('vendor_name') || ''
     const year  = c.req.query('year')  || ''
     const month = c.req.query('month') || ''
@@ -1265,17 +1271,24 @@ txRouter.get('/invoice/category-summary', async (c) => {
       return c.json({ ok: false, error: '업체명/연도/월 필수' }, 400)
     }
 
-    // 날짜 범위 또는 연/월 필터 구성
-    let whereClause = 'hospital_id=? AND vendor_name=?'
-    let baseParams: any[] = [hospitalId, vendorName]
+    // hospital_id 필터: 병원유저=자기병원, admin+지정=해당병원, admin+미지정=전체
+    const conds: string[] = ['vendor_name=?']
+    const baseParams: any[] = [vendorName]
+    if (userHospitalId && userHospitalId > 0) {
+      conds.unshift('hospital_id=?')
+      baseParams.unshift(userHospitalId)
+    } else if (qHid && Number(qHid) > 0) {
+      conds.unshift('hospital_id=?')
+      baseParams.unshift(Number(qHid))
+    }
     if (dateFrom && dateTo) {
-      // transaction_date 컬럼이 있으면 사용, 없으면 document_year/month fallback
-      whereClause += ` AND document_year||'-'||printf('%02d',document_month)||'-01' >= ? AND document_year||'-'||printf('%02d',document_month)||'-28' <= ?`
+      conds.push(`document_year||'-'||printf('%02d',document_month)||'-01' >= ? AND document_year||'-'||printf('%02d',document_month)||'-28' <= ?`)
       baseParams.push(dateFrom.substring(0,7) + '-01', dateTo.substring(0,7) + '-28')
     } else {
-      whereClause += ` AND document_year=? AND document_month=?`
+      conds.push(`document_year=? AND document_month=?`)
       baseParams.push(Number(year), Number(month))
     }
+    const whereClause = conds.join(' AND ')
 
     // 분류별 합계
     const catRows = await c.env.DB.prepare(`
@@ -1408,7 +1421,9 @@ txRouter.get('/invoice/monthly-trend', async (c) => {
 // GET /invoice/items?hospital_id=&vendor_name=&year=&month=&category=&date_from=&date_to=
 txRouter.get('/invoice/items', async (c) => {
   try {
-    const hospitalId = await resolveHospitalId(c)
+    const user = (c as any).get('user')
+    const userHospitalId = user?.hospitalId ? Number(user.hospitalId) : null
+    const qHid = c.req.query?.('hospital_id')
     const vendorName = c.req.query('vendor_name') || ''
     const year  = Number(c.req.query('year')  || 0)
     const month = Number(c.req.query('month') || 0)
@@ -1416,16 +1431,25 @@ txRouter.get('/invoice/items', async (c) => {
     const dateFrom = c.req.query('date_from') || ''
     const dateTo   = c.req.query('date_to')   || ''
 
-    let whereClause = 'hospital_id=? AND vendor_name=?'
-    const params: any[] = [hospitalId, vendorName]
+    // hospital_id 필터: 병원유저=자기병원, admin+지정=해당병원, admin+미지정=전체
+    const itemConds: string[] = ['vendor_name=?']
+    const params: any[] = [vendorName]
+    if (userHospitalId && userHospitalId > 0) {
+      itemConds.unshift('hospital_id=?')
+      params.unshift(userHospitalId)
+    } else if (qHid && Number(qHid) > 0) {
+      itemConds.unshift('hospital_id=?')
+      params.unshift(Number(qHid))
+    }
     if (dateFrom && dateTo) {
-      whereClause += ` AND document_year||'-'||printf('%02d',document_month)||'-01' >= ? AND document_year||'-'||printf('%02d',document_month)||'-28' <= ?`
+      itemConds.push(`document_year||'-'||printf('%02d',document_month)||'-01' >= ? AND document_year||'-'||printf('%02d',document_month)||'-28' <= ?`)
       params.push(dateFrom.substring(0,7) + '-01', dateTo.substring(0,7) + '-28')
     } else {
-      whereClause += ` AND document_year=? AND document_month=?`
+      itemConds.push(`document_year=? AND document_month=?`)
       params.push(year, month)
     }
-    if (category) { whereClause += ` AND supplier_category=?`; params.push(category) }
+    if (category) { itemConds.push(`supplier_category=?`); params.push(category) }
+    const whereClause = itemConds.join(' AND ')
 
     const sql = `
       SELECT id, item_code, item_name, spec, unit, quantity, unit_price,
@@ -1471,21 +1495,52 @@ txRouter.get('/invoice/period-detect', async (c) => {
 })
 
 // ── 업체 목록 조회 (분석된 업체) ──────────────────────────────
-// GET /invoice/vendors?hospital_id=
+// GET /invoice/vendors?hospital_id=&year=&month=
 txRouter.get('/invoice/vendors', async (c) => {
   try {
-    const hospitalId = await resolveHospitalId(c)
-    const rows = await c.env.DB.prepare(`
-      SELECT DISTINCT vendor_name,
+    const user = (c as any).get('user')
+    const userHospitalId = user?.hospitalId ? Number(user.hospitalId) : null
+    const qHid = c.req.query?.('hospital_id')
+    const year  = c.req.query('year')  || ''
+    const month = c.req.query('month') || ''
+
+    // 병원 유저: 자기 병원만
+    // 관리자 + hospital_id 지정: 해당 병원
+    // 관리자 + hospital_id 없음: 전체 (모든 병원 합산)
+    const conditions: string[] = []
+    const params: any[] = []
+
+    if (userHospitalId && userHospitalId > 0) {
+      conditions.push('hospital_id=?')
+      params.push(userHospitalId)
+    } else if (qHid && Number(qHid) > 0) {
+      conditions.push('hospital_id=?')
+      params.push(Number(qHid))
+    }
+    // 연/월 필터
+    if (year && month) {
+      conditions.push('document_year=? AND document_month=?')
+      params.push(Number(year), Number(month))
+    }
+
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''
+
+    const sql = `
+      SELECT vendor_name,
              MIN(document_year) as first_year,
              MAX(document_year) as last_year,
              COUNT(DISTINCT document_year||'-'||document_month) as month_count,
              SUM(amount + tax_amount) as total_amount
       FROM transaction_items
-      WHERE hospital_id=?
+      ${whereClause}
       GROUP BY vendor_name
       ORDER BY total_amount DESC
-    `).bind(hospitalId).all<any>()
+    `
+    // params 유무에 상관없이 항상 bind() 사용 (빈 params일 때도 동일하게 처리)
+    const stmt = c.env.DB.prepare(sql)
+    const rows = params.length > 0
+      ? await stmt.bind(...params).all<any>()
+      : await stmt.all<any>()
     return c.json({ ok: true, data: rows.results || [] })
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500)
