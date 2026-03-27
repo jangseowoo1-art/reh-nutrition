@@ -1982,7 +1982,16 @@ adminRouter.get('/hospitals/:id/diet-categories-for-meal', async (c) => {
 // 환자군 설정 예산 자동 배분에 사용 (custom_data의 cat_* 키 집계)
 adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
   const { id, year, month } = c.req.param()
-  const mm = String(month).padStart(2, '0')
+  const y = parseInt(String(year))
+  const m = parseInt(String(month))
+
+  // ── 최근 3개월 범위 계산 ──
+  const months3: { year: number; month: number; mm: string }[] = []
+  for (let i = 0; i < 3; i++) {
+    let my = y, mm2 = m - i
+    if (mm2 <= 0) { mm2 += 12; my -= 1 }
+    months3.push({ year: my, month: mm2, mm: String(mm2).padStart(2, '0') })
+  }
 
   // 환자군 목록
   const cats = await c.env.DB.prepare(`
@@ -1991,44 +2000,124 @@ adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
     ORDER BY sort_order, id
   `).bind(id).all<any>()
 
-  // 해당 월 daily_meals custom_data 전체 조회
-  const mealRows = await c.env.DB.prepare(`
-    SELECT custom_data FROM daily_meals
-    WHERE hospital_id = ?
-      AND strftime('%Y', meal_date) = ?
-      AND strftime('%m', meal_date) = ?
-      AND custom_data IS NOT NULL AND custom_data != '{}'
-  `).bind(id, String(year), mm).all<any>()
+  // 환자군별 식수 집계 맵 (이번달 / 3개월 합계 / 3개월 월수)
+  const catMealMap: Record<string, number> = {}       // 이번달
+  const catMeal3Map: Record<string, number> = {}      // 최근 3개월 합계
+  const catMealMonthCount: Record<string, number> = {} // 실제 데이터 있는 월 수
 
-  // 환자군별 식수 집계
-  const catMealMap: Record<string, number> = {}
   for (const cat of (cats.results || [])) {
     catMealMap[cat.category_key] = 0
+    catMeal3Map[cat.category_key] = 0
+    catMealMonthCount[cat.category_key] = 0
   }
 
-  for (const row of (mealRows.results || [])) {
-    try {
-      const cd = JSON.parse(row.custom_data || '{}')
-      for (const cat of (cats.results || [])) {
-        const fk = `cat_${cat.category_key}`
-        const fv = cd[fk] || {}
-        catMealMap[cat.category_key] = (catMealMap[cat.category_key] || 0) +
-          (fv.bf || 0) + (fv.l || 0) + (fv.d || 0)
+  // 각 월별 식수 집계
+  for (const mInfo of months3) {
+    const mealRows = await c.env.DB.prepare(`
+      SELECT custom_data FROM daily_meals
+      WHERE hospital_id = ?
+        AND strftime('%Y', meal_date) = ?
+        AND strftime('%m', meal_date) = ?
+        AND custom_data IS NOT NULL AND custom_data != '{}'
+    `).bind(id, String(mInfo.year), mInfo.mm).all<any>()
+
+    const monthCatMap: Record<string, number> = {}
+    for (const cat of (cats.results || [])) {
+      monthCatMap[cat.category_key] = 0
+    }
+
+    for (const row of (mealRows.results || [])) {
+      try {
+        const cd = JSON.parse(row.custom_data || '{}')
+        for (const cat of (cats.results || [])) {
+          const fk = `cat_${cat.category_key}`
+          const fv = cd[fk] || {}
+          monthCatMap[cat.category_key] = (monthCatMap[cat.category_key] || 0) +
+            (fv.bf || 0) + (fv.l || 0) + (fv.d || 0)
+        }
+      } catch (e) {}
+    }
+
+    // 이번달 별도 저장
+    if (mInfo.year === y && mInfo.month === m) {
+      for (const k of Object.keys(catMealMap)) {
+        catMealMap[k] = monthCatMap[k] || 0
       }
-    } catch (e) {}
+    }
+
+    // 3개월 합계 누적 (해당 월 데이터가 하나라도 있으면 카운트)
+    const hasData = (mealRows.results || []).length > 0
+    if (hasData) {
+      for (const cat of (cats.results || [])) {
+        catMeal3Map[cat.category_key] = (catMeal3Map[cat.category_key] || 0) + (monthCatMap[cat.category_key] || 0)
+        catMealMonthCount[cat.category_key] = (catMealMonthCount[cat.category_key] || 0) + 1
+      }
+    }
   }
 
-  // 결과: 환자군별 식수 합계 + 전체 합계
-  const totalMeals = Object.values(catMealMap).reduce((s: number, v) => s + (v as number), 0)
-  const result = (cats.results || []).map((cat: any) => ({
-    id: cat.id,
-    category_key: cat.category_key,
-    category_name: cat.category_name,
-    total_meals: catMealMap[cat.category_key] || 0,
-    ratio: totalMeals > 0 ? (catMealMap[cat.category_key] || 0) / totalMeals : 0
-  }))
+  // ── 환자군별 기준 식단가: category_order_settings에서 가장 최근 target_meal_price 조회 ──
+  const priceRows = await c.env.DB.prepare(`
+    SELECT cos.patient_category_id, hpc.category_key, cos.target_meal_price
+    FROM category_order_settings cos
+    JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+    WHERE cos.hospital_id = ?
+      AND cos.id IN (
+        SELECT MAX(id) FROM category_order_settings
+        WHERE hospital_id = ?
+        GROUP BY patient_category_id
+      )
+  `).bind(id, id).all<any>()
 
-  return c.json({ catMeals: result, totalMeals })
+  const catPriceMap: Record<string, number> = {}
+  for (const row of (priceRows.results || [])) {
+    catPriceMap[(row as any).category_key] = (row as any).target_meal_price || 0
+  }
+
+  // 이번달 총 식수
+  const totalMeals = Object.values(catMealMap).reduce((s: number, v) => s + (v as number), 0)
+
+  // 최근 3개월 평균 식수
+  const catAvgMeals: Record<string, number> = {}
+  for (const cat of (cats.results || [])) {
+    const cnt = catMealMonthCount[cat.category_key] || 0
+    catAvgMeals[cat.category_key] = cnt > 0
+      ? Math.round((catMeal3Map[cat.category_key] || 0) / cnt)
+      : 0
+  }
+
+  // 이번달 식수 비중 (단순)
+  // 가중값: 평균식수 × 기준식단가
+  const catWeightMap: Record<string, number> = {}
+  let totalWeight = 0
+  for (const cat of (cats.results || [])) {
+    const avgM = catAvgMeals[cat.category_key] || 0
+    const price = catPriceMap[cat.category_key] || 0
+    const w = avgM * price
+    catWeightMap[cat.category_key] = w
+    totalWeight += w
+  }
+
+  const result = (cats.results || []).map((cat: any) => {
+    const meals = catMealMap[cat.category_key] || 0
+    const avgMeals = catAvgMeals[cat.category_key] || 0
+    const refPrice = catPriceMap[cat.category_key] || 0
+    const weight = catWeightMap[cat.category_key] || 0
+    return {
+      id: cat.id,
+      category_key: cat.category_key,
+      category_name: cat.category_name,
+      total_meals: meals,
+      avg_meals_3m: avgMeals,                   // 최근 3개월 평균
+      ref_meal_price: refPrice,                  // 기준 식단가 (저장된 target_meal_price)
+      weight: weight,                             // 가중값 = 평균식수 × 기준식단가
+      // 단순 식수 비중 (이번달)
+      meal_ratio: totalMeals > 0 ? meals / totalMeals : 0,
+      // 가중 예산 비중 (평균식수 × 기준식단가 기반)
+      budget_ratio: totalWeight > 0 ? weight / totalWeight : 0,
+    }
+  })
+
+  return c.json({ catMeals: result, totalMeals, totalWeight })
 })
 
 // ── 발주 업체 → 명세서 업체 일괄 동기화 (초기 설정용) ──────────

@@ -12019,9 +12019,12 @@ async function loadPatientCategories(hospitalId) {
   window._dietPresets = presets || []
   window._currentDietTypeTab = 'patient'
 
-  // 환자군별 식수 합계 저장 (비중 계산에 사용)
+  // 환자군별 식수/가중값 저장 (비중 계산에 사용)
+  // catMeals 각 항목: { id, category_key, category_name, total_meals, avg_meals_3m,
+  //   ref_meal_price, weight, meal_ratio, budget_ratio }
   window._adminCatMealTotals = mealTotalsResp?.catMeals || []
   window._adminTotalMeals = mealTotalsResp?.totalMeals || 0
+  window._adminTotalWeight = mealTotalsResp?.totalWeight || 0
 
   const catSettings = Array.isArray(catSettingsResp) ? catSettingsResp : (catSettingsResp?.settings || [])
   const isCatFallback = catSettingsResp?.isFallback || false
@@ -12454,123 +12457,170 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
   const settingsMap = {}
   ;(settings || []).forEach(s => { settingsMap[s.patient_category_id] = s })
 
-  // ── 식수 비중 데이터 ──
-  const mealTotals = window._adminCatMealTotals || []  // [{id, category_key, category_name, total_meals, ratio}]
+  // ── 식수 비중 데이터 (API 확장: avg_meals_3m, ref_meal_price, weight, budget_ratio 포함) ──
+  const mealTotals = window._adminCatMealTotals || []
   const totalMeals = window._adminTotalMeals || 0
   const mealTotalsMap = {}
   mealTotals.forEach(m => { mealTotalsMap[m.category_key] = m })
 
-  // ── 식수 비중 기반 배분 패널 (상단) ──
-  const hasMealData = totalMeals > 0
+  // 가중값 합계 (총 가중합)
+  const totalWeight = mealTotals.reduce((s, m) => s + (m.weight || 0), 0)
+  const hasWeightData = totalWeight > 0   // 기준식단가 + 식수 모두 있을 때
+  const hasMealData = totalMeals > 0      // 식수만 있을 때
+
+  // ── 가중 예산배분 패널 (상단) ──
   const autoAllocBanner = `
-  <div id="autoAllocPanel" class="mb-4 p-3 bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl">
-    <div class="flex items-center justify-between mb-2">
+  <div id="autoAllocPanel" class="mb-4 border border-indigo-200 rounded-xl overflow-hidden">
+    <!-- 패널 헤더 -->
+    <div class="px-3 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <div class="w-6 h-6 rounded-lg bg-indigo-500 flex items-center justify-center text-white text-xs">
-          <i class="fas fa-magic"></i>
-        </div>
-        <span class="text-sm font-bold text-indigo-800">식수 비중 기반 예산 자동배분</span>
+        <i class="fas fa-calculator text-white text-sm"></i>
+        <span class="text-sm font-bold text-white">환자군별 예산 자동배분</span>
+        <span class="text-xs text-indigo-200 bg-indigo-700 bg-opacity-50 px-1.5 py-0.5 rounded-full">식수 × 기준식단가 가중방식</span>
       </div>
-      <span class="text-xs text-indigo-500">${App.currentYear}년 ${App.currentMonth}월</span>
+      <span class="text-xs text-indigo-200">${App.currentYear}년 ${App.currentMonth}월</span>
     </div>
 
-    ${hasMealData ? `
-    <div class="mb-2 p-2 bg-white rounded-lg border border-indigo-100 text-xs text-indigo-700">
-      <i class="fas fa-chart-pie mr-1"></i>이번 달 식수 입력 데이터 기반으로 비중을 자동 계산합니다.
-      <span class="text-gray-500 ml-1">(총 ${totalMeals.toLocaleString()}식)</span>
-    </div>` : `
-    <div class="mb-2 p-2 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
-      <i class="fas fa-exclamation-triangle mr-1"></i>이번 달 식수 입력이 없어 직접 비중(%)을 입력하거나 수동으로 금액을 설정하세요.
-    </div>`}
+    <div class="p-3 bg-gradient-to-br from-indigo-50 to-purple-50">
+      <!-- 계산 방식 안내 -->
+      <div class="mb-3 p-2.5 bg-white rounded-lg border border-indigo-100 text-xs">
+        <div class="font-semibold text-indigo-800 mb-1.5"><i class="fas fa-info-circle mr-1"></i>계산 방식</div>
+        <div class="space-y-0.5 text-gray-600">
+          <div>① 가중값 = <span class="font-medium text-blue-700">3개월 평균 식수</span> × <span class="font-medium text-green-700">기준 식단가</span></div>
+          <div>② 예산 비중 = 환자군 가중값 ÷ 전체 가중합</div>
+          <div>③ 배분예산 = 총 목표예산 × 예산 비중</div>
+          <div>④ 목표 식단가 = 배분예산 ÷ 평균 식수</div>
+        </div>
+      </div>
 
-    <div class="grid grid-cols-2 gap-2 mb-3">
-      <div>
-        <label class="block text-xs text-gray-500 mb-1 font-medium">예산설정 월 총 목표금액 (원)</label>
-        <div class="flex gap-1 items-center">
-          <input type="number" id="autoAlloc-totalBudget"
-            class="form-input text-sm py-1 flex-1 font-bold"
-            placeholder="예산설정 탭에서 자동 가져옴"
+      <!-- 총 목표금액 + 영업일수 입력 -->
+      <div class="grid grid-cols-2 gap-2 mb-3">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1 font-medium">월 총 목표예산 (원)</label>
+          <div class="flex gap-1 items-center">
+            <input type="number" id="autoAlloc-totalBudget"
+              class="form-input text-sm py-1 flex-1 font-bold"
+              placeholder="예산설정 탭에서 가져오기"
+              oninput="recalcAutoAlloc()">
+            <button type="button" onclick="fetchBudgetTotalForAlloc()"
+              class="flex-shrink-0 px-2 py-1 text-xs bg-indigo-500 text-white rounded hover:bg-indigo-600 font-medium">
+              <i class="fas fa-sync-alt mr-0.5"></i>가져오기
+            </button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1 font-medium">영업일수 (일)</label>
+          <input type="number" id="autoAlloc-workdays"
+            class="form-input text-sm py-1 w-full"
+            placeholder="영업일수"
+            value="${(function(){ const wd = document.getElementById('hb-workdays'); return wd ? wd.value : '' })()}"
             oninput="recalcAutoAlloc()">
-          <button type="button" onclick="fetchBudgetTotalForAlloc()"
-            class="flex-shrink-0 px-2 py-1 text-xs bg-indigo-100 text-indigo-700 rounded hover:bg-indigo-200 font-medium">
-            <i class="fas fa-sync-alt mr-0.5"></i>가져오기
-          </button>
         </div>
       </div>
-      <div>
-        <label class="block text-xs text-gray-500 mb-1 font-medium">영업일수 (일)</label>
-        <input type="number" id="autoAlloc-workdays"
-          class="form-input text-sm py-1 w-full"
-          placeholder="영업일수"
-          value="${(function(){ const wd = document.getElementById('hb-workdays'); return wd ? wd.value : '' })()}"
-          oninput="recalcAutoAlloc()">
-      </div>
-    </div>
 
-    <div id="autoAllocRows" class="space-y-2 mb-3">
-      ${cats.map(cat => {
-        const mealInfo = mealTotalsMap[cat.category_key] || {}
-        const mealCount = mealInfo.total_meals || 0
-        const ratio = hasMealData ? (mealInfo.ratio || 0) : (1 / cats.length)
-        const ratioPercent = Math.round(ratio * 1000) / 10
-        const s = settingsMap[cat.id] || {}
-        return `
-        <div class="flex items-center gap-2 p-2 bg-white rounded-lg border border-indigo-100">
-          <div class="w-5 h-5 rounded flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-               style="background:${getCategoryColor(cat.category_key)}">
-            ${cat.category_name.charAt(0)}
-          </div>
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-1.5">
-              <span class="text-xs font-semibold text-gray-700">${cat.category_name}</span>
-              ${hasMealData ? `<span class="text-xs text-gray-400">${mealCount.toLocaleString()}식</span>` : ''}
+      ${!hasWeightData && !hasMealData ? `
+      <div class="mb-3 p-2 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
+        <i class="fas fa-exclamation-triangle mr-1"></i>
+        <strong>식수 데이터 없음:</strong> 아래 기준 식단가 입력 후 비중을 직접 수정하거나 균등배분을 사용하세요.
+      </div>` : !hasWeightData && hasMealData ? `
+      <div class="mb-3 p-2 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
+        <i class="fas fa-exclamation-triangle mr-1"></i>
+        <strong>기준 식단가 미설정:</strong> 아래 각 환자군의 기준 식단가를 저장하면 가중배분이 적용됩니다. 현재는 단순 식수 비중으로 계산합니다.
+      </div>` : `
+      <div class="mb-3 p-2 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-700">
+        <i class="fas fa-check-circle mr-1"></i>
+        <strong>가중배분 활성화:</strong> 3개월 평균 식수 × 기준 식단가 기반으로 예산 비중을 자동 계산합니다.
+      </div>`}
+
+      <!-- 환자군별 상세 행 (테이블형) -->
+      <div class="mb-3 rounded-lg overflow-hidden border border-indigo-100">
+        <!-- 헤더 -->
+        <div class="grid text-xs font-semibold text-indigo-700 bg-indigo-100 px-2 py-1.5"
+          style="grid-template-columns: 1fr 70px 70px 80px 60px 90px 88px">
+          <span>환자군</span>
+          <span class="text-center">3개월<br>평균식수</span>
+          <span class="text-center">기준<br>식단가</span>
+          <span class="text-center">가중값</span>
+          <span class="text-center">식수<br>비중</span>
+          <span class="text-center">예산<br>비중</span>
+          <span class="text-center">배분예산<br>/ 식단가</span>
+        </div>
+        <!-- 행 -->
+        ${cats.map(cat => {
+          const mealInfo = mealTotalsMap[cat.category_key] || {}
+          const avgMeals = mealInfo.avg_meals_3m || 0
+          const refPrice = mealInfo.ref_meal_price || 0
+          const weight = mealInfo.weight || 0
+          const mealRatio = hasMealData ? (mealInfo.meal_ratio || 0) : 0
+          const budgetRatio = hasWeightData ? (mealInfo.budget_ratio || 0) : (hasMealData ? mealRatio : 1/cats.length)
+          const budgetRatioPct = Math.round(budgetRatio * 1000) / 10
+          const mealRatioPct = Math.round(mealRatio * 1000) / 10
+          return `
+          <div class="grid items-center px-2 py-2 bg-white border-t border-indigo-50 hover:bg-indigo-50 transition"
+            style="grid-template-columns: 1fr 70px 70px 80px 60px 90px 88px">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <div class="w-4 h-4 rounded flex-shrink-0 flex items-center justify-center text-white text-xs font-bold"
+                   style="background:${getCategoryColor(cat.category_key)}">${cat.category_name.charAt(0)}</div>
+              <span class="text-xs font-semibold text-gray-700 truncate">${cat.category_name}</span>
             </div>
-          </div>
-          <div class="flex items-center gap-1.5 flex-shrink-0">
-            <div class="flex items-center gap-0.5">
+            <div class="text-center text-xs text-blue-700 font-medium">${avgMeals > 0 ? avgMeals.toLocaleString() : '<span class="text-gray-300">-</span>'}</div>
+            <div class="text-center">
+              <input type="number" id="allocRefPrice-${cat.id}"
+                class="form-input text-xs py-0.5 text-center w-full"
+                value="${refPrice || ''}"
+                placeholder="입력"
+                oninput="recalcAutoAlloc()"
+                title="기준 식단가 (원/식) - 변경 후 아래 [재계산] 클릭">
+            </div>
+            <div id="allocWeight-${cat.id}" class="text-center text-xs text-purple-700 font-medium">
+              ${weight > 0 ? Math.round(weight/1000).toLocaleString()+'천' : '<span class="text-gray-300">-</span>'}
+            </div>
+            <div class="text-center text-xs text-gray-500">${hasMealData ? mealRatioPct+'%' : '<span class="text-gray-300">-</span>'}</div>
+            <div class="text-center">
               <input type="number" id="allocRatio-${cat.id}"
-                class="form-input text-xs py-0.5 text-center font-bold"
-                style="width:60px"
-                value="${ratioPercent}"
+                class="form-input text-xs py-0.5 text-center font-bold w-full"
+                value="${budgetRatioPct}"
                 min="0" max="100" step="0.1"
                 oninput="recalcAutoAlloc()"
-                ${hasMealData ? 'readonly title="식수 데이터 기반 자동계산 (직접 수정 시 잠금 해제 버튼 클릭)"' : ''}>
-              <span class="text-xs text-gray-500">%</span>
+                ${hasWeightData ? 'readonly title="가중치 자동계산 (직접수정: 잠금해제 버튼)"' : ''}>
+              <div class="text-center text-gray-400 mt-0.5" style="font-size:9px">예산비중%</div>
             </div>
-            <div class="text-right" style="min-width:90px">
+            <div class="text-right pr-1">
               <div id="allocBudget-${cat.id}" class="text-xs font-bold text-indigo-700">-</div>
-              <div id="allocMealPrice-${cat.id}" class="text-xs text-gray-400">-</div>
+              <div id="allocMealPrice-${cat.id}" class="text-xs text-emerald-600">-</div>
             </div>
-          </div>
-        </div>`
-      }).join('')}
-    </div>
+          </div>`
+        }).join('')}
+        <!-- 합계 행 -->
+        <div class="grid items-center px-2 py-1.5 bg-indigo-50 border-t border-indigo-200 font-semibold"
+          style="grid-template-columns: 1fr 70px 70px 80px 60px 90px 88px">
+          <span class="text-xs text-indigo-700">합계</span>
+          <span class="text-center text-xs text-blue-700">${hasMealData ? mealTotals.reduce((s,m)=>s+(m.avg_meals_3m||0),0).toLocaleString() : '-'}</span>
+          <span></span>
+          <span class="text-center text-xs text-purple-700">${hasWeightData ? Math.round(totalWeight/1000).toLocaleString()+'천' : '-'}</span>
+          <span class="text-center text-xs text-gray-500">100%</span>
+          <span class="text-center text-xs text-indigo-600 font-bold"><span id="allocRatioSum">0</span>%</span>
+          <span class="text-right text-xs text-indigo-700 font-bold pr-1"><span id="allocBudgetSum">-</span></span>
+        </div>
+      </div>
 
-    <div class="flex items-center justify-between mb-2 p-2 bg-indigo-100 rounded-lg">
-      <span class="text-xs font-semibold text-indigo-700">
-        <i class="fas fa-sigma mr-1"></i>비중 합계:
-        <span id="allocRatioSum" class="font-bold">0</span>%
-      </span>
-      <span class="text-xs font-semibold text-indigo-700">
-        배분 합계: <span id="allocBudgetSum" class="font-bold">-</span>
-      </span>
+      <!-- 액션 버튼 -->
+      <div class="flex gap-2">
+        <button type="button" onclick="recalcAutoAllocFromRefPrice()"
+          class="flex-1 py-1.5 text-xs font-semibold bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200">
+          <i class="fas fa-redo mr-1"></i>기준식단가로 재계산
+        </button>
+        ${hasWeightData ? `
+        <button type="button" onclick="unlockAllocRatios()"
+          class="py-1.5 px-3 text-xs font-semibold bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200">
+          <i class="fas fa-unlock mr-1"></i>비중 수동수정
+        </button>` : ''}
+        <button type="button" onclick="applyAutoAlloc()"
+          class="flex-1 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+          <i class="fas fa-magic mr-1"></i>아래 입력란에 적용
+        </button>
+      </div>
     </div>
-
-    ${hasMealData ? `
-    <div class="flex gap-2">
-      <button type="button" onclick="unlockAllocRatios()"
-        class="flex-1 py-1.5 text-xs font-semibold bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200">
-        <i class="fas fa-unlock mr-1"></i>비중 직접 수정
-      </button>
-      <button type="button" onclick="applyAutoAlloc()"
-        class="flex-1 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-        <i class="fas fa-magic mr-1"></i>아래 목표금액에 자동 적용
-      </button>
-    </div>` : `
-    <button type="button" onclick="applyAutoAlloc()"
-      class="w-full py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-      <i class="fas fa-magic mr-1"></i>아래 목표금액에 자동 적용
-    </button>`}
   </div>`
 
   el.innerHTML = autoAllocBanner + fallbackBanner + cats.map(cat => {
@@ -12594,25 +12644,25 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         return !k.includes('rice_extra') && !k.includes('rice_add')
       })
 
-    // 식수 비중 표시
+    // 식수/가중 비중 표시
     const mealInfo = mealTotalsMap[cat.category_key] || {}
-    const mealCount = mealInfo.total_meals || 0
-    const ratio = totalMeals > 0 ? (mealInfo.ratio || 0) : 0
-    const ratioPercent = Math.round(ratio * 1000) / 10
+    const avgMeals3m = mealInfo.avg_meals_3m || 0
+    const mealRatioPct = hasMealData ? Math.round((mealInfo.meal_ratio || 0) * 1000) / 10 : 0
+    const budgetRatioPct = hasWeightData ? Math.round((mealInfo.budget_ratio || 0) * 1000) / 10 : 0
+    const refPriceVal = mealInfo.ref_meal_price || 0
 
     return `
     <div class="p-3 bg-white border border-gray-200 rounded-xl">
-      <div class="flex items-center gap-2 mb-2">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
         <div class="w-5 h-5 rounded flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
              style="background:${getCategoryColor(cat.category_key)}">
           ${cat.category_name.charAt(0)}
         </div>
         <span class="font-semibold text-gray-700 text-sm">${cat.category_name}</span>
         ${cat.order_code ? `<span class="text-xs text-gray-400">(${cat.order_code})</span>` : ''}
-        ${totalMeals > 0 ? `
-        <span class="ml-auto text-xs text-indigo-600 font-medium bg-indigo-50 px-2 py-0.5 rounded-full">
-          <i class="fas fa-utensils mr-0.5"></i>${mealCount.toLocaleString()}식 (${ratioPercent}%)
-        </span>` : ''}
+        ${avgMeals3m > 0 ? `<span class="ml-auto text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full"><i class="fas fa-utensils mr-0.5"></i>3개월평균 ${avgMeals3m.toLocaleString()}식</span>` : ''}
+        ${hasMealData ? `<span class="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">식수 ${mealRatioPct}%</span>` : ''}
+        ${hasWeightData ? `<span class="text-xs text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-full font-semibold">예산 ${budgetRatioPct}%</span>` : ''}
       </div>
       <div class="grid grid-cols-2 gap-2 mb-2">
         <div>
@@ -12754,10 +12804,7 @@ function fetchBudgetTotalForAlloc() {
     allocEl.value = totalEl.value
     allocEl.style.background = '#eef2ff'
     allocEl.style.borderColor = '#818cf8'
-    setTimeout(() => {
-      allocEl.style.background = ''
-      allocEl.style.borderColor = ''
-    }, 1500)
+    setTimeout(() => { allocEl.style.background = ''; allocEl.style.borderColor = '' }, 1500)
   }
   if (allocWorkEl && workEl && workEl.value && !allocWorkEl.value) {
     allocWorkEl.value = workEl.value
@@ -12765,47 +12812,93 @@ function fetchBudgetTotalForAlloc() {
   recalcAutoAlloc()
 }
 
-// ── 자동배분: 비중 기반 예산 재계산 ──
+// ── 자동배분: 기준식단가 입력값으로 가중치 재계산 후 반영 ──
+function recalcAutoAllocFromRefPrice() {
+  const cats = window._budgetCats || []
+  if (!cats.length) return
+
+  // 각 카테고리의 기준식단가 입력값 읽기
+  const mealTotals = window._adminCatMealTotals || []
+  let totalWeight = 0
+  const weights = {}
+
+  cats.forEach(cat => {
+    const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
+    const avgMeals = mealInfo.avg_meals_3m || 0
+    const refPriceEl = document.getElementById(`allocRefPrice-${cat.id}`)
+    const refPrice = parseFloat(refPriceEl?.value || 0)
+    const w = avgMeals * refPrice
+    weights[cat.id] = w
+    totalWeight += w
+
+    // 가중값 표시 업데이트
+    const weightEl = document.getElementById(`allocWeight-${cat.id}`)
+    if (weightEl) {
+      weightEl.innerHTML = w > 0
+        ? `<span class="text-purple-700">${Math.round(w/1000).toLocaleString()}천</span>`
+        : '<span class="text-gray-300">-</span>'
+    }
+  })
+
+  // 예산 비중 갱신 (readonly 해제 후 값 업데이트)
+  cats.forEach(cat => {
+    const ratioEl = document.getElementById(`allocRatio-${cat.id}`)
+    if (ratioEl) {
+      ratioEl.removeAttribute('readonly')
+      const ratio = totalWeight > 0 ? weights[cat.id] / totalWeight : 1 / cats.length
+      ratioEl.value = Math.round(ratio * 1000) / 10
+      ratioEl.style.background = '#f5f3ff'
+      ratioEl.style.borderColor = '#a78bfa'
+      ratioEl.setAttribute('readonly', 'readonly')
+    }
+  })
+
+  recalcAutoAlloc()
+  if (totalWeight > 0) {
+    showToast('기준 식단가 기반으로 예산 비중이 재계산되었습니다.', 'success')
+  } else {
+    showToast('평균 식수 또는 기준 식단가를 입력하세요.', 'warning')
+  }
+}
+
+// ── 자동배분: 배분금액 실시간 계산 (비중 기반) ──
 function recalcAutoAlloc() {
   const cats = window._budgetCats || []
   if (!cats.length) return
   const totalBudget = parseFloat(document.getElementById('autoAlloc-totalBudget')?.value || 0)
-  const workdays = parseFloat(document.getElementById('autoAlloc-workdays')?.value || 0)
+  const mealTotals = window._adminCatMealTotals || []
 
   let ratioSum = 0
   let budgetSum = 0
+
   cats.forEach(cat => {
     const ratioEl = document.getElementById(`allocRatio-${cat.id}`)
     const ratio = parseFloat(ratioEl?.value || 0) / 100
     const allocated = totalBudget > 0 ? Math.round(totalBudget * ratio) : 0
 
-    // 식수 정보
-    const mealTotals = window._adminCatMealTotals || []
+    // 목표 식단가 = 배분예산 ÷ 3개월평균식수
     const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
-    const mealCount = mealInfo.total_meals || 0
+    const avgMeals = mealInfo.avg_meals_3m || 0
 
-    // 목표 식단가 계산 (식수 있을 때만)
     let mealPrice = 0
-    if (allocated > 0 && mealCount > 0) {
-      mealPrice = Math.round(allocated / mealCount)
+    if (allocated > 0 && avgMeals > 0) {
+      mealPrice = Math.round(allocated / avgMeals)
     }
 
     const budgetEl = document.getElementById(`allocBudget-${cat.id}`)
     const mealPriceEl = document.getElementById(`allocMealPrice-${cat.id}`)
+
     if (budgetEl) {
       budgetEl.textContent = allocated > 0 ? `${allocated.toLocaleString()}원` : '-'
-      budgetEl.style.color = allocated > 0 ? '#4338ca' : '#9ca3af'
     }
     if (mealPriceEl) {
       if (mealPrice > 0) {
-        mealPriceEl.textContent = `${mealPrice.toLocaleString()}원/식`
-        mealPriceEl.style.color = '#059669'
-      } else if (mealCount === 0 && allocated > 0) {
-        mealPriceEl.textContent = '식수 없음'
+        mealPriceEl.textContent = `→ ${mealPrice.toLocaleString()}원/식`
+      } else if (avgMeals === 0 && allocated > 0) {
+        mealPriceEl.textContent = '식수없음'
         mealPriceEl.style.color = '#d97706'
       } else {
         mealPriceEl.textContent = '-'
-        mealPriceEl.style.color = '#9ca3af'
       }
     }
 
@@ -12818,14 +12911,14 @@ function recalcAutoAlloc() {
   if (ratioSumEl) {
     const rounded = Math.round(ratioSum * 10) / 10
     ratioSumEl.textContent = rounded
-    ratioSumEl.style.color = Math.abs(rounded - 100) < 0.2 ? '#16a34a' : '#dc2626'
+    ratioSumEl.style.color = Math.abs(rounded - 100) < 0.5 ? '#16a34a' : '#dc2626'
   }
   if (budgetSumEl) {
     budgetSumEl.textContent = budgetSum > 0 ? `${budgetSum.toLocaleString()}원` : '-'
   }
 }
 
-// ── 자동배분: 비중 직접 수정 잠금 해제 ──
+// ── 자동배분: 예산 비중 수동 수정 잠금 해제 ──
 function unlockAllocRatios() {
   const cats = window._budgetCats || []
   cats.forEach(cat => {
@@ -12837,19 +12930,19 @@ function unlockAllocRatios() {
       el.style.borderColor = '#f59e0b'
     }
   })
-  showToast('비중을 직접 수정할 수 있습니다. 합계가 100%가 되도록 입력하세요.', 'info')
+  showToast('예산 비중(%)을 직접 수정할 수 있습니다. 합계가 100%가 되도록 입력하세요.', 'info')
 }
 
-// ── 자동배분: 아래 목표금액 입력란에 적용 ──
+// ── 자동배분: 아래 입력란에 적용 ──
 function applyAutoAlloc() {
   const cats = window._budgetCats || []
   if (!cats.length) return
   const totalBudget = parseFloat(document.getElementById('autoAlloc-totalBudget')?.value || 0)
   if (!totalBudget) {
-    showToast('예산설정 탭의 월 총 목표금액을 먼저 입력하거나 가져오세요.', 'warning')
+    showToast('월 총 목표예산을 먼저 입력하거나 예산설정 탭에서 가져오세요.', 'warning')
     return
   }
-
+  const workdays = parseFloat(document.getElementById('autoAlloc-workdays')?.value || 0)
   const mealTotals = window._adminCatMealTotals || []
 
   cats.forEach(cat => {
@@ -12857,46 +12950,32 @@ function applyAutoAlloc() {
     const ratio = parseFloat(ratioEl?.value || 0) / 100
     const allocated = Math.round(totalBudget * ratio)
 
-    // 식수 정보
+    // 목표 식단가 = 배분예산 ÷ 3개월평균식수
     const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
-    const mealCount = mealInfo.total_meals || 0
+    const avgMeals = mealInfo.avg_meals_3m || 0
     let mealPrice = 0
-    if (allocated > 0 && mealCount > 0) {
-      mealPrice = Math.round(allocated / mealCount)
+    if (allocated > 0 && avgMeals > 0) {
+      mealPrice = Math.round(allocated / avgMeals)
     }
 
-    // catBudget 입력란에 적용
+    const flash = (el, bg, border) => {
+      if (!el) return
+      el.style.background = bg; el.style.borderColor = border
+      setTimeout(() => { el.style.background = ''; el.style.borderColor = '' }, 2000)
+    }
+
     const budgetInput = document.getElementById(`catBudget-${cat.id}`)
-    if (budgetInput) {
-      budgetInput.value = allocated
-      budgetInput.style.background = '#eef2ff'
-      budgetInput.style.borderColor = '#818cf8'
-      setTimeout(() => {
-        budgetInput.style.background = ''
-        budgetInput.style.borderColor = ''
-      }, 2000)
-    }
-    // catMealPrice 입력란에 적용 (식수 있을 때만)
+    if (budgetInput) { budgetInput.value = allocated; flash(budgetInput, '#eef2ff', '#818cf8') }
+
     const mealPriceInput = document.getElementById(`catMealPrice-${cat.id}`)
-    if (mealPriceInput && mealPrice > 0) {
-      mealPriceInput.value = mealPrice
-      mealPriceInput.style.background = '#f0fdf4'
-      mealPriceInput.style.borderColor = '#22c55e'
-      setTimeout(() => {
-        mealPriceInput.style.background = ''
-        mealPriceInput.style.borderColor = ''
-      }, 2000)
-    }
-    // catWorkDays 영업일수도 autoAlloc 패널의 값으로 일괄 적용
-    const workdays = parseFloat(document.getElementById('autoAlloc-workdays')?.value || 0)
+    if (mealPriceInput && mealPrice > 0) { mealPriceInput.value = mealPrice; flash(mealPriceInput, '#f0fdf4', '#22c55e') }
+
     const workDaysInput = document.getElementById(`catWorkDays-${cat.id}`)
-    if (workDaysInput && workdays > 0) {
-      workDaysInput.value = workdays
-    }
+    if (workDaysInput && workdays > 0) { workDaysInput.value = workdays }
   })
 
   updateWeightedAvgTarget()
-  showToast('자동배분 값이 아래 목표금액/식단가 입력란에 적용되었습니다. 저장 버튼을 눌러 확정하세요.', 'success')
+  showToast('자동배분이 적용되었습니다. 저장 버튼을 눌러 확정하세요.', 'success')
 }
 
 function updateWeightedAvgTarget() {
@@ -12905,24 +12984,31 @@ function updateWeightedAvgTarget() {
 
   const panel = document.getElementById('weightedAvgTargetPanel')
   const mealTotals = window._adminCatMealTotals || []
+  const totalWeight = mealTotals.reduce((s, m) => s + (m.weight || 0), 0)
   const totalMeals = window._adminTotalMeals || 0
 
-  // ── 식수 데이터 있으면 식수 비중 기반 가중평균, 없으면 예산 비중 기반 ──
   let weighted = 0
 
-  if (totalMeals > 0) {
-    // 식수 비중 기반
+  if (totalWeight > 0) {
+    // ── 가중값(식수×기준식단가) 비중 기반 가중평균 목표 식단가 ──
     weighted = cats.reduce((s, cat) => {
       const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
-      const ratio = mealInfo.ratio || 0
+      const ratio = mealInfo.budget_ratio || 0
+      const p = parseFloat(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0)
+      return s + p * ratio
+    }, 0)
+  } else if (totalMeals > 0) {
+    // ── 단순 식수 비중 기반 (기준식단가 미설정 시 fallback) ──
+    weighted = cats.reduce((s, cat) => {
+      const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
+      const ratio = mealInfo.meal_ratio || 0
       const p = parseFloat(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0)
       return s + p * ratio
     }, 0)
   } else {
-    // 예산 비중 기반 (fallback)
-    const totalBudget = cats.reduce((s, cat) => {
-      return s + parseFloat(document.getElementById(`catBudget-${cat.id}`)?.value || 0)
-    }, 0)
+    // ── 예산 비중 기반 (식수 미입력 시 fallback) ──
+    const totalBudget = cats.reduce((s, cat) =>
+      s + parseFloat(document.getElementById(`catBudget-${cat.id}`)?.value || 0), 0)
     if (totalBudget > 0) {
       weighted = cats.reduce((s, cat) => {
         const b = parseFloat(document.getElementById(`catBudget-${cat.id}`)?.value || 0)
@@ -12934,15 +13020,12 @@ function updateWeightedAvgTarget() {
 
   const roundedWeighted = Math.round(weighted)
 
-  // 카테고리 1개면 가중평균 패널 숨기기
   if (cats.length === 1) {
     if (panel) panel.style.display = 'none'
   } else {
     if (panel) panel.style.display = ''
     const el = document.getElementById('weightedAvgTargetValue')
-    if (el) {
-      el.textContent = roundedWeighted > 0 ? `${roundedWeighted.toLocaleString()}원/식` : '-'
-    }
+    if (el) el.textContent = roundedWeighted > 0 ? `${roundedWeighted.toLocaleString()}원/식` : '-'
   }
 
   // 예산설정 탭의 목표 식단가(hb-mealprice) 자동 적용
