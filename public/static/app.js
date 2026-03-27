@@ -10704,6 +10704,10 @@ async function rollbackClosing(hospitalId, year, month, hospitalName) {
 }
 
 async function openHospitalDetail(hospitalId) {
+  // ── 기존 모달 제거 (중복 방지) ──
+  const existingModal = document.getElementById('hospDetailModal')
+  if (existingModal) existingModal.remove()
+
   const [hosp, budget, vendorList, accounts, execAccounts] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`),
@@ -10914,38 +10918,100 @@ async function openHospitalDetail(hospitalId) {
             </div>
           </div>
         </div>
-        <div class="text-sm font-semibold text-gray-600 mb-3">
-          <i class="fas fa-cog text-indigo-500 mr-1"></i>기본 예산 설정
-          <span class="text-xs font-normal text-gray-400 ml-2">(저장한 월 이후 달에 자동 상속)</span>
+        <!-- ══ STEP 1: 업체별 목표금액 입력 ══ -->
+        <div class="mb-4 p-4 bg-green-50 border border-green-200 rounded-xl">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-bold text-green-800 text-sm"><i class="fas fa-store text-green-600 mr-1.5"></i>① 업체별 총 목표금액 입력</h3>
+              <p class="text-xs text-green-600 mt-0.5">각 업체의 월 총 목표금액을 입력하면 합계가 월 총 목표금액으로 자동 연동됩니다.</p>
+            </div>
+            <div class="text-right">
+              <div class="text-xs text-green-600 font-medium">영업일수</div>
+              <div class="flex items-center gap-1 mt-0.5">
+                <input id="hb-workdays" type="number" class="form-input w-16 text-center text-sm py-1" value="${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}" oninput="refreshVendorDayTargets()">
+                <span class="text-xs text-green-700 font-medium">일</span>
+              </div>
+            </div>
+          </div>
+          <div id="hospBudgetVendors">
+            ${renderBudgetVendorRows(vendors, s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth))}
+          </div>
         </div>
+
+        <!-- ══ STEP 2: 월 총 목표금액 (업체 합계 자동반영) ══ -->
+        <div class="mb-4 p-4 bg-indigo-50 border-2 border-indigo-300 rounded-xl">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="w-6 h-6 rounded-full bg-indigo-600 text-white text-xs flex items-center justify-center font-bold">②</span>
+            <h3 class="font-bold text-indigo-800 text-sm">월 총 목표금액 (업체 합계)</h3>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="flex-1">
+              <input id="hb-total" type="number" class="form-input font-bold text-lg text-indigo-700" value="${s.total_budget||0}"
+                oninput="recalcFoodBudget()" style="background:#eef2ff;border-color:#6366f1">
+            </div>
+            <span class="text-sm text-indigo-600 font-medium">원</span>
+            <button onclick="syncVendorBudgetTotal(true)" class="btn btn-sm px-3 whitespace-nowrap" style="background:#4f46e5;color:#fff;border-radius:8px">
+              <i class="fas fa-sync-alt mr-1"></i>업체 합계 반영
+            </button>
+          </div>
+          <p class="text-xs text-indigo-500 mt-2"><i class="fas fa-info-circle mr-1"></i>업체 합계를 직접 반영하거나 수동으로 입력할 수 있습니다.</p>
+        </div>
+
+        <!-- ══ STEP 3: 세부 항목 차감 ══ -->
+        <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="w-6 h-6 rounded-full bg-amber-500 text-white text-xs flex items-center justify-center font-bold">③</span>
+            <h3 class="font-bold text-amber-800 text-sm">세부 예산 항목 (차감 항목)</h3>
+            <span class="text-xs text-amber-600 font-normal">월 총 목표금액에서 아래 항목을 차감한 나머지가 식재료 기본예산입니다</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+            <div class="bg-white rounded-lg p-3 border border-amber-100">
+              <label class="block text-xs font-semibold text-orange-600 mb-1.5"><i class="fas fa-calendar-star mr-1"></i>이벤트 예산 (원)</label>
+              <input id="hb-event" type="number" class="form-input text-sm" value="${s.event_budget||0}" oninput="recalcFoodBudget()" placeholder="0">
+            </div>
+            <div class="bg-white rounded-lg p-3 border border-amber-100">
+              <label class="block text-xs font-semibold text-purple-600 mb-1.5"><i class="fas fa-box mr-1"></i>소모품 목표금액 (원)</label>
+              <input id="hb-supply" type="number" class="form-input text-sm" value="${s.supply_budget||0}" oninput="recalcFoodBudget()" placeholder="0">
+            </div>
+            <div class="bg-white rounded-lg p-3 border border-amber-100">
+              <label class="block text-xs font-semibold text-blue-600 mb-1.5"><i class="fas fa-credit-card mr-1"></i>법인카드 목표금액 (원)</label>
+              <input id="hb-card" type="number" class="form-input text-sm" value="${s.card_budget||0}" oninput="recalcFoodBudget()" placeholder="0">
+            </div>
+          </div>
+        </div>
+
+        <!-- ══ STEP 4: 식재료 기본예산 자동계산 결과 ══ -->
+        <div class="mb-4 p-4 bg-emerald-50 border-2 border-emerald-400 rounded-xl">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-6 h-6 rounded-full bg-emerald-600 text-white text-xs flex items-center justify-center font-bold">④</span>
+            <h3 class="font-bold text-emerald-800 text-sm">식재료 기본 예산 (자동계산)</h3>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="flex-1 bg-white border-2 border-emerald-400 rounded-lg px-4 py-3 flex items-center justify-between">
+              <span class="text-xs text-emerald-700 font-medium">월 총 목표금액 − (이벤트 + 소모품 + 법인카드)</span>
+              <span id="hb-food-basic-display" class="text-xl font-bold text-emerald-700">
+                ${(()=>{const t=(s.total_budget||0),e=(s.event_budget||0),sup=(s.supply_budget||0),c=(s.card_budget||0);const r=t-e-sup-c;return (r).toLocaleString('ko-KR')})()}원
+              </span>
+            </div>
+          </div>
+          <div class="mt-2 flex gap-4 text-xs text-emerald-600">
+            <span><i class="fas fa-equals mr-1"></i><span id="hb-food-formula-display">${s.total_budget||0} − (${s.event_budget||0} + ${s.supply_budget||0} + ${s.card_budget||0})</span></span>
+          </div>
+        </div>
+
+        <!-- ══ 기타 설정 ══ -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">월 총 목표금액 (원)</label>
-            <input id="hb-total" type="number" class="form-input" value="${s.total_budget||0}">
-          </div>
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">이벤트 예산 (원)</label>
-            <input id="hb-event" type="number" class="form-input" value="${s.event_budget||0}">
-          </div>
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">소모품 목표금액 (원)</label>
-            <input id="hb-supply" type="number" class="form-input" value="${s.supply_budget||0}">
-          </div>
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">법인카드 목표금액 (원)</label>
-            <input id="hb-card" type="number" class="form-input" value="${s.card_budget||0}">
-          </div>
-          <div>
+          <div class="bg-white border border-gray-100 rounded-lg p-3">
             <label class="block text-xs font-semibold text-gray-500 mb-1">목표 식단가 (원/식)
               <span class="text-green-500 font-normal ml-1"><i class="fas fa-magic mr-0.5"></i>환자군설정 가중평균 자동반영</span>
             </label>
             <input id="hb-mealprice" type="number" class="form-input" value="${s.meal_price||0}">
           </div>
-          <div>
+          <div class="bg-white border border-gray-100 rounded-lg p-3">
             <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 목표금액 (원)</label>
             <input id="hb-waste" type="number" class="form-input" value="${s.food_waste_budget||0}">
           </div>
-          <div>
+          <div class="bg-white border border-gray-100 rounded-lg p-3 md:col-span-2">
             <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 처리 단가 (원/L)
               <span class="text-amber-500 font-normal ml-1">병원별 설정</span>
             </label>
@@ -10957,23 +11023,6 @@ async function openHospitalDetail(hospitalId) {
             </div>
             <p class="text-xs text-gray-400 mt-1">* 잔반량(L) × 단가로 비용 자동계산. 0이면 직접 입력.</p>
           </div>
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">해당월 영업일수 (일)</label>
-            <input id="hb-workdays" type="number" class="form-input" value="${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}" oninput="refreshVendorDayTargets()">
-            <p class="text-xs text-gray-400 mt-1">* 자동계산: ${getDefaultWorkingDays(App.currentYear, App.currentMonth)}일 (해당월 전체일수)</p>
-          </div>
-        </div>
-
-        <!-- 업체별 목표금액 -->
-        <div class="border-t border-gray-100 pt-4">
-          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-store text-green-600 mr-1"></i>업체별 월 목표금액</h3>
-          <p class="text-xs text-gray-400 mb-3"><i class="fas fa-info-circle mr-1"></i>일 목표 = 월 목표금액 ÷ 영업일수(${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}일)</p>
-          <div id="hospBudgetVendors">
-            ${renderBudgetVendorRows(vendors, s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth))}
-          </div>
-        </div>
-        <div class="mt-4 flex justify-end">
-          <!-- 상단 우측 버튼으로 통합 -->
         </div>
       </div>
 
@@ -11233,10 +11282,10 @@ async function openHospitalDetail(hospitalId) {
   document.body.appendChild(modal)
 }
 
-// 예산설정 탭 업체별 목표금액 행 렌더
+// 예산설정 탭 업체별 목표금액 행 렌더 (Step 1)
 function renderBudgetVendorRows(vendors, workingDays) {
   if (!vendors || vendors.length === 0) {
-    return `<div class="text-center py-8 text-gray-400">
+    return `<div class="text-center py-6 text-gray-400">
       <i class="fas fa-store text-3xl mb-2 block text-gray-300"></i>
       <p class="text-sm">등록된 업체가 없습니다</p>
       <p class="text-xs mt-1">업체관리 탭에서 업체를 먼저 추가하세요</p>
@@ -11244,46 +11293,35 @@ function renderBudgetVendorRows(vendors, workingDays) {
   }
   const wd = workingDays || 0
   const initSum = vendors.reduce((s,v) => s + (v.monthly_budget||0), 0)
-  return `<div class="space-y-2">
+  return `<div class="space-y-1.5">
     ${vendors.map(v => {
       const mb = v.monthly_budget || 0
       const dayTarget = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
       return `
-      <div class="flex items-center gap-3 py-2 border-b border-gray-50">
+      <div class="flex items-center gap-3 py-2 px-3 bg-white rounded-lg border border-green-100 hover:border-green-300 transition-colors">
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
         <div class="flex-1 min-w-0">
-          <span class="font-medium text-sm">${v.name}</span>
+          <span class="font-medium text-sm text-gray-800">${v.name}</span>
           <span class="text-xs text-gray-400 ml-2">${getCategoryLabel(v.category)}</span>
-          ${dayTarget > 0 ? `<span class="text-xs text-blue-500 ml-2">일 목표: ${dayTarget.toLocaleString('ko-KR')}원</span>` : ''}
+          ${dayTarget > 0 ? `<span class="text-xs text-blue-500 ml-2 vendor-day-target">일 ${dayTarget.toLocaleString('ko-KR')}원</span>` : `<span class="text-xs text-gray-300 ml-2 vendor-day-target"></span>`}
         </div>
-        <div class="flex items-center gap-2">
-          <input id="hvb-${v.id}" type="number" class="form-input w-40 text-right text-sm py-1.5 vendor-budget-input"
+        <div class="flex items-center gap-1.5">
+          <input id="hvb-${v.id}" type="number" class="form-input w-36 text-right text-sm py-1.5 vendor-budget-input"
             value="${mb||0}" placeholder="0" oninput="syncVendorBudgetTotal()">
-          <span class="text-xs text-gray-400 whitespace-nowrap">원</span>
+          <span class="text-xs text-gray-500 whitespace-nowrap">원</span>
         </div>
       </div>`
     }).join('')}
-    <!-- #9: 업체 합계 + 자동반영 옵션 -->
-    <div class="py-3 border-t-2 border-green-200 bg-green-50 rounded-lg px-3 mt-2">
-      <div class="flex items-center justify-between mb-2">
-        <div class="font-semibold text-sm text-green-800">
-          <i class="fas fa-calculator mr-1 text-green-600"></i>업체별 합계
-        </div>
-        <div class="flex items-center gap-2">
-          <span id="vendorBudgetSum" class="font-bold text-green-700 text-base">${fmt(initSum)}</span>
-          <span class="text-xs text-gray-400">원</span>
-        </div>
+    <!-- 업체 합계 표시줄 -->
+    <div class="flex items-center justify-between py-2.5 px-3 bg-green-100 rounded-lg border border-green-300 mt-2">
+      <div class="flex items-center gap-2">
+        <i class="fas fa-sigma text-green-700 text-sm"></i>
+        <span class="font-bold text-sm text-green-800">업체별 합계</span>
+        <span class="text-xs text-green-600">(${vendors.length}개 업체)</span>
       </div>
-      <div class="flex items-center justify-between">
-        <label class="flex items-center gap-1.5 cursor-pointer">
-          <input type="checkbox" id="autoSyncTotalBudget" onchange="syncVendorBudgetTotal()"
-            style="width:14px;height:14px;accent-color:#16a34a">
-          <span class="text-xs text-green-700 font-medium">업체 합계 → 월 총 목표금액 자동 반영 <span style="color:#9ca3af;font-weight:400">(직접 반영 시 버튼 사용)</span></span>
-        </label>
-        <button onclick="syncVendorBudgetTotal(true)" 
-          class="text-xs bg-green-600 text-white px-3 py-1 rounded-lg font-semibold hover:bg-green-700">
-          <i class="fas fa-sync mr-1"></i>지금 반영
-        </button>
+      <div class="flex items-center gap-2">
+        <span id="vendorBudgetSum" class="font-bold text-green-800 text-base">${fmt(initSum)}</span>
+        <span class="text-xs text-green-700 font-medium">원</span>
       </div>
     </div>
   </div>`
@@ -11315,23 +11353,42 @@ window.refreshVendorDayTargets = function() {
   syncVendorBudgetTotal()
 }
 
-// 업체별 예산 합산 자동 동기화 (#9 개선: 자동반영 체크박스 + 강제반영 옵션)
+// 업체별 예산 합산 → 월 총 목표금액 동기화 + 식재료 기본예산 재계산
 window.syncVendorBudgetTotal = function(force = false) {
   const inputs = document.querySelectorAll('.vendor-budget-input')
   let sum = 0
   inputs.forEach(inp => { sum += parseInt(inp.value||0)||0 })
+  // 합계 표시 업데이트
   const sumEl = document.getElementById('vendorBudgetSum')
   if (sumEl) sumEl.textContent = fmt(sum)
-  // 자동반영 체크박스 확인
-  const autoCheckEl = document.getElementById('autoSyncTotalBudget')
-  const shouldSync = force || (autoCheckEl ? autoCheckEl.checked : true)
-  if (shouldSync) {
+  // force=true 이면 무조건 hb-total에 반영
+  if (force) {
     const totalEl = document.getElementById('hb-total')
     if (totalEl) {
       totalEl.value = sum
-      totalEl.style.background = '#f0fdf4'
-      totalEl.style.borderColor = '#16a34a'
+      totalEl.style.background = '#eef2ff'
+      totalEl.style.borderColor = '#6366f1'
     }
+  }
+  // 식재료 기본예산 재계산
+  recalcFoodBudget()
+}
+
+// 식재료 기본예산 자동계산: 월 총 목표 - (이벤트 + 소모품 + 법인카드)
+window.recalcFoodBudget = function() {
+  const total  = parseInt(document.getElementById('hb-total')?.value||0)||0
+  const event  = parseInt(document.getElementById('hb-event')?.value||0)||0
+  const supply = parseInt(document.getElementById('hb-supply')?.value||0)||0
+  const card   = parseInt(document.getElementById('hb-card')?.value||0)||0
+  const food   = total - event - supply - card
+  const dispEl = document.getElementById('hb-food-basic-display')
+  const formulaEl = document.getElementById('hb-food-formula-display')
+  if (dispEl) {
+    dispEl.textContent = food.toLocaleString('ko-KR') + '원'
+    dispEl.style.color = food < 0 ? '#dc2626' : '#065f46'
+  }
+  if (formulaEl) {
+    formulaEl.textContent = `${total.toLocaleString('ko-KR')} − (${event.toLocaleString('ko-KR')} + ${supply.toLocaleString('ko-KR')} + ${card.toLocaleString('ko-KR')})`
   }
 }
 
@@ -11570,14 +11627,11 @@ async function saveAdminVendor() {
     }
     // 업체 목록 + 예산탭 동시 갱신
     const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+    const wd = parseInt(document.getElementById('hb-workdays')?.value || 0) || 0
     window._adminHospVendors = updated || []
     document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
-    document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [])
-    // 업체별 목표금액 → 예산탭 자동 반영
-    ;(updated || []).forEach(v => {
-      const inp = document.getElementById(`hvb-${v.id}`)
-      if (inp) inp.value = v.monthly_budget || 0
-    })
+    document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [], wd)
+    // 합계 + 식재료 기본예산 재계산
     syncVendorBudgetTotal()
   } else {
     showToast('저장 실패', 'error')
@@ -11588,13 +11642,17 @@ async function deleteAdminVendor(vid) {
   const hospitalId = window._adminHospitalId
   if (!hospitalId) return
   if (!confirm('업체를 삭제하시겠습니까?\n(해당 업체의 발주 데이터는 유지됩니다)')) return
-  await api('DELETE', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`)
+  const res = await api('DELETE', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`)
+  if (res?.success === false) { showToast('삭제 실패', 'error'); return }
   showToast('업체가 삭제되었습니다', 'success')
   // 업체 목록 + 예산탭 동시 갱신
   const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+  const wd = parseInt(document.getElementById('hb-workdays')?.value || 0) || 0
   window._adminHospVendors = updated || []
   document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
-  document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [])
+  document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [], wd)
+  // 합계 + 식재료 기본예산 재계산
+  syncVendorBudgetTotal()
 }
 
 // ── 계정 관리 함수 ────────────────────────────────────────────
@@ -11775,22 +11833,29 @@ function switchHospTab(tab) {
   if (tab === 'categories' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
   }
-  // 예산 탭으로 전환 시 업체별 합계 자동 계산
+  // 예산 탭으로 전환 시 업체별 합계 자동 계산 + 식재료 기본예산 재계산
   if (tab === 'budget') {
-    setTimeout(() => syncVendorBudgetTotal(), 50)
+    setTimeout(() => { syncVendorBudgetTotal(); recalcFoodBudget() }, 80)
   }
   // 업체 탭: 발주 업체 목록은 이미 adminVendorList에 렌더링됨 (loadInvoiceVendors 불필요)
 }
 
 // 환자군 탭: 식이분류 + 목표금액 동시 저장
 async function saveDietAndBudgets(hospitalId) {
-  showToast('환자군 설정 저장 중...', 'info')
+  // ── 저장 버튼 비활성화 (중복 클릭 / 탭전환 방지) ──
+  const saveBtn = document.getElementById('tabSaveBtn-categories')
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
+
   try {
     await saveDietCategories(hospitalId)
     await saveCategoryBudgets(hospitalId)
     showToast('환자군 설정 저장 완료!', 'success')
   } catch(e) {
     showToast('저장 중 오류 발생', 'error')
+    console.error('[saveDietAndBudgets]', e)
+  } finally {
+    // ── 저장 완료 후 반드시 버튼 복원 ──
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save mr-1"></i>환자군 저장' }
   }
 }
 
@@ -11845,9 +11910,23 @@ async function saveHospitalInfo(hospitalId) {
     dietitian_phone: document.getElementById('hi-dietphone').value,
     admin_memo: document.getElementById('hi-memo').value
   }
+  // ── 저장 버튼 비활성화 (중복 클릭 방지) ──
+  const saveBtn = document.getElementById('tabSaveBtn-info')
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
+
   const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/info`, body)
-  if (res?.success) showToast('기본정보가 저장되었습니다', 'success')
-  else showToast('저장 실패', 'error')
+
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save mr-1"></i>기본정보 저장' }
+  if (res?.success) {
+    showToast('기본정보가 저장되었습니다', 'success')
+    // 병원 목록의 병원명 업데이트 (모달 유지, 재생성 없음)
+    const titleEl = document.querySelector('#hospDetailModal h2')
+    if (titleEl && body.name) {
+      titleEl.innerHTML = `<i class="fas fa-hospital text-green-600 mr-2"></i>${body.name}`
+    }
+  } else {
+    showToast('저장 실패', 'error')
+  }
 }
 
 // 카카오 주소검색
@@ -12251,13 +12330,25 @@ function updateDietCatField(id, field, value) {
 }
 
 async function deleteDietCategory(id) {
-  if (!confirm('이 식이 항목을 삭제(비활성화)할까요?')) return
+  if (!confirm('이 식이 항목을 삭제할까요?\n\n삭제 후 저장하면 DB에 영구 반영됩니다.')) return
   const hid = window._currentAdminHospitalId
-  await api('DELETE', `/api/admin/hospitals/${hid}/diet-categories/${id}`)
+  if (!hid) { showToast('병원 정보 오류', 'error'); return }
+
+  const res = await api('DELETE', `/api/admin/hospitals/${hid}/diet-categories/${id}`)
+  if (res?.success === false) {
+    showToast('삭제 실패: 서버 오류', 'error')
+    return
+  }
+
+  // ── 로컬 메모리에서도 즉시 제거 ──
   window._dietCategories = (window._dietCategories || []).filter(d => d.id !== id)
+  // _budgetCats 에서도 제거 (환자군 목표 목록 동기화)
+  if (window._budgetCats) {
+    window._budgetCats = window._budgetCats.filter(d => d.id !== id)
+  }
   renderDietCategoryList()
   renderDietPresetChips()
-  showToast('삭제 완료', 'success')
+  showToast('삭제가 완료되었습니다 (DB 즉시 반영).', 'success')
 }
 
 function openAddDietModal(hospitalId) {
@@ -12269,18 +12360,30 @@ function openAddDietModal(hospitalId) {
 }
 
 async function saveDietCategories(hospitalId) {
-  const cats = window._dietCategories || []
-  if (!cats.length) { showToast('저장할 항목이 없습니다', 'warning'); return }
-  const btn = event?.target
+  // ── is_active=1인 항목만 PUT 대상 (삭제된 항목 재활성화 방지) ──
+  const allCats = window._dietCategories || []
+  const cats = allCats.filter(c => c.is_active !== 0)
+  // 빈 목록이어도 (전체 삭제한 경우) 저장은 허용 → 경고만
+  if (!cats.length) {
+    showToast('⚠ 저장할 식이 항목이 없습니다. 항목을 추가하거나 기존 저장 상태가 반영됩니다.', 'warning')
+    return
+  }
+  // event?.target 방식은 saveDietAndBudgets 내부 호출 시 undefined — 안전하게 null 처리
+  const btn = (typeof event !== 'undefined' && event?.target?.tagName === 'BUTTON') ? event.target : null
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중' }
+
   const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/diet-categories`, { categories: cats })
   if (res?.success) {
+    // ── 서버 반환값으로 로컬 상태 동기화 (is_active=1만 반환) ──
     window._dietCategories = res.categories || cats
-    showToast('✅ 식이 분류 저장 완료', 'success')
+    if (window._budgetCats) {
+      window._budgetCats = window._budgetCats.filter(c => c.is_active !== 0)
+    }
     renderDietCategoryList()
     renderDietPresetChips()
   } else {
-    showToast('저장 실패', 'error')
+    showToast('식이 분류 저장 실패', 'error')
+    throw new Error('saveDietCategories failed')
   }
   if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save mr-1"></i>변경사항 저장' }
 }
@@ -12769,22 +12872,52 @@ async function saveHospitalBudget(hospitalId) {
     vendorBudgets.push({ vendorId: parseInt(vid), budget: parseInt(el.value||0)||0 })
   })
 
+  // ── 저장 버튼 비활성화 (중복 클릭 방지) ──
+  const saveBtn = document.getElementById('tabSaveBtn-budget')
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
+
+  const totalBudget   = parseInt(document.getElementById('hb-total')?.value)||0
+  const eventBudget   = parseInt(document.getElementById('hb-event')?.value)||0
+  const supplyBudget  = parseInt(document.getElementById('hb-supply')?.value)||0
+  const cardBudget    = parseInt(document.getElementById('hb-card')?.value)||0
+  const foodBasicBudget = totalBudget - eventBudget - supplyBudget - cardBudget
+
   const body = {
-    totalBudget: parseInt(document.getElementById('hb-total').value)||0,
-    eventBudget: parseInt(document.getElementById('hb-event').value)||0,
-    mealPrice: parseInt(document.getElementById('hb-mealprice').value)||0,
-    foodWasteBudget: parseInt(document.getElementById('hb-waste').value)||0,
-    workingDays: parseInt(document.getElementById('hb-workdays').value)||0,
-    supplyBudget: parseInt(document.getElementById('hb-supply').value)||0,
-    cardBudget: parseInt(document.getElementById('hb-card').value)||0,
+    totalBudget,
+    eventBudget,
+    mealPrice: parseInt(document.getElementById('hb-mealprice')?.value)||0,
+    foodWasteBudget: parseInt(document.getElementById('hb-waste')?.value)||0,
+    workingDays: parseInt(document.getElementById('hb-workdays')?.value)||0,
+    supplyBudget,
+    cardBudget,
+    foodBasicBudget,  // 식재료 기본예산 = 월 총 - (이벤트 + 소모품 + 법인카드)
     vendorBudgets
   }
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`, body)
+
+  // ── 버튼 복원 ──
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save mr-1"></i>예산 저장' }
+
   if (res?.success) {
-    showToast(`기본 예산 설정이 저장되었습니다 (${App.currentYear}년 ${App.currentMonth}월 기준 - 모든 달 적용)`, 'success')
-    // 예산 설정 탭 안내 배너 업데이트
-    openHospitalDetail(hospitalId)
-  } else showToast('저장 실패', 'error')
+    showToast(`예산 설정이 저장되었습니다`, 'success')
+    // ── 안내 배너 업데이트 (모달 재생성 없음) ──
+    const bannerEl = document.querySelector('#hospTab-budget > div:first-child')
+    if (bannerEl) {
+      bannerEl.className = 'mb-4 p-3 rounded-lg border bg-green-50 border-green-200'
+      bannerEl.innerHTML = `<div class="flex items-start gap-2">
+        <i class="fas fa-check-circle text-green-500 mt-0.5 text-sm"></i>
+        <div>
+          <div class="text-sm font-semibold text-green-700">저장 완료 (${App.currentYear}년 ${App.currentMonth}월)</div>
+          <div class="text-xs text-green-600 mt-0.5">예산 설정이 저장되었습니다. 이 값이 설정 없는 모든 달에 기본값으로 자동 적용됩니다.</div>
+        </div>
+      </div>`
+    }
+    // 식재료 기본예산 재계산 + 합계 업데이트
+    syncVendorBudgetTotal()
+    recalcFoodBudget()
+  } else {
+    showToast('저장 실패', 'error')
+  }
 }
 
 // 2.8 관리자 - 병원별 잔반 단가 즉시 저장

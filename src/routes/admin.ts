@@ -1776,11 +1776,13 @@ adminRouter.get('/hospitals/:id/category-annual/:year', async (c) => {
 // ══════════════════════════════════════════════════════════════
 
 // 병원의 diet_categories 전체 조회 (대분류별 그룹)
+// ── 수정: includeInactive=1 쿼리 없으면 is_active=1 항목만 반환 (삭제 항목 복구 방지)
 adminRouter.get('/hospitals/:id/diet-categories', async (c) => {
   const id = c.req.param('id')
+  const includeInactive = c.req.query('includeInactive') === '1'
   const rows = await c.env.DB.prepare(`
     SELECT * FROM diet_categories
-    WHERE hospital_id = ?
+    WHERE hospital_id = ?${includeInactive ? '' : ' AND is_active = 1'}
     ORDER BY parent_type, sort_order, id
   `).bind(id).all<any>()
   return c.json(rows.results || [])
@@ -1960,7 +1962,7 @@ adminRouter.put('/hospitals/:id/diet-categories', async (c) => {
   }
 
   const updated = await c.env.DB.prepare(`
-    SELECT * FROM diet_categories WHERE hospital_id = ? ORDER BY parent_type, sort_order, id
+    SELECT * FROM diet_categories WHERE hospital_id = ? AND is_active = 1 ORDER BY parent_type, sort_order, id
   `).bind(id).all<any>()
   return c.json({ success: true, categories: updated.results || [] })
 })
