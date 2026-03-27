@@ -18485,7 +18485,7 @@ function renderCardExpenseRow(item, idx) {
     <td class="px-1 py-1.5"><input type="text" inputmode="numeric" class="card-exp-input form-input text-xs py-1 px-2 text-right comma-input" data-field="amount" data-idx="${idx}" value="${item.amount > 0 ? parseInt(item.amount).toLocaleString('ko-KR') : ''}" placeholder="0" style="width:100%;min-width:82px;" oninput="onCommaInput(this);updateCardExpenseTotal()"></td>
     <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="memo" data-idx="${idx}" value="${escHtml(item.memo||'')}" placeholder="예: 긴급구매" style="width:100%;min-width:90px;" title="비고: 선택 입력 (예: 긴급 구매, 당일 추가 발주 대체)"></td>
     <td class="px-1 py-1.5 text-center">
-      <button onclick="removeCardExpenseRow(${idx})" class="text-red-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 transition-colors mx-auto">
+      <button onclick="removeCardExpenseRow(this)" class="text-red-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 transition-colors mx-auto">
         <i class="fas fa-trash text-xs"></i>
       </button>
     </td>
@@ -18522,18 +18522,25 @@ window.addCardExpenseRow = function() {
   updateCardExpenseTotal()
 }
 
-window.removeCardExpenseRow = function(idx) {
-  const rows = document.querySelectorAll('#cardExpenseRows .card-expense-row')
-  if (rows.length <= 1) {
-    showToast('최소 1개 항목이 필요합니다', 'info')
+window.removeCardExpenseRow = function(btn) {
+  // btn: 삭제 버튼 요소 또는 idx(하위 호환)
+  let row
+  if (typeof btn === 'number') {
+    // 구버전 idx 방식 (하위 호환)
+    const rows = document.querySelectorAll('#cardExpenseRows .card-expense-row')
+    row = rows[btn]
+  } else if (btn instanceof Element) {
+    row = btn.closest('.card-expense-row')
+  } else {
     return
   }
-  // id 있으면 삭제 목록에 추가
-  const row = rows[idx]
-  if (row && row.dataset.id) {
+  if (!row) return
+
+  // DB id 있으면 삭제 목록에 추가
+  if (row.dataset.id) {
     window._cardExpenseDeletedIds.push(parseInt(row.dataset.id))
   }
-  if (row) row.remove()
+  row.remove()
   // idx 재정렬
   document.querySelectorAll('#cardExpenseRows .card-expense-row').forEach((r, i) => {
     r.dataset.idx = i
@@ -18594,7 +18601,8 @@ window.saveCardExpenseItems = async function() {
     showToast('빈 항목을 모두 입력해주세요 (업체명, 품목, 용도, 금액 필수)', 'error')
     return
   }
-  if (items.length === 0) {
+  // 저장할 항목도 없고 삭제할 항목도 없으면 중단
+  if (items.length === 0 && (window._cardExpenseDeletedIds || []).length === 0) {
     showToast('저장할 항목이 없습니다', 'error')
     return
   }
