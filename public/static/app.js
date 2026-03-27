@@ -12295,7 +12295,7 @@ function renderDietCategoryList() {
     ${type === 'patient' ? `
     <div class="px-3 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700">
       <i class="fas fa-info-circle mr-1"></i>
-      <strong>환자군</strong>이 식단가 계산의 기준 단위입니다. 식단가(원/식)와 월 목표금액을 환자군별로 설정하세요.<br>
+      <strong>환자군</strong>이 식단가 계산의 기준 단위입니다. 목표 식단가와 월 목표금액은 아래 <b>카테고리별 목표 설정</b>에서 설정하세요.<br>
       <span class="text-blue-500">치료식이 이 환자군에 연결되면 치료식 식수도 합산되어 계산됩니다.</span>
     </div>` : ''}
     ${type === 'noncovered' ? `
@@ -12350,23 +12350,7 @@ function renderDietCategoryList() {
               <div class="toggle-thumb absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition" style="transform:${cat.show_in_input?'translateX(16px)':'translateX(0)'}"></div>
             </div>
           </label>
-          ${type === 'patient' ? `
-          <!-- 식단가 (환자군만) -->
-          <div class="flex flex-col items-center gap-0.5 flex-shrink-0">
-            <span class="text-gray-400" style="font-size:9px">식단가(원)</span>
-            <input type="number" value="${cat.target_meal_price||0}" min="0" step="100"
-              class="form-input text-sm py-0.5 text-center" style="width:68px"
-              data-diet-id="${cat.id}" data-field="target_meal_price"
-              onchange="updateDietCatField(${cat.id},'target_meal_price',Number(this.value))">
-          </div>
-          <!-- 월목표 -->
-          <div class="flex flex-col items-center gap-0.5 flex-shrink-0">
-            <span class="text-gray-400" style="font-size:9px">월목표(만원)</span>
-            <input type="number" value="${Math.round((cat.monthly_budget||0)/10000)}" min="0" step="10"
-              class="form-input text-sm py-0.5 text-center" style="width:68px"
-              data-diet-id="${cat.id}" data-field="monthly_budget"
-              onchange="updateDietCatField(${cat.id},'monthly_budget',Number(this.value)*10000)">
-          </div>` : ''}
+          ${type === 'patient' ? `` : ''}
           ${type === 'noncovered' ? `
           <!-- 식단가 포함 여부 -->
           <label class="flex flex-col items-center gap-0.5 flex-shrink-0 cursor-pointer" title="식단가 계산 분자(식수)에 포함">
