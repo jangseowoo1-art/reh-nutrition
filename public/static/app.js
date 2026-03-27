@@ -13071,8 +13071,8 @@ async function renderReport(selectedHospitalId = null) {
       <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa">
         <i class="fas fa-file-pdf mr-1"></i>PDF 보고서
       </button>
-      <button onclick="(function(){window._txPdfParams={hn:window._txPdfHn,yr:${reportYear},mo:${reportMonth},hid:${targetHospitalId||'null'}};exportTxAnalysisPDF(window._txPdfParams.hn,window._txPdfParams.yr,window._txPdfParams.mo,window._txPdfParams.hid==='null'?null:window._txPdfParams.hid)})()" class="btn btn-sm" style="background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd">
-        <i class="fas fa-chart-bar mr-1"></i>거래명세서 분석 PDF
+      <button onclick="(function(){const hn=window._txPdfHn||'${hospitalName}';const hid=${targetHospitalId||'null'};exportTxAnalysisPPT(hn,${reportYear},${reportMonth},hid==='null'?null:hid)})()" class="btn btn-sm" style="background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd">
+        <i class="fas fa-file-powerpoint mr-1"></i>거래명세서 분석 PPT
       </button>
     </div>
   </div>
@@ -16530,6 +16530,187 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     window._pdfGenerating = false
   }
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  거래명세서 분석 PPT 보고서 출력
+//  - html2canvas로 현재 분석 화면을 캡처하여 PPT 슬라이드로 저장
+//  - 한글 깨짐 없음 (이미지 방식)
+// ══════════════════════════════════════════════════════════════════
+async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
+  if (window._pptGenerating) { showToast('PPT 생성 중입니다. 잠시 기다려주세요.', 'warning'); return }
+  window._pptGenerating = true
+
+  const mm = String(month).padStart(2, '0')
+  const hname = hospitalName || '병원'
+
+  try {
+    showToast('PPT 생성 준비 중...', 'info')
+
+    // 1) html2canvas 및 PptxGenJS 로드
+    await _loadHtml2Canvas()
+    await _loadPptxGenJS()
+
+    // 2) 캡처 대상 영역 결정
+    //    - txTabContent: 현재 표시 중인 탭 콘텐츠 (분류별 분석 결과 포함)
+    //    - pageContent: 거래명세서 분석 전체 페이지 (탭 포함)
+    const txContent = document.getElementById('txTabContent')
+    const pageContent = document.getElementById('pageContent')
+    const captureTarget = txContent || pageContent
+
+    if (!captureTarget) {
+      showToast('캡처할 콘텐츠가 없습니다. 거래명세서 분석 페이지를 먼저 열어주세요.', 'warning')
+      window._pptGenerating = false
+      return
+    }
+
+    // 3) 분석 결과 확인 - 데이터가 없으면 안내
+    const analysisResult = document.getElementById('invAnalysisResult')
+    const hasAnalysis = analysisResult && !analysisResult.innerHTML.includes('분석 버튼을 클릭하세요')
+    if (!hasAnalysis && txContent) {
+      showToast('먼저 분석 버튼을 클릭하여 분석을 실행해주세요.', 'warning')
+      window._pptGenerating = false
+      return
+    }
+
+    showToast('화면을 캡처하는 중... (잠시 기다려 주세요)', 'warning')
+
+    // 4) 캡처할 섹션들 수집
+    //    우선순위: invAnalysisResult 내 카드들, 없으면 txTabContent 전체
+    const sections = []
+
+    // invAnalysisResult 내의 주요 카드/섹션들
+    if (analysisResult && hasAnalysis) {
+      // 예산 현황 바
+      const budgetBar = document.getElementById('invBudgetBar')
+      if (budgetBar && budgetBar.style.display !== 'none') {
+        sections.push({ el: budgetBar, label: '예산 현황' })
+      }
+      // 분석 결과 전체 (카드들)
+      sections.push({ el: analysisResult, label: '분류별 분석' })
+    } else {
+      // txTabContent 전체 캡처
+      sections.push({ el: captureTarget, label: '거래명세서 분석' })
+    }
+
+    // 5) PPT 설정 (16:9 레이아웃)
+    const PPT_W = 10    // 인치
+    const PPT_H = 5.625 // 인치 (16:9)
+    const pptx = new window.PptxGenJS()
+    pptx.defineLayout({ name: 'WIDESCREEN_16_9', width: PPT_W, height: PPT_H })
+    pptx.layout = 'WIDESCREEN_16_9'
+
+    let slideCount = 0
+
+    // 6) 표지 슬라이드 추가
+    {
+      const coverSlide = pptx.addSlide()
+      // 배경 그라디언트 효과 (보라-파랑 테마)
+      coverSlide.background = { fill: '4F46E5' }
+      coverSlide.addText('거래명세서 분석 보고서', {
+        x: 0.5, y: 1.8, w: 9, h: 0.8,
+        fontSize: 36, bold: true, color: 'FFFFFF', align: 'center'
+      })
+      coverSlide.addText(`${hname}`, {
+        x: 0.5, y: 2.8, w: 9, h: 0.5,
+        fontSize: 24, color: 'E0E7FF', align: 'center'
+      })
+      coverSlide.addText(`${year}년 ${month}월`, {
+        x: 0.5, y: 3.4, w: 9, h: 0.4,
+        fontSize: 18, color: 'C7D2FE', align: 'center'
+      })
+      coverSlide.addText('병원 급식 예산 관리 시스템', {
+        x: 0.5, y: 4.8, w: 9, h: 0.3,
+        fontSize: 11, color: 'A5B4FC', align: 'center'
+      })
+      slideCount++
+    }
+
+    // 7) 각 섹션을 캡처하여 슬라이드로 추가
+    for (let i = 0; i < sections.length; i++) {
+      const { el, label } = sections[i]
+      showToast(`캡처 중... (${i + 1}/${sections.length}: ${label})`, 'warning')
+
+      try {
+        // 스크롤 영역 높이를 고려한 캡처
+        const elH = Math.max(el.scrollHeight, el.offsetHeight, 400)
+        const elW = Math.max(el.scrollWidth, el.offsetWidth, 1200)
+
+        const canvas = await window.html2canvas(el, {
+          scale: 1.5,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#f9fafb',
+          scrollX: 0,
+          scrollY: -window.scrollY,
+          windowWidth: Math.max(elW, 1200),
+          windowHeight: elH,
+          width: elW,
+          height: elH,
+          logging: false
+        })
+
+        const imgData = canvas.toDataURL('image/png', 0.95)
+        const slide = pptx.addSlide()
+
+        // 이미지 비율 계산 (슬라이드에 맞게)
+        const imgAspect = canvas.width / canvas.height
+        const slideAspect = PPT_W / PPT_H
+
+        let imgW, imgH, imgX, imgY
+        if (imgAspect > slideAspect) {
+          // 이미지가 더 넓음 → 가로 맞춤
+          imgW = PPT_W
+          imgH = PPT_W / imgAspect
+          imgX = 0
+          imgY = (PPT_H - imgH) / 2
+        } else {
+          // 이미지가 더 높음 → 세로 맞춤
+          imgH = PPT_H
+          imgW = PPT_H * imgAspect
+          imgX = (PPT_W - imgW) / 2
+          imgY = 0
+        }
+
+        slide.addImage({
+          data: imgData,
+          x: imgX, y: imgY, w: imgW, h: imgH,
+          sizing: { type: 'contain', w: PPT_W, h: PPT_H }
+        })
+
+        // 슬라이드 하단 라벨
+        slide.addText(`${hname} · ${year}년 ${month}월 · ${label}`, {
+          x: 0, y: PPT_H - 0.25, w: PPT_W, h: 0.25,
+          fontSize: 8, color: '9CA3AF', align: 'right',
+          margin: [0, 0.1, 0, 0]
+        })
+
+        slideCount++
+      } catch (capErr) {
+        console.warn(`[PPT] ${label} 캡처 실패:`, capErr)
+        // 캡처 실패 시 빈 슬라이드
+        const slide = pptx.addSlide()
+        slide.addText(`${label} 캡처 실패`, {
+          x: 1, y: 2.3, w: 8, h: 1,
+          fontSize: 18, color: '9CA3AF', align: 'center'
+        })
+        slideCount++
+      }
+    }
+
+    // 8) 저장
+    const fname = `${hname}_${year}년${mm}월_거래명세서분석보고서.pptx`
+    showToast('PPT 파일 저장 중...', 'warning')
+    await pptx.writeFile({ fileName: fname })
+    showToast(`✅ PPT 생성 완료! (${slideCount}슬라이드)`, 'success')
+
+  } catch (err) {
+    console.error('[PPT] 오류:', err.message, err.stack)
+    showToast('PPT 생성 실패: ' + err.message, 'error')
+  } finally {
+    window._pptGenerating = false
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════
 //  법인카드 상세입력 모달
 // ══════════════════════════════════════════════════════════════════
@@ -20519,6 +20700,9 @@ async function txRenderCategoryTab(container) {
         <button onclick="txShowPeriodSelectModal()" id="invPeriodExportBtn" class="bg-purple-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1.5" style="display:none">
           <i class="fas fa-calendar-alt text-xs"></i> 기간선택 보고서
         </button>
+        <button onclick="txExportAnalysisPPT()" id="invPptBtn" class="bg-indigo-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center gap-1.5" style="display:none" title="현재 분석 화면을 PPT로 저장">
+          <i class="fas fa-file-powerpoint text-xs"></i> PPT 저장
+        </button>
       </div>
       <!-- 현재 선택 기간 표시 -->
       <div id="invPeriodLabel" class="mt-2 text-xs text-blue-600 font-medium" style="display:none">
@@ -21075,6 +21259,9 @@ function txRenderCategoryAnalysis(el, vendor, year, month, catData, trendData, a
   if (exportBtn) exportBtn.style.display = 'flex'
   const periodExportBtn = document.getElementById('invPeriodExportBtn')
   if (periodExportBtn) periodExportBtn.style.display = 'flex'
+  // PPT 저장 버튼 표시
+  const pptBtn = document.getElementById('invPptBtn')
+  if (pptBtn) pptBtn.style.display = 'flex'
 
   // 차트 그리기
   setTimeout(() => {
@@ -21866,6 +22053,19 @@ window.txExportCategoryAnalysis = async function() {
   const fname = `거래명세서분석보고서_${vendor}_${rangeStr}.xlsx`
   XLSX.writeFile(wb, fname)
   showToast(`✅ 보고서 다운로드 완료: ${fname}`, 'success')
+}
+
+// ── 거래명세서 분류별 분석 PPT 저장 (래퍼) ───────────────────────
+// 분류별 분석 탭의 현재 화면을 PPT로 저장
+window.txExportAnalysisPPT = async function() {
+  const vendor  = TXState._invVendor || ''
+  const year    = TXState._invYear   || TXState.year
+  const month   = TXState._invMonth  || TXState.month
+  const hospName = TXState.selectedHospitalName || window._txPdfHn || '병원'
+  const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || null
+
+  const label = vendor ? `${vendor} · ${year}년 ${month}월` : `${year}년 ${month}월`
+  await exportTxAnalysisPPT(label, year, month, hospitalId)
 }
 
 // ── 명세서 업로드 모달 (분류별 분석용) - 업체 카드 선택 방식 ────
