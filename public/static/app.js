@@ -458,18 +458,125 @@ async function api(method, url, data = null) {
   } catch(e) { console.error('API Error:', e); return null }
 }
 
+// ══════════════════════════════════════════════════════════════
+// ── 금액 포맷 공통 유틸 ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+
+/** 숫자 → 천단위 콤마 (표시용) */
 function fmt(n) { return (n || 0).toLocaleString('ko-KR') }
+
+/** 숫자 → 콤마+'원' */
 function fmtWon(n) { return `${(n || 0).toLocaleString('ko-KR')}원` }
+
+/** 숫자 → 억/만 단위 축약 */
 function fmtMan(n) {
   const v = Math.round(n || 0)
   if (v >= 100000000) return `${(v/100000000).toFixed(1)}억`
-  if (v >= 10000000) return `${Math.round(v/10000).toLocaleString('ko-KR')}만`  // 1000만 이상: X,XXX만
-  if (v >= 1000000) return `${(v/10000).toFixed(1)}만`   // 100만 이상: XX.X만
-  if (v >= 10000) return `${(v/10000).toFixed(1)}만`     // 1만 이상: X.X만
+  if (v >= 10000000) return `${Math.round(v/10000).toLocaleString('ko-KR')}만`
+  if (v >= 1000000) return `${(v/10000).toFixed(1)}만`
+  if (v >= 10000) return `${(v/10000).toFixed(1)}만`
   return `${v.toLocaleString('ko-KR')}`
 }
-// 콤마 포함 문자열에서 숫자 추출 (발주입력 text 필드용)
-function parseOrderVal(v) { return parseInt(String(v||'').replace(/,/g,''))||0 }
+
+/** 콤마/공백/원 제거 후 정수 반환 (저장·계산 공통 사용) */
+function parseCommaNum(v) { return parseInt(String(v||'').replace(/[,\s원]/g,''))||0 }
+
+/** 콤마/공백/원 제거 후 실수 반환 */
+function parseCommaFloat(v) { return parseFloat(String(v||'').replace(/[,\s원]/g,''))||0 }
+
+/** 콤마 포함 문자열에서 숫자 추출 (발주입력 text 필드용 - 하위호환) */
+function parseOrderVal(v) { return parseCommaNum(v) }
+
+// ── 입력창 자동 콤마 적용 시스템 ────────────────────────────
+
+/**
+ * 금액 입력창에 자동 콤마 적용
+ * - input 이벤트: 콤마 자동 삽입
+ * - 커서 위치 유지
+ * - class="comma-input" 또는 data-comma="true" 에 자동 적용
+ */
+function applyCommaToInput(el) {
+  if (!el) return
+  const raw = String(el.value).replace(/[^0-9]/g, '')
+  if (raw === '') { el.value = ''; return }
+  const num = parseInt(raw, 10)
+  el.value = isNaN(num) ? '' : num.toLocaleString('ko-KR')
+}
+
+function onCommaInput(el) {
+  const selEnd = el.selectionEnd
+  const before = el.value.slice(0, selEnd)
+  const digitsBefore = before.replace(/[^0-9]/g, '').length
+  applyCommaToInput(el)
+  // 콤마가 추가된 후 커서 재배치
+  let pos = 0, count = 0
+  for (let i = 0; i < el.value.length; i++) {
+    if (/[0-9]/.test(el.value[i])) count++
+    if (count === digitsBefore) { pos = i + 1; break }
+  }
+  try { el.setSelectionRange(pos, pos) } catch(e) {}
+}
+
+/**
+ * DOM에 마운트된 콤마 입력창 초기화
+ * - class="comma-input" 또는 data-comma="true" 속성을 가진 input 자동 처리
+ */
+function initCommaInputs(root) {
+  const scope = root || document
+  scope.querySelectorAll('input.comma-input, input[data-comma="true"]').forEach(el => {
+    // 기존 값 콤마 포맷
+    if (el.value) applyCommaToInput(el)
+    if (!el._commaListenerAttached) {
+      el.addEventListener('input', () => onCommaInput(el))
+      el.addEventListener('blur', () => applyCommaToInput(el))
+      // 붙여넣기 처리
+      el.addEventListener('paste', (e) => {
+        e.preventDefault()
+        const text = (e.clipboardData || window.clipboardData).getData('text')
+        const num = parseInt(text.replace(/[^0-9]/g, ''), 10)
+        if (!isNaN(num)) {
+          el.value = num.toLocaleString('ko-KR')
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+      })
+      el._commaListenerAttached = true
+    }
+  })
+}
+
+/** 콤마 입력창 값을 숫자로 읽기 */
+function getCommaInputVal(id) {
+  const el = typeof id === 'string' ? document.getElementById(id) : id
+  return parseCommaNum(el?.value)
+}
+
+/** 콤마 입력창에 숫자 값 설정 */
+function setCommaInputVal(id, num) {
+  const el = typeof id === 'string' ? document.getElementById(id) : id
+  if (el) el.value = (num || 0) > 0 ? (num || 0).toLocaleString('ko-KR') : ''
+}
+
+// DOM 변경 감지 → 새로 삽입된 콤마 입력창 자동 초기화
+const _commaObserver = new MutationObserver(mutations => {
+  for (const m of mutations) {
+    for (const node of m.addedNodes) {
+      if (node.nodeType === 1) {
+        if (node.matches?.('input.comma-input, input[data-comma="true"]')) initCommaInputs(node.parentElement)
+        else if (node.querySelectorAll) initCommaInputs(node)
+      }
+    }
+  }
+})
+// DOM 로드 완료 후 옵저버 시작
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    _commaObserver.observe(document.body, { childList: true, subtree: true })
+    initCommaInputs()
+  })
+} else {
+  _commaObserver.observe(document.body, { childList: true, subtree: true })
+  initCommaInputs()
+}
 function getProgressColor(pct) {
   if (pct >= 100) return 'progress-red'
   if (pct >= 80) return 'progress-yellow'
@@ -2490,11 +2597,11 @@ async function renderOrders() {
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
       <div>
         <label class="block text-xs font-semibold text-gray-600 mb-1">과세금액 (원)</label>
-        <input type="number" id="qdTaxable" class="form-input" placeholder="0" min="0">
+        <input type="text" inputmode="numeric" id="qdTaxable" class="form-input comma-input" placeholder="0">
       </div>
       <div>
         <label class="block text-xs font-semibold text-gray-600 mb-1">면세금액 (원)</label>
-        <input type="number" id="qdExempt" class="form-input" placeholder="0" min="0">
+        <input type="text" inputmode="numeric" id="qdExempt" class="form-input comma-input" placeholder="0">
       </div>
     </div>
     <div class="flex gap-3">
@@ -3463,8 +3570,8 @@ window.saveQuickMultiDay = async () => {
   const start = document.getElementById('qdStart').value
   const days = parseInt(document.getElementById('qdDays').value) || 2
   const vendorId = parseInt(document.getElementById('qdVendor').value)
-  const taxable = parseInt(document.getElementById('qdTaxable').value || 0) || 0
-  const exempt = parseInt(document.getElementById('qdExempt').value || 0) || 0
+  const taxable = parseCommaNum(document.getElementById('qdTaxable').value)
+  const exempt = parseCommaNum(document.getElementById('qdExempt').value)
   const note = document.getElementById('qdNote').value || `${days}일치 발주`
   const vat = Math.round(taxable * 0.1)
 
@@ -4084,8 +4191,8 @@ window.openInspectionModal = async () => {
                   <span class="font-bold ${(r.actual_amount||r.total_amount)!==r.total_amount?'text-orange-600':'text-green-600'}">${fmt(r.actual_amount||r.total_amount)}원</span>
                   ${r.deduction_amount !== 0 && r.deduction_amount != null ? `<div style="font-size:10px;color:${r.deduction_amount>0?'#dc2626':'#16a34a'}">변동: ${r.deduction_amount>0?'-':'+'}${fmt(Math.abs(r.deduction_amount))}원 (${r.deduction_amount>0?'차감':'증액'})</div>` : ''}
                 ` : `
-                  <input type="number" id="actual-${r.id}" value="${r.total_amount}"
-                    style="width:90px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;text-align:right;font-size:11px">
+                  <input type="text" inputmode="numeric" id="actual-${r.id}" value="${(r.total_amount||0).toLocaleString('ko-KR')}"
+                    class="comma-input" style="width:90px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;text-align:right;font-size:11px">
                 `}
               </td>
               <td style="padding:6px 8px;text-align:center">
@@ -4145,8 +4252,8 @@ window.openInspectionModal = async () => {
                   </div>
                   <div>
                     <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:3px">변동금액 (원, - 입력 가능)</label>
-                    <input type="number" id="issue-deduction-${r.id}" placeholder="0" value="0"
-                      oninput="updateActualFromDeduction(${r.id},${r.total_amount})"
+                    <input type="text" inputmode="numeric" id="issue-deduction-${r.id}" placeholder="0" value="0"
+                      class="comma-input" oninput="updateActualFromDeduction(${r.id},${r.total_amount})"
                       style="width:100%;padding:5px 8px;border:1px solid #fdba74;border-radius:6px;font-size:12px;box-sizing:border-box">
                   </div>
                 </div>
@@ -4214,7 +4321,7 @@ window.cancelIssueForm = function(orderId) {
 }
 window.updateActualFromDeduction = function(orderId, orderAmount) {
   // 변동금액: + 이면 증액, - 이면 차감
-  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||'0')||0
+  const deduction = parseCommaNum(document.getElementById(`issue-deduction-${orderId}`)?.value||'0')
   const actual = orderAmount - deduction  // 변동금액 차감 (음수면 증액됨)
   const dispEl = document.getElementById(`issue-actual-display-${orderId}`)
   const sign = deduction > 0 ? '차감' : deduction < 0 ? '증액' : ''
@@ -4226,7 +4333,7 @@ window.saveInspectionIssue = async function(orderId, vendorName, orderAmount) {
   const issueType = document.getElementById(`issue-type-${orderId}`)?.value
   const issueStatus = document.getElementById(`issue-status-${orderId}`)?.value || 'completed_issue'
   const itemName = document.getElementById(`issue-item-${orderId}`)?.value || ''
-  const deduction = parseInt(document.getElementById(`issue-deduction-${orderId}`)?.value||'0')||0
+  const deduction = parseCommaNum(document.getElementById(`issue-deduction-${orderId}`)?.value||'0')
   const detail = document.getElementById(`issue-detail-${orderId}`)?.value || ''
   const actualAmount = orderAmount - deduction  // 변동금액 반영 (음수=증액, 양수=차감)
 
@@ -6015,8 +6122,8 @@ function updateWeekPctCell(date) {
         processedVendors.add(vendorId)
         const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${d}"]`)
         const exemptEl  = document.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${d}"]`)
-        const t = parseInt(taxableEl?.value?.replace(/,/g,'') || 0) || 0
-        const e = parseInt(exemptEl?.value?.replace(/,/g,'') || 0) || 0
+        const t = parseCommaNum(taxableEl?.value)
+        const e = parseCommaNum(exemptEl?.value)
         wTotal += t + Math.round(t * 0.1) + e
       })
     })
@@ -8231,8 +8338,8 @@ window.showFoodWasteModal = async function(year, month) {
       <div class="flex items-center gap-3">
         <div class="flex-1">
           <label class="text-xs font-semibold text-amber-700 mb-1 block"><i class="fas fa-tag mr-1"></i>잔반 처리 단가 (L당, 원)</label>
-          <input type="number" id="fw-unit-price" class="form-input text-sm w-full" min="0" step="100"
-            value="${unitPrice||''}" placeholder="예: 500 (0이면 비용 직접 입력)">
+          <input type="text" inputmode="numeric" id="fw-unit-price" class="form-input text-sm w-full comma-input"
+            value="${unitPrice > 0 ? unitPrice.toLocaleString('ko-KR') : ''}" placeholder="예: 500 (0이면 비용 직접 입력)">
         </div>
         <button onclick="saveFoodWasteUnitPrice(${year},${month})"
           class="mt-4 px-3 py-2 bg-amber-500 text-white text-xs rounded-lg hover:bg-amber-600 font-semibold whitespace-nowrap">
@@ -8258,8 +8365,8 @@ window.showFoodWasteModal = async function(year, month) {
             </div>
             <div>
               <label class="text-xs text-gray-500">비용(원) <span class="text-amber-500 text-xs">(자동/직접)</span></label>
-              <input type="number" id="fw-cost-${w}" class="form-input text-sm" min="0"
-                value="${d.waste_cost||''}" placeholder="자동계산">
+              <input type="text" inputmode="numeric" id="fw-cost-${w}" class="form-input text-sm comma-input"
+                value="${d.waste_cost > 0 ? d.waste_cost.toLocaleString('ko-KR') : ''}" placeholder="자동계산">
             </div>
             <div>
               <label class="text-xs text-gray-500">메모</label>
@@ -8289,16 +8396,16 @@ window.showFoodWasteModal = async function(year, month) {
 
 // 잔반 kg 입력 시 단가 기준 비용 자동계산
 window.autoCalcWasteCost = function(week) {
-  const unitPrice = parseFloat(document.getElementById('fw-unit-price')?.value || 0) || 0
+  const unitPrice = parseCommaNum(document.getElementById('fw-unit-price')?.value)
   if (unitPrice <= 0) return
   const kg = parseFloat(document.getElementById(`fw-amount-${week}`)?.value || 0) || 0
   const costEl = document.getElementById(`fw-cost-${week}`)
-  if (costEl) costEl.value = Math.round(kg * unitPrice)
+  if (costEl) costEl.value = Math.round(kg * unitPrice) > 0 ? Math.round(kg * unitPrice).toLocaleString('ko-KR') : ''
   // 합계 업데이트
   let totalL = 0, totalCost = 0
   for (let w = 1; w <= 5; w++) {
     totalL += parseFloat(document.getElementById(`fw-amount-${w}`)?.value || 0) || 0
-    totalCost += parseInt(document.getElementById(`fw-cost-${w}`)?.value || 0) || 0
+    totalCost += parseCommaNum(document.getElementById(`fw-cost-${w}`)?.value)
   }
   const tkEl = document.getElementById('fw-total-kg')
   const tcEl = document.getElementById('fw-total-cost')
@@ -8308,7 +8415,7 @@ window.autoCalcWasteCost = function(week) {
 
 // 잔반 단가 저장
 window.saveFoodWasteUnitPrice = async function(year, month) {
-  const unitPrice = parseInt(document.getElementById('fw-unit-price')?.value || 0) || 0
+  const unitPrice = parseCommaNum(document.getElementById('fw-unit-price')?.value)
   await api('POST', '/api/settings/waste-unit-price', { year, month, waste_unit_price: unitPrice })
   showToast('잔반 단가가 저장되었습니다.', 'success')
   // 자동계산 다시 실행
@@ -8321,7 +8428,7 @@ window.saveFoodWaste = async function(year, month) {
   let saved = 0
   for (const w of weeks) {
     const amount = parseFloat(document.getElementById(`fw-amount-${w}`)?.value || 0) || 0
-    const cost = parseInt(document.getElementById(`fw-cost-${w}`)?.value || 0) || 0
+    const cost = parseCommaNum(document.getElementById(`fw-cost-${w}`)?.value)
     const memo = document.getElementById(`fw-memo-${w}`)?.value || ''
     if (amount > 0 || cost > 0) {
       await api('POST', '/api/settings/food-waste', { year, month, week: w, waste_amount: amount, waste_cost: cost, memo })
@@ -8404,8 +8511,8 @@ window.showIngredientPricesModal = async function(year, month) {
               </select>
             </td>
             <td class="py-2 px-2">
-              <input type="number" class="form-input text-xs py-1 text-right" id="ing-price-${i}"
-                value="${r.price||''}" placeholder="0" min="0" style="width:90px"
+              <input type="text" inputmode="numeric" class="form-input text-xs py-1 text-right comma-input" id="ing-price-${i}"
+                value="${r.price > 0 ? r.price.toLocaleString('ko-KR') : ''}" placeholder="0" style="width:90px"
                 oninput="updateIngredientDiff(${i},${r.prevPrice},${r.prevYearPrice})">
             </td>
             <td class="py-2 px-2 text-right text-gray-500 text-xs" id="ing-prev-${i}">
@@ -8433,7 +8540,7 @@ window.showIngredientPricesModal = async function(year, month) {
 }
 
 window.updateIngredientDiff = function(idx, prevPrice, prevYearPrice) {
-  const cur = parseInt(document.getElementById(`ing-price-${idx}`)?.value||0)||0
+  const cur = parseCommaNum(document.getElementById(`ing-price-${idx}`)?.value)
   // 시각적 피드백 (전월 대비)
   const prevEl = document.getElementById(`ing-prev-${idx}`)
   if (prevEl && prevPrice > 0 && cur > 0) {
@@ -8450,7 +8557,7 @@ window.saveIngredientPrices = async function(year, month, count) {
   for (let i = 0; i < count; i++) {
     const name = document.getElementById(`ing-name-${i}`)?.value?.trim()
     const unit = document.getElementById(`ing-unit-${i}`)?.value || 'kg'
-    const price = parseInt(document.getElementById(`ing-price-${i}`)?.value||0)||0
+    const price = parseCommaNum(document.getElementById(`ing-price-${i}`)?.value)
     const memo = document.getElementById(`ing-memo-${i}`)?.value||''
     if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price, memo })
   }
@@ -8683,8 +8790,8 @@ function buildIngRow(i, r, prevMLabel, prevYLabel) {
       </select>
     </td>
     <td class="py-2 px-3">
-      <input type="number" class="form-input text-xs py-1 text-right ing-price" id="ing-pprice-${i}"
-        value="${r.price||''}" placeholder="0" min="0" style="width:90px"
+      <input type="text" inputmode="numeric" class="form-input text-xs py-1 text-right ing-price comma-input" id="ing-pprice-${i}"
+        value="${r.price > 0 ? r.price.toLocaleString('ko-KR') : ''}" placeholder="0" style="width:90px"
         data-prev-price="${r.prevPrice||0}" data-prev-year-price="${r.prevYearPrice||0}"
         oninput="refreshIngRow(${i},${r.prevPrice},${r.prevYearPrice})">
     </td>
@@ -8721,7 +8828,7 @@ window.toggleVendorShareView = function(view) {
 }
 
 window.refreshIngRow = function(i, prevPrice, prevYearPrice) {
-  const cur = parseInt(document.getElementById(`ing-pprice-${i}`)?.value||0)||0
+  const cur = parseCommaNum(document.getElementById(`ing-pprice-${i}`)?.value)
   const diffEl = document.getElementById(`ing-pdiff-${i}`)
   const diffYEl = document.getElementById(`ing-pdiffy-${i}`)
   const rowEl = document.querySelector(`tr[data-ing-idx="${i}"]`)
@@ -8776,7 +8883,7 @@ window.saveIngredientPricesPage = async function(year, month) {
     const i = row.dataset.ingIdx
     const name = document.getElementById(`ing-pname-${i}`)?.value?.trim()
     const unit = document.getElementById(`ing-punit-${i}`)?.value || 'kg'
-    const price = parseInt(document.getElementById(`ing-pprice-${i}`)?.value||0)||0
+    const price = parseCommaNum(document.getElementById(`ing-pprice-${i}`)?.value)
     const memo  = document.getElementById(`ing-pmemo-${i}`)?.value || ''
     if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price, memo })
   })
@@ -8920,7 +9027,7 @@ window.autoAnalyzeIngredientFromExcel = async function(input, year, month) {
           if (priceEl) {
             const prevPrice = parseInt(priceEl.dataset?.prevPrice || 0) || 0
             const prevYearPrice = parseInt(priceEl.dataset?.prevYearPrice || 0) || 0
-            priceEl.value = results[name]
+            priceEl.value = results[name] > 0 ? results[name].toLocaleString('ko-KR') : ''
             priceEl.style.background = '#faf5ff'
             priceEl.style.borderColor = '#7c3aed'
             refreshIngRow(i, prevPrice, prevYearPrice)
@@ -10872,16 +10979,16 @@ async function openHospitalDetail(hospitalId) {
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">컨설팅 전 평균 식단가 (원/식)</label>
-            <input id="hi-curprice" type="number" class="form-input" value="${hosp.current_meal_price||0}">
+            <input id="hi-curprice" type="text" inputmode="numeric" class="form-input comma-input" value="${(hosp.current_meal_price||0) > 0 ? (hosp.current_meal_price||0).toLocaleString('ko-KR') : ''}">
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">컨설팅 전 연간 총 급식 예산 (원)</label>
-            <input id="hi-annual" type="number" class="form-input" value="${hosp.annual_budget||0}">
+            <input id="hi-annual" type="text" inputmode="numeric" class="form-input comma-input" value="${(hosp.annual_budget||0) > 0 ? (hosp.annual_budget||0).toLocaleString('ko-KR') : ''}">
           </div>
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">컨설팅 전 월평균 예산 (원)</label>
             <div class="flex gap-2">
-              <input id="hi-monthly-avg" type="number" class="form-input flex-1" value="${hosp.monthly_avg_budget||0}" placeholder="직접 입력">
+              <input id="hi-monthly-avg" type="text" inputmode="numeric" class="form-input flex-1 comma-input" value="${(hosp.monthly_avg_budget||0) > 0 ? (hosp.monthly_avg_budget||0).toLocaleString('ko-KR') : ''}" placeholder="직접 입력">
             </div>
           </div>
           <div>
@@ -10946,7 +11053,7 @@ async function openHospitalDetail(hospitalId) {
           </div>
           <div class="flex items-center gap-3">
             <div class="flex-1">
-              <input id="hb-total" type="number" class="form-input font-bold text-lg text-indigo-700" value="${s.total_budget||0}"
+              <input id="hb-total" type="text" inputmode="numeric" class="form-input font-bold text-lg text-indigo-700 comma-input" value="${(s.total_budget||0) > 0 ? (s.total_budget||0).toLocaleString('ko-KR') : ''}"
                 oninput="recalcFoodBudget()" style="background:#eef2ff;border-color:#6366f1">
             </div>
             <span class="text-sm text-indigo-600 font-medium">원</span>
@@ -10967,15 +11074,15 @@ async function openHospitalDetail(hospitalId) {
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
             <div class="bg-white rounded-lg p-3 border border-amber-100">
               <label class="block text-xs font-semibold text-orange-600 mb-1.5"><i class="fas fa-calendar-star mr-1"></i>이벤트 예산 (원)</label>
-              <input id="hb-event" type="number" class="form-input text-sm" value="${s.event_budget||0}" oninput="recalcFoodBudget()" placeholder="0">
+              <input id="hb-event" type="text" inputmode="numeric" class="form-input text-sm comma-input" value="${(s.event_budget||0) > 0 ? (s.event_budget||0).toLocaleString('ko-KR') : ''}" oninput="recalcFoodBudget()" placeholder="0">
             </div>
             <div class="bg-white rounded-lg p-3 border border-amber-100">
               <label class="block text-xs font-semibold text-purple-600 mb-1.5"><i class="fas fa-box mr-1"></i>소모품 목표금액 (원)</label>
-              <input id="hb-supply" type="number" class="form-input text-sm" value="${s.supply_budget||0}" oninput="recalcFoodBudget()" placeholder="0">
+              <input id="hb-supply" type="text" inputmode="numeric" class="form-input text-sm comma-input" value="${(s.supply_budget||0) > 0 ? (s.supply_budget||0).toLocaleString('ko-KR') : ''}" oninput="recalcFoodBudget()" placeholder="0">
             </div>
             <div class="bg-white rounded-lg p-3 border border-amber-100">
               <label class="block text-xs font-semibold text-blue-600 mb-1.5"><i class="fas fa-credit-card mr-1"></i>법인카드 목표금액 (원)</label>
-              <input id="hb-card" type="number" class="form-input text-sm" value="${s.card_budget||0}" oninput="recalcFoodBudget()" placeholder="0">
+              <input id="hb-card" type="text" inputmode="numeric" class="form-input text-sm comma-input" value="${(s.card_budget||0) > 0 ? (s.card_budget||0).toLocaleString('ko-KR') : ''}" oninput="recalcFoodBudget()" placeholder="0">
             </div>
           </div>
         </div>
@@ -11005,18 +11112,18 @@ async function openHospitalDetail(hospitalId) {
             <label class="block text-xs font-semibold text-gray-500 mb-1">목표 식단가 (원/식)
               <span class="text-green-500 font-normal ml-1"><i class="fas fa-magic mr-0.5"></i>환자군설정 가중평균 자동반영</span>
             </label>
-            <input id="hb-mealprice" type="number" class="form-input" value="${s.meal_price||0}">
+            <input id="hb-mealprice" type="text" inputmode="numeric" class="form-input comma-input" value="${(s.meal_price||0) > 0 ? (s.meal_price||0).toLocaleString('ko-KR') : ''}">
           </div>
           <div class="bg-white border border-gray-100 rounded-lg p-3">
             <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 목표금액 (원)</label>
-            <input id="hb-waste" type="number" class="form-input" value="${s.food_waste_budget||0}">
+            <input id="hb-waste" type="text" inputmode="numeric" class="form-input comma-input" value="${(s.food_waste_budget||0) > 0 ? (s.food_waste_budget||0).toLocaleString('ko-KR') : ''}">
           </div>
           <div class="bg-white border border-gray-100 rounded-lg p-3 md:col-span-2">
             <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 처리 단가 (원/L)
               <span class="text-amber-500 font-normal ml-1">병원별 설정</span>
             </label>
             <div class="flex gap-2">
-              <input id="hb-waste-unit-price" type="number" class="form-input flex-1" value="${s.waste_unit_price||0}" placeholder="예: 500">
+              <input id="hb-waste-unit-price" type="text" inputmode="numeric" class="form-input flex-1 comma-input" value="${(s.waste_unit_price||0) > 0 ? (s.waste_unit_price||0).toLocaleString('ko-KR') : ''}" placeholder="예: 500">
               <button onclick="saveWasteUnitPriceAdmin(${hospitalId})" class="btn btn-secondary btn-sm whitespace-nowrap">
                 <i class="fas fa-save mr-1"></i>저장
               </button>
@@ -11216,7 +11323,7 @@ async function openHospitalDetail(hospitalId) {
         </div>
         <div>
           <label class="text-sm font-medium text-gray-600">월 목표금액 (원)</label>
-          <input type="number" id="adminVendorBudget" class="form-input mt-1" placeholder="0 (없으면 0)">
+          <input type="text" inputmode="numeric" id="adminVendorBudget" class="form-input mt-1 comma-input" placeholder="0 (없으면 0)">
         </div>
       </div>
       <div class="flex gap-2 mt-5">
@@ -11306,8 +11413,8 @@ function renderBudgetVendorRows(vendors, workingDays) {
           ${dayTarget > 0 ? `<span class="text-xs text-blue-500 ml-2 vendor-day-target">일 ${dayTarget.toLocaleString('ko-KR')}원</span>` : `<span class="text-xs text-gray-300 ml-2 vendor-day-target"></span>`}
         </div>
         <div class="flex items-center gap-1.5">
-          <input id="hvb-${v.id}" type="number" class="form-input w-36 text-right text-sm py-1.5 vendor-budget-input"
-            value="${mb||0}" placeholder="0" oninput="syncVendorBudgetTotal()">
+          <input id="hvb-${v.id}" type="text" inputmode="numeric" class="form-input w-36 text-right text-sm py-1.5 vendor-budget-input comma-input"
+            value="${mb > 0 ? mb.toLocaleString('ko-KR') : ''}" placeholder="0" oninput="syncVendorBudgetTotal()">
           <span class="text-xs text-gray-500 whitespace-nowrap">원</span>
         </div>
       </div>`
@@ -11332,7 +11439,7 @@ window.refreshVendorDayTargets = function() {
   const wd = parseInt(document.getElementById('hb-workdays')?.value || '0') || 0
   // 각 vendor-budget-input의 현재 값으로 일 목표 업데이트
   document.querySelectorAll('.vendor-budget-input').forEach(inp => {
-    const mb = parseInt(inp.value || '0') || 0
+    const mb = parseCommaNum(inp.value)
     const dayTarget = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
     // 같은 행의 일 목표 span 업데이트 (data-vdaytarget 속성 활용)
     const row = inp.closest('[class*="flex items-center gap-3"]') || inp.parentElement?.parentElement?.parentElement
@@ -11357,7 +11464,7 @@ window.refreshVendorDayTargets = function() {
 window.syncVendorBudgetTotal = function(force = false) {
   const inputs = document.querySelectorAll('.vendor-budget-input')
   let sum = 0
-  inputs.forEach(inp => { sum += parseInt(inp.value||0)||0 })
+  inputs.forEach(inp => { sum += parseCommaNum(inp.value) })
   // 합계 표시 업데이트
   const sumEl = document.getElementById('vendorBudgetSum')
   if (sumEl) sumEl.textContent = fmt(sum)
@@ -11365,7 +11472,7 @@ window.syncVendorBudgetTotal = function(force = false) {
   if (force) {
     const totalEl = document.getElementById('hb-total')
     if (totalEl) {
-      totalEl.value = sum
+      totalEl.value = sum > 0 ? sum.toLocaleString('ko-KR') : ''
       totalEl.style.background = '#eef2ff'
       totalEl.style.borderColor = '#6366f1'
     }
@@ -11376,10 +11483,10 @@ window.syncVendorBudgetTotal = function(force = false) {
 
 // 식재료 기본예산 자동계산: 월 총 목표 - (이벤트 + 소모품 + 법인카드)
 window.recalcFoodBudget = function() {
-  const total  = parseInt(document.getElementById('hb-total')?.value||0)||0
-  const event  = parseInt(document.getElementById('hb-event')?.value||0)||0
-  const supply = parseInt(document.getElementById('hb-supply')?.value||0)||0
-  const card   = parseInt(document.getElementById('hb-card')?.value||0)||0
+  const total  = parseCommaNum(document.getElementById('hb-total')?.value)
+  const event  = parseCommaNum(document.getElementById('hb-event')?.value)
+  const supply = parseCommaNum(document.getElementById('hb-supply')?.value)
+  const card   = parseCommaNum(document.getElementById('hb-card')?.value)
   const food   = total - event - supply - card
   const dispEl = document.getElementById('hb-food-basic-display')
   const formulaEl = document.getElementById('hb-food-formula-display')
@@ -11608,7 +11715,7 @@ async function saveAdminVendor() {
     name: document.getElementById('adminVendorName').value.trim(),
     category: document.getElementById('adminVendorCategory').value,
     taxType: document.getElementById('adminVendorTaxType').value,
-    monthlyBudget: parseInt(document.getElementById('adminVendorBudget').value||0)||0,
+    monthlyBudget: parseCommaNum(document.getElementById('adminVendorBudget').value),
     isCardType: isCard,
     cardSubtype: isCard ? document.getElementById('adminVendorCardSubtype').value : null
   }
@@ -11903,11 +12010,11 @@ async function saveHospitalInfo(hospitalId) {
     care_type: document.getElementById('hi-caretype')?.value || 'general',
     consignment_company: document.getElementById('hi-consign')?.value || '',
     meals_per_day: parseInt(document.getElementById('hi-meals').value)||3,
-    current_meal_price: parseInt(document.getElementById('hi-curprice').value)||0,
+    current_meal_price: parseCommaNum(document.getElementById('hi-curprice').value),
     target_meal_price: 0,
     supply_method: document.getElementById('hi-supply').value,
-    annual_budget: parseInt(document.getElementById('hi-annual').value)||0,
-    monthly_avg_budget: parseInt(document.getElementById('hi-monthly-avg')?.value)||0,
+    annual_budget: parseCommaNum(document.getElementById('hi-annual').value),
+    monthly_avg_budget: parseCommaNum(document.getElementById('hi-monthly-avg')?.value),
     dietitian_name: document.getElementById('hi-dietname').value,
     dietitian_phone: document.getElementById('hi-dietphone').value,
     admin_memo: document.getElementById('hi-memo').value
@@ -12498,8 +12605,8 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         <div>
           <label class="block text-xs text-gray-500 mb-1 font-medium">월 총 목표예산 (원)</label>
           <div class="flex gap-1 items-center">
-            <input type="number" id="autoAlloc-totalBudget"
-              class="form-input text-sm py-1 flex-1 font-bold"
+            <input type="text" inputmode="numeric" id="autoAlloc-totalBudget"
+              class="form-input text-sm py-1 flex-1 font-bold comma-input"
               placeholder="예산설정 탭에서 가져오기"
               oninput="recalcAutoAlloc()">
             <button type="button" onclick="fetchBudgetTotalForAlloc()"
@@ -12565,9 +12672,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             </div>
             <div class="text-center text-xs text-blue-700 font-medium">${avgMeals > 0 ? avgMeals.toLocaleString() : '<span class="text-gray-300">-</span>'}</div>
             <div class="text-center">
-              <input type="number" id="allocRefPrice-${cat.id}"
-                class="form-input text-xs py-0.5 text-center w-full"
-                value="${refPrice || ''}"
+              <input type="text" inputmode="numeric" id="allocRefPrice-${cat.id}"
+                class="form-input text-xs py-0.5 text-center w-full comma-input"
+                value="${refPrice > 0 ? refPrice.toLocaleString('ko-KR') : ''}"
                 placeholder="입력"
                 oninput="recalcAutoAlloc()"
                 title="기준 식단가 (원/식) - 변경 후 아래 [재계산] 클릭">
@@ -12667,14 +12774,14 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
       <div class="grid grid-cols-2 gap-2 mb-2">
         <div>
           <label class="block text-xs text-gray-500 mb-1">월 목표금액 (원)</label>
-          <input type="number" id="catBudget-${cat.id}" value="${s.monthly_budget||0}"
-            class="form-input text-sm py-1" placeholder="0"
+          <input type="text" inputmode="numeric" id="catBudget-${cat.id}" value="${s.monthly_budget > 0 ? (s.monthly_budget).toLocaleString('ko-KR') : ''}"
+            class="form-input text-sm py-1 comma-input" placeholder="0"
             oninput="updateWeightedAvgTarget()">
         </div>
         <div>
           <label class="block text-xs text-gray-500 mb-1">목표 식단가 (원/식)</label>
-          <input type="number" id="catMealPrice-${cat.id}" value="${s.target_meal_price||0}"
-            class="form-input text-sm py-1" placeholder="자동계산"
+          <input type="text" inputmode="numeric" id="catMealPrice-${cat.id}" value="${s.target_meal_price > 0 ? (s.target_meal_price).toLocaleString('ko-KR') : ''}"
+            class="form-input text-sm py-1 comma-input" placeholder="자동계산"
             oninput="updateWeightedAvgTarget()">
         </div>
       </div>
@@ -12826,7 +12933,7 @@ function recalcAutoAllocFromRefPrice() {
     const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
     const avgMeals = mealInfo.avg_meals_3m || 0
     const refPriceEl = document.getElementById(`allocRefPrice-${cat.id}`)
-    const refPrice = parseFloat(refPriceEl?.value || 0)
+    const refPrice = parseCommaNum(refPriceEl?.value)
     const w = avgMeals * refPrice
     weights[cat.id] = w
     totalWeight += w
@@ -12865,7 +12972,7 @@ function recalcAutoAllocFromRefPrice() {
 function recalcAutoAlloc() {
   const cats = window._budgetCats || []
   if (!cats.length) return
-  const totalBudget = parseFloat(document.getElementById('autoAlloc-totalBudget')?.value || 0)
+  const totalBudget = parseCommaNum(document.getElementById('autoAlloc-totalBudget')?.value)
   const mealTotals = window._adminCatMealTotals || []
 
   let ratioSum = 0
@@ -12937,12 +13044,12 @@ function unlockAllocRatios() {
 function applyAutoAlloc() {
   const cats = window._budgetCats || []
   if (!cats.length) return
-  const totalBudget = parseFloat(document.getElementById('autoAlloc-totalBudget')?.value || 0)
+  const totalBudget = parseCommaNum(document.getElementById('autoAlloc-totalBudget')?.value)
   if (!totalBudget) {
     showToast('월 총 목표예산을 먼저 입력하거나 예산설정 탭에서 가져오세요.', 'warning')
     return
   }
-  const workdays = parseFloat(document.getElementById('autoAlloc-workdays')?.value || 0)
+  const workdays = parseInt(document.getElementById('autoAlloc-workdays')?.value || 0) || 0
   const mealTotals = window._adminCatMealTotals || []
 
   cats.forEach(cat => {
@@ -12965,10 +13072,10 @@ function applyAutoAlloc() {
     }
 
     const budgetInput = document.getElementById(`catBudget-${cat.id}`)
-    if (budgetInput) { budgetInput.value = allocated; flash(budgetInput, '#eef2ff', '#818cf8') }
+    if (budgetInput) { budgetInput.value = allocated > 0 ? allocated.toLocaleString('ko-KR') : ''; flash(budgetInput, '#eef2ff', '#818cf8') }
 
     const mealPriceInput = document.getElementById(`catMealPrice-${cat.id}`)
-    if (mealPriceInput && mealPrice > 0) { mealPriceInput.value = mealPrice; flash(mealPriceInput, '#f0fdf4', '#22c55e') }
+    if (mealPriceInput && mealPrice > 0) { mealPriceInput.value = mealPrice.toLocaleString('ko-KR'); flash(mealPriceInput, '#f0fdf4', '#22c55e') }
 
     const workDaysInput = document.getElementById(`catWorkDays-${cat.id}`)
     if (workDaysInput && workdays > 0) { workDaysInput.value = workdays }
@@ -12994,7 +13101,7 @@ function updateWeightedAvgTarget() {
     weighted = cats.reduce((s, cat) => {
       const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
       const ratio = mealInfo.budget_ratio || 0
-      const p = parseFloat(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0)
+      const p = parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value)
       return s + p * ratio
     }, 0)
   } else if (totalMeals > 0) {
@@ -13002,17 +13109,17 @@ function updateWeightedAvgTarget() {
     weighted = cats.reduce((s, cat) => {
       const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
       const ratio = mealInfo.meal_ratio || 0
-      const p = parseFloat(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0)
+      const p = parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value)
       return s + p * ratio
     }, 0)
   } else {
     // ── 예산 비중 기반 (식수 미입력 시 fallback) ──
     const totalBudget = cats.reduce((s, cat) =>
-      s + parseFloat(document.getElementById(`catBudget-${cat.id}`)?.value || 0), 0)
+      s + parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value), 0)
     if (totalBudget > 0) {
       weighted = cats.reduce((s, cat) => {
-        const b = parseFloat(document.getElementById(`catBudget-${cat.id}`)?.value || 0)
-        const p = parseFloat(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0)
+        const b = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value)
+        const p = parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value)
         return s + p * (b / totalBudget)
       }, 0)
     }
@@ -13031,7 +13138,7 @@ function updateWeightedAvgTarget() {
   // 예산설정 탭의 목표 식단가(hb-mealprice) 자동 적용
   const mealPriceEl = document.getElementById('hb-mealprice')
   if (mealPriceEl && roundedWeighted > 0) {
-    mealPriceEl.value = roundedWeighted
+    mealPriceEl.value = roundedWeighted.toLocaleString('ko-KR')
     mealPriceEl.style.background = '#f0fdf4'
     mealPriceEl.style.borderColor = '#22c55e'
     clearTimeout(mealPriceEl._resetTimer)
@@ -13213,8 +13320,8 @@ async function saveCategoryBudgets(hospitalId) {
 
   const settings = cats.map(cat => ({
     patient_category_id: cat.id,
-    monthly_budget: parseInt(document.getElementById(`catBudget-${cat.id}`)?.value || 0) || 0,
-    target_meal_price: parseInt(document.getElementById(`catMealPrice-${cat.id}`)?.value || 0) || 0,
+    monthly_budget: parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value),
+    target_meal_price: parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value),
     working_days: parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0,
     daily_meal_count: 0
   }))
@@ -13231,24 +13338,24 @@ async function saveHospitalBudget(hospitalId) {
   const vendorBudgets = []
   document.querySelectorAll('[id^="hvb-"]').forEach(el => {
     const vid = el.id.replace('hvb-', '')
-    vendorBudgets.push({ vendorId: parseInt(vid), budget: parseInt(el.value||0)||0 })
+    vendorBudgets.push({ vendorId: parseInt(vid), budget: parseCommaNum(el.value) })
   })
 
   // ── 저장 버튼 비활성화 (중복 클릭 방지) ──
   const saveBtn = document.getElementById('tabSaveBtn-budget')
   if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
 
-  const totalBudget   = parseInt(document.getElementById('hb-total')?.value)||0
-  const eventBudget   = parseInt(document.getElementById('hb-event')?.value)||0
-  const supplyBudget  = parseInt(document.getElementById('hb-supply')?.value)||0
-  const cardBudget    = parseInt(document.getElementById('hb-card')?.value)||0
+  const totalBudget   = parseCommaNum(document.getElementById('hb-total')?.value)
+  const eventBudget   = parseCommaNum(document.getElementById('hb-event')?.value)
+  const supplyBudget  = parseCommaNum(document.getElementById('hb-supply')?.value)
+  const cardBudget    = parseCommaNum(document.getElementById('hb-card')?.value)
   const foodBasicBudget = totalBudget - eventBudget - supplyBudget - cardBudget
 
   const body = {
     totalBudget,
     eventBudget,
-    mealPrice: parseInt(document.getElementById('hb-mealprice')?.value)||0,
-    foodWasteBudget: parseInt(document.getElementById('hb-waste')?.value)||0,
+    mealPrice: parseCommaNum(document.getElementById('hb-mealprice')?.value),
+    foodWasteBudget: parseCommaNum(document.getElementById('hb-waste')?.value),
     workingDays: parseInt(document.getElementById('hb-workdays')?.value)||0,
     supplyBudget,
     cardBudget,
@@ -13284,7 +13391,7 @@ async function saveHospitalBudget(hospitalId) {
 
 // 2.8 관리자 - 병원별 잔반 단가 즉시 저장
 window.saveWasteUnitPriceAdmin = async function(hospitalId) {
-  const unitPrice = parseInt(document.getElementById('hb-waste-unit-price')?.value||0)||0
+  const unitPrice = parseCommaNum(document.getElementById('hb-waste-unit-price')?.value)
   // admin API를 통해 해당 병원의 waste_unit_price 저장
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`, {
     waste_unit_price: unitPrice,
@@ -18253,7 +18360,7 @@ function renderCardExpenseRow(item, idx) {
     <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="vendorName" data-idx="${idx}" value="${escHtml(item.vendorName||'')}" placeholder="예: 이마트, 쿠팡" style="width:100%;min-width:100px;"></td>
     <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="itemName" data-idx="${idx}" value="${escHtml(item.itemName||'')}" placeholder="예: 위생장갑, 과일" style="width:100%;min-width:100px;" title="사용 품목을 입력하세요 (예: 위생장갑, 과일, 세제)"></td>
     <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="purpose" data-idx="${idx}" value="${escHtml(item.purpose||'')}" placeholder="예: 주방소모품 구매" style="width:100%;min-width:120px;" title="진행 용도를 입력하세요 (예: 주방 소모품 구매, 환자 추가 간식 제공)"></td>
-    <td class="px-1 py-1.5"><input type="text" inputmode="numeric" class="card-exp-input form-input text-xs py-1 px-2 text-right" data-field="amount" data-idx="${idx}" value="${item.amount > 0 ? parseInt(item.amount).toLocaleString() : ''}" placeholder="0" style="width:100%;min-width:82px;" oninput="this.value=this.value.replace(/[^0-9,]/g,'');updateCardExpenseTotal()"></td>
+    <td class="px-1 py-1.5"><input type="text" inputmode="numeric" class="card-exp-input form-input text-xs py-1 px-2 text-right comma-input" data-field="amount" data-idx="${idx}" value="${item.amount > 0 ? parseInt(item.amount).toLocaleString('ko-KR') : ''}" placeholder="0" style="width:100%;min-width:82px;" oninput="onCommaInput(this);updateCardExpenseTotal()"></td>
     <td class="px-1 py-1.5"><input type="text" class="card-exp-input form-input text-xs py-1 px-2" data-field="memo" data-idx="${idx}" value="${escHtml(item.memo||'')}" placeholder="예: 긴급구매" style="width:100%;min-width:90px;" title="비고: 선택 입력 (예: 긴급 구매, 당일 추가 발주 대체)"></td>
     <td class="px-1 py-1.5 text-center">
       <button onclick="removeCardExpenseRow(${idx})" class="text-red-400 hover:text-red-600 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 transition-colors mx-auto">
@@ -18318,7 +18425,7 @@ window.updateCardExpenseTotal = function() {
   document.querySelectorAll('#cardExpenseRows .card-expense-row').forEach(row => {
     const amtInput = row.querySelector('[data-field="amount"]')
     if (amtInput) {
-      const v = parseInt(amtInput.value.replace(/,/g, '')) || 0
+      const v = parseCommaNum(amtInput.value)
       if (v > 0) { total += v; count++ }
     }
   })
@@ -18345,8 +18452,7 @@ window.saveCardExpenseItems = async function() {
     const vendorName = get('vendorName')
     const itemName = get('itemName')
     const purpose = get('purpose')
-    const amountStr = get('amount').replace(/,/g, '')
-    const amount = parseInt(amountStr) || 0
+    const amount = parseCommaNum(get('amount'))
     const memo = get('memo')
     const id = row.dataset.id ? parseInt(row.dataset.id) : null
 
@@ -18665,7 +18771,7 @@ window.openAddExpenseModal = function(editData) {
         </div>
         <div>
           <label class="text-xs text-gray-500 mb-1 block">금액 *</label>
-          <input type="number" id="expInput_amount" value="${editData?.amount||''}" placeholder="금액 입력 (원)" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+          <input type="text" inputmode="numeric" id="expInput_amount" value="${editData?.amount > 0 ? editData.amount.toLocaleString('ko-KR') : ''}" placeholder="금액 입력 (원)" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 comma-input">
         </div>
         <div>
           <label class="text-xs text-gray-500 mb-1 block">비고</label>
@@ -18689,7 +18795,7 @@ window.submitExpenseForm = async function(editId) {
   const vendorName = document.getElementById('expInput_vendor')?.value?.trim()
   const itemName   = document.getElementById('expInput_item')?.value?.trim()
   const purpose    = document.getElementById('expInput_purpose')?.value?.trim()
-  const amount     = parseInt(document.getElementById('expInput_amount')?.value || '0')
+  const amount     = parseCommaNum(document.getElementById('expInput_amount')?.value)
   const memo       = document.getElementById('expInput_memo')?.value?.trim()
 
   if (!expDate || !vendorName || !itemName || !purpose || !amount) {
@@ -24670,8 +24776,8 @@ function txRenderParsedItems(items) {
               value="${item.quantity||0}" id="txQty-${item.id}">
           </td>
           <td class="px-2 py-1.5">
-            <input type="number" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-20 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white"
-              value="${item.unit_price||0}" id="txPrice-${item.id}">
+            <input type="text" inputmode="numeric" class="text-xs border border-gray-200 rounded px-1.5 py-1 w-20 text-right focus:ring-1 focus:ring-blue-300 focus:outline-none bg-white comma-input"
+              value="${item.unit_price > 0 ? item.unit_price.toLocaleString('ko-KR') : ''}" id="txPrice-${item.id}">
           </td>
           <td class="px-2 py-1.5 text-right font-medium text-gray-700 whitespace-nowrap">${amt.toLocaleString()}</td>
           <td class="px-2 py-1.5 text-right text-orange-600 whitespace-nowrap">${taxAmt > 0 ? taxAmt.toLocaleString() : '<span class="text-gray-300">0</span>'}</td>
@@ -24705,8 +24811,8 @@ function txRenderParsedItems(items) {
 // ── 품목 저장 ─────────────────────────────────────────────────────────
 async function txSaveItem(itemId) {
   try {
-    const qty       = +document.getElementById(`txQty-${itemId}`)?.value || 0
-    const unitPrice = +document.getElementById(`txPrice-${itemId}`)?.value || 0
+    const qty       = parseFloat(document.getElementById(`txQty-${itemId}`)?.value) || 0
+    const unitPrice = parseCommaNum(document.getElementById(`txPrice-${itemId}`)?.value)
     const taxType   = document.getElementById(`txTax-${itemId}`)?.value || 'taxable'
 
     const res = await axios.put(`/api/transaction/items/${itemId}`, {
@@ -26602,8 +26708,8 @@ function txIngBuildVendorRow(i, r) {
       </select>
     </td>
     <td class="py-1.5 px-3">
-      <input type="number" id="txVIng-price-${i}" value="${r.price||''}" placeholder="0"
-        class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right"
+      <input type="text" inputmode="numeric" id="txVIng-price-${i}" value="${r.price > 0 ? r.price.toLocaleString('ko-KR') : ''}" placeholder="0"
+        class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right comma-input"
         oninput="txIngRefreshVendorRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})">
     </td>
     <td class="py-1.5 px-3 text-right">${amountCell}</td>
@@ -26615,7 +26721,7 @@ function txIngBuildVendorRow(i, r) {
 }
 
 window.txIngRefreshVendorRow = function(i, prevPrice, prevYearPrice) {
-  const cur = parseInt(document.getElementById(`txVIng-price-${i}`)?.value||0)||0
+  const cur = parseCommaNum(document.getElementById(`txVIng-price-${i}`)?.value)
   const diffEl  = document.getElementById(`txVIng-diff-${i}`)
   const diffYEl = document.getElementById(`txVIng-diffy-${i}`)
   const rowEl   = document.querySelector(`tr[data-vendor-row="${i}"]`)
@@ -26646,7 +26752,7 @@ window.txIngSaveVendorPrices = async function(vendorName, year, month, hospitalI
     const i = tr.dataset.vendorRow
     const name  = document.getElementById(`txVIng-name-${i}`)?.value?.trim()
     const unit  = document.getElementById(`txVIng-unit-${i}`)?.value || 'kg'
-    const price = parseInt(document.getElementById(`txVIng-price-${i}`)?.value||0)||0
+    const price = parseCommaNum(document.getElementById(`txVIng-price-${i}`)?.value)
     if (name && price > 0) items.push({ ingredient_name: name, unit, unit_price: price })
   })
   if (!items.length) { showToast('입력된 단가가 없습니다', 'warning'); return }
@@ -26692,7 +26798,7 @@ const txIngBuildManualRow_COMPAT = function(i, r) {
     <td class="py-1.5 px-3 text-center"><select id="txIng-unit-${i}" class="border border-gray-200 rounded px-1 py-1 text-xs">
       ${['kg','개','박스','묶음','L','봉','팩'].map(u=>`<option value="${u}" ${r.unit===u?'selected':''}>${u}</option>`).join('')}
     </select></td>
-    <td class="py-1.5 px-3"><input type="number" id="txIng-price-${i}" value="${r.price||''}" placeholder="0" class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right" oninput="txIngRefreshRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})"></td>
+    <td class="py-1.5 px-3"><input type="text" inputmode="numeric" id="txIng-price-${i}" value="${r.price > 0 ? r.price.toLocaleString('ko-KR') : ''}" placeholder="0" class="border border-gray-200 rounded px-2 py-1 text-xs w-24 text-right comma-input" oninput="txIngRefreshRow(${i},${r.prevPrice||0},${r.prevYearPrice||0})"></td>
     <td class="py-1.5 px-3 text-right">${r.amount > 0 ? r.amount.toLocaleString()+'원' : '-'}</td>
     <td class="py-1.5 px-3 text-right text-gray-400">${r.prevPrice > 0 ? r.prevPrice.toLocaleString()+'원' : '-'}</td>
     <td class="py-1.5 px-3 text-right" id="txIng-diff-${i}">${diff(r.price, r.prevPrice)}</td>
