@@ -1978,6 +1978,59 @@ adminRouter.get('/hospitals/:id/diet-categories-for-meal', async (c) => {
   return c.json(rows.results || [])
 })
 
+// ── 관리자용: 병원별 환자군 월간 식수 합계 조회 ─────────────────
+// 환자군 설정 예산 자동 배분에 사용 (custom_data의 cat_* 키 집계)
+adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
+  const { id, year, month } = c.req.param()
+  const mm = String(month).padStart(2, '0')
+
+  // 환자군 목록
+  const cats = await c.env.DB.prepare(`
+    SELECT * FROM hospital_patient_categories
+    WHERE hospital_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).bind(id).all<any>()
+
+  // 해당 월 daily_meals custom_data 전체 조회
+  const mealRows = await c.env.DB.prepare(`
+    SELECT custom_data FROM daily_meals
+    WHERE hospital_id = ?
+      AND strftime('%Y', meal_date) = ?
+      AND strftime('%m', meal_date) = ?
+      AND custom_data IS NOT NULL AND custom_data != '{}'
+  `).bind(id, String(year), mm).all<any>()
+
+  // 환자군별 식수 집계
+  const catMealMap: Record<string, number> = {}
+  for (const cat of (cats.results || [])) {
+    catMealMap[cat.category_key] = 0
+  }
+
+  for (const row of (mealRows.results || [])) {
+    try {
+      const cd = JSON.parse(row.custom_data || '{}')
+      for (const cat of (cats.results || [])) {
+        const fk = `cat_${cat.category_key}`
+        const fv = cd[fk] || {}
+        catMealMap[cat.category_key] = (catMealMap[cat.category_key] || 0) +
+          (fv.bf || 0) + (fv.l || 0) + (fv.d || 0)
+      }
+    } catch (e) {}
+  }
+
+  // 결과: 환자군별 식수 합계 + 전체 합계
+  const totalMeals = Object.values(catMealMap).reduce((s: number, v) => s + (v as number), 0)
+  const result = (cats.results || []).map((cat: any) => ({
+    id: cat.id,
+    category_key: cat.category_key,
+    category_name: cat.category_name,
+    total_meals: catMealMap[cat.category_key] || 0,
+    ratio: totalMeals > 0 ? (catMealMap[cat.category_key] || 0) / totalMeals : 0
+  }))
+
+  return c.json({ catMeals: result, totalMeals })
+})
+
 // ── 발주 업체 → 명세서 업체 일괄 동기화 (초기 설정용) ──────────
 adminRouter.post('/hospitals/:id/sync-invoice-vendors', async (c) => {
   const hospitalId = c.req.param('id')
