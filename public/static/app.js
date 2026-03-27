@@ -2682,6 +2682,15 @@ async function renderOrders() {
       })
       // ── 테이블/tfoot 렌더링 완료 후 모든 실시간 패널 업데이트 ──
       requestAnimationFrame(() => {
+        // 모든 날짜의 dayRatioCell과 summCatAmt를 updateDayTotal로 동기화
+        // (초기 렌더링의 displayTotal과 catTotals가 updateDayTotal 기준과 다를 수 있으므로
+        //  항상 updateDayTotal로 덮어써서 summCatAmt = dayRatioCell 일치 보장)
+        if (typeof updateDayTotal === 'function') {
+          const allDays = document.querySelectorAll('tr.order-summary-row[data-date]')
+          allDays.forEach(row => {
+            if (row.dataset.date) updateDayTotal(row.dataset.date)
+          })
+        }
         if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
       })
     }, 0)
