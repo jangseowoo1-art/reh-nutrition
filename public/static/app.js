@@ -16747,55 +16747,115 @@ async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
     pptx.title  = hname + ' 거래명세서 분석 보고서'
 
     // ════════════════════════════════════
-    // 슬라이드 1: 표지 (Re&H 진녹색 테마)
+    // 슬라이드 1: 표지 (Re&H 진녹색 테마 — 모던 프로페셔널)
     // ════════════════════════════════════
     {
       const s = pptx.addSlide()
-      s.background = { color: C.PRIMARY_D }
 
-      // 배경 장식 레이어
-      s.addShape('rect', { x:0, y:0, w:W, h:1.6, fill:{ color:C.PRIMARY } })
-      s.addShape('rect', { x:0, y:1.6, w:W, h:0.05, fill:{ color:C.ACCENT } })
-      s.addShape('rect', { x:0, y:H-0.8, w:W, h:0.8, fill:{ color:C.PRIMARY } })
-      s.addShape('rect', { x:0, y:H-0.8, w:W, h:0.04, fill:{ color:C.ACCENT_L } })
+      // ─────────────────────────────────────────────────────────────
+      // 전체 배경: 좌측 진녹색 패널 + 우측 순백 패널 (2분할 레이아웃)
+      // ─────────────────────────────────────────────────────────────
+      const SPLIT = 4.5   // 분할 X 좌표 (인치)
 
-      // 좌측 브랜드 라인
-      s.addShape('rect', { x:0.28, y:1.75, w:0.055, h:1.0, fill:{ color:C.ACCENT } })
+      // 좌측: Re&H 브랜드 패널 (진녹색)
+      s.addShape('rect', { x:0, y:0, w:SPLIT, h:H, fill:{ color:C.PRIMARY_D } })
+      // 우측: 흰색 콘텐츠 패널
+      s.addShape('rect', { x:SPLIT, y:0, w:W-SPLIT, h:H, fill:{ color:'FFFFFF' } })
 
-      // Re&H 로고 텍스트 (상단 좌)
-      s.addText('Re&H', { x:0.25, y:0.22, w:2, h:0.45, fontSize:20, bold:true, color:C.ACCENT_L, charSpacing:3 })
-      s.addText('Hospital Meal Management', { x:0.25, y:0.65, w:4, h:0.25, fontSize:9, color:'FFFFFF', italic:true })
+      // ── 좌측 패널 장식 ──────────────────────────────────────────
+      // 에메랄드 포인트 상단 바 (전체 너비)
+      s.addShape('rect', { x:0, y:0, w:W, h:0.06, fill:{ color:C.ACCENT } })
+      // 에메랄드 포인트 하단 바 (전체 너비)
+      s.addShape('rect', { x:0, y:H-0.06, w:W, h:0.06, fill:{ color:C.ACCENT } })
 
-      // 메인 제목
-      s.addText('거래명세서', { x:0.5, y:1.75, w:W-1, h:0.65, fontSize:36, bold:true, color:'FFFFFF', align:'center', charSpacing:2 })
-      s.addText('분석 보고서', { x:0.5, y:2.38, w:W-1, h:0.65, fontSize:36, bold:true, color:C.ACCENT_L, align:'center', charSpacing:2 })
+      // 좌측 패널 내부 — 대각선 장식 (기하학적 요소)
+      s.addShape('rect', { x:SPLIT-0.6, y:0, w:0.04, h:H, fill:{ color:'064E3B' } })
+      s.addShape('rect', { x:SPLIT-0.38, y:0, w:0.015, h:H, fill:{ color:'065F46' } })
 
-      // 병원명
-      s.addText(hname, { x:0.5, y:3.15, w:W-1, h:0.45, fontSize:18, color:'FFFFFF', align:'center' })
+      // 좌측 상단 — Re&H 브랜드 워드마크
+      s.addShape('roundRect', { x:0.35, y:0.28, w:1.0, h:0.36, fill:{ color:C.ACCENT }, rectRadius:0.06 })
+      s.addText('Re&H', { x:0.35, y:0.28, w:1.0, h:0.36, fontSize:14, bold:true, color:'FFFFFF', align:'center' })
+      s.addText('Hospital Meal Management', { x:0.35, y:0.68, w:3.8, h:0.22, fontSize:7.5, color:C.ACCENT_L, italic:true, charSpacing:1 })
 
-      // 기간 배지
-      s.addShape('roundRect', { x:3.5, y:3.72, w:3, h:0.44, fill:{ color:C.ACCENT }, rectRadius:0.18 })
-      s.addText(year + '년 ' + month + '월', { x:3.5, y:3.74, w:3, h:0.4, fontSize:15, bold:true, color:'FFFFFF', align:'center' })
+      // 좌측 중앙 — 메인 타이틀 블록
+      // 분리선
+      s.addShape('rect', { x:0.35, y:1.18, w:0.5, h:0.035, fill:{ color:C.ACCENT } })
+      s.addText('거래명세서', { x:0.35, y:1.28, w:SPLIT-0.55, h:0.72,
+        fontSize:34, bold:true, color:'FFFFFF', charSpacing:3 })
+      s.addText('분석 보고서', { x:0.35, y:1.95, w:SPLIT-0.55, h:0.72,
+        fontSize:34, bold:true, color:C.ACCENT_L, charSpacing:3 })
 
-      // 하단 통계 3개 카드
-      const coverStats = [
-        { label:'분석 업체', value: vendors.length+'개' },
-        { label:'납품 총액', value: fmtK(grandTotal) },
-        { label:'분류 종류', value: allCats.length+'종' }
+      // 기간 레이블 (연도/월)
+      s.addText(year + '년  ' + month + '월  기준', {
+        x:0.35, y:2.78, w:SPLIT-0.55, h:0.32,
+        fontSize:11, color:'FFFFFF', charSpacing:2 })
+
+      // 좌측 하단 — 발급 기관 박스
+      s.addShape('roundRect', { x:0.35, y:3.22, w:SPLIT-0.7, h:0.7,
+        fill:{ color:'032117' }, rectRadius:0.08,
+        line:{ color:C.ACCENT_L, width:0.4 } })
+      s.addText('발 행', { x:0.35, y:3.26, w:0.72, h:0.26, fontSize:7, color:C.ACCENT_L, align:'center', bold:true })
+      s.addShape('rect', { x:1.07, y:3.32, w:0.015, h:0.52, fill:{ color:'065F46' } })
+      s.addText(hname, { x:1.12, y:3.30, w:SPLIT-1.5, h:0.3, fontSize:10.5, bold:true, color:'FFFFFF' })
+      s.addText('Re&H 병원 급식 관리 시스템', { x:1.12, y:3.60, w:SPLIT-1.5, h:0.22, fontSize:7.5, color:C.ACCENT_L })
+
+      // ── 우측 패널 콘텐츠 ────────────────────────────────────────
+      const RX = SPLIT + 0.3
+      const RW = W - SPLIT - 0.35
+
+      // 우측 상단 — Invoice Analysis 영문 제목
+      s.addText('Invoice', { x:RX, y:0.3, w:RW, h:0.44, fontSize:22, bold:true, color:C.PRIMARY_D, charSpacing:1 })
+      s.addText('Analysis Report', { x:RX, y:0.7, w:RW, h:0.36, fontSize:14, color:C.PRIMARY_M, charSpacing:1 })
+      // 구분선
+      s.addShape('rect', { x:RX, y:1.12, w:RW-0.1, h:0.025, fill:{ color:C.BORDER_M } })
+
+      // 우측 중단 — 통계 3카드 (세로 배치)
+      const CARD_Y_START = 1.22
+      const CARD_H = 0.88
+      const CARD_GAP = 0.04
+      const statCards = [
+        { icon:'📦', label:'분석 업체 수',   value: vendors.length + '개',   sub: vendors.slice(0,3).map(v=>v.vendor_name).join(', '), accent: C.PRIMARY },
+        { icon:'💰', label:'납품 총액',       value: fmtK(grandTotal),         sub: vendors.length + '개 업체 합산 금액',                accent: C.ACCENT  },
+        { icon:'📋', label:'분류 항목 수',    value: allCats.length + '종',    sub: '전체 거래 품목 분류 기준',                           accent: C.PRIMARY_L }
       ]
-      coverStats.forEach((cs, i) => {
-        const cx = 1.3 + i*2.55
-        s.addShape('roundRect', { x:cx, y:4.32, w:2.25, h:0.78, fill:{ color:C.PRIMARY }, rectRadius:0.1, line:{ color:C.ACCENT_L, width:0.6 } })
-        s.addShape('rect', { x:cx, y:4.32, w:0.05, h:0.78, fill:{ color:C.ACCENT } })
-        s.addText(cs.label, { x:cx+0.12, y:4.36, w:2.05, h:0.2, fontSize:8, color:C.ACCENT_L })
-        s.addText(cs.value, { x:cx+0.12, y:4.56, w:2.05, h:0.34, fontSize:16, bold:true, color:'FFFFFF' })
+      statCards.forEach((sc, i) => {
+        const cy = CARD_Y_START + i*(CARD_H + CARD_GAP)
+        // 카드 배경
+        s.addShape('roundRect', { x:RX, y:cy, w:RW, h:CARD_H,
+          fill:{ color: i===1 ? 'F0FDF4' : 'FAFAFA' },
+          line:{ color: C.BORDER_M, width:0.5 }, rectRadius:0.1 })
+        // 좌측 컬러 바
+        s.addShape('roundRect', { x:RX, y:cy, w:0.06, h:CARD_H,
+          fill:{ color:sc.accent }, rectRadius:0.06 })
+        // 아이콘 원
+        s.addShape('ellipse', { x:RX+0.14, y:cy+0.19, w:0.44, h:0.44,
+          fill:{ color: i===1 ? C.ACCENT : C.PRIMARY }, line:{ color:'none' } })
+        s.addText(sc.icon, { x:RX+0.13, y:cy+0.17, w:0.46, h:0.44, fontSize:12, align:'center' })
+        // 라벨
+        s.addText(sc.label, { x:RX+0.68, y:cy+0.08, w:RW-0.8, h:0.24, fontSize:7.5, color:C.TEXT_L })
+        // 값
+        s.addText(sc.value, { x:RX+0.68, y:cy+0.3, w:RW-0.8, h:0.34, fontSize:16, bold:true, color: i===1 ? C.PRIMARY : C.TEXT_D })
+        // 서브텍스트 (말줄임)
+        const subStr = sc.sub.length > 28 ? sc.sub.substring(0,27) + '…' : sc.sub
+        s.addText(subStr, { x:RX+0.68, y:cy+0.62, w:RW-0.8, h:0.2, fontSize:6.5, color:C.TEXT_XL })
       })
 
-      // 업체 목록
-      const vList = vendors.slice(0,6).map(v=>v.vendor_name).join('  ·  ')
-      s.addText('분석 업체: ' + vList, { x:0.5, y:H-0.64, w:W-1, h:0.25, fontSize:8, color:C.ACCENT_L, align:'center' })
-      s.addText('Invoice Analysis Report  ·  ' + year + '년 ' + mm + '월 기준', {
-        x:0.5, y:H-0.38, w:W-1, h:0.22, fontSize:8, color:'FFFFFF', align:'center', italic:true })
+      // 우측 하단 — 분석 업체 목록 레이블
+      const vListY = CARD_Y_START + 3*(CARD_H+CARD_GAP) + 0.06
+      if (vendors.length > 0) {
+        s.addShape('roundRect', { x:RX, y:vListY, w:RW, h:0.42,
+          fill:{ color:'F0FDF4' }, line:{ color:C.BORDER_M, width:0.4 }, rectRadius:0.08 })
+        const vListStr = vendors.slice(0,4).map(v=>v.vendor_name).join('  ·  ')
+          + (vendors.length > 4 ? '  외 '+(vendors.length-4)+'개' : '')
+        s.addText('분석 업체', { x:RX+0.1, y:vListY+0.04, w:0.8, h:0.18, fontSize:6.5, bold:true, color:C.PRIMARY })
+        s.addText(vListStr, { x:RX+0.1, y:vListY+0.2, w:RW-0.2, h:0.18, fontSize:7, color:C.TEXT_M })
+      }
+
+      // 분리선 & 푸터 (좌측)
+      s.addShape('rect', { x:0.35, y:H-0.56, w:SPLIT-0.7, h:0.015, fill:{ color:'065F46' } })
+      s.addText('Invoice Analysis Report  ·  ' + year + '년 ' + mm + '월 기준  ·  Confidential', {
+        x:0.35, y:H-0.50, w:SPLIT-0.7, h:0.24,
+        fontSize:7, color:'34D399', italic:true })
     }
 
     // ════════════════════════════════════
