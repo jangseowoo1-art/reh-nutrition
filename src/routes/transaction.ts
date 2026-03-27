@@ -1294,6 +1294,7 @@ txRouter.get('/invoice/category-summary', async (c) => {
     const catRows = await c.env.DB.prepare(`
       SELECT supplier_category,
              COUNT(*) as item_count,
+             SUM(quantity) as total_qty,
              SUM(amount) as total_amount,
              SUM(tax_amount) as total_vat,
              SUM(amount + tax_amount) as grand_total

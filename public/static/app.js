@@ -16163,32 +16163,45 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
   console.log('[PDF] 시작:', hospitalName, year, month, hospitalId)
 
   try {
-    // ── 1. jsPDF 로드 ──────────────────────────────────────────
-    if (!window._jspdfLoaded) {
-      await new Promise(function(resolve, reject) {
-        var s1 = document.createElement('script')
-        s1.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
-        s1.onload = function() {
-          var s2 = document.createElement('script')
-          s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'
-          s2.onload = resolve
-          s2.onerror = function() { reject(new Error('autotable 로드 실패')) }
-          document.head.appendChild(s2)
-        }
-        s1.onerror = function() { reject(new Error('jsPDF 로드 실패 - 인터넷 연결 확인')) }
-        document.head.appendChild(s1)
+    // ── 1. jsPDF + autotable 로드 (매번 검증) ─────────────────
+    function loadScript(src) {
+      return new Promise(function(resolve, reject) {
+        // 이미 로드된 스크립트인지 확인
+        var existing = document.querySelector('script[src="' + src + '"]')
+        if (existing) { resolve(); return }
+        var s = document.createElement('script')
+        s.src = src
+        s.onload = resolve
+        s.onerror = function() { reject(new Error('스크립트 로드 실패: ' + src)) }
+        document.head.appendChild(s)
       })
-      window._jspdfLoaded = true
     }
 
+    // jsPDF 로드
     if (!window.jspdf || !window.jspdf.jsPDF) {
-      throw new Error('jsPDF 객체를 찾을 수 없습니다')
+      console.log('[PDF] jsPDF 로드 중...')
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+      console.log('[PDF] jsPDF 로드 완료:', !!(window.jspdf && window.jspdf.jsPDF))
+    }
+    if (!window.jspdf || !window.jspdf.jsPDF) {
+      throw new Error('jsPDF 로드 실패')
+    }
+
+    // autotable 로드 - jsPDF 인스턴스에 autoTable이 붙어있는지 검증
+    var testDoc = new window.jspdf.jsPDF()
+    if (typeof testDoc.autoTable !== 'function') {
+      console.log('[PDF] autotable 로드 중...')
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js')
+      // 재검증
+      var testDoc2 = new window.jspdf.jsPDF()
+      if (typeof testDoc2.autoTable !== 'function') {
+        throw new Error('jsPDF autoTable 플러그인 로드 실패')
+      }
+      console.log('[PDF] autotable 로드 완료')
     }
 
     // ── 2. 폰트 로드 (한 번만) ────────────────────────────────
     if (!window._nanumB64Done) {
-      window._nanumB64Done = false
-      window._nanumB64 = null
       try {
         console.log('[PDF] 폰트 로드 시작...')
         var fr = await fetch('/static/NanumGothic.ttf')
@@ -16204,6 +16217,7 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
         console.log('[PDF] 폰트 로드 완료. 크기:', b64.length)
       } catch(fe) {
         window._nanumB64Done = true  // 실패해도 재시도 않음
+        window._nanumB64 = null
         console.warn('[PDF] 폰트 로드 실패 (한글 깨질 수 있음):', fe.message)
       }
     }
@@ -16310,14 +16324,25 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     function TB(sy,hd,bd,cs,hbg){
       hbg=hbg||'#4338ca'
       var c=hx(hbg), fn=useK?FN:'helvetica'
-      doc.autoTable({
-        startY:sy, head:[hd], body:bd,
-        styles:{font:fn,fontSize:8,cellPadding:2,textColor:[31,41,55],lineColor:[209,213,219],lineWidth:0.15,overflow:'ellipsize'},
-        headStyles:{fillColor:c,textColor:[255,255,255],font:fn,fontStyle:'normal',fontSize:8},
-        alternateRowStyles:{fillColor:[249,250,251]},
-        columnStyles:cs||{}, margin:{left:ML,right:14}, tableWidth:CW
-      })
-      return doc.lastAutoTable.finalY + 4
+      try {
+        doc.autoTable({
+          startY:sy, head:[hd], body:bd,
+          styles:{font:fn,fontSize:8,cellPadding:2,textColor:[31,41,55],lineColor:[209,213,219],lineWidth:0.15,overflow:'ellipsize'},
+          headStyles:{fillColor:c,textColor:[255,255,255],font:fn,fontStyle:'normal',fontSize:8},
+          alternateRowStyles:{fillColor:[249,250,251]},
+          columnStyles:cs||{}, margin:{left:ML,right:14}
+        })
+      } catch(te) {
+        // columnStyles 오류 시 스타일 없이 재시도
+        console.warn('[PDF] autoTable 오류, 기본 스타일로 재시도:', te.message)
+        doc.autoTable({
+          startY:sy, head:[hd], body:bd,
+          styles:{font:fn,fontSize:8,cellPadding:2,overflow:'ellipsize'},
+          headStyles:{fillColor:c,textColor:[255,255,255],font:fn,fontSize:8},
+          margin:{left:ML,right:14}
+        })
+      }
+      return (doc.lastAutoTable && doc.lastAutoTable.finalY ? doc.lastAutoTable.finalY : sy+20) + 4
     }
 
     // ── PAGE 1: 표지 ──────────────────────────────────────────
@@ -16375,7 +16400,7 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     if(vData.length>0){
       y=SH(y,'업체별 현황')
       y=TB(y,['업체명','카테고리수','총 발주금액','비중(%)'],
-        vData.map(function(vd){ return [String(vd.name||''),String(vd.cats.length),N(vd.total.grand_total||0)+'원',grandTotal>0?(Number(vd.total.grand_total||0)/grandTotal*100).toFixed(1)+'%':'0%'] }),
+        vData.map(function(vd){ return [String(vd.name||''),String(vd.cats.length),String(N(vd.total.grand_total||0))+'원',grandTotal>0?String((Number(vd.total.grand_total||0)/grandTotal*100).toFixed(1))+'%':'0%'] }),
         {0:{cellWidth:70},1:{cellWidth:24,halign:'center'},2:{cellWidth:50,halign:'right'},3:{cellWidth:30,halign:'center'}})
     }
 
@@ -16389,7 +16414,7 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
       if(vd.cats.length>0){
         FT(9,1); ST('#374151'); doc.text('카테고리별 현황', ML, y); y+=4
         y=TB(y,['카테고리','총금액','수량','단가평균'],
-          vd.cats.map(function(c){ return [String(c.category_name||c.category||'기타'),N(c.total_amount||0)+'원',N(c.total_qty||0),c.total_qty>0?N(Math.round((c.total_amount||0)/(c.total_qty||1)))+'원':'-'] }),
+          vd.cats.map(function(c){ var qty=Number(c.total_qty||0); var cat=String(c.supplier_category||c.category_name||c.category||'기타'); return [cat, String(N(c.total_amount||0))+'원', String(N(qty)), qty>0?String(N(Math.round((c.total_amount||0)/qty)))+'원':'-'] }),
           {0:{cellWidth:60},1:{cellWidth:44,halign:'right'},2:{cellWidth:30,halign:'right'},3:{cellWidth:40,halign:'right'}},col)
       }
 
@@ -16397,7 +16422,7 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
       if(t5.length>0){
         y+=2; FT(9,1); ST('#374151'); doc.text('금액 TOP 5 품목', ML, y); y+=4
         y=TB(y,['품목명','단가','수량','합계'],
-          t5.map(function(it){ return [String(it.item_name||''),N(it.unit_price||0)+'원',N(it.total_qty||0),N(it.total_amount||0)+'원'] }),
+          t5.map(function(it){ return [String(it.item_name||''), String(N(it.unit_price||0))+'원', String(N(it.total_qty||it.quantity||0)), String(N(it.total_amount||0))+'원'] }),
           {0:{cellWidth:76},1:{cellWidth:36,halign:'right'},2:{cellWidth:24,halign:'right'},3:{cellWidth:38,halign:'right'}},col)
       }
     }
@@ -16413,7 +16438,7 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     if(topA.length>0){
       FT(9,1); ST('#374151'); doc.text('발주금액 TOP 8 품목', ML, y); y+=4
       y=TB(y,['품목명','업체','단가','수량','합계'],
-        topA.map(function(it){ return [String(it.item_name||''),String(it.vendor||''),N(it.unit_price||0)+'원',N(it.total_qty||0),N(it.total_amount||0)+'원'] }),
+        topA.map(function(it){ return [String(it.item_name||''),String(it.vendor||''),String(N(it.unit_price||0))+'원',String(N(it.total_qty||it.quantity||0)),String(N(it.total_amount||0))+'원'] }),
         {0:{cellWidth:56},1:{cellWidth:36},2:{cellWidth:32,halign:'right'},3:{cellWidth:22,halign:'right'},4:{cellWidth:28,halign:'right'}})
     }
     if(y<H2-60){
