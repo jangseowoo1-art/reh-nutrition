@@ -2812,8 +2812,15 @@ async function renderOrders() {
       let dayTotal = 0
       if (hasCats) {
         const vMapDay = catDailyMap[dateStr] || {}
-        Object.values(vMapDay).forEach(catMap => {
+        // 법인카드가 아닌 업체만 catDailyMap에서 합산 (법인카드는 _cardDailyMap에서 별도 처리)
+        Object.entries(vMapDay).forEach(([vid, catMap]) => {
+          const vendorObj = vendors.find(v => String(v.id) === String(vid))
+          if (vendorObj && vendorObj.is_card_type) return  // 법인카드 업체는 건너뜀
           Object.values(catMap).forEach(r => { dayTotal += r.total || 0 })
+        })
+        // 법인카드 업체 금액을 _cardDailyMap에서 추가
+        vendors.filter(v => v.is_card_type).forEach(v => {
+          dayTotal += (window._cardDailyMap?.[v.id]?.[dateStr]) || 0
         })
       } else {
         orderData.filter(o=>o.order_date===dateStr).forEach(o=>dayTotal+=o.total_amount||0)
@@ -2829,15 +2836,21 @@ async function renderOrders() {
       const todayHighlight = isToday ? 'border-left:3px solid #2563eb !important;box-shadow:inset 3px 0 0 #2563eb;' : ''
       const pastOpacity = isPast && !isToday ? 'opacity:0.65;' : ''
 
-      // 카테고리별 일합계
+      // 카테고리별 일합계 (법인카드 업체는 catDailyMap에 없으므로 자동 제외됨)
       const catTotals = hasCats ? patientCats.map(cat => {
-        return Object.values(catDailyMap[dateStr] || {}).reduce((s, vMap) => {
+        return Object.entries(catDailyMap[dateStr] || {}).reduce((s, [vid, vMap]) => {
+          const vendorObj = vendors.find(vv => String(vv.id) === String(vid))
+          if (vendorObj && vendorObj.is_card_type) return s  // 법인카드 업체 제외
           const r = vMap[cat.id] || {}
           return s + (r.total || 0)
         }, 0)
       }) : []
 
-      const displayTotal = hasCats ? catTotals.reduce((a,b)=>a+b,0) : dayTotal
+      // displayTotal: 카테고리 소계 합 + 법인카드 업체 금액 (updateDayTotal의 grandTotal과 동일하게)
+      const cardTotalForDay = hasCats
+        ? vendors.filter(v => v.is_card_type).reduce((s, v) => s + ((window._cardDailyMap?.[v.id]?.[dateStr]) || 0), 0)
+        : 0
+      const displayTotal = hasCats ? catTotals.reduce((a,b)=>a+b,0) + cardTotalForDay : dayTotal
 
       // ── 요약 행 (날짜 1행) ──
       const summaryRowBg = isToday ? '#eff6ff' : (isPast ? '#fafafa' : 'white')
