@@ -16529,15 +16529,23 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  거래명세서 분석 PPT 보고서 출력 (API 데이터 기반 전문 슬라이드)
-//  구성: 표지 → 예산 현황 → 업체별 납품 현황 → 분류별 분석(업체당 1슬라이드)
-//        → TOP5 품목 → 종합 요약
+//  거래명세서 분석 PPT 보고서 (Re&H 진녹색 테마)
+//  슬라이드 구성:
+//   1. 표지
+//   2. 예산 집행 현황 요약
+//   3. 주요 품목 TOP 12 (금액 기준)
+//   4. 전체 분류별 납품 구성
+//   5~N. 업체별 분류 분석 (업체당 1슬라이드)
+//   N+1. 월별 납품 추이 (분기별 비교)
+//   N+2. 연도별 요약 및 분기별 분석
+//   N+3. 주요 식재료 물가 상승 추이
+//   마지막. 종합 분석 의견
 // ══════════════════════════════════════════════════════════════════
 async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
   if (window._pptGenerating) { showToast('PPT 생성 중입니다. 잠시 기다려주세요.', 'warning'); return }
   window._pptGenerating = true
 
-  // hospitalId 폴백: 파라미터 → 전역 관리자 선택 → 전역 adminHospitalId
+  // hospitalId 폴백
   const resolvedHospId = hospitalId || window._adminHospitalId || null
 
   const mm = String(month).padStart(2, '0')
@@ -16545,11 +16553,18 @@ async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
   const authH = { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
   const hidParam = resolvedHospId ? '&hospital_id=' + resolvedHospId : ''
   const hidQ    = resolvedHospId ? '?hospitalId=' + resolvedHospId : ''
+  const hidQA   = resolvedHospId ? '&hospital_id=' + resolvedHospId : ''
 
-  // ── 숫자 포맷 헬퍼 ──────────────────────────────────────────────
-  const fmtW = v => Number(v||0).toLocaleString('ko-KR') + '원'
+  // ── fetch 헬퍼 ──────────────────────────────────────────────────
+  const apiFetch = async (url) => {
+    const resp = await fetch(url, { headers: authH })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ' + url)
+    return resp.json()
+  }
+
+  // ── 숫자 포맷 ──────────────────────────────────────────────────
   const fmtN = v => Number(v||0).toLocaleString('ko-KR')
-  const fmtP = v => (Number(v||0)).toFixed(1) + '%'
+  const fmtP = v => Number(v||0).toFixed(1) + '%'
   const fmtK = v => {
     const n = Number(v||0)
     if (n >= 100000000) return (n/100000000).toFixed(1) + '억원'
@@ -16557,114 +16572,143 @@ async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
     return n.toLocaleString('ko-KR') + '원'
   }
 
-  // ── PPT 공통 헬퍼 ───────────────────────────────────────────────
+  // ── Re&H 컬러 팔레트 (진녹색 기반) ──────────────────────────────
+  const C = {
+    // 메인 브랜드 컬러
+    PRIMARY:    '064E3B',   // Re&H 진녹색
+    PRIMARY_D:  '022C22',   // 더 진한 녹색
+    PRIMARY_M:  '065F46',   // 중간 녹색
+    PRIMARY_L:  '047857',   // 밝은 녹색
+    ACCENT:     '10B981',   // 에메랄드 포인트
+    ACCENT_L:   '34D399',   // 연한 에메랄드
+    // 배경
+    BG:         'F0FDF4',   // 매우 연한 녹색 배경
+    BG_WHITE:   'FFFFFF',
+    CARD_BG:    'ECFDF5',   // 카드 배경
+    // 텍스트
+    TEXT_D:     '111827',
+    TEXT_M:     '374151',
+    TEXT_L:     '6B7280',
+    TEXT_XL:    '9CA3AF',
+    // 보조 컬러 (차트용)
+    CHART:      ['064E3B','065F46','047857','059669','10B981','34D399','6EE7B7','0EA5E9','F59E0B','EF4444','8B5CF6','EC4899'],
+    BORDER:     'D1FAE5',
+    BORDER_M:   'A7F3D0',
+    // 분기 컬러
+    Q:          ['065F46','0EA5E9','F59E0B','EF4444'],
+    // 경고/위험
+    WARN:       'F59E0B',
+    DANGER:     'EF4444',
+    SAFE:       '10B981',
+  }
+
+  // ── PPT 레이아웃 상수 ──────────────────────────────────────────
   const W = 10, H = 5.625   // 16:9 인치
+  const HEADER_H = 0.52
+  const FOOTER_H = 0.22
+  const PAD = 0.25
+  const BODY_Y = HEADER_H + 0.12
+  const BODY_H = H - HEADER_H - FOOTER_H - 0.12
 
-  // 슬라이드 공통 헤더 바
-  function addHeader(slide, title, sub, bgColor) {
-    slide.addShape('rect', { x:0, y:0, w:W, h:0.52, fill:{ color: bgColor||'4F46E5' } })
-    slide.addText(title, { x:0.25, y:0.07, w:7, h:0.38, fontSize:15, bold:true, color:'FFFFFF' })
-    if (sub) slide.addText(sub, { x:0, y:0.07, w:W-0.25, h:0.38, fontSize:10, color:'C7D2FE', align:'right' })
+  // ── 공통 헬퍼 함수 ─────────────────────────────────────────────
+  function addHeader(slide, title, sub) {
+    // 배경 그라데이션 효과 (두 레이어)
+    slide.addShape('rect', { x:0, y:0, w:W, h:HEADER_H, fill:{ color:C.PRIMARY } })
+    slide.addShape('rect', { x:0, y:0, w:2, h:HEADER_H, fill:{ color:C.PRIMARY_D } })
+    // 우측 포인트 라인
+    slide.addShape('rect', { x:W-0.06, y:0, w:0.06, h:HEADER_H, fill:{ color:C.ACCENT } })
+    // 제목
+    slide.addText(title, { x:PAD, y:0.08, w:7, h:0.36, fontSize:14, bold:true, color:'FFFFFF' })
+    if (sub) slide.addText(sub, { x:0, y:0.08, w:W-PAD-0.1, h:0.36, fontSize:9, color:C.ACCENT_L, align:'right' })
     // 하단 watermark
-    slide.addText(hname + '  ·  ' + year + '년 ' + month + '월  ·  거래명세서 분석 보고서',
-      { x:0, y:H-0.22, w:W, h:0.2, fontSize:7, color:'9CA3AF', align:'center' })
+    slide.addText(hname + '  ·  ' + year + '년 ' + month + '월  ·  거래명세서 분석 보고서  ·  Re&H',
+      { x:0, y:H-FOOTER_H, w:W, h:FOOTER_H-0.02, fontSize:6.5, color:C.TEXT_XL, align:'center' })
+    // 하단 구분선
+    slide.addShape('rect', { x:0, y:H-FOOTER_H, w:W, h:0.015, fill:{ color:C.BORDER } })
   }
 
-  // 구분선
-  function addLine(slide, y, color) {
-    slide.addShape('line', { x:0.3, y:y, w:W-0.6, h:0, line:{ color:color||'E5E7EB', width:0.8 } })
-  }
-
-  // 카드형 배경 박스
   function addCard(slide, x, y, w, h, fillColor, borderColor) {
     slide.addShape('roundRect', { x, y, w, h,
-      fill:{ color: fillColor||'F8FAFC' },
-      line:{ color: borderColor||'E2E8F0', width:0.5 },
-      rectRadius: 0.08
+      fill:{ color: fillColor||C.BG_WHITE },
+      line:{ color: borderColor||C.BORDER, width:0.5 },
+      rectRadius: 0.07
     })
   }
 
-  // KPI 카드 (수치 강조)
   function addKpiCard(slide, x, y, w, h, label, value, sub, accent) {
-    addCard(slide, x, y, w, h, 'FFFFFF', accent||'E2E8F0')
-    slide.addShape('rect', { x, y, w:0.06, h:h, fill:{ color:accent||'6366F1' } })
-    slide.addText(label, { x:x+0.12, y:y+0.08, w:w-0.18, h:0.22, fontSize:8, color:'6B7280' })
-    slide.addText(value, { x:x+0.12, y:y+0.28, w:w-0.18, h:0.36, fontSize:15, bold:true, color:'111827' })
-    if (sub) slide.addText(sub, { x:x+0.12, y:y+0.62, w:w-0.18, h:0.18, fontSize:7.5, color:'9CA3AF' })
+    const ac = accent || C.PRIMARY
+    addCard(slide, x, y, w, h, C.BG_WHITE, ac)
+    slide.addShape('rect', { x, y, w:0.055, h:h, fill:{ color:ac } })
+    slide.addText(label, { x:x+0.1, y:y+0.08, w:w-0.15, h:0.2, fontSize:7.5, color:C.TEXT_L })
+    slide.addText(value, { x:x+0.1, y:y+0.26, w:w-0.15, h:0.34, fontSize:14, bold:true, color:C.TEXT_D })
+    if (sub) slide.addText(sub, { x:x+0.1, y:y+0.58, w:w-0.15, h:0.18, fontSize:7, color:C.TEXT_XL })
   }
 
-  // 진행 바
   function addProgressBar(slide, x, y, w, h, pct, barColor, bgColor) {
-    slide.addShape('roundRect', { x, y, w, h, fill:{ color:bgColor||'E5E7EB' }, rectRadius:0.05 })
-    const filled = Math.min(pct/100, 1) * w
-    if (filled > 0.01) {
-      slide.addShape('roundRect', { x, y, w:filled, h, fill:{ color:barColor||'4F46E5' }, rectRadius:0.05 })
-    }
+    slide.addShape('roundRect', { x, y, w, h, fill:{ color:bgColor||C.BORDER }, rectRadius:0.03 })
+    const filled = Math.min(Math.max(pct/100, 0), 1) * w
+    if (filled > 0.01) slide.addShape('roundRect', { x, y, w:filled, h, fill:{ color:barColor||C.PRIMARY }, rectRadius:0.03 })
   }
 
-  // 범례 점
   function addDot(slide, x, y, color) {
-    slide.addShape('ellipse', { x, y, w:0.12, h:0.12, fill:{ color } })
+    slide.addShape('ellipse', { x, y, w:0.11, h:0.11, fill:{ color } })
   }
 
-  // 카테고리 색상 팔레트
-  const CAT_COLORS = ['4F46E5','0EA5E9','10B981','F59E0B','EF4444','8B5CF6','EC4899','14B8A6','F97316','6B7280']
+  function addLine(slide, y, color) {
+    slide.addShape('line', { x:PAD, y, w:W-PAD*2, h:0, line:{ color:color||C.BORDER, width:0.7 } })
+  }
 
-  // fetch 기반 API 헬퍼 (axios 미로드 환경 대응)
-  const apiFetch = async (url) => {
-    const resp = await fetch(url, { headers: authH })
-    if (!resp.ok) throw new Error('HTTP ' + resp.status)
-    return resp.json()
+  // 섹션 뱃지
+  function addBadge(slide, x, y, text, color) {
+    slide.addShape('roundRect', { x, y, w:0.7, h:0.22, fill:{ color:color||C.PRIMARY }, rectRadius:0.08 })
+    slide.addText(text, { x, y:y+0.01, w:0.7, h:0.2, fontSize:7, bold:true, color:'FFFFFF', align:'center' })
   }
 
   try {
-    showToast('PPT 데이터 로딩 중...', 'info')
-
-    // ── 1. 데이터 로드 ────────────────────────────────────────────
+    showToast('📊 PPT 데이터 수집 중... (1/4)', 'info')
     await _loadPptxGenJS()
 
-    // 업체 목록
-    let vendors = []
-    try {
-      const d = await apiFetch('/api/transaction/invoice/vendors?year='+year+'&month='+month+hidParam)
-      vendors = d.data || []
-    } catch(e) { console.warn('[PPT] vendors:', e.message) }
+    // ════════════════════════════════════
+    // 데이터 수집 (병렬)
+    // ════════════════════════════════════
+    const [vendorsResp, summaryResp, topItemsResp, annualResp, priceTrendResp, budgetCompResp] = await Promise.allSettled([
+      apiFetch('/api/transaction/invoice/vendors?year='+year+'&month='+month+hidParam),
+      apiFetch('/api/dashboard/summary/'+year+'/'+month+hidQ),
+      apiFetch('/api/transaction/invoice/top-items?months=12'+hidQA),
+      apiFetch('/api/transaction/invoice/annual-summary?year='+year+hidQA),
+      apiFetch('/api/transaction/invoice/ingredient-price-trend?period=monthly&months=12'+hidQA),
+      apiFetch('/api/transaction/invoice/monthly-budget-compare?months=12'+hidQA),
+    ])
 
-    // 예산/요약 정보
-    let summaryData = null
-    try {
-      const d = await apiFetch('/api/dashboard/summary/'+year+'/'+month+hidQ)
-      summaryData = d
-    } catch(e) { console.warn('[PPT] summary:', e.message) }
+    const vendors      = vendorsResp.status === 'fulfilled'     ? (vendorsResp.value.data || []) : []
+    const summaryData  = summaryResp.status === 'fulfilled'     ? summaryResp.value : null
+    const topItemsRaw  = topItemsResp.status === 'fulfilled'    ? (topItemsResp.value.data || []) : []
+    const annualData   = annualResp.status === 'fulfilled'      ? annualResp.value : {}
+    const priceTrend   = priceTrendResp.status === 'fulfilled'  ? (priceTrendResp.value.data || {}) : {}
+    const budgetComp   = budgetCompResp.status === 'fulfilled'  ? (budgetCompResp.value.data || []) : []
 
-    const settings = summaryData?.settings || {}
-    const summary  = summaryData?.summary  || {}
-    const totalBudget  = Number(settings.total_budget || summary.totalBudget || 0)
-    const totalUsed    = Number(summary.totalUsed || 0)
-    const usagePct     = totalBudget > 0 ? (totalUsed / totalBudget * 100) : 0
-    const remaining    = totalBudget - totalUsed
+    if (vendors.length === 0) {
+      showToast('거래명세서 데이터가 없습니다. 먼저 거래명세서를 업로드해 주세요.', 'warning')
+      window._pptGenerating = false
+      return
+    }
 
-    showToast('PPT 분류 데이터 로딩 중...', 'info')
+    showToast('📊 업체별 분류 데이터 수집 중... (2/4)', 'info')
 
-    // 업체별 분류 데이터 수집 (최대 6개)
+    // 업체별 상세 분류 수집
     const vendorDetails = []
     for (const v of vendors.slice(0, 6)) {
       try {
-        const d = await apiFetch(
-          '/api/transaction/invoice/category-summary?vendor_name='+encodeURIComponent(v.vendor_name)+'&year='+year+'&month='+month+hidParam
-        )
-        vendorDetails.push({
-          name: v.vendor_name,
-          total: v.total_amount,
-          categories: d.categories || [],
-          topItems: d.top_items || []
-        })
+        const d = await apiFetch('/api/transaction/invoice/category-summary?vendor_name='+encodeURIComponent(v.vendor_name)+'&year='+year+'&month='+month+hidParam)
+        vendorDetails.push({ name:v.vendor_name, total:v.total_amount, categories:d.categories||[], topItems:d.top_items||[] })
       } catch(e) {
-        vendorDetails.push({ name: v.vendor_name, total: v.total_amount, categories: [], topItems: [] })
+        vendorDetails.push({ name:v.vendor_name, total:v.total_amount, categories:[], topItems:[] })
       }
     }
 
-    // 전체 분류별 합산
+    showToast('🎨 슬라이드 생성 중... (3/4)', 'warning')
+
+    // 집계
     const allCatMap = {}
     let grandTotal = 0
     vendorDetails.forEach(v => {
@@ -16674,86 +16718,84 @@ async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
       grandTotal += Number(v.total||0)
     })
     if (!grandTotal) vendors.forEach(v => { grandTotal += Number(v.total_amount||0) })
-
     const allCats = Object.entries(allCatMap).sort((a,b)=>b[1]-a[1])
 
-    if (vendors.length === 0) {
-      showToast('거래명세서 데이터가 없습니다. 먼저 거래명세서를 업로드해 주세요.', 'warning')
-      window._pptGenerating = false
-      return
-    }
+    // 예산 데이터
+    const settings    = summaryData?.settings || {}
+    const summary     = summaryData?.summary  || {}
+    const totalBudget = Number(settings.total_budget || summary.totalBudget || 0)
+    const totalUsed   = Number(summary.totalUsed || 0)
+    const usagePct    = totalBudget > 0 ? (totalUsed/totalBudget*100) : 0
+    const remaining   = totalBudget - totalUsed
+    const mealPrice   = Number(settings.meal_price || 0)
+    const workDays    = Number(settings.working_days || 0)
 
-    showToast('PPT 슬라이드 생성 중...', 'warning')
+    // 분기 데이터
+    const quarterly = annualData.quarterly || []
+    const annualMonthly = annualData.monthly || []
 
-    // ── 2. PPT 생성 ──────────────────────────────────────────────
+    // 물가 추이 주요 품목
+    const priceItems = Object.entries(priceTrend).filter(([,arr]) => arr && arr.length > 0).slice(0, 8)
+
+    // ════════════════════════════════════
+    // PPT 생성
+    // ════════════════════════════════════
     const pptx = new window.PptxGenJS()
-    pptx.defineLayout({ name: 'W169', width: W, height: H })
+    pptx.defineLayout({ name: 'W169', width:W, height:H })
     pptx.layout = 'W169'
-    pptx.author = '병원 급식 예산 관리 시스템'
+    pptx.author = 'Re&H 병원 급식 관리 시스템'
     pptx.title  = hname + ' 거래명세서 분석 보고서'
 
     // ════════════════════════════════════
-    // 슬라이드 1: 표지
+    // 슬라이드 1: 표지 (Re&H 진녹색 테마)
     // ════════════════════════════════════
     {
       const s = pptx.addSlide()
-      // 배경
-      s.background = { color: '1E1B4B' }
-      // 상단 장식 바
-      s.addShape('rect', { x:0, y:0, w:W, h:1.1, fill:{ color:'312E81' } })
-      s.addShape('rect', { x:0, y:1.1, w:W, h:0.06, fill:{ color:'6366F1' } })
-      // 하단 장식
-      s.addShape('rect', { x:0, y:H-0.65, w:W, h:0.65, fill:{ color:'312E81' } })
-      s.addShape('rect', { x:0, y:H-0.65, w:W, h:0.05, fill:{ color:'818CF8' } })
+      s.background = { color: C.PRIMARY_D }
 
-      // 좌측 장식 라인
-      s.addShape('rect', { x:0.2, y:1.3, w:0.05, h:0.8, fill:{ color:'818CF8' } })
+      // 배경 장식 레이어
+      s.addShape('rect', { x:0, y:0, w:W, h:1.6, fill:{ color:C.PRIMARY } })
+      s.addShape('rect', { x:0, y:1.6, w:W, h:0.05, fill:{ color:C.ACCENT } })
+      s.addShape('rect', { x:0, y:H-0.8, w:W, h:0.8, fill:{ color:C.PRIMARY } })
+      s.addShape('rect', { x:0, y:H-0.8, w:W, h:0.04, fill:{ color:C.ACCENT_L } })
 
-      // 제목
-      s.addText('거래명세서 분석 보고서', {
-        x:0.5, y:1.3, w:W-1, h:0.8, fontSize:32, bold:true,
-        color:'FFFFFF', align:'center', charSpacing:1
-      })
+      // 좌측 브랜드 라인
+      s.addShape('rect', { x:0.28, y:1.75, w:0.055, h:1.0, fill:{ color:C.ACCENT } })
+
+      // Re&H 로고 텍스트 (상단 좌)
+      s.addText('Re&H', { x:0.25, y:0.22, w:2, h:0.45, fontSize:20, bold:true, color:C.ACCENT_L, charSpacing:3 })
+      s.addText('Hospital Meal Management', { x:0.25, y:0.65, w:4, h:0.25, fontSize:9, color:'FFFFFF', italic:true })
+
+      // 메인 제목
+      s.addText('거래명세서', { x:0.5, y:1.75, w:W-1, h:0.65, fontSize:36, bold:true, color:'FFFFFF', align:'center', charSpacing:2 })
+      s.addText('분석 보고서', { x:0.5, y:2.38, w:W-1, h:0.65, fontSize:36, bold:true, color:C.ACCENT_L, align:'center', charSpacing:2 })
+
       // 병원명
-      s.addText(hname, {
-        x:0.5, y:2.22, w:W-1, h:0.5, fontSize:20, bold:false,
-        color:'A5B4FC', align:'center'
-      })
+      s.addText(hname, { x:0.5, y:3.15, w:W-1, h:0.45, fontSize:18, color:'FFFFFF', align:'center' })
+
       // 기간 배지
-      s.addShape('roundRect', { x:3.8, y:2.85, w:2.4, h:0.42, fill:{ color:'4F46E5' }, rectRadius:0.2 })
-      s.addText(year + '년 ' + month + '월', {
-        x:3.8, y:2.87, w:2.4, h:0.38, fontSize:14, bold:true,
-        color:'FFFFFF', align:'center'
-      })
+      s.addShape('roundRect', { x:3.5, y:3.72, w:3, h:0.44, fill:{ color:C.ACCENT }, rectRadius:0.18 })
+      s.addText(year + '년 ' + month + '월', { x:3.5, y:3.74, w:3, h:0.4, fontSize:15, bold:true, color:'FFFFFF', align:'center' })
 
-      // 업체 목록 (표지 하단)
-      const vendorList = vendors.slice(0, 5).map(v => v.vendor_name).join('  ·  ')
-      s.addText('📦 분석 업체: ' + vendorList + (vendors.length > 5 ? '  외 ' + (vendors.length - 5) + '개' : ''), {
-        x:0.5, y:3.45, w:W-1, h:0.3, fontSize:9,
-        color:'818CF8', align:'center'
-      })
-
-      // 요약 통계 (작은 카드 3개)
+      // 하단 통계 3개 카드
       const coverStats = [
-        { label: '납품 업체', value: vendors.length + '개' },
-        { label: '거래 총액', value: grandTotal >= 10000 ? Math.round(grandTotal/10000) + '만원' : grandTotal.toLocaleString() + '원' },
-        { label: '분류 종류', value: allCats.length + '종' }
+        { label:'분석 업체', value: vendors.length+'개' },
+        { label:'납품 총액', value: fmtK(grandTotal) },
+        { label:'분류 종류', value: allCats.length+'종' }
       ]
       coverStats.forEach((cs, i) => {
-        const cx = 1.5 + i * 2.6
-        s.addShape('roundRect', { x:cx, y:3.9, w:2.2, h:0.7, fill:{ color:'312E81' }, rectRadius:0.1 })
-        s.addShape('rect', { x:cx, y:3.9, w:0.05, h:0.7, fill:{ color: CAT_COLORS[i] } })
-        s.addText(cs.label, { x:cx+0.12, y:3.95, w:2.0, h:0.22, fontSize:8, color:'A5B4FC' })
-        s.addText(cs.value, { x:cx+0.12, y:4.18, w:2.0, h:0.32, fontSize:14, bold:true, color:'FFFFFF' })
+        const cx = 1.3 + i*2.55
+        s.addShape('roundRect', { x:cx, y:4.32, w:2.25, h:0.78, fill:{ color:C.PRIMARY }, rectRadius:0.1, line:{ color:C.ACCENT_L, width:0.6 } })
+        s.addShape('rect', { x:cx, y:4.32, w:0.05, h:0.78, fill:{ color:C.ACCENT } })
+        s.addText(cs.label, { x:cx+0.12, y:4.36, w:2.05, h:0.2, fontSize:8, color:C.ACCENT_L })
+        s.addText(cs.value, { x:cx+0.12, y:4.56, w:2.05, h:0.34, fontSize:16, bold:true, color:'FFFFFF' })
       })
 
-      // 하단 안내
-      s.addText('Hospital Food Cost Invoice Analysis Report', {
-        x:0.5, y:H-0.52, w:W-1, h:0.28, fontSize:9,
-        color:'6366F1', align:'center', italic:true
-      })
-      // 좌측 장식 라인
-      s.addShape('rect', { x:0.2, y:1.5, w:0.05, h:0.9, fill:{ color:'818CF8' } })
+      // 업체 목록
+      const vList = vendors.slice(0,6).map(v=>v.vendor_name).join('  ·  ')
+      s.addText('분석 업체: ' + vList, { x:0.5, y:H-0.64, w:W-1, h:0.25, fontSize:8, color:C.ACCENT_L, align:'center' })
+      s.addText('Invoice Analysis Report  ·  ' + year + '년 ' + mm + '월 기준', {
+        x:0.5, y:H-0.38, w:W-1, h:0.22, fontSize:8, color:'FFFFFF', align:'center', italic:true })
     }
 
     // ════════════════════════════════════
@@ -16761,249 +16803,571 @@ async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
     // ════════════════════════════════════
     {
       const s = pptx.addSlide()
-      s.background = { color: 'F8FAFC' }
+      s.background = { color:C.BG }
       addHeader(s, '예산 집행 현황', year+'년 '+month+'월 기준')
 
-      // 상단 KPI 4개
-      const budgetPct  = usagePct.toFixed(1) + '%'
-      const remainLabel = remaining < 0 ? '초과 ' + fmtK(-remaining) : '잔여 ' + fmtK(remaining)
-      const txPct = totalBudget > 0 ? (grandTotal/totalBudget*100).toFixed(1)+'%' : '-'
+      // KPI 4개 상단
+      const txPct = totalBudget>0 ? (grandTotal/totalBudget*100).toFixed(1)+'%' : '-'
+      const remainLabel = remaining<0 ? '초과 '+fmtK(-remaining) : '잔여 '+fmtK(remaining)
+      addKpiCard(s, PAD,   BODY_Y, 2.05, 0.95, '월 예산',       fmtK(totalBudget), workDays>0?workDays+'일 기준':'',   C.PRIMARY)
+      addKpiCard(s, 2.45,  BODY_Y, 2.05, 0.95, '거래명세서 총액', fmtK(grandTotal),  vendors.length+'개 업체 합산',     C.PRIMARY_L)
+      addKpiCard(s, 4.65,  BODY_Y, 2.05, 0.95, '전체 집행률',    usagePct>0?fmtP(usagePct):'-', '전체 예산 대비',     usagePct>90?C.DANGER:usagePct>70?C.WARN:C.SAFE)
+      addKpiCard(s, 6.85,  BODY_Y, 2.9,  0.95, '명세서/예산 비율', txPct,           remainLabel,                       C.ACCENT)
 
-      addKpiCard(s, 0.25, 0.65, 2.1, 1.0, '월 예산', fmtK(totalBudget), settings.working_days ? settings.working_days+'일 기준' : '', '4F46E5')
-      addKpiCard(s, 2.55, 0.65, 2.1, 1.0, '거래명세서 납품 총액', fmtK(grandTotal), vendors.length+'개 업체', '0EA5E9')
-      addKpiCard(s, 4.85, 0.65, 2.1, 1.0, '전체 예산 집행률', totalBudget>0?budgetPct:'-', '월 전체 지출 기준', usagePct>90?'EF4444':usagePct>70?'F59E0B':'10B981')
-      addKpiCard(s, 7.15, 0.65, 2.1, 1.0, '예산 대비 명세서', txPct, remainLabel, '8B5CF6')
+      // 예산 진행 바
+      addCard(s, PAD, BODY_Y+1.08, W-PAD*2, 0.7, C.BG_WHITE, C.BORDER_M)
+      s.addText('예산 집행 현황', { x:PAD+0.15, y:BODY_Y+1.14, w:3, h:0.22, fontSize:8.5, bold:true, color:C.TEXT_D })
+      s.addText(fmtK(totalUsed)+' / '+fmtK(totalBudget), { x:0, y:BODY_Y+1.14, w:W-PAD-0.08, h:0.22, fontSize:8.5, color:C.TEXT_L, align:'right' })
+      addProgressBar(s, PAD+0.15, BODY_Y+1.40, W-PAD*2-0.3, 0.2,
+        Math.min(usagePct,100), usagePct>90?C.DANGER:usagePct>70?C.WARN:C.PRIMARY, C.BORDER)
+      s.addText(fmtP(usagePct), { x:W-1.2, y:BODY_Y+1.40, w:0.9, h:0.2, fontSize:8, color:C.TEXT_M, align:'right' })
 
-      // 예산 집행 진행 바
-      addCard(s, 0.25, 1.82, W-0.5, 0.72, 'FFFFFF', 'E2E8F0')
-      s.addText('예산 집행 현황', { x:0.45, y:1.88, w:3, h:0.22, fontSize:8.5, bold:true, color:'374151' })
-      s.addText(fmtK(totalUsed) + ' / ' + fmtK(totalBudget), { x:0, y:1.88, w:W-0.4, h:0.22, fontSize:8.5, color:'6B7280', align:'right' })
-      addProgressBar(s, 0.45, 2.14, W-0.9, 0.22,
-        Math.min(usagePct, 100),
-        usagePct>90?'EF4444':usagePct>70?'F59E0B':'4F46E5', 'E5E7EB')
-      s.addText(fmtP(usagePct), { x:W-1.1, y:2.14, w:0.8, h:0.22, fontSize:8, color:'374151', align:'right' })
-
-      // 업체별 납품액 바 차트
-      addCard(s, 0.25, 2.65, W-0.5, 2.72, 'FFFFFF', 'E2E8F0')
-      s.addText('업체별 납품 현황', { x:0.45, y:2.72, w:5, h:0.25, fontSize:9.5, bold:true, color:'111827' })
-      s.addText('(명세서 기준)', { x:5, y:2.72, w:4.3, h:0.25, fontSize:8, color:'9CA3AF', align:'right' })
-      addLine(s, 3.0, 'E5E7EB')
-
+      // 업체별 납품 바 차트
+      addCard(s, PAD, BODY_Y+1.88, W-PAD*2, 2.55, C.BG_WHITE, C.BORDER_M)
+      s.addText('업체별 납품 현황', { x:PAD+0.18, y:BODY_Y+1.96, w:4, h:0.25, fontSize:9.5, bold:true, color:C.TEXT_D })
+      s.addText('(당월 명세서 기준)', { x:4, y:BODY_Y+1.96, w:W-4.3, h:0.25, fontSize:8, color:C.TEXT_XL, align:'right' })
+      addLine(s, BODY_Y+2.25, C.BORDER)
       const maxVAmt = Math.max(...vendors.map(v=>Number(v.total_amount||0)), 1)
-      const barAreaW = W - 1.0
-      vendors.slice(0, 6).forEach((v, i) => {
-        const yy = 3.08 + i * 0.38
+      vendors.slice(0,6).forEach((v,i) => {
+        const yy = BODY_Y+2.32 + i*0.35
         const amt = Number(v.total_amount||0)
-        const barW = (amt / maxVAmt) * (barAreaW - 2.5)
-        const pctV = grandTotal > 0 ? (amt/grandTotal*100).toFixed(1) : '0.0'
-        const col = CAT_COLORS[i % CAT_COLORS.length]
-        addDot(s, 0.35, yy+0.02, col)
-        s.addText(v.vendor_name, { x:0.55, y:yy, w:2.0, h:0.28, fontSize:8.5, color:'374151', bold: i===0 })
-        s.addShape('roundRect', { x:2.6, y:yy+0.04, w:Math.max(barW,0.05), h:0.2, fill:{ color:col }, rectRadius:0.04 })
-        s.addText(fmtK(amt) + '  (' + pctV + '%)', { x:2.6+Math.max(barW,0.05)+0.08, y:yy, w:4, h:0.28, fontSize:8, color:'6B7280' })
+        const barW = (amt/maxVAmt)*(W-3.8)
+        const pctV = grandTotal>0 ? (amt/grandTotal*100).toFixed(1) : '0.0'
+        const col = C.CHART[i % C.CHART.length]
+        addDot(s, PAD+0.18, yy+0.04, col)
+        s.addText(v.vendor_name, { x:PAD+0.35, y:yy, w:2.0, h:0.27, fontSize:8.5, color:C.TEXT_M, bold:i===0 })
+        s.addShape('roundRect', { x:2.6, y:yy+0.05, w:Math.max(barW,0.05), h:0.18, fill:{ color:col }, rectRadius:0.03 })
+        s.addText(fmtK(amt)+'  ('+pctV+'%)', { x:2.6+Math.max(barW,0.06)+0.07, y:yy, w:4.5, h:0.27, fontSize:8, color:C.TEXT_L })
       })
     }
 
     // ════════════════════════════════════
-    // 슬라이드 3: 전체 분류별 납품 구성
+    // 슬라이드 3: 주요 품목 TOP 12
+    // ════════════════════════════════════
+    {
+      const s = pptx.addSlide()
+      s.background = { color:C.BG }
+      addHeader(s, '주요 품목 TOP 12', '금액 기준 · 최근 12개월')
+
+      const top12 = topItemsRaw.slice(0, 12)
+      const maxTopAmt = Math.max(...top12.map(it=>Number(it.total_amount||0)), 1)
+
+      addCard(s, PAD, BODY_Y, W-PAD*2, BODY_H, C.BG_WHITE, C.BORDER_M)
+      addBadge(s, PAD+0.12, BODY_Y+0.08, 'TOP 12', C.PRIMARY)
+      s.addText('납품 금액 기준 주요 품목 순위', { x:PAD+0.9, y:BODY_Y+0.08, w:5, h:0.22, fontSize:9.5, bold:true, color:C.TEXT_D })
+      s.addText('업체 합산 기준', { x:PAD+0.9, y:BODY_Y+0.08, w:W-PAD*2-1.0, h:0.22, fontSize:8, color:C.TEXT_XL, align:'right' })
+      addLine(s, BODY_Y+0.34, C.BORDER)
+
+      // 6개씩 2열 레이아웃
+      const COL_W = (W-PAD*2-0.2)/2
+      top12.forEach((it, i) => {
+        const col = i < 6 ? 0 : 1
+        const row = i % 6
+        const cx = PAD + 0.1 + col*(COL_W+0.2)
+        const cy = BODY_Y+0.42 + row*0.66
+        const amt = Number(it.total_amount||0)
+        const barMaxW = COL_W - 0.18
+        const barW = (amt/maxTopAmt)*barMaxW
+        const rank = i+1
+        const accentCol = C.CHART[i % C.CHART.length]
+
+        // 순위 배지
+        s.addShape('roundRect', { x:cx, y:cy+0.06, w:0.28, h:0.28, fill:{ color: rank<=3?C.PRIMARY:C.BORDER_M }, rectRadius:0.06 })
+        s.addText(String(rank), { x:cx, y:cy+0.08, w:0.28, h:0.24, fontSize:9, bold:true, color: rank<=3?'FFFFFF':C.TEXT_M, align:'center' })
+        // 품목명
+        const itemLabel = (it.item_name||'-').length > 16 ? (it.item_name||'-').substring(0,15)+'…' : (it.item_name||'-')
+        s.addText(itemLabel, { x:cx+0.33, y:cy+0.04, w:barMaxW-0.38, h:0.22, fontSize:8.5, color:C.TEXT_D, bold:rank<=3 })
+        // 금액
+        s.addText(fmtK(amt), { x:cx+0.33, y:cy+0.04, w:barMaxW-0.1, h:0.22, fontSize:8.5, color:accentCol, bold:true, align:'right' })
+        // 진행 바
+        s.addShape('roundRect', { x:cx+0.33, y:cy+0.3, w:barMaxW-0.38, h:0.13, fill:{ color:C.BG }, rectRadius:0.04 })
+        if (barW > 0.03) s.addShape('roundRect', { x:cx+0.33, y:cy+0.3, w:Math.min(barW, barMaxW-0.38), h:0.13, fill:{ color:accentCol }, rectRadius:0.04 })
+        // 평균 단가
+        s.addText('평균단가: '+fmtK(it.avg_price||0), { x:cx+0.33, y:cy+0.46, w:barMaxW-0.38, h:0.17, fontSize:7, color:C.TEXT_XL })
+      })
+    }
+
+    // ════════════════════════════════════
+    // 슬라이드 4: 전체 분류별 납품 구성
     // ════════════════════════════════════
     if (allCats.length > 0) {
       const s = pptx.addSlide()
-      s.background = { color: 'F8FAFC' }
+      s.background = { color:C.BG }
       addHeader(s, '전체 분류별 납품 구성', '모든 업체 합산 기준')
 
-      const catTotal = allCats.reduce((sum,[,v])=>sum+v, 0) || 1
-      const leftCats = allCats.slice(0, Math.ceil(allCats.length/2))
-      const rightCats = allCats.slice(Math.ceil(allCats.length/2))
+      const catTotal = allCats.reduce((sum,[,v])=>sum+v,0)||1
 
-      // 왼쪽: 분류별 리스트 바
-      addCard(s, 0.25, 0.65, 5.6, H-1.0, 'FFFFFF', 'E2E8F0')
-      s.addText('분류별 납품금액 비중', { x:0.45, y:0.72, w:5, h:0.28, fontSize:10, bold:true, color:'111827' })
-      addLine(s, 1.05, 'E5E7EB')
-
-      allCats.slice(0, 8).forEach(([cat, amt], i) => {
-        const yy = 1.12 + i * 0.47
-        const pctV = (amt / catTotal * 100)
-        const barMaxW = 3.8
-        const col = CAT_COLORS[i % CAT_COLORS.length]
-        addDot(s, 0.38, yy+0.06, col)
-        s.addText(cat, { x:0.58, y:yy, w:2.0, h:0.25, fontSize:8.5, color:'374151' })
-        s.addText(fmtK(amt), { x:2.6, y:yy, w:1.5, h:0.25, fontSize:8.5, color:'111827', bold:true, align:'right' })
-        s.addText(pctV.toFixed(1)+'%', { x:4.2, y:yy, w:1.0, h:0.25, fontSize:8, color:'6B7280', align:'right' })
-        addProgressBar(s, 0.38, yy+0.26, Math.min(pctV/100*barMaxW, barMaxW), 0.12, 100, col, col)
-        // 배경 바
-        s.addShape('roundRect', { x:0.38, y:yy+0.26, w:barMaxW, h:0.12, fill:{ color:'F3F4F6' }, rectRadius:0.04 })
-        s.addShape('roundRect', { x:0.38, y:yy+0.26, w:Math.max(pctV/100*barMaxW, 0.04), h:0.12, fill:{ color:col }, rectRadius:0.04 })
+      // 왼쪽: 분류별 바 리스트
+      addCard(s, PAD, BODY_Y, 5.6, BODY_H, C.BG_WHITE, C.BORDER_M)
+      s.addText('분류별 납품금액 비중', { x:PAD+0.18, y:BODY_Y+0.1, w:4, h:0.26, fontSize:9.5, bold:true, color:C.TEXT_D })
+      addLine(s, BODY_Y+0.4, C.BORDER)
+      allCats.slice(0,8).forEach(([cat,amt],i) => {
+        const yy = BODY_Y+0.48 + i*0.46
+        const pctV = (amt/catTotal*100)
+        const col = C.CHART[i%C.CHART.length]
+        addDot(s, PAD+0.2, yy+0.07, col)
+        s.addText(cat, { x:PAD+0.38, y:yy, w:2.1, h:0.26, fontSize:8.5, color:C.TEXT_M })
+        s.addText(fmtK(amt), { x:2.6, y:yy, w:1.6, h:0.26, fontSize:8.5, color:C.TEXT_D, bold:true, align:'right' })
+        s.addText(pctV.toFixed(1)+'%', { x:4.3, y:yy, w:1.0, h:0.26, fontSize:8, color:col, bold:true, align:'right' })
+        s.addShape('roundRect', { x:PAD+0.2, y:yy+0.27, w:3.8*(pctV/100), h:0.12, fill:{ color:col }, rectRadius:0.04 })
+        s.addShape('roundRect', { x:PAD+0.2, y:yy+0.27, w:3.8, h:0.12, fill:{ color:C.BG }, rectRadius:0.04, line:{color:C.BORDER,width:0.3} })
+        s.addShape('roundRect', { x:PAD+0.2, y:yy+0.27, w:Math.max(3.8*(pctV/100),0.04), h:0.12, fill:{ color:col }, rectRadius:0.04 })
       })
 
-      // 오른쪽: 상위 3개 카드
-      addCard(s, 6.05, 0.65, 3.7, H-1.0, 'FFFFFF', 'E2E8F0')
-      s.addText('분류별 TOP 3', { x:6.2, y:0.72, w:3.2, h:0.28, fontSize:10, bold:true, color:'111827' })
-      addLine(s, 1.05, 'E5E7EB')
-
-      allCats.slice(0, 3).forEach(([cat, amt], i) => {
-        const yy = 1.15 + i * 1.35
-        const pctV = (amt / catTotal * 100)
-        const col = CAT_COLORS[i]
-        addCard(s, 6.15, yy, 3.5, 1.2, col+'15', col)
-        s.addShape('rect', { x:6.15, y:yy, w:0.07, h:1.2, fill:{ color:col } })
-        s.addText(String(i+1), { x:6.25, y:yy+0.12, w:0.4, h:0.4, fontSize:18, bold:true, color:col })
-        s.addText(cat, { x:6.7, y:yy+0.1, w:2.8, h:0.3, fontSize:10, bold:true, color:'111827' })
-        s.addText(fmtK(amt), { x:6.7, y:yy+0.42, w:2.8, h:0.32, fontSize:13, bold:true, color:col })
-        s.addText(pctV.toFixed(1) + '% 비중', { x:6.7, y:yy+0.75, w:2.8, h:0.25, fontSize:8.5, color:'6B7280' })
+      // 오른쪽: TOP 3 강조 카드
+      addCard(s, 6.05, BODY_Y, 3.7, BODY_H, C.BG_WHITE, C.BORDER_M)
+      s.addText('TOP 3 분류', { x:6.22, y:BODY_Y+0.1, w:3.2, h:0.26, fontSize:9.5, bold:true, color:C.TEXT_D })
+      addLine(s, BODY_Y+0.4, C.BORDER)
+      allCats.slice(0,3).forEach(([cat,amt],i) => {
+        const yy = BODY_Y+0.5 + i*1.32
+        const pctV = (amt/catTotal*100)
+        const col = C.CHART[i]
+        addCard(s, 6.15, yy, 3.5, 1.18, col==='064E3B'?'F0FDF4':C.BG_WHITE, col)
+        s.addShape('rect', { x:6.15, y:yy, w:0.07, h:1.18, fill:{ color:col } })
+        s.addText(String(i+1), { x:6.25, y:yy+0.12, w:0.42, h:0.42, fontSize:20, bold:true, color:col })
+        s.addText(cat, { x:6.72, y:yy+0.1, w:2.8, h:0.3, fontSize:10, bold:true, color:C.TEXT_D })
+        s.addText(fmtK(amt), { x:6.72, y:yy+0.42, w:2.8, h:0.3, fontSize:14, bold:true, color:col })
+        s.addText(pctV.toFixed(1)+'% 비중', { x:6.72, y:yy+0.74, w:2.8, h:0.24, fontSize:8.5, color:C.TEXT_L })
       })
     }
 
     // ════════════════════════════════════
-    // 슬라이드 4~: 업체별 분류 분석 (업체당 1슬라이드)
+    // 슬라이드 5~N: 업체별 분류 분석
     // ════════════════════════════════════
     for (const vd of vendorDetails) {
       const s = pptx.addSlide()
-      s.background = { color: 'F8FAFC' }
-      addHeader(s, '업체별 분류 분석 · ' + vd.name, '납품 총액: ' + fmtK(vd.total), '1E40AF')
+      s.background = { color:C.BG }
+      addHeader(s, '업체별 분류 분석 · '+vd.name, '납품 총액: '+fmtK(vd.total))
 
       if (vd.categories.length === 0) {
-        s.addText('분류 데이터 없음', { x:1, y:2.5, w:W-2, h:0.5, fontSize:14, color:'9CA3AF', align:'center' })
+        s.addText('분류 데이터 없음 (명세서 미업로드 또는 분류 정보 없음)', { x:1, y:2.5, w:W-2, h:0.5, fontSize:12, color:C.TEXT_XL, align:'center' })
         continue
       }
 
-      const vCatTotal = vd.categories.reduce((s,c)=>s+Number(c.grand_total||0), 0) || 1
+      const vCatTotal = vd.categories.reduce((s,c)=>s+Number(c.grand_total||0),0)||1
 
-      // 왼쪽: 업체 요약 KPI
-      addCard(s, 0.25, 0.65, 3.2, 0.9, 'EFF6FF', '3B82F6')
-      s.addText('납품 총액', { x:0.4, y:0.7, w:2.8, h:0.22, fontSize:8, color:'3B82F6' })
-      s.addText(fmtK(vd.total), { x:0.4, y:0.9, w:2.8, h:0.38, fontSize:17, bold:true, color:'1E40AF' })
+      // 좌측 상단: KPI 카드 2개
+      addCard(s, PAD, BODY_Y, 3.2, 0.88, 'F0FDF4', C.PRIMARY_L)
+      s.addText('납품 총액', { x:PAD+0.14, y:BODY_Y+0.08, w:2.8, h:0.2, fontSize:7.5, color:C.PRIMARY_L })
+      s.addText(fmtK(vd.total), { x:PAD+0.14, y:BODY_Y+0.28, w:2.8, h:0.36, fontSize:17, bold:true, color:C.PRIMARY })
 
-      addCard(s, 0.25, 1.65, 1.5, 0.7, 'F0FDF4', '22C55E')
-      s.addText('분류 수', { x:0.4, y:1.7, w:1.2, h:0.2, fontSize:7.5, color:'16A34A' })
-      s.addText(String(vd.categories.length)+'종', { x:0.4, y:1.88, w:1.2, h:0.3, fontSize:14, bold:true, color:'166534' })
+      addCard(s, PAD, BODY_Y+1.0, 1.48, 0.67, C.BG_WHITE, C.BORDER_M)
+      s.addText('분류 수', { x:PAD+0.12, y:BODY_Y+1.06, w:1.2, h:0.2, fontSize:7.5, color:C.TEXT_L })
+      s.addText(vd.categories.length+'종', { x:PAD+0.12, y:BODY_Y+1.26, w:1.2, h:0.3, fontSize:14, bold:true, color:C.PRIMARY })
 
-      addCard(s, 1.85, 1.65, 1.6, 0.7, 'FFF7ED', 'F97316')
-      s.addText('총 품목 수', { x:2.0, y:1.7, w:1.3, h:0.2, fontSize:7.5, color:'EA580C' })
+      addCard(s, PAD+1.58, BODY_Y+1.0, 1.52, 0.67, C.BG_WHITE, C.BORDER_M)
+      s.addText('총 품목 수', { x:PAD+1.72, y:BODY_Y+1.06, w:1.3, h:0.2, fontSize:7.5, color:C.TEXT_L })
       const totalItems = vd.categories.reduce((s,c)=>s+Number(c.item_count||0),0)
-      s.addText(String(totalItems)+'품목', { x:2.0, y:1.88, w:1.3, h:0.3, fontSize:14, bold:true, color:'9A3412' })
+      s.addText(totalItems+'품목', { x:PAD+1.72, y:BODY_Y+1.26, w:1.3, h:0.3, fontSize:14, bold:true, color:C.PRIMARY })
 
-      // 분류별 바 차트 (왼쪽 하단)
-      addCard(s, 0.25, 2.45, 3.2, 2.9, 'FFFFFF', 'E2E8F0')
-      s.addText('분류별 납품 비중', { x:0.4, y:2.52, w:2.8, h:0.25, fontSize:9, bold:true, color:'111827' })
-      addLine(s, 2.8, 'F3F4F6')
-
-      vd.categories.slice(0, 6).forEach((c, i) => {
-        const yy = 2.85 + i * 0.4
-        const pctV = (Number(c.grand_total||0) / vCatTotal * 100)
-        const col = CAT_COLORS[i % CAT_COLORS.length]
-        addDot(s, 0.35, yy+0.06, col)
-        s.addText(c.supplier_category||'기타', { x:0.55, y:yy, w:1.4, h:0.28, fontSize:8, color:'374151' })
-        s.addText(pctV.toFixed(1)+'%', { x:1.95, y:yy, w:0.7, h:0.28, fontSize:8, bold:true, color:col, align:'right' })
-        addProgressBar(s, 2.7, yy+0.06, 0.65, 0.14, Math.min(pctV,100), col, 'E5E7EB')
+      // 분류별 바 차트 (좌측 하단)
+      addCard(s, PAD, BODY_Y+1.78, 3.2, 2.9, C.BG_WHITE, C.BORDER_M)
+      s.addText('분류별 납품 비중', { x:PAD+0.15, y:BODY_Y+1.86, w:2.8, h:0.24, fontSize:9, bold:true, color:C.TEXT_D })
+      addLine(s, BODY_Y+2.14, C.BORDER)
+      vd.categories.slice(0,6).forEach((c,i) => {
+        const yy = BODY_Y+2.2 + i*0.38
+        const pctV = (Number(c.grand_total||0)/vCatTotal*100)
+        const col = C.CHART[i%C.CHART.length]
+        addDot(s, PAD+0.18, yy+0.07, col)
+        s.addText(c.supplier_category||'기타', { x:PAD+0.36, y:yy, w:1.4, h:0.28, fontSize:8, color:C.TEXT_M })
+        s.addText(pctV.toFixed(1)+'%', { x:PAD+1.78, y:yy, w:0.7, h:0.28, fontSize:8, bold:true, color:col, align:'right' })
+        s.addShape('roundRect', { x:PAD+2.52, y:yy+0.07, w:0.65, h:0.14, fill:{ color:C.BG }, rectRadius:0.04 })
+        const bw = 0.65*(pctV/100)
+        if (bw>0.02) s.addShape('roundRect', { x:PAD+2.52, y:yy+0.07, w:Math.min(bw,0.65), h:0.14, fill:{ color:col }, rectRadius:0.04 })
       })
 
-      // 오른쪽: TOP5 품목 테이블
-      addCard(s, 3.65, 0.65, 6.1, 4.7, 'FFFFFF', 'E2E8F0')
-      s.addText('주요 납품 품목 TOP ' + Math.min(vd.topItems.length, 10),
-        { x:3.85, y:0.72, w:5, h:0.26, fontSize:9.5, bold:true, color:'111827' })
-      addLine(s, 1.0, 'E5E7EB')
+      // 우측: TOP 품목 테이블
+      addCard(s, 3.65, BODY_Y, 6.1, BODY_H, C.BG_WHITE, C.BORDER_M)
+      s.addText('주요 납품 품목 TOP '+Math.min(vd.topItems.length,10), { x:3.82, y:BODY_Y+0.08, w:4, h:0.25, fontSize:9.5, bold:true, color:C.TEXT_D })
+      addLine(s, BODY_Y+0.37, C.BORDER)
 
       // 테이블 헤더
-      s.addShape('rect', { x:3.65, y:1.02, w:6.1, h:0.28, fill:{ color:'EFF6FF' } })
-      const TH = ['품목명', '분류', '수량', '단가', '금액']
-      const TW = [2.2, 1.0, 0.7, 0.9, 1.1]
+      s.addShape('rect', { x:3.65, y:BODY_Y+0.39, w:6.1, h:0.26, fill:{ color:'F0FDF4' } })
+      const TH = ['품목명','분류','수량','단가','금액']
+      const TW = [2.2,1.0,0.7,0.95,1.05]
       let tx = 3.75
-      TH.forEach((th, i) => {
-        s.addText(th, { x:tx, y:1.04, w:TW[i], h:0.22, fontSize:7.5, bold:true, color:'1E40AF', align: i>=2?'right':'left' })
-        tx += TW[i] + 0.05
+      TH.forEach((th,i) => {
+        s.addText(th, { x:tx, y:BODY_Y+0.41, w:TW[i], h:0.22, fontSize:7.5, bold:true, color:C.PRIMARY, align:i>=2?'right':'left' })
+        tx += TW[i]+0.04
       })
 
-      vd.topItems.slice(0, 10).forEach((item, i) => {
-        const yy = 1.32 + i * 0.32
-        const bg = i % 2 === 0 ? 'FFFFFF' : 'F8FAFC'
-        s.addShape('rect', { x:3.65, y:yy, w:6.1, h:0.3, fill:{ color:bg } })
+      vd.topItems.slice(0,10).forEach((item,i) => {
+        const yy = BODY_Y+0.67 + i*0.31
+        s.addShape('rect', { x:3.65, y:yy, w:6.1, h:0.29, fill:{ color:i%2===0?C.BG_WHITE:C.BG } })
         const vals = [
-          item.item_name||'-',
+          (item.item_name||'-').length>18?(item.item_name||'-').substring(0,17)+'…':(item.item_name||'-'),
           item.supplier_category||'-',
-          fmtN(item.quantity) + (item.unit?item.unit:''),
+          fmtN(item.quantity)+(item.unit?item.unit:''),
           fmtK(item.unit_price||0),
           fmtK(item.total||item.amount||0)
         ]
         tx = 3.75
-        vals.forEach((v, j) => {
+        vals.forEach((v,j) => {
           s.addText(v, { x:tx, y:yy+0.04, w:TW[j], h:0.22, fontSize:7.5,
-            color: j===4?'111827':'374151', bold: j===4,
-            align: j>=2?'right':'left' })
-          tx += TW[j] + 0.05
+            color:j===4?C.PRIMARY:C.TEXT_M, bold:j===4, align:j>=2?'right':'left' })
+          tx += TW[j]+0.04
         })
       })
     }
 
     // ════════════════════════════════════
-    // 마지막 슬라이드: 종합 요약 & 분석 의견
+    // 슬라이드: 월별 납품 추이 & 분기별 비교
     // ════════════════════════════════════
     {
       const s = pptx.addSlide()
-      s.background = { color: 'F8FAFC' }
-      addHeader(s, '종합 요약 및 분석 의견', year+'년 '+month+'월 거래명세서 분석')
+      s.background = { color:C.BG }
+      addHeader(s, '월별 납품 추이 및 분기별 비교', year+'년 분기별 현황')
 
-      // 요약 텍스트 카드
-      addCard(s, 0.25, 0.65, W-0.5, 1.7, 'FFFFFF', 'E2E8F0')
-      s.addText('📋  분석 요약', { x:0.45, y:0.72, w:4, h:0.28, fontSize:10, bold:true, color:'111827' })
-      addLine(s, 1.02, 'E5E7EB')
+      // 분기별 데이터 집계 (annualData.quarterly 사용)
+      const qMap = {}
+      quarterly.forEach(q => {
+        const key = 'Q'+q.quarter
+        if (!qMap[key]) qMap[key] = 0
+        qMap[key] += Number(q.total_amount||0)
+      })
+      const quarters = ['Q1','Q2','Q3','Q4']
+      const qAmts = quarters.map(q => qMap[q]||0)
+      const maxQAmt = Math.max(...qAmts, 1)
 
-      const summaryLines = [
-        '• 분석 기간: ' + year + '년 ' + month + '월  |  분석 업체 수: ' + vendors.length + '개  |  거래명세서 납품 총액: ' + fmtK(grandTotal),
-        '• 월 예산: ' + fmtK(totalBudget) + '  |  전체 예산 집행률: ' + (totalBudget>0?fmtP(usagePct):'-') + '  |  잔여 예산: ' + fmtK(remaining),
-        allCats.length > 0
-          ? '• 최다 분류: ' + allCats[0][0] + ' (' + fmtK(allCats[0][1]) + ')  |  분류 종류: ' + allCats.length + '종'
-          : '• 분류 데이터 없음'
-      ]
-      summaryLines.forEach((line, i) => {
-        s.addText(line, { x:0.45, y:1.08 + i*0.36, w:W-0.9, h:0.3, fontSize:8.5, color:'374151' })
+      // 좌측: 분기별 막대 차트
+      addCard(s, PAD, BODY_Y, 4.5, BODY_H, C.BG_WHITE, C.BORDER_M)
+      s.addText('분기별 납품 현황 ('+year+'년)', { x:PAD+0.18, y:BODY_Y+0.1, w:3.8, h:0.26, fontSize:9.5, bold:true, color:C.TEXT_D })
+      addLine(s, BODY_Y+0.4, C.BORDER)
+
+      const barAreaH = BODY_H - 0.65
+      const barW_q = 0.75
+      const barSpacing = (4.0-barW_q*4)/5
+      quarters.forEach((q,i) => {
+        const cx = PAD+0.18 + barSpacing*(i+1) + barW_q*i
+        const amt = qAmts[i]
+        const barH = amt>0 ? (amt/maxQAmt)*(barAreaH-0.7) : 0
+        const by = BODY_Y + 0.48 + (barAreaH-0.7) - barH
+        const col = C.Q[i]
+        if (barH > 0.01) s.addShape('roundRect', { x:cx, y:by, w:barW_q, h:barH, fill:{ color:col }, rectRadius:0.06 })
+        s.addShape('roundRect', { x:cx, y:BODY_Y+0.48+(barAreaH-0.7), w:barW_q, h:0.015, fill:{ color:C.BORDER }, rectRadius:0 })
+        s.addText(q, { x:cx, y:BODY_Y+0.48+barAreaH-0.55, w:barW_q, h:0.24, fontSize:10, bold:true, color:col, align:'center' })
+        s.addText(fmtK(amt), { x:cx-0.1, y:BODY_Y+0.48+barAreaH-0.28, w:barW_q+0.2, h:0.22, fontSize:8, color:C.TEXT_M, align:'center' })
+        if (amt>0) s.addText(fmtK(amt), { x:cx, y:by-0.26, w:barW_q, h:0.24, fontSize:8, bold:true, color:col, align:'center' })
       })
 
-      // 업체별 요약 테이블
-      addCard(s, 0.25, 2.45, W-0.5, H-3.1, 'FFFFFF', 'E2E8F0')
-      s.addText('업체별 납품 요약', { x:0.45, y:2.52, w:4, h:0.26, fontSize:9.5, bold:true, color:'111827' })
-      addLine(s, 2.82, 'E5E7EB')
+      // 우측: 월별 추이 리스트
+      addCard(s, 4.85, BODY_Y, W-4.85-PAD, BODY_H, C.BG_WHITE, C.BORDER_M)
+      s.addText('월별 납품 추이 ('+year+'년)', { x:5.05, y:BODY_Y+0.1, w:4.5, h:0.26, fontSize:9.5, bold:true, color:C.TEXT_D })
+      addLine(s, BODY_Y+0.4, C.BORDER)
 
-      // 테이블 헤더
-      s.addShape('rect', { x:0.25, y:2.84, w:W-0.5, h:0.28, fill:{ color:'EFF6FF' } })
-      const SH = ['업체명', '납품총액', '비중', '분류수', '품목수']
-      const SW = [2.8, 1.8, 1.2, 1.0, 1.0]
-      let sx = 0.4
-      SH.forEach((h, i) => {
-        s.addText(h, { x:sx, y:2.86, w:SW[i], h:0.22, fontSize:8, bold:true, color:'1E40AF', align:i>=1?'right':'left' })
-        sx += SW[i] + 0.15
+      // annualMonthly 데이터로 월별 집계
+      const moMap = {}
+      annualMonthly.forEach(m => {
+        const key = m.mo
+        if (!moMap[key]) moMap[key] = 0
+        moMap[key] += Number(m.total_amount||0)
+      })
+      const maxMoAmt = Math.max(...Object.values(moMap), 1)
+      const months12 = Array.from({length:12},(_,i)=>i+1)
+      months12.forEach((mo,i) => {
+        const yy = BODY_Y+0.48 + i*0.38
+        const amt = moMap[mo]||0
+        const barW_m = (amt/maxMoAmt)*(W-7.5)
+        const qNum = Math.ceil(mo/3)
+        const col = C.Q[qNum-1]
+        const isCurrent = (mo===month)
+        s.addShape('rect', { x:4.85, y:yy, w:W-4.85-PAD, h:0.36, fill:{ color:isCurrent?'F0FDF4':C.BG_WHITE } })
+        if (isCurrent) s.addShape('rect', { x:4.85, y:yy, w:0.04, h:0.36, fill:{ color:C.PRIMARY } })
+        s.addText(mo+'월', { x:5.05, y:yy+0.07, w:0.5, h:0.22, fontSize:8, color:isCurrent?C.PRIMARY:C.TEXT_L, bold:isCurrent })
+        s.addText('Q'+qNum, { x:5.52, y:yy+0.07, w:0.38, h:0.2, fontSize:7, color:col })
+        if (barW_m > 0.02) s.addShape('roundRect', { x:5.92, y:yy+0.1, w:Math.min(barW_m,W-8.0), h:0.14, fill:{ color:col }, rectRadius:0.03 })
+        s.addShape('roundRect', { x:5.92, y:yy+0.1, w:W-8.0, h:0.14, fill:{ color:C.BG }, rectRadius:0.03, line:{color:C.BORDER,width:0.3} })
+        if (barW_m > 0.02) s.addShape('roundRect', { x:5.92, y:yy+0.1, w:Math.min(barW_m,W-8.0), h:0.14, fill:{ color:col }, rectRadius:0.03 })
+        s.addText(amt>0?fmtK(amt):'-', { x:W-1.8, y:yy+0.07, w:1.5, h:0.22, fontSize:8, color:isCurrent?C.PRIMARY:C.TEXT_M, align:'right', bold:isCurrent })
+      })
+    }
+
+    // ════════════════════════════════════
+    // 슬라이드: 연도별 요약 & 분기별 상세 분석
+    // ════════════════════════════════════
+    {
+      const s = pptx.addSlide()
+      s.background = { color:C.BG }
+      addHeader(s, '분기별 상세 분석', year+'년 연간 거래명세서 현황')
+
+      // 분기별 업체별 집계
+      const qVendorMap = {}
+      quarterly.forEach(q => {
+        const k = 'Q'+q.quarter
+        if (!qVendorMap[k]) qVendorMap[k] = []
+        qVendorMap[k].push({ name:q.vendor_name, amt:Number(q.total_amount||0), cnt:Number(q.item_count||0) })
       })
 
-      vendorDetails.forEach((vd, i) => {
-        const yy = 3.14 + i * 0.33
-        const bg = i%2===0 ? 'FFFFFF' : 'F8FAFC'
-        s.addShape('rect', { x:0.25, y:yy, w:W-0.5, h:0.3, fill:{ color:bg } })
-        const pctV = grandTotal > 0 ? (Number(vd.total||0)/grandTotal*100).toFixed(1)+'%' : '-'
-        const iCnt = vd.categories.reduce((s,c)=>s+Number(c.item_count||0), 0)
-        const vals2 = [vd.name, fmtK(vd.total), pctV, vd.categories.length+'종', iCnt+'품목']
-        sx = 0.4
-        vals2.forEach((v, j) => {
-          s.addText(v, { x:sx, y:yy+0.04, w:SW[j], h:0.22, fontSize:8.5,
-            color: j===1?'1E40AF':'374151', bold:j===1,
-            align:j>=1?'right':'left' })
-          sx += SW[j] + 0.15
-        })
-        // 비중 바
-        if (grandTotal > 0) {
-          const bW = Number(vd.total||0)/grandTotal * 1.5
-          s.addShape('roundRect', { x:3.7, y:yy+0.1, w:1.5, h:0.12, fill:{ color:'E5E7EB' }, rectRadius:0.04 })
-          if (bW > 0) s.addShape('roundRect', { x:3.7, y:yy+0.1, w:Math.min(bW,1.5), h:0.12, fill:{ color:CAT_COLORS[i%CAT_COLORS.length] }, rectRadius:0.04 })
+      const quarters4 = ['Q1','Q2','Q3','Q4']
+      const qLabels = ['1분기 (1~3월)','2분기 (4~6월)','3분기 (7~9월)','4분기 (10~12월)']
+
+      // 4개 분기 카드
+      quarters4.forEach((q,i) => {
+        const cx = PAD + i*2.4
+        const qData = qVendorMap[q] || []
+        const qTotal = qData.reduce((s,v)=>s+v.amt,0)
+        const qItems = qData.reduce((s,v)=>s+v.cnt,0)
+        const col = C.Q[i]
+
+        // 분기 카드 헤더
+        addCard(s, cx, BODY_Y, 2.28, BODY_H, C.BG_WHITE, col)
+        s.addShape('rect', { x:cx, y:BODY_Y, w:2.28, h:0.32, fill:{ color:col } })
+        s.addText(q+' '+qLabels[i].split(' ')[1], { x:cx+0.08, y:BODY_Y+0.04, w:2.1, h:0.24, fontSize:9, bold:true, color:'FFFFFF' })
+
+        if (qTotal > 0) {
+          s.addText(fmtK(qTotal), { x:cx+0.08, y:BODY_Y+0.4, w:2.1, h:0.34, fontSize:14, bold:true, color:col })
+          s.addText(qItems+'품목', { x:cx+0.08, y:BODY_Y+0.74, w:2.1, h:0.22, fontSize:8, color:C.TEXT_L })
+
+          addLine(s, BODY_Y+1.0, col)
+          s.addText('업체별 납품', { x:cx+0.08, y:BODY_Y+1.06, w:2.1, h:0.2, fontSize:8, bold:true, color:C.TEXT_D })
+
+          const qMax = Math.max(...qData.map(v=>v.amt), 1)
+          qData.slice(0,4).forEach((v,j) => {
+            const yy = BODY_Y+1.3 + j*0.72
+            const barH = (v.amt/qMax)*0.45
+            s.addText(v.name.length>8?v.name.substring(0,7)+'…':v.name, { x:cx+0.08, y:yy, w:2.1, h:0.22, fontSize:7.5, color:C.TEXT_M })
+            s.addText(fmtK(v.amt), { x:cx+0.08, y:yy+0.2, w:2.1, h:0.2, fontSize:8, bold:true, color:col, align:'right' })
+            addProgressBar(s, cx+0.08, yy+0.42, 2.1, 0.13, v.amt/qMax*100, col, C.BORDER)
+          })
+        } else {
+          s.addText('데이터 없음', { x:cx+0.08, y:BODY_Y+1.0, w:2.1, h:0.4, fontSize:11, color:C.TEXT_XL, align:'center' })
         }
       })
     }
 
-    // ── 저장 ────────────────────────────────────────────────────
-    const totalSlides = 3 + vendorDetails.length + (allCats.length>0?1:0)
-    showToast('PPT 파일 저장 중...', 'warning')
+    // ════════════════════════════════════
+    // 슬라이드: 주요 식재료 물가 상승 추이
+    // ════════════════════════════════════
+    if (priceItems.length > 0) {
+      const s = pptx.addSlide()
+      s.background = { color:C.BG }
+      addHeader(s, '주요 식재료 단가 추이', '업체별 월별 단가 변동 현황')
+
+      addCard(s, PAD, BODY_Y, W-PAD*2, BODY_H, C.BG_WHITE, C.BORDER_M)
+      addBadge(s, PAD+0.12, BODY_Y+0.1, '물가', C.PRIMARY)
+      s.addText('주요 식재료 단가 변동 추이', { x:PAD+0.9, y:BODY_Y+0.1, w:5, h:0.22, fontSize:9.5, bold:true, color:C.TEXT_D })
+      s.addText('단가 상승률 분석 기준', { x:PAD+0.9, y:BODY_Y+0.1, w:W-PAD*2-1.0, h:0.22, fontSize:8, color:C.TEXT_XL, align:'right' })
+      addLine(s, BODY_Y+0.36, C.BORDER)
+
+      // 테이블 헤더
+      s.addShape('rect', { x:PAD, y:BODY_Y+0.38, w:W-PAD*2, h:0.28, fill:{ color:'F0FDF4' } })
+      const PH = ['식재료명','업체','현재 단가','최소 단가','최대 단가','변동폭','추이']
+      const PW = [1.3, 1.4, 0.95, 0.95, 0.95, 0.85, 1.7]
+      let px = PAD+0.12
+      PH.forEach((ph,i) => {
+        s.addText(ph, { x:px, y:BODY_Y+0.41, w:PW[i], h:0.22, fontSize:7.5, bold:true, color:C.PRIMARY, align:i>=2?'center':'left' })
+        px += PW[i]+0.04
+      })
+
+      priceItems.forEach(([iname, dataArr],i) => {
+        const yy = BODY_Y+0.68 + i*0.42
+        s.addShape('rect', { x:PAD, y:yy, w:W-PAD*2, h:0.4, fill:{ color:i%2===0?C.BG_WHITE:C.BG } })
+
+        // 데이터 집계
+        const prices = dataArr.map(d=>Number(d.avg_price||0)).filter(v=>v>0)
+        const latestData = dataArr[dataArr.length-1]||{}
+        const curPrice = Number(latestData.avg_price||0)
+        const minPrice = Math.min(...prices)
+        const maxPrice = Math.max(...prices)
+        const diffPct = minPrice>0 ? ((maxPrice-minPrice)/minPrice*100) : 0
+        const vendorName = latestData.vendor_name||'-'
+
+        // 추이 미니 막대 (최근 6개월)
+        const recent6 = dataArr.slice(-6)
+        const maxP6 = Math.max(...recent6.map(d=>Number(d.avg_price||0)), 1)
+
+        px = PAD+0.12
+        const cols2 = [
+          iname,
+          vendorName.length>8?vendorName.substring(0,7)+'…':vendorName,
+          fmtK(curPrice),
+          fmtK(minPrice),
+          fmtK(maxPrice),
+          diffPct>0 ? '+'+diffPct.toFixed(1)+'%' : '-',
+        ]
+        const colColors = [C.TEXT_D, C.TEXT_M, C.PRIMARY, C.TEXT_L, C.DANGER, diffPct>15?C.DANGER:diffPct>5?C.WARN:C.SAFE]
+        cols2.forEach((v,j) => {
+          s.addText(v, { x:px, y:yy+0.09, w:PW[j], h:0.22, fontSize:8,
+            color:colColors[j], bold:j===0||j===2, align:j>=2?'center':'left' })
+          px += PW[j]+0.04
+        })
+
+        // 추이 미니 막대 차트 (우측)
+        const chartX = px
+        const chartW = PW[6]-0.1
+        const chartH = 0.28
+        const barUW = chartW/7
+        recent6.forEach((d,j) => {
+          const bh = (Number(d.avg_price||0)/maxP6)*chartH
+          const bx = chartX + j*barUW + barUW*0.1
+          const by = yy+0.08+chartH-bh
+          const isLast = j===recent6.length-1
+          s.addShape('rect', { x:bx, y:by, w:barUW*0.7, h:bh, fill:{ color:isLast?C.PRIMARY:C.ACCENT_L } })
+        })
+      })
+    }
+
+    // ════════════════════════════════════
+    // 슬라이드: 업체 간 동일 품목 단가 비교
+    // ════════════════════════════════════
+    {
+      const s = pptx.addSlide()
+      s.background = { color:C.BG }
+      addHeader(s, '업체 간 동일 품목 단가 비교', '업체별 가격 차이 분석')
+
+      // 전체 품목 수집 후 업체간 비교 가능한 품목 찾기
+      const allItemMap = {}
+      for (const vd of vendorDetails) {
+        for (const item of vd.topItems) {
+          const key = (item.item_name||'').replace(/\s/g,'').replace(/,/g,'')
+          if (!allItemMap[key]) allItemMap[key] = { name:item.item_name||'', vendors:[] }
+          // 이미 해당 업체가 없으면 추가
+          if (!allItemMap[key].vendors.find(v=>v.vname===vd.name)) {
+            allItemMap[key].vendors.push({ vname:vd.name, price:Number(item.unit_price||0), unit:item.unit||'' })
+          }
+        }
+      }
+
+      // 2개 이상 업체에서 공통으로 나타난 품목
+      const sharedItems = Object.values(allItemMap).filter(it=>it.vendors.length>=2).slice(0,8)
+
+      addCard(s, PAD, BODY_Y, W-PAD*2, BODY_H, C.BG_WHITE, C.BORDER_M)
+      addBadge(s, PAD+0.12, BODY_Y+0.1, '비교', C.PRIMARY_L)
+      s.addText('업체별 동일 품목 단가 비교', { x:PAD+0.9, y:BODY_Y+0.1, w:5, h:0.22, fontSize:9.5, bold:true, color:C.TEXT_D })
+      s.addText('가격 차이 기반 구매 최적화 분석', { x:PAD+0.9, y:BODY_Y+0.1, w:W-PAD*2-1.0, h:0.22, fontSize:8, color:C.TEXT_XL, align:'right' })
+      addLine(s, BODY_Y+0.36, C.BORDER)
+
+      if (sharedItems.length > 0) {
+        // 헤더
+        s.addShape('rect', { x:PAD, y:BODY_Y+0.38, w:W-PAD*2, h:0.26, fill:{ color:'F0FDF4' } })
+        s.addText('품목명', { x:PAD+0.12, y:BODY_Y+0.41, w:2.2, h:0.2, fontSize:7.5, bold:true, color:C.PRIMARY })
+        s.addText('단가 비교', { x:PAD+2.4, y:BODY_Y+0.41, w:6.5, h:0.2, fontSize:7.5, bold:true, color:C.PRIMARY })
+        s.addText('절감 가능액', { x:W-1.3, y:BODY_Y+0.41, w:1.0, h:0.2, fontSize:7.5, bold:true, color:C.PRIMARY, align:'right' })
+
+        sharedItems.forEach((it,i) => {
+          const yy = BODY_Y+0.66 + i*0.48
+          s.addShape('rect', { x:PAD, y:yy, w:W-PAD*2, h:0.46, fill:{ color:i%2===0?C.BG_WHITE:C.BG } })
+          s.addText(it.name.length>16?it.name.substring(0,15)+'…':it.name, { x:PAD+0.12, y:yy+0.12, w:2.2, h:0.22, fontSize:8.5, bold:true, color:C.TEXT_D })
+
+          const maxP = Math.max(...it.vendors.map(v=>v.price), 1)
+          const minP = Math.min(...it.vendors.filter(v=>v.price>0).map(v=>v.price), maxP)
+          const barAreaW = 6.0 / it.vendors.length
+
+          it.vendors.forEach((v,j) => {
+            const vx = PAD+2.4 + j*barAreaW
+            const barFrac = v.price>0 ? v.price/maxP : 0
+            const isCheapest = v.price===minP && v.price>0
+            const col = isCheapest ? C.SAFE : C.CHART[j+2]
+            s.addShape('roundRect', { x:vx, y:yy+0.08, w:barFrac*(barAreaW-0.4), h:0.15, fill:{ color:col }, rectRadius:0.04 })
+            s.addShape('roundRect', { x:vx, y:yy+0.08, w:barAreaW-0.4, h:0.15, fill:{ color:C.BG }, rectRadius:0.04, line:{color:C.BORDER,width:0.3} })
+            if (barFrac>0.02) s.addShape('roundRect', { x:vx, y:yy+0.08, w:barFrac*(barAreaW-0.4), h:0.15, fill:{ color:col }, rectRadius:0.04 })
+            const vLabel = v.vname.length>7?v.vname.substring(0,6)+'…':v.vname
+            s.addText(vLabel, { x:vx, y:yy+0.26, w:barAreaW-0.1, h:0.18, fontSize:7, color:C.TEXT_L })
+            s.addText(fmtK(v.price), { x:vx, y:yy+0.08, w:barAreaW-0.05, h:0.15, fontSize:7, color:isCheapest?'FFFFFF':C.TEXT_L, align:'right' })
+            if (isCheapest) s.addText('★최저', { x:vx, y:yy-0.04, w:barAreaW-0.1, h:0.14, fontSize:6.5, color:C.SAFE, bold:true })
+          })
+
+          const savings = maxP - minP
+          if (savings > 0) {
+            s.addText('-'+fmtK(savings), { x:W-1.3, y:yy+0.12, w:1.0, h:0.22, fontSize:8, color:C.SAFE, bold:true, align:'right' })
+          }
+        })
+      } else {
+        s.addText('현재 데이터에서 업체 간 공통 품목이 충분하지 않습니다.\n거래명세서를 더 많이 업로드하시면\n업체 간 단가 비교 분석이 가능합니다.', {
+          x:1, y:2.0, w:W-2, h:1.2, fontSize:11, color:C.TEXT_XL, align:'center' })
+      }
+    }
+
+    // ════════════════════════════════════
+    // 슬라이드: 종합 분석 의견
+    // ════════════════════════════════════
+    {
+      const s = pptx.addSlide()
+      s.background = { color:C.BG }
+      addHeader(s, '종합 분석 의견 및 권고사항', year+'년 '+month+'월 거래명세서 분석 결론')
+
+      // 상단 요약 카드
+      addCard(s, PAD, BODY_Y, W-PAD*2, 1.45, C.BG_WHITE, C.BORDER_M)
+      s.addShape('rect', { x:PAD, y:BODY_Y, w:0.07, h:1.45, fill:{ color:C.PRIMARY } })
+      s.addText('📋  분석 요약', { x:PAD+0.18, y:BODY_Y+0.1, w:3, h:0.26, fontSize:10, bold:true, color:C.PRIMARY })
+      addLine(s, BODY_Y+0.4, C.BORDER)
+      const summLines = [
+        '• 분석 기간: '+year+'년 '+month+'월  |  분석 업체: '+vendors.length+'개  |  거래명세서 납품 총액: '+fmtK(grandTotal),
+        '• 월 예산: '+fmtK(totalBudget)+'  |  집행률: '+(totalBudget>0?fmtP(usagePct):'-')+'  |  잔여 예산: '+fmtK(remaining),
+        allCats.length>0
+          ? '• 최다 분류: '+allCats[0][0]+' ('+fmtK(allCats[0][1])+')  |  분류 종류: '+allCats.length+'종  |  주요 품목: '+topItemsRaw.slice(0,3).map(t=>t.item_name).join(', ')
+          : '• 분류 데이터 없음'
+      ]
+      summLines.forEach((line,i) => {
+        s.addText(line, { x:PAD+0.18, y:BODY_Y+0.48+i*0.3, w:W-PAD*2-0.3, h:0.28, fontSize:8.5, color:C.TEXT_M })
+      })
+
+      // 권고사항 카드 3개
+      const advices = [
+        {
+          icon:'💰', title:'예산 효율화',
+          body: totalBudget>0 && grandTotal/totalBudget > 0.9
+            ? '명세서 기준 납품액이 예산의 90%를 초과합니다. 다음 달 예산 재배분을 검토하세요.'
+            : '납품액이 예산 범위 내에서 안정적으로 운영되고 있습니다. 분류별 예산 배분을 최적화하세요.',
+          color: totalBudget>0 && grandTotal/totalBudget>0.9 ? C.WARN : C.SAFE
+        },
+        {
+          icon:'🔍', title:'품목 단가 모니터링',
+          body: priceItems.length>0
+            ? '추적 중인 식재료 '+priceItems.length+'종의 단가를 모니터링 중입니다. 단가 급등 품목은 대체재를 검토하세요.'
+            : '주요 식재료 단가 데이터 축적 중입니다. 월별 거래명세서 꾸준히 업로드하면 물가 추이 분석이 강화됩니다.',
+          color: C.PRIMARY
+        },
+        {
+          icon:'📊', title:'업체 비교 분석',
+          body: vendors.length>=2
+            ? ''+vendors.length+'개 업체의 납품 데이터를 비교 분석 중입니다. 동일 품목의 업체 간 단가 비교로 구매 비용을 절감하세요.'
+            : '업체를 2개 이상 등록하면 업체 간 단가 비교가 가능합니다. 경쟁 입찰 또는 복수 업체 운영을 검토하세요.',
+          color: C.PRIMARY_L
+        }
+      ]
+      advices.forEach((adv,i) => {
+        const cx = PAD + i*(W-PAD*2+0.05)/3
+        const cw = (W-PAD*2-0.1)/3
+        addCard(s, cx, BODY_Y+1.6, cw, 2.4, C.BG_WHITE, adv.color)
+        s.addShape('rect', { x:cx, y:BODY_Y+1.6, w:cw, h:0.06, fill:{ color:adv.color } })
+        s.addText(adv.icon+'  '+adv.title, { x:cx+0.12, y:BODY_Y+1.72, w:cw-0.2, h:0.28, fontSize:9.5, bold:true, color:adv.color })
+        addLine(s, BODY_Y+2.04, C.BORDER)
+        s.addText(adv.body, { x:cx+0.12, y:BODY_Y+2.1, w:cw-0.2, h:1.6, fontSize:8, color:C.TEXT_M, bullet:false })
+      })
+
+      // 업체별 요약 테이블
+      addCard(s, PAD, BODY_Y+4.1, W-PAD*2, 0.9, C.BG_WHITE, C.BORDER_M)
+      s.addShape('rect', { x:PAD, y:BODY_Y+4.1, w:W-PAD*2, h:0.26, fill:{ color:'F0FDF4' } })
+      const SH2 = ['업체명','납품총액','비중','분류수','품목수']
+      const SW2 = [2.6,1.8,1.2,1.0,1.0]
+      let sx2 = PAD+0.12
+      SH2.forEach((h,i) => {
+        s.addText(h, { x:sx2, y:BODY_Y+4.13, w:SW2[i], h:0.2, fontSize:7.5, bold:true, color:C.PRIMARY, align:i>=1?'right':'left' })
+        sx2 += SW2[i]+0.18
+      })
+      vendorDetails.forEach((vd,i) => {
+        const yy = BODY_Y+4.38 + i*0.22
+        if (yy > H-0.3) return
+        const pctV = grandTotal>0?(Number(vd.total||0)/grandTotal*100).toFixed(1)+'%':'-'
+        const iCnt = vd.categories.reduce((s,c)=>s+Number(c.item_count||0),0)
+        const vals3 = [vd.name, fmtK(vd.total), pctV, vd.categories.length+'종', iCnt+'품목']
+        sx2 = PAD+0.12
+        vals3.forEach((v,j) => {
+          s.addText(v, { x:sx2, y:yy, w:SW2[j], h:0.2, fontSize:8,
+            color:j===1?C.PRIMARY:C.TEXT_M, bold:j===1, align:j>=1?'right':'left' })
+          sx2 += SW2[j]+0.18
+        })
+      })
+    }
+
+    // ── 저장 ──────────────────────────────────────────────────────
+    showToast('💾 PPT 파일 저장 중... (4/4)', 'warning')
+    const slideCount = 4 + vendorDetails.length + (allCats.length>0?1:0) + (priceItems.length>0?1:0) + 3
     const fname = hname + '_' + year + '년' + mm + '월_거래명세서분석보고서.pptx'
     await pptx.writeFile({ fileName: fname })
-    showToast('✅ PPT 생성 완료! (' + totalSlides + '슬라이드)', 'success')
-    console.log('[PPT] 완료:', fname, totalSlides + '슬라이드')
+    showToast('✅ PPT 생성 완료! ('+slideCount+'슬라이드)', 'success')
+    console.log('[PPT] 완료:', fname, slideCount+'슬라이드')
 
   } catch (err) {
     console.error('[PPT] 오류:', err.message, err.stack)
@@ -17012,6 +17376,7 @@ async function exportTxAnalysisPPT(hospitalName, year, month, hospitalId) {
     window._pptGenerating = false
   }
 }
+
 
 // ══════════════════════════════════════════════════════════════════
 //  법인카드 상세입력 모달
