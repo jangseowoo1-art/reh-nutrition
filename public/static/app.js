@@ -16162,41 +16162,32 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
   console.log('[PDF] 시작:', hospitalName, year, month, hospitalId)
 
   try {
-    // ── 1. jsPDF 로드 (autotable 없이 순수 jsPDF만 사용) ──────
-    function loadScript(src) {
-      return new Promise(function(res, rej) {
-        if (document.querySelector('script[src="' + src + '"]')) { res(); return }
+    // ── 1. jsPDF 확인 및 로드 ────────────────────────────────
+    if (!window.jspdf || !window.jspdf.jsPDF) {
+      await new Promise(function(res) {
+        var existing = document.querySelector('script[src*="jspdf"]')
+        if (existing) { existing.remove() }
+        var timer = setTimeout(res, 10000)
         var s = document.createElement('script')
-        s.src = src; s.onload = res
-        s.onerror = function() { rej(new Error('로드 실패: ' + src)) }
+        s.src = '/static/jspdf.umd.min.js'
+        s.onload = function() { clearTimeout(timer); res() }
+        s.onerror = function() { clearTimeout(timer); res() }
         document.head.appendChild(s)
       })
-    }
-    if (!window.jspdf || !window.jspdf.jsPDF) {
-      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
     }
     if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF 로드 실패')
     console.log('[PDF] jsPDF 로드 완료')
 
-    // ── 2. 폰트 로드 ──────────────────────────────────────────
-    if (!window._nanumB64Done) {
-      try {
-        var fr = await fetch('/static/NanumGothic.ttf')
-        if (!fr.ok) throw new Error('HTTP ' + fr.status)
-        var ab = await fr.arrayBuffer()
-        var ua = new Uint8Array(ab), b64 = '', cs = 8192
-        for (var ci = 0; ci < ua.length; ci += cs)
-          b64 += btoa(String.fromCharCode.apply(null, ua.subarray(ci, ci+cs)))
-        window._nanumB64 = b64
-        console.log('[PDF] 폰트 로드 완료')
-      } catch(fe) {
-        window._nanumB64 = null
-        console.warn('[PDF] 폰트 로드 실패:', fe.message)
-      }
-      window._nanumB64Done = true
+    // ── 2. 폰트 상태 확인 (이미 로드된 경우만 사용, 미로드시 즉시 진행) ────────
+    // 폰트 로드는 페이지 로드 직후 백그라운드에서 시작됨 (window._startNanumLoad)
+    // PDF 생성 시점에 이미 로드됐으면 사용, 아니면 기본 폰트로 즉시 진행
+    if (window._nanumB64Done) {
+      console.log('[PDF] 폰트 캐시 사용:', window._nanumB64 ? '있음' : '없음')
+    } else {
+      console.log('[PDF] 폰트 미로드 - 기본 폰트로 진행')
     }
 
-    // ── 3. 데이터 로드 ────────────────────────────────────────
+    // ── 3. 데이터 로드 (폰트 로드와 병렬) ────────────────────
     var tok = localStorage.getItem('token') || ''
     var H = { Authorization: 'Bearer ' + tok }
     var hid = hospitalId && hospitalId !== 'null' && hospitalId !== null ? Number(hospitalId) : null
@@ -16206,29 +16197,35 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     console.log('[PDF] 데이터 로드. hid=', hid)
 
     var vendors = []
+    var _axCfg = {headers: H, timeout: 30000}
     try {
-      var rv = await axios.get('/api/transaction/invoice/vendors?year=' + year + '&month=' + month + hidParam, {headers: H})
+      var rv = await axios.get('/api/transaction/invoice/vendors?year=' + year + '&month=' + month + hidParam, _axCfg)
       vendors = rv.data && rv.data.data ? rv.data.data : []
       if (vendors.length === 0) {
-        var rv2 = await axios.get('/api/transaction/invoice/vendors' + (hid ? '?hospital_id=' + hid : ''), {headers: H})
+        var rv2 = await axios.get('/api/transaction/invoice/vendors' + (hid ? '?hospital_id=' + hid : ''), _axCfg)
         vendors = rv2.data && rv2.data.data ? rv2.data.data : []
       }
       console.log('[PDF] vendors:', vendors.length)
     } catch(e) { console.warn('[PDF] vendors 실패:', e.message) }
 
     var bs = {}
-    try {
-      var rb = await axios.get('/api/dashboard/summary/' + year + '/' + month + '?hospitalId=' + (hid||''), {headers: H})
-      bs = rb.data && rb.data.summary ? rb.data.summary : {}
-    } catch(e) { console.warn('[PDF] summary 실패:', e.message) }
+    if (hid) {
+      try {
+        var rb = await axios.get('/api/dashboard/summary/' + year + '/' + month + '?hospitalId=' + hid, _axCfg)
+        bs = rb.data && rb.data.summary ? rb.data.summary : {}
+        console.log('[PDF] summary 로드 완료')
+      } catch(e) { console.warn('[PDF] summary 실패:', e.message) }
+    } else {
+      console.warn('[PDF] hospital_id 없어 summary 건너뜀')
+    }
 
     var vData = []
     for (var vi = 0; vi < Math.min(vendors.length, 6); vi++) {
       var vn = String(vendors[vi].vendor_name || '')
       try {
         var enc = encodeURIComponent(vn)
-        var rc = await axios.get('/api/transaction/invoice/category-summary?vendor_name=' + enc + '&year=' + year + '&month=' + month + hidParam, {headers: H})
-        var ri = await axios.get('/api/transaction/invoice/items?vendor_name=' + enc + '&year=' + year + '&month=' + month + hidParam, {headers: H})
+        var rc = await axios.get('/api/transaction/invoice/category-summary?vendor_name=' + enc + '&year=' + year + '&month=' + month + hidParam, _axCfg)
+        var ri = await axios.get('/api/transaction/invoice/items?vendor_name=' + enc + '&year=' + year + '&month=' + month + hidParam, _axCfg)
         vData.push({
           name: vn,
           cats: (rc.data && rc.data.categories) ? rc.data.categories : [],
@@ -16248,15 +16245,27 @@ async function exportTxAnalysisPDF(hospitalName, year, month, hospitalId) {
     // ── 4. jsPDF 초기화 ───────────────────────────────────────
     var doc = new window.jspdf.jsPDF({orientation:'portrait', unit:'mm', format:'a4'})
     var FN = 'NanumGothic', useK = false
-    if (window._nanumB64) {
+    if (window._nanumB64 && window._nanumB64.length > 1000) {
       try {
         doc.addFileToVFS('NanumGothic.ttf', window._nanumB64)
         doc.addFont('NanumGothic.ttf', FN, 'normal')
-        doc.addFont('NanumGothic.ttf', FN, 'bold')
         doc.setFont(FN, 'normal')
-        useK = true
-        console.log('[PDF] 한글 폰트 등록 완료')
-      } catch(fe) { console.warn('[PDF] 폰트 등록 실패:', fe.message) }
+        // 폰트 실제 적용 확인 (widths 테스트)
+        var testW = doc.getStringUnitWidth('테스트')
+        if (testW > 0) {
+          useK = true
+          console.log('[PDF] 한글 폰트 등록 완료')
+        } else {
+          throw new Error('폰트 widths 0')
+        }
+      } catch(fe) {
+        useK = false
+        doc.setFont('helvetica', 'normal')
+        console.warn('[PDF] 폰트 등록 실패 (영문 폰트 사용):', fe.message)
+      }
+    } else {
+      doc.setFont('helvetica', 'normal')
+      console.warn('[PDF] 폰트 없음 (영문 폰트 사용)')
     }
 
     // ── 5. 헬퍼 함수 ─────────────────────────────────────────
@@ -25812,3 +25821,49 @@ async function confirmInvoiceVendorTest(vendorId, hospitalId) {
   }
 }
 
+
+// ── 한글 폰트 사전 로드 (페이지 로드 후 백그라운드 시작) ──────────────────
+// PDF 생성 전에 폰트를 미리 로드해두어 PDF 생성 속도를 높임
+// setTimeout으로 페이지 로드 완료 후 비동기 시작
+;(function startNanumFontPreload() {
+  if (window._nanumB64Done || window._nanumLoading) return
+  window._nanumLoading = true
+  
+  // 페이지 로드 완료 후 3초 뒤에 폰트 로드 시작 (페이지 초기 로딩 방해 안 함)
+  setTimeout(function() {
+    if (window._nanumB64Done) { window._nanumLoading = false; return }
+    
+    var fontTimer = setTimeout(function() {
+      window._nanumB64 = null
+      window._nanumB64Done = true
+      window._nanumLoading = false
+      console.log('[Font] 폰트 프리로드 타임아웃 (PDF는 영문 폰트로 생성됩니다)')
+    }, 30000) // 30초 타임아웃
+    
+    fetch('/static/NanumGothic.ttf')
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        return r.arrayBuffer()
+      })
+      .then(function(buf) {
+        clearTimeout(fontTimer)
+        var uint8 = new Uint8Array(buf)
+        var binary = ''
+        var chunk = 8192
+        for (var i = 0; i < uint8.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, uint8.subarray(i, Math.min(i + chunk, uint8.length)))
+        }
+        window._nanumB64 = btoa(binary)
+        window._nanumB64Done = true
+        window._nanumLoading = false
+        console.log('[Font] 한글 폰트 로드 완료 (' + Math.round(window._nanumB64.length / 1024) + 'KB) - PDF에서 한글 사용 가능')
+      })
+      .catch(function(e) {
+        clearTimeout(fontTimer)
+        window._nanumB64 = null
+        window._nanumB64Done = true
+        window._nanumLoading = false
+        console.warn('[Font] 폰트 로드 실패 - PDF는 영문 폰트로 생성됩니다:', e.message)
+      })
+  }, 3000)
+})()

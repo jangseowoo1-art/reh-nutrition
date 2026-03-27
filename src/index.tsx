@@ -234,6 +234,7 @@ function getAppShell(): string {
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="/static/jspdf.umd.min.js" defer></script>
 <link rel="stylesheet" href="/static/styles.css?v=20260325b">
 </head>
 <body class="bg-gray-50">
@@ -337,7 +338,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260327c"></script>
+<script src="/static/app.js?v=20260327j"></script>
 </body>
 </html>`
 }

@@ -2,6 +2,13 @@
 # 서버 시작 스크립트 - DB 초기화 후 wrangler pages dev 실행
 cd /home/user/webapp
 
+# ── 포트 3000 점유 프로세스 강제 종료 ──────────────────────────
+echo "포트 3000 정리 중..."
+fuser -k 3000/tcp 2>/dev/null || true
+# workerd/wrangler 잔여 프로세스 정리
+pkill -f "workerd.*3000" 2>/dev/null || true
+sleep 2
+
 DB_DIR=".wrangler/state/v3/d1/miniflare-D1DatabaseObject"
 DB_FILE=$(ls $DB_DIR/*.sqlite 2>/dev/null | head -1)
 
@@ -9,6 +16,7 @@ DB_FILE=$(ls $DB_DIR/*.sqlite 2>/dev/null | head -1)
 if [ -z "$DB_FILE" ] || [ ! -s "$DB_FILE" ]; then
   echo "DB 초기화 중..."
   # 임시로 wrangler를 백그라운드 실행해서 DB 생성
+  fuser -k 3001/tcp 2>/dev/null || true
   timeout 10 npx wrangler pages dev dist --persist-to .wrangler/state --ip 0.0.0.0 --port 3001 > /tmp/wrangler-init.log 2>&1 &
   INIT_PID=$!
   sleep 6
