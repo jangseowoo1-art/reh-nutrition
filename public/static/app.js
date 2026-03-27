@@ -4826,29 +4826,76 @@ function updateBudgetProgressPanel() {
     const catMonthAcc = {}; const catTodayAcc = {}; const catWeekAcc = {}
     patientCats.forEach(c => { catMonthAcc[c.id]=0; catTodayAcc[c.id]=0; catWeekAcc[c.id]=0 })
 
-    const processedCat = {}
+    // ── 버그 수정: DOM cat-order-input 대신 _catDailyMap 기반으로 집계 ──
+    // DOM의 숨겨진(display:none) input까지 합산하는 이중집계 문제 방지.
+    // 저장된 _catDailyMap을 기준으로 월/주/오늘 합계를 계산하고,
+    // 현재 화면에 보이는(편집 중인) input만 해당 날짜를 덮어씀.
+    const dailyMapForPanel = window._catDailyMap || {}
+
+    // _catDailyMap 기반 집계 (전체 월)
+    Object.entries(dailyMapForPanel).forEach(([dk, vMap]) => {
+      Object.entries(vMap).forEach(([vid, cMap]) => {
+        const vInt = parseInt(vid)
+        const vendorObj = (window._ordersVendors||[]).find(v=>v.id===vInt)
+        if (!vendorObj || vendorObj.is_card_type) return
+        Object.entries(cMap).forEach(([cid, r]) => {
+          const catId = String(cid)
+          const amt = r.total || 0
+          if (amt === 0) return
+          if (catMonthAcc[catId] !== undefined) catMonthAcc[catId] += amt
+          monthTotal += amt
+          if (dk === todayStr) {
+            if (catTodayAcc[catId] !== undefined) catTodayAcc[catId] += amt
+            todayTotal += amt
+          }
+          if (dk >= weekStartStr2 && dk <= weekEndStr2) {
+            if (catWeekAcc[catId] !== undefined) catWeekAcc[catId] += amt
+            weekTotal += amt
+          }
+        })
+      })
+    })
+
+    // visible DOM input으로 현재 편집 중인 날짜/업체/카테고리 값 덮어씀
+    const visibleOverride = {} // key: date-vendor-catId → amt (DOM 기준)
+    const visibleOverrideSaved = {} // key: date-vendor-catId → amt (_catDailyMap 저장값)
     document.querySelectorAll('.cat-order-input').forEach(inp => {
-      const date   = inp.dataset.date
-      const vendor = inp.dataset.vendor
-      const catId  = inp.dataset.category
-      const field  = inp.dataset.field
-      const key = `${date}-${vendor}-${catId}-${field}`
-      if (processedCat[key]) return
-      processedCat[key] = true
-
-      const val = parseOrderVal(inp.value)
-      if (val === 0) return
-      const amt = field === 'taxable' ? val + Math.round(val*0.1) : val
-
-      monthTotal += amt
-      if (catMonthAcc[catId] !== undefined) catMonthAcc[catId] += amt
-      if (date === todayStr) {
-        todayTotal += amt
-        if (catTodayAcc[catId] !== undefined) catTodayAcc[catId] += amt
+      const parentRow = inp.closest('tr.order-detail-row')
+      if (parentRow && parentRow.style.display === 'none') return
+      const dk = inp.dataset.date
+      const vid = inp.dataset.vendor
+      const catId = inp.dataset.category
+      const field = inp.dataset.field
+      const pairKey = `${dk}-${vid}-${catId}`
+      if (!visibleOverride[pairKey]) {
+        visibleOverride[pairKey] = { taxable:0, exempt:0, total:0, catId, dk }
+        // 저장된 값도 기록 (나중에 차감)
+        visibleOverrideSaved[pairKey] = ((dailyMapForPanel[dk]||{})[parseInt(vid)]||{})[parseInt(catId)]?.total || 0
       }
-      if (date >= weekStartStr2 && date <= weekEndStr2) {
-        weekTotal += amt
-        if (catWeekAcc[catId] !== undefined) catWeekAcc[catId] += amt
+      const val = parseOrderVal(inp.value)
+      if (field === 'taxable') visibleOverride[pairKey].taxable += val
+      else if (field === 'exempt') visibleOverride[pairKey].exempt += val
+      else visibleOverride[pairKey].total += val
+    })
+    // 저장값과 DOM값의 차이를 합계에 반영 (교체)
+    Object.entries(visibleOverride).forEach(([pairKey, p]) => {
+      const domAmt = p.taxable > 0 || p.exempt > 0
+        ? p.taxable + Math.round(p.taxable*0.1) + p.exempt
+        : p.total
+      const savedAmt = visibleOverrideSaved[pairKey] || 0
+      const diff = domAmt - savedAmt
+      if (diff === 0) return
+      const catId = p.catId
+      const dk = p.dk
+      if (catMonthAcc[catId] !== undefined) catMonthAcc[catId] += diff
+      monthTotal += diff
+      if (dk === todayStr) {
+        if (catTodayAcc[catId] !== undefined) catTodayAcc[catId] += diff
+        todayTotal += diff
+      }
+      if (dk >= weekStartStr2 && dk <= weekEndStr2) {
+        if (catWeekAcc[catId] !== undefined) catWeekAcc[catId] += diff
+        weekTotal += diff
       }
     })
 
@@ -4998,24 +5045,55 @@ function updateBudgetProgressPanel() {
   // weekStart 기준으로 weeklyTotals 계산
   const weeklyTotals = {}
   if (hasCats) {
-    // 카테고리 모드: cat-order-input 에서 날짜 기준으로 주차별 합산
-    const procCatWk = {}
+    // ── 버그 수정: DOM cat-order-input 대신 _catDailyMap 기반으로 주차별 합산 ──
+    const dailyMapForWeek = window._catDailyMap || {}
+    Object.entries(dailyMapForWeek).forEach(([dk, vMap]) => {
+      Object.entries(vMap).forEach(([vid, cMap]) => {
+        const vendorObj = (window._ordersVendors||[]).find(v=>v.id===parseInt(vid))
+        if (!vendorObj || vendorObj.is_card_type) return
+        Object.values(cMap).forEach(r => {
+          const amt = r.total || 0
+          if (amt === 0) return
+          const wEntry = savedWeeklyData.find(w => dk >= w.wk && dk <= w.wkEnd)
+          if (!wEntry) return
+          if (!weeklyTotals[wEntry.wk]) weeklyTotals[wEntry.wk] = 0
+          weeklyTotals[wEntry.wk] += amt
+        })
+      })
+    })
+    // visible DOM input으로 해당 날짜 업체+카테고리 차이 반영 (편집 중인 값)
+    const wkVisibleSeen = {}
     document.querySelectorAll('.cat-order-input').forEach(inp => {
-      const date   = inp.dataset.date
-      const vendor = inp.dataset.vendor
-      const field  = inp.dataset.field
-      const wKey   = `${date}-${vendor}-${field}`
-      if (procCatWk[wKey]) return
-      procCatWk[wKey] = true
+      const parentRow = inp.closest('tr.order-detail-row')
+      if (parentRow && parentRow.style.display === 'none') return
+      const dk = inp.dataset.date
+      const vid = inp.dataset.vendor
+      const catId = inp.dataset.category
+      const field = inp.dataset.field
+      const pairKey = `${dk}-${vid}-${catId}`
+      if (!wkVisibleSeen[pairKey]) {
+        wkVisibleSeen[pairKey] = { taxable:0, exempt:0, total:0, dk }
+        const savedAmt = ((dailyMapForWeek[dk]||{})[parseInt(vid)]||{})[parseInt(catId)]?.total || 0
+        wkVisibleSeen[pairKey].savedAmt = savedAmt
+        // 저장값 차감 (DOM 값으로 교체 준비)
+        const wEntry = savedWeeklyData.find(w => dk >= w.wk && dk <= w.wkEnd)
+        if (wEntry && savedAmt > 0) {
+          weeklyTotals[wEntry.wk] = (weeklyTotals[wEntry.wk] || 0) - savedAmt
+        }
+      }
       const val = parseOrderVal(inp.value)
-      if (val === 0) return
-      const amt = field === 'taxable' ? val + Math.round(val * 0.1) : val
-      // 해당 날짜가 속한 주차 시작일 찾기
-      const wEntry = savedWeeklyData.find(w => date >= w.wk && date <= w.wkEnd)
-      const wkStart = wEntry ? wEntry.wk : null
-      if (!wkStart) return
-      if (!weeklyTotals[wkStart]) weeklyTotals[wkStart] = 0
-      weeklyTotals[wkStart] += amt
+      if (field === 'taxable') wkVisibleSeen[pairKey].taxable += val
+      else if (field === 'exempt') wkVisibleSeen[pairKey].exempt += val
+      else wkVisibleSeen[pairKey].total += val
+    })
+    Object.values(wkVisibleSeen).forEach(p => {
+      const domAmt = p.taxable > 0 || p.exempt > 0
+        ? p.taxable + Math.round(p.taxable*0.1) + p.exempt
+        : p.total
+      if (domAmt === 0) return
+      const wEntry = savedWeeklyData.find(w => p.dk >= w.wk && p.dk <= w.wkEnd)
+      if (!wEntry) return
+      weeklyTotals[wEntry.wk] = (weeklyTotals[wEntry.wk] || 0) + domAmt
     })
   } else {
     // 일반 모드: order-input 에서 날짜 기준으로 주차별 합산
@@ -5072,23 +5150,37 @@ function updateBudgetProgressPanel() {
         Object.values(window._cardDailyMap[v.id]).forEach(amt => { vMonthTotal += amt })
       }
     } else if (hasCatsForVsum) {
-      // 카테고리 모드: cat-order-input으로 업체별 합산
-      const seenKeys = new Set()
+      // ── 버그 수정: DOM cat-order-input 대신 _catDailyMap 기반 업체별 월합계 ──
+      const dailyMapForVsum = window._catDailyMap || {}
+      Object.entries(dailyMapForVsum).forEach(([dk, vMap]) => {
+        const cMap = vMap[v.id] || {}
+        Object.values(cMap).forEach(r => { vMonthTotal += r.total || 0 })
+      })
+      // visible DOM input으로 차이 반영 (편집 중인 값)
+      const vVis = {}
       document.querySelectorAll(`.cat-order-input[data-vendor="${v.id}"]`).forEach(inp => {
+        const parentRow = inp.closest('tr.order-detail-row')
+        if (parentRow && parentRow.style.display === 'none') return
         const d = inp.dataset.date
         const catId = inp.dataset.category
         const field = inp.dataset.field
-        const key = `${d}-${catId}-${field}`
-        if (seenKeys.has(key)) return; seenKeys.add(key)
-        const val = parseOrderVal(inp.value)
-        if (field === 'taxable') vMonthTotal += val + Math.round(val * 0.1)
-        else if (field === 'exempt') vMonthTotal += val
-        else if (field === 'total') {
-          // total 필드는 taxable/exempt 없을 때만 합산 (중복 방지)
-          const txEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${catId}"][data-field="taxable"][data-date="${d}"]`)
-          const exEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${catId}"][data-field="exempt"][data-date="${d}"]`)
-          if (!txEl && !exEl) vMonthTotal += val
+        const pairKey = `${d}-${catId}`
+        if (!vVis[pairKey]) {
+          vVis[pairKey] = { taxable:0, exempt:0, total:0 }
+          const savedAmt = ((dailyMapForVsum[d]||{})[v.id]||{})[parseInt(catId)]?.total || 0
+          vVis[pairKey].savedAmt = savedAmt
+          vMonthTotal -= savedAmt
         }
+        const val = parseOrderVal(inp.value)
+        if (field === 'taxable') vVis[pairKey].taxable += val
+        else if (field === 'exempt') vVis[pairKey].exempt += val
+        else vVis[pairKey].total += val
+      })
+      Object.values(vVis).forEach(p => {
+        const domAmt = p.taxable > 0 || p.exempt > 0
+          ? p.taxable + Math.round(p.taxable*0.1) + p.exempt
+          : p.total
+        vMonthTotal += domAmt
       })
     } else {
       const seenDates = new Set()
@@ -5847,18 +5939,68 @@ function updateDayTotal(date) {
   // 카테고리 모드: dayRatioCell 업데이트
   const ratioCell = document.getElementById(`dayRatioCell-${date}`)
   if (ratioCell) {
-    // cat-order-input 으로 카테고리별 합계 계산
     const vendors = window._ordersVendors || []
     const patientCats = window._patientCats || []
     const catTotals = {}
     patientCats.forEach(cat => { catTotals[cat.id] = 0 })
+
+    // ── 버그 수정: DOM querySelectorAll 대신 _catDailyMap(저장 데이터) 기반으로 집계 ──
+    // DOM의 cat-order-input은 display:none 상태(패널 닫힘)에서도 값이 존재하여
+    // 패널 열기/닫기만 해도 이중 집계가 발생하는 문제를 방지.
+    //
+    // 1) _catDailyMap(서버 저장값) 기준으로 초기 catTotals 계산
+    const catDailyMapDay = (window._catDailyMap || {})[date] || {}
+    ;(window._ordersVendors || []).filter(v => !v.is_card_type).forEach(v => {
+      patientCats.forEach(cat => {
+        const r = (catDailyMapDay[v.id]?.[cat.id]) || {}
+        if (catTotals[cat.id] === undefined) catTotals[cat.id] = 0
+        catTotals[cat.id] += r.total || 0
+      })
+    })
+
+    // 2) 현재 화면에 보이는(visible) 입력셀의 값으로 해당 업체+카테고리만 덮어씀
+    //    (사용자가 편집 중인 값 실시간 반영 - 아직 저장 전)
+    const processedPairs = new Set()
     document.querySelectorAll(`.cat-order-input[data-date="${date}"]`).forEach(inp => {
+      // 숨겨진 row 안의 input은 무시 (display:none인 상위 tr 확인)
+      const parentRow = inp.closest('tr.order-detail-row')
+      if (parentRow && parentRow.style.display === 'none') return
+
       const catId = parseInt(inp.dataset.category)
+      const vendorId = parseInt(inp.dataset.vendor)
+      const field = inp.dataset.field
+      const pairKey = `${vendorId}-${catId}`
+
+      // 이 업체+카테고리 쌍을 처음 만났을 때만 _catDailyMap 값을 차감(덮어쓰기 준비)
+      if (!processedPairs.has(pairKey)) {
+        processedPairs.add(pairKey)
+        const savedRow = (catDailyMapDay[vendorId]?.[catId]) || {}
+        // 저장된 값을 먼저 차감 (DOM 값으로 교체하기 위해)
+        catTotals[catId] = (catTotals[catId] || 0) - (savedRow.total || 0)
+      }
+    })
+
+    // 3) visible input에서 업체+카테고리별로 taxable/exempt/total 합산 후 반영
+    const visiblePairTotals = {}
+    document.querySelectorAll(`.cat-order-input[data-date="${date}"]`).forEach(inp => {
+      const parentRow = inp.closest('tr.order-detail-row')
+      if (parentRow && parentRow.style.display === 'none') return
+
+      const catId = parseInt(inp.dataset.category)
+      const vendorId = parseInt(inp.dataset.vendor)
       const field = inp.dataset.field
       const val = parseOrderVal(inp.value)
-      if (catTotals[catId] === undefined) catTotals[catId] = 0
-      if (field === 'taxable') catTotals[catId] += val + Math.round(val * 0.1)
-      else catTotals[catId] += val
+      const pairKey = `${vendorId}-${catId}`
+      if (!visiblePairTotals[pairKey]) visiblePairTotals[pairKey] = { taxable: 0, exempt: 0, total: 0, catId }
+      if (field === 'taxable') visiblePairTotals[pairKey].taxable += val
+      else if (field === 'exempt') visiblePairTotals[pairKey].exempt += val
+      else visiblePairTotals[pairKey].total += val
+    })
+    Object.values(visiblePairTotals).forEach(p => {
+      const amt = p.taxable > 0 || p.exempt > 0
+        ? p.taxable + Math.round(p.taxable * 0.1) + p.exempt
+        : p.total
+      catTotals[p.catId] = (catTotals[p.catId] || 0) + amt
     })
     // 법인카드형 업체 금액도 grandTotal에 포함
     let cardTotalForDay = 0
@@ -5892,18 +6034,32 @@ function updateDayTotal(date) {
     ratioCell.style.background = grandTotal > 0 ? dBg : '#f9fafb'
 
     // 카테고리별 소계 셀(vcatsubt) + 업체합산(vcat-sum) 업데이트
+    // ── 버그 수정: 숨겨진 row의 DOM 값 대신 _catDailyMap + visible DOM 값 우선 적용 ──
+    // getVendorCatAmt: 업체+카테고리별 실제 금액 반환 (visible DOM 우선, 없으면 _catDailyMap)
+    const getVendorCatAmt = (vendorId, catId) => {
+      const taxableEl = document.querySelector(`.cat-order-input[data-vendor="${vendorId}"][data-category="${catId}"][data-field="taxable"][data-date="${date}"]`)
+      const exemptEl  = document.querySelector(`.cat-order-input[data-vendor="${vendorId}"][data-category="${catId}"][data-field="exempt"][data-date="${date}"]`)
+      const totalEl   = document.querySelector(`.cat-order-input[data-vendor="${vendorId}"][data-category="${catId}"][data-field="total"][data-date="${date}"]`)
+      // visible 여부 확인 (패널이 열려 있을 때만 DOM 값 사용)
+      const refEl = taxableEl || exemptEl || totalEl
+      const parentRow = refEl?.closest('tr.order-detail-row')
+      const isVisible = parentRow ? parentRow.style.display !== 'none' : false
+      if (isVisible) {
+        const t = parseOrderVal(taxableEl?.value)
+        const e = parseOrderVal(exemptEl?.value)
+        const tot = parseOrderVal(totalEl?.value)
+        return t > 0 || e > 0 ? t + Math.round(t * 0.1) + e : tot
+      }
+      // 패널 닫힘: _catDailyMap 저장값 사용
+      return (catDailyMapDay[vendorId]?.[catId]?.total) || 0
+    }
+
     patientCats.forEach(cat => {
       const catColor = getCategoryColorHex(cat.category_key)
       vendors.forEach(v => {
         const subtEl = document.getElementById(`vcatsubt-${v.id}-${cat.id}-${date}`)
         if (subtEl) {
-          const taxableEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"][data-field="taxable"][data-date="${date}"]`)
-          const exemptEl  = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"][data-field="exempt"][data-date="${date}"]`)
-          const totalEl   = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"][data-field="total"][data-date="${date}"]`)
-          const t = parseOrderVal(taxableEl?.value)
-          const e = parseOrderVal(exemptEl?.value)
-          const tot = parseOrderVal(totalEl?.value)
-          const catAmt = t > 0 || e > 0 ? t + Math.round(t*0.1) + e : tot
+          const catAmt = getVendorCatAmt(v.id, cat.id)
           subtEl.textContent = catAmt > 0 ? fmtMan(catAmt) : ''
           subtEl.style.color = catColor
         }
@@ -5913,13 +6069,7 @@ function updateDayTotal(date) {
           if (sumEl) {
             let vAllCatsAmt = 0
             patientCats.forEach(pc => {
-              const txEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${pc.id}"][data-field="taxable"][data-date="${date}"]`)
-              const exEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${pc.id}"][data-field="exempt"][data-date="${date}"]`)
-              const totEl = document.querySelector(`.cat-order-input[data-vendor="${v.id}"][data-category="${pc.id}"][data-field="total"][data-date="${date}"]`)
-              const tx2 = parseOrderVal(txEl?.value)
-              const ex2 = parseOrderVal(exEl?.value)
-              const tot2 = parseOrderVal(totEl?.value)
-              vAllCatsAmt += tx2 > 0 || ex2 > 0 ? tx2 + Math.round(tx2*0.1) + ex2 : tot2
+              vAllCatsAmt += getVendorCatAmt(v.id, pc.id)
             })
             sumEl.textContent = vAllCatsAmt > 0 ? fmt(vAllCatsAmt) : ''
           }
