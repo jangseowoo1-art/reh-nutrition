@@ -12656,7 +12656,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         ${cats.map(cat => {
           const mealInfo = mealTotalsMap[cat.category_key] || {}
           const avgMeals = mealInfo.avg_meals_3m || 0
-          const refPrice = mealInfo.ref_meal_price || 0
+          // 기준 식단가: settingsMap(직접저장값) 우선, 없으면 mealTotals(target_meal_price 파생)
+          const savedRefPrice = (settingsMap[cat.id] || {}).ref_meal_price || 0
+          const refPrice = savedRefPrice > 0 ? savedRefPrice : (mealInfo.ref_meal_price || 0)
           const weight = mealInfo.weight || 0
           const mealRatio = hasMealData ? (mealInfo.meal_ratio || 0) : 0
           const budgetRatio = hasWeightData ? (mealInfo.budget_ratio || 0) : (hasMealData ? mealRatio : 1/cats.length)
@@ -12756,7 +12758,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
     const avgMeals3m = mealInfo.avg_meals_3m || 0
     const mealRatioPct = hasMealData ? Math.round((mealInfo.meal_ratio || 0) * 1000) / 10 : 0
     const budgetRatioPct = hasWeightData ? Math.round((mealInfo.budget_ratio || 0) * 1000) / 10 : 0
-    const refPriceVal = mealInfo.ref_meal_price || 0
+    // 기준 식단가: settingsMap(직접저장값) 우선, 없으면 mealTotals(target_meal_price 파생)
+    const savedRefPriceVal = (settingsMap[cat.id] || {}).ref_meal_price || 0
+    const refPriceVal = savedRefPriceVal > 0 ? savedRefPriceVal : (mealInfo.ref_meal_price || 0)
 
     return `
     <div class="p-3 bg-white border border-gray-200 rounded-xl">
@@ -13323,7 +13327,8 @@ async function saveCategoryBudgets(hospitalId) {
     monthly_budget: parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value),
     target_meal_price: parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value),
     working_days: parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0,
-    daily_meal_count: 0
+    daily_meal_count: 0,
+    ref_meal_price: parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
   }))
 
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`, { settings })

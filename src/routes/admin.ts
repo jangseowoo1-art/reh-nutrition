@@ -1658,15 +1658,16 @@ adminRouter.post('/hospitals/:id/category-settings/:year/:month', async (c) => {
   for (const s of settings) {
     await c.env.DB.prepare(`
       INSERT INTO category_order_settings
-        (hospital_id, patient_category_id, year, month, monthly_budget, target_meal_price, working_days, daily_meal_count, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        (hospital_id, patient_category_id, year, month, monthly_budget, target_meal_price, working_days, daily_meal_count, ref_meal_price, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(hospital_id, patient_category_id, year, month) DO UPDATE SET
         monthly_budget = excluded.monthly_budget,
         target_meal_price = excluded.target_meal_price,
         working_days = excluded.working_days,
         daily_meal_count = excluded.daily_meal_count,
+        ref_meal_price = excluded.ref_meal_price,
         updated_at = CURRENT_TIMESTAMP
-    `).bind(id, s.patient_category_id, year, month, s.monthly_budget || 0, s.target_meal_price || 0, s.working_days || 0, s.daily_meal_count || 0).run()
+    `).bind(id, s.patient_category_id, year, month, s.monthly_budget || 0, s.target_meal_price || 0, s.working_days || 0, s.daily_meal_count || 0, s.ref_meal_price || 0).run()
   }
 
   return c.json({ success: true })
@@ -2055,9 +2056,11 @@ adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
     }
   }
 
-  // ── 환자군별 기준 식단가: category_order_settings에서 가장 최근 target_meal_price 조회 ──
+  // ── 환자군별 기준 식단가: ref_meal_price 우선, 없으면 target_meal_price 사용 ──
   const priceRows = await c.env.DB.prepare(`
-    SELECT cos.patient_category_id, hpc.category_key, cos.target_meal_price
+    SELECT cos.patient_category_id, hpc.category_key,
+           COALESCE(NULLIF(cos.ref_meal_price, 0), cos.target_meal_price) AS ref_meal_price,
+           cos.target_meal_price
     FROM category_order_settings cos
     JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
     WHERE cos.hospital_id = ?
@@ -2070,7 +2073,7 @@ adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
 
   const catPriceMap: Record<string, number> = {}
   for (const row of (priceRows.results || [])) {
-    catPriceMap[(row as any).category_key] = (row as any).target_meal_price || 0
+    catPriceMap[(row as any).category_key] = (row as any).ref_meal_price || 0
   }
 
   // 이번달 총 식수
