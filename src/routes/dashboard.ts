@@ -510,19 +510,19 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const prevMealPriceNoSupply = prevMealsForPrice > 0
     ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0
 
-  // ── formula 기반 전체 식단가 계산 (총발주÷총식수 방식) ────────────
-  // 카테고리가 있는 병원: 각 카테고리의 발주금액 합산 ÷ 식수 합산
-  // = (항암발주 + 요양발주) / (항암식수 + 요양식수)  ← 올바른 가중평균
-  // ※ 예산비중 가중평균(식단가×비중)은 잘못된 방식 — 발주 단가가 높은 카테고리 비중이
-  //   실제보다 부풀려지므로 사용하지 않음
+  // ── 현재 식단가: 전체발주 ÷ 전체식수(카테고리+직원+보호자) ────────────
+  // admin.ts와 동일 기준: 영양사 페이지 기준으로 통일
+  // 카테고리 식수만으로 나누면 직원/보호자 식분 발주가 분모에 빠져 과대계상됨
   let formulaMealPriceTotal = mealPriceTotal  // 기본값: 기존 계산 (카테고리 없는 병원)
   const activeCatDietPrices = catDietPrices.filter(c => c.monthMeals > 0 && c.monthAmt > 0)
   if (activeCatDietPrices.length >= 1) {
-    // 카테고리 1개 이상: 총발주금액 ÷ 총식수 (올바른 가중평균)
-    const totalCatAmt   = activeCatDietPrices.reduce((s, c) => s + c.monthAmt,   0)
+    // 카테고리 식수 합산
     const totalCatMeals = activeCatDietPrices.reduce((s, c) => s + c.monthMeals, 0)
-    if (totalCatMeals > 0) {
-      formulaMealPriceTotal = Math.round(totalCatAmt / totalCatMeals)
+    // 전체 식수 = 카테고리 식수 + 직원 + 보호자 (비급여 제외)
+    const totalMealsForFormula = totalCatMeals + (ms.total_staff || 0) + (ms.total_guardian || 0)
+    // 전체 발주금액 ÷ 전체 식수 (영양사/어드민 페이지와 동일 기준)
+    if (totalMealsForFormula > 0) {
+      formulaMealPriceTotal = Math.round(totalUsed / totalMealsForFormula)
     }
   }
 

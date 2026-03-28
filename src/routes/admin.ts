@@ -626,7 +626,9 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const mealPriceNoSupply = totalMeals > 0
         ? Math.round((totalUsed - supplyCardUsed) / totalMeals) : 0
 
-      const targetMealPrice = h.target_meal_price || settings?.meal_price || 0
+      // 목표 식단가 일원화: monthly_settings.meal_price를 단일 기준으로 사용
+      // category_order_settings.target_meal_price(예산역산값)는 무시
+      const targetMealPrice = settings?.meal_price || 0
 
       // 전월 식단가 계산 (병원 활성 월 기준)
       const prevMonthNum = parseInt(hMonth) === 1 ? 12 : parseInt(hMonth) - 1
@@ -810,14 +812,18 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         }
       })
 
-      // ── 전체 식단가: 총발주÷총식수 방식 (카테고리 있으면 카테고리 합산, 없으면 기존 방식) ──
-      // 올바른 방식: (항암발주+요양발주) / (항암식수+요양식수)
-      let formulaMealPriceTotal = mealPriceTotal  // 기본값 (카테고리 없는 병원)
+      // ── 현재 식단가: 전체발주 ÷ 전체식수(카테고리+직원+보호자) ──
+      // 수정 방식: 영양사 페이지와 동일하게 전체 발주금액을 전체 식수(카테고리+직원+보호자)로 나눔
+      // 카테고리 식수만으로 나누면 직원/보호자 식분 발주가 분모에 빠져 과대계상됨
       const activeCatPricesAdmin = catDietPrices.filter((c: any) => c.monthMeals > 0 && c.monthAmt > 0)
+      let formulaMealPriceTotal = mealPriceTotal  // 기본값 (카테고리 없는 병원: 전체발주÷전체식수)
       if (activeCatPricesAdmin.length >= 1) {
-        const sumAmt   = activeCatPricesAdmin.reduce((s: number, c: any) => s + c.monthAmt,   0)
-        const sumMeals = activeCatPricesAdmin.reduce((s: number, c: any) => s + c.monthMeals, 0)
-        if (sumMeals > 0) formulaMealPriceTotal = Math.round(sumAmt / sumMeals)
+        // 카테고리 식수 합산
+        const sumCatMeals = activeCatPricesAdmin.reduce((s: number, c: any) => s + c.monthMeals, 0)
+        // 전체 식수 = 카테고리 식수 + 직원 + 보호자 (비급여 제외)
+        const totalMealsForPrice = sumCatMeals + ms.total_staff + ms.total_guardian
+        // 전체 발주금액 ÷ 전체 식수 (영양사 페이지 기준과 동일)
+        if (totalMealsForPrice > 0) formulaMealPriceTotal = Math.round(totalUsed / totalMealsForPrice)
       }
 
       // 이슈 목록 생성
