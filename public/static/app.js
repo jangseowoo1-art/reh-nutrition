@@ -432,7 +432,14 @@ function navigateTo(page, forceReload = false) {
 
   if (pages[page]) {
     if (page === 'meals') App._panelReady[cacheKey] = true
-    pages[page]()
+    const _pageResult = pages[page]()
+    if (_pageResult && typeof _pageResult.catch === 'function') {
+      _pageResult.catch(e => {
+        console.error('[navigateTo] 페이지 렌더링 오류:', e)
+        const _c = document.getElementById('pageContent')
+        if (_c) _c.innerHTML = '<div class="text-red-500 p-6 text-center" style="font-size:14px"><i class="fas fa-exclamation-triangle mr-2"></i>페이지 로딩 중 오류가 발생했습니다.<br><small style="color:#9ca3af;font-size:12px">' + (e?.message || String(e)) + '</small><br><button onclick="navigateTo(\'' + page + '\')" style="margin-top:12px;padding:6px 16px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer">다시 시도</button></div>'
+      })
+    }
   } else {
     document.getElementById('pageContent').innerHTML =
       '<div class="text-center text-gray-400 py-20">준비 중입니다</div>'
@@ -1895,7 +1902,6 @@ async function renderOrders() {
   const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  try {
   const [vendors, orderData, settingsData, dashData, patientCats, catOrderData, cardData] = await Promise.all([
     api('GET', '/api/vendors'),
     api('GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
@@ -2009,7 +2015,7 @@ async function renderOrders() {
     if (r.order_date >= weekStartStr2 && r.order_date <= weekEndStr2) catWeekTotal += r.total || 0
   })
   let normalTodayTotal = 0, normalWeekTotal = 0
-  ;(orderData||[]).forEach(o => {
+  ;(orderList||[]).forEach(o => {
     if (o.order_date === todayStr) normalTodayTotal += o.total_amount||0
     if (o.order_date >= weekStartStr2 && o.order_date <= weekEndStr2) normalWeekTotal += o.total_amount||0
   })
@@ -3283,12 +3289,9 @@ async function renderOrders() {
   }
 
 
-  } catch(e) {
-    console.error('[renderOrders] 오류:', e)
-    const content2 = document.getElementById('orders-panel') || document.getElementById('pageContent')
-    if (content2) content2.innerHTML = `<div class="text-red-500 p-6 text-center"><i class="fas fa-exclamation-triangle mr-2"></i>발주 페이지 로딩 중 오류가 발생했습니다.<br><small class="text-gray-400">${e?.message || e}</small><br><button onclick="navigateTo('orders')" class="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">다시 시도</button></div>`
-  }
 }
+renderOrders._safeWrap = true
+// 에러 발생 시 navigateTo에서 catch로 처리
 
 // ── 업체 카드 클릭 → 오늘 날짜 상세 자동 오픈 ──────────────────
 window.openTodayDetailForVendor = function(vendorId) {
