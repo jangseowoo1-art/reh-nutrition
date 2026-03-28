@@ -3127,12 +3127,12 @@ async function renderOrders() {
                   <span style="color:#374151;font-weight:600">오늘 발주</span>
                   <span id="vcat-today-amt-${v.id}-${cat.id}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
                 </div>
-                <div id="vcat-today-target-row-${v.id}-${cat.id}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
-                  <span id="vcat-today-target-label-${v.id}-${cat.id}">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
-                  <span id="vcat-today-target-${v.id}-${cat.id}" style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
+                <div id="vcat-today-target-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
+                  <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
+                  <span id="vcat-today-target-${v.id}-${cat.id}-${dateStr}" style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
                 </div>
-                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}" style="display:${vTodayTarget>0?'block':'none'};height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:3px;overflow:hidden">
-                  <div id="vcat-today-bar-${v.id}-${cat.id}" style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
+                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'block':'none'};height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:3px;overflow:hidden">
+                  <div id="vcat-today-bar-${v.id}-${cat.id}-${dateStr}" style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
                 </div>
                 <!-- 누적 발주 / 월 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
@@ -3390,6 +3390,10 @@ window.toggleOrderDetail = function(dateStr) {
     // 상세가 열릴 때 첫 번째 입력에 포커스
     const firstInput = firstDetailRow?.querySelector('input.cat-order-input, input.order-input')
     if (firstInput) setTimeout(() => firstInput.focus(), 100)
+    // 상세 행이 열릴 때 multidays 반영하여 목표금액/진행률 즉시 재계산
+    if (typeof updateDayTotal === 'function') {
+      setTimeout(() => updateDayTotal(dateStr), 50)
+    }
   }
 }
 
@@ -6288,12 +6292,12 @@ function updateDayTotal(date) {
           todayAmtEl.style.color = vTodayColor5
         }
 
-        // 오늘 목표금액 / 레이블 / 진행률 바 실시간 업데이트 (multidays 반영)
-        const targetRowEl = document.getElementById(`vcat-today-target-row-${v.id}-${cat.id}`)
-        const targetLabelEl = document.getElementById(`vcat-today-target-label-${v.id}-${cat.id}`)
-        const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}`)
-        const barWrapEl = document.getElementById(`vcat-today-bar-wrap-${v.id}-${cat.id}`)
-        const barInnerEl = document.getElementById(`vcat-today-bar-${v.id}-${cat.id}`)
+        // 오늘 목표금액 / 레이블 / 진행률 바 실시간 업데이트 (multidays 반영, 날짜 포함 ID)
+        const targetRowEl = document.getElementById(`vcat-today-target-row-${v.id}-${cat.id}-${date}`)
+        const targetLabelEl = document.getElementById(`vcat-today-target-label-${v.id}-${cat.id}-${date}`)
+        const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}-${date}`)
+        const barWrapEl = document.getElementById(`vcat-today-bar-wrap-${v.id}-${cat.id}-${date}`)
+        const barInnerEl = document.getElementById(`vcat-today-bar-${v.id}-${cat.id}-${date}`)
         if (vTodayTarget5 > 0) {
           if (targetRowEl) targetRowEl.style.display = 'flex'
           if (barWrapEl) barWrapEl.style.display = 'block'
