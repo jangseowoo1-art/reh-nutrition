@@ -295,8 +295,6 @@ function getHospitalMenus() {
     { id: 'orders', icon: 'fa-clipboard-list', label: '발주 입력', section: null },
     { id: 'meals', icon: 'fa-utensils', label: '식수 입력', section: null },
     { id: 'schedule', icon: 'fa-calendar-alt', label: '스케줄 관리', section: null },
-    { id: 'ingredient-prices', icon: 'fa-leaf', label: '식재료 단가 분석', section: '분석' },
-    { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: null },
     { id: 'settings', icon: 'fa-flag-checkered', label: '마감 요청', section: '관리' },
     { id: 'expense-doc', icon: 'fa-file-invoice-dollar', label: '지출결의서', section: null }
   ]
@@ -422,6 +420,14 @@ function navigateTo(page, forceReload = false) {
     'ingredient-prices': renderIngredientPricesPage,  // #8 독립 메뉴
     'ceo-dashboard': renderCeoDashboard,
     'transaction-analysis': renderTransactionAnalysis
+  }
+
+  // 영양사 역할에서 관리자 전용 메뉴 접근 차단
+  const adminOnlyPages = ['analysis', 'ingredient-prices']
+  if (App.role !== 'admin' && adminOnlyPages.includes(page)) {
+    document.getElementById('pageContent').innerHTML =
+      '<div class="text-center text-gray-400 py-20"><i class="fas fa-lock text-4xl mb-3 block"></i>관리자 전용 메뉴입니다</div>'
+    return
   }
 
   if (pages[page]) {
