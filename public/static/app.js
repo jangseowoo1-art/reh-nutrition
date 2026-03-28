@@ -1895,6 +1895,7 @@ async function renderOrders() {
   const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
+  try {
   const [vendors, orderData, settingsData, dashData, patientCats, catOrderData, cardData] = await Promise.all([
     api('GET', '/api/vendors'),
     api('GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
@@ -3282,6 +3283,11 @@ async function renderOrders() {
   }
 
 
+  } catch(e) {
+    console.error('[renderOrders] 오류:', e)
+    const content2 = document.getElementById('orders-panel') || document.getElementById('pageContent')
+    if (content2) content2.innerHTML = `<div class="text-red-500 p-6 text-center"><i class="fas fa-exclamation-triangle mr-2"></i>발주 페이지 로딩 중 오류가 발생했습니다.<br><small class="text-gray-400">${e?.message || e}</small><br><button onclick="navigateTo('orders')" class="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">다시 시도</button></div>`
+  }
 }
 
 // ── 업체 카드 클릭 → 오늘 날짜 상세 자동 오픈 ──────────────────
@@ -6167,7 +6173,8 @@ function updateDayTotal(date) {
       if (el) {
         const badge = `<div style="display:inline-block;background:${catColor};color:white;font-size:8px;font-weight:700;padding:1px 4px;border-radius:8px;margin-bottom:2px;white-space:nowrap">${cat.category_name}</div>`
         const amtDisp = catCatAmt > 0 ? `<div style="font-size:10px;font-weight:700;color:${catAmtColor}">${fmtMan(catCatAmt)}</div>` : `<div style="font-size:9px;color:#d1d5db">-</div>`
-        const pctDisp = catPct!==null ? `<div style="font-size:9px;color:${catAmtColor};font-weight:600">${catPct}%${multidays>1?` <span style="font-size:7px;color:#9ca3af">(×${multidays})</span>`:''}</div>` : ''
+        const multidayLabel = multidays > 1 ? ' <span style="font-size:7px;color:#9ca3af">(\xD7' + multidays + ')</span>' : ''
+        const pctDisp = catPct!==null ? '<div style="font-size:9px;color:' + catAmtColor + ';font-weight:600">' + catPct + '%' + multidayLabel + '</div>' : ''
         const budgetDisp = catDB > 0 ? `<div style="font-size:8px;color:#9ca3af">/${fmtMan(catDB)}</div>` : ''
         el.innerHTML = badge + amtDisp + pctDisp + budgetDisp
       }
