@@ -1930,9 +1930,18 @@ async function renderOrders() {
     window._catDietPricesData = dashData?.catDietPrices || []
   }
 
+  // API 응답 구조: { orders: [...], multidaySettings: [...] } 또는 하위호환 배열
+  const orderList = Array.isArray(orderData) ? orderData : (orderData?.orders || [])
+  const multidaySettingsList = Array.isArray(orderData) ? [] : (orderData?.multidaySettings || [])
+
+  // 발주일수 설정 맵: { dateStr: dayCount }
+  const multidaySettingsMap = {}
+  multidaySettingsList.forEach(s => { multidaySettingsMap[s.order_date] = s.day_count || 1 })
+  window._multidaySettingsMap = multidaySettingsMap
+
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   const orderMap = {}
-  ;(orderData || []).forEach(o => {
+  ;(orderList || []).forEach(o => {
     if (!orderMap[o.order_date]) orderMap[o.order_date] = {}
     orderMap[o.order_date][o.vendor_id] = o
   })
@@ -1989,7 +1998,7 @@ async function renderOrders() {
 
   // 금액 계산 (카테고리 모드일 때는 catDailyData 합산, 아닐 때는 orderData 사용)
   const catMonthTotal = catDailyData.reduce((s, r) => s + (r.total || 0), 0)
-  const normalMonthTotal = (orderData||[]).reduce((s,o) => s+(o.total_amount||0), 0)
+  const normalMonthTotal = (orderList||[]).reduce((s,o) => s+(o.total_amount||0), 0)
   const monthTotal = hasCatsData ? catMonthTotal : normalMonthTotal
 
   let catTodayTotal = 0, catWeekTotal = 0
@@ -2040,7 +2049,7 @@ async function renderOrders() {
     if (hasCatsData) {
       wTotal = catDailyData.filter(r => r.order_date >= wk && r.order_date <= wkEnd).reduce((s,r) => s+(r.total||0), 0)
     } else {
-      wTotal = (orderData||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
+      wTotal = (orderList||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
     }
     const wPct = wBudget>0?Math.round(wTotal/wBudget*100):0
     // 이번 주 여부
@@ -2418,7 +2427,7 @@ async function renderOrders() {
           if (v.is_card_type) {
             vTotal = Object.values(window._cardDailyMap?.[v.id] || {}).reduce((s, a) => s + a, 0)
           } else {
-            const vOrders = (orderData || []).filter(o => o.vendor_id === v.id)
+            const vOrders = (orderList || []).filter(o => o.vendor_id === v.id)
             vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
           }
           const pctNum = v.monthly_budget > 0 ? Math.round(vTotal / v.monthly_budget * 100) : null
@@ -2452,7 +2461,7 @@ async function renderOrders() {
         }).join('')}
         <div style="min-width:90px;background:#f0fdf4;border-radius:10px;border:1px solid #d1fae5;padding:8px 10px">
           <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:3px">월 합계</div>
-          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:13px;font-weight:800">${fmtMan((orderData||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</div>
+          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:13px;font-weight:800">${fmtMan((orderList||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</div>
           ${totalBudget > 0 ? `<div style="font-size:10px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}" id="monthPctDisplay">${monthPct}%</div>` : ''}
           ${totalBudget > 0 ? `<div style="height:5px;background:#e5e7eb;border-radius:3px;margin-top:3px;overflow:hidden"><div style="height:100%;width:${Math.min(monthPct,100)}%;background:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};border-radius:3px"></div></div>` : ''}
         </div>
@@ -2624,7 +2633,7 @@ async function renderOrders() {
   const weekStartStr = weekStartStr2
   const weekEndStr = weekEndStr2
   window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*(curWeekData?.wDays||5)])), workingDays, weeklyData, card_budget: settings.card_budget || 0 }
-  window._ordersData = orderData || []
+  window._ordersData = orderList || []
   window._catDailyOrders = catOrderData?.dailyByVendorCat || []
   window._ordersVendors = vendors || []
   window._ordersMealStats = {
@@ -2644,11 +2653,29 @@ async function renderOrders() {
     setTimeout(() => {
       const _coveredDates = {}
       const _multiDayMap = {}
-      ;(orderData||[]).forEach(o => {
+
+      // 1) order_multiday_settings 테이블 기반 (금액 없이 일수만 저장된 경우 포함)
+      Object.entries(multidaySettingsMap || {}).forEach(([dateStr, cnt]) => {
+        if (cnt > 1) {
+          _multiDayMap[dateStr] = cnt
+          const s = new Date(dateStr)
+          for (let i = 1; i < cnt; i++) {
+            const d = new Date(s); d.setDate(s.getDate() + i)
+            const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+            _coveredDates[ds] = dateStr
+          }
+        }
+      })
+
+      // 2) daily_orders의 is_multi_day 데이터로 보완 (기존 호환)
+      ;(orderList||[]).forEach(o => {
         if (o.is_multi_day && o.multi_day_start && o.multi_day_end) {
           const s = new Date(o.multi_day_start), e = new Date(o.multi_day_end)
           const cnt = Math.round((e-s)/(1000*60*60*24))+1
-          _multiDayMap[o.multi_day_start] = Math.max(_multiDayMap[o.multi_day_start]||0, cnt)
+          // multidaySettingsMap 우선, 없으면 daily_orders 값 사용
+          if (!_multiDayMap[o.multi_day_start]) {
+            _multiDayMap[o.multi_day_start] = Math.max(_multiDayMap[o.multi_day_start]||0, cnt)
+          }
           for (let d = new Date(s); d <= e; d.setDate(d.getDate()+1)) {
             const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
             if (ds !== o.multi_day_start) _coveredDates[ds] = o.multi_day_start
@@ -2675,7 +2702,7 @@ async function renderOrders() {
       window._catSettingsMap = _catSettingsMap
 
       _buildOrdersTbody({
-        days, orderData: orderData||[], vendors: vendors||[],
+        days, orderData: orderList||[], vendors: vendors||[],
         patientCats: patientCats||[], coveredDates: _coveredDates,
         multiDayMap: _multiDayMap, vendorDailyBudgets: _vendorDailyBudgets,
         catDailyMap: _catDailyMap, catSettingsMap: _catSettingsMap,
@@ -2683,7 +2710,7 @@ async function renderOrders() {
         totalBudget, monthPct, orderMap
       })
       _buildOrdersTfoot({
-        vendors: vendors||[], patientCats: patientCats||[], orderData: orderData||[],
+        vendors: vendors||[], patientCats: patientCats||[], orderData: orderList||[],
         catOrderData, catSettingsMap: _catSettingsMap, monthPct, totalBudget
       })
       // ── 테이블/tfoot 렌더링 완료 후 모든 실시간 패널 업데이트 ──
@@ -3064,7 +3091,17 @@ async function renderOrders() {
             // 업체 일 목표: v.monthly_budget ÷ 전체 working_days (설정 기준)
             // v.monthly_budget 우선, 없으면 카테고리 예산 균등 배분 → 일별 목표로 변환
             const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0)
-            const vMonthBudget = _globalWorkingDays > 0 ? Math.round(vRawMonthBudget / _globalWorkingDays) : 0
+            const vDailyBudget = _globalWorkingDays > 0 ? Math.round(vRawMonthBudget / _globalWorkingDays) : 0
+            // 오늘 적용 목표 = 일 목표 × 발주일수(multiDayCount)
+            const vTodayTarget = vDailyBudget * multiDayCount
+            // 오늘 발주금액 = 현재 날짜의 이 업체 입력값
+            const vTodayAmt = total  // catRow.total (당일 입력값)
+            const vTodayPct = vTodayTarget > 0 ? Math.round(vTodayAmt / vTodayTarget * 100) : null
+            const vTodayOver = vTodayPct!==null&&vTodayPct>=100
+            const vTodayWarn = vTodayPct!==null&&vTodayPct>=80&&!vTodayOver
+            const vTodayColor = vTodayOver?'#dc2626':vTodayWarn?'#d97706':(vTodayAmt>0?catColor:'#6b7280')
+            // 누적 발주금액 = 이번 달 현재일까지의 합계 (vCatMonthAccum)
+            const vMonthBudget = vRawMonthBudget  // 월 목표 (전체)
             const vMonthPct = vMonthBudget > 0 ? Math.round(vCatMonthAccum / vMonthBudget * 100) : null
             const vMonthOver = vMonthPct!==null&&vMonthPct>=100
             const vMonthWarn = vMonthPct!==null&&vMonthPct>=80&&!vMonthOver
@@ -3078,17 +3115,31 @@ async function renderOrders() {
               </div>
               ${inputFields}
               <div style="margin-top:6px;padding-top:5px;border-top:1px solid #f3f4f6">
-                <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:2px">
-                  <span>일 누적</span>
+                <!-- 오늘 발주금액 / 오늘 목표 -->
+                <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px">
+                  <span style="color:#374151;font-weight:600">오늘 발주</span>
+                  <span id="vcat-today-amt-${v.id}-${cat.id}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
+                </div>
+                ${vTodayTarget > 0 ? `
+                <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
+                  <span>오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
+                  <span style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
+                </div>
+                <div style="height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:3px;overflow:hidden">
+                  <div style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
+                </div>` : ''}
+                <!-- 누적 발주 / 월 목표 -->
+                <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
+                  <span>누적 발주</span>
                   <span id="vcat-month-accum-${v.id}-${cat.id}" style="font-weight:700;color:${vMonthColor}">${vCatMonthAccum>0?fmtMan(vCatMonthAccum):'0'}</span>
                 </div>
                 ${vMonthBudget > 0 ? `
-                <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:3px">
-                  <span>일 목표</span>
+                <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
+                  <span>월 목표</span>
                   <span style="color:#6b7280">${fmtMan(vMonthBudget)}</span>
                 </div>
-                <div style="height:4px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
-                  <div style="height:4px;width:${Math.min(vMonthPct||0,100)}%;background:${vMonthColor};border-radius:2px;transition:width 0.3s"></div>
+                <div style="height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
+                  <div style="height:3px;width:${Math.min(vMonthPct||0,100)}%;background:${vMonthColor};border-radius:2px;transition:width 0.3s"></div>
                 </div>
                 <div style="display:flex;justify-content:space-between;font-size:8px">
                   <span style="color:${vMonthColor};font-weight:600">${vMonthPct!==null?vMonthPct+'%':''}</span>
@@ -3578,10 +3629,51 @@ window.updateMultiDayNote = async (sel) => {
     if (window._ordersMultiDayMap) delete window._ordersMultiDayMap[dateStr]
   }
 
+  // 4-1) 커버 날짜 data-covered 실시간 갱신
+  // 이전 커버 범위 해제: _ordersCoveredDates에서 dateStr을 시작으로 하는 항목 제거
+  if (window._ordersCoveredDates) {
+    Object.keys(window._ordersCoveredDates).forEach(dk => {
+      if (window._ordersCoveredDates[dk] === dateStr) {
+        delete window._ordersCoveredDates[dk]
+        const covRow = document.querySelector(`tr.order-summary-row[data-date="${dk}"]`)
+        if (covRow) {
+          covRow.dataset.covered = '0'
+          document.querySelectorAll(`tr.order-detail-row[data-date="${dk}"]`).forEach(r => { r.dataset.covered = '0' })
+        }
+      }
+    })
+  }
+  // 새 커버 범위 설정
+  if (days > 1) {
+    if (!window._ordersCoveredDates) window._ordersCoveredDates = {}
+    const sDate = new Date(dateStr)
+    for (let i = 1; i < days; i++) {
+      const d = new Date(sDate); d.setDate(sDate.getDate() + i)
+      const dk = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+      window._ordersCoveredDates[dk] = dateStr
+      const covRow = document.querySelector(`tr.order-summary-row[data-date="${dk}"]`)
+      if (covRow) {
+        covRow.dataset.covered = '1'
+        document.querySelectorAll(`tr.order-detail-row[data-date="${dk}"]`).forEach(r => { r.dataset.covered = '1' })
+        updateDayTotal(dk)  // 커버 날짜의 진행률도 재계산
+      }
+    }
+  }
+
   // 5) 진행률 셀 즉시 재계산
   updateDayTotal(dateStr)
 
-  // 6) 입력값 있는 업체만 DB 저장
+  // 6) 발주일수 전용 저장 (금액 없어도 항상 저장)
+  await api('POST', '/api/orders/multiday-setting', { orderDate: dateStr, dayCount: days })
+  // 전역 맵 즉시 갱신
+  if (!window._multidaySettingsMap) window._multidaySettingsMap = {}
+  if (days > 1) {
+    window._multidaySettingsMap[dateStr] = days
+  } else {
+    delete window._multidaySettingsMap[dateStr]
+  }
+
+  // 7) 입력값 있는 업체 is_multi_day 정보도 동기화
   const vendors = window._ordersVendors || []
   for (const v of vendors) {
     const taxableEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${dateStr}"]`)
@@ -6063,9 +6155,10 @@ function updateDayTotal(date) {
           }
         }
       })
-      // catDayTotal 셀 업데이트
+      // catDayTotal 셀 업데이트 (multidays 반영: ×N일치 목표)
       const catSettings = (window._catSettingsMap || {})[cat.id] || {}
-      const catDB = catSettings.working_days > 0 ? Math.round((catSettings.monthly_budget||0)/catSettings.working_days) : 0
+      const catDBBase = catSettings.working_days > 0 ? Math.round((catSettings.monthly_budget||0)/catSettings.working_days) : 0
+      const catDB = isCovered ? 0 : catDBBase * multidays  // N일치 목표 적용
       const catCatAmt = catTotals[cat.id] || 0
       const catPct = catDB > 0 ? Math.round(catCatAmt/catDB*100) : null
       const catOver = catPct!==null&&catPct>=100; const catWarn = catPct!==null&&catPct>=80&&!catOver
@@ -6074,8 +6167,9 @@ function updateDayTotal(date) {
       if (el) {
         const badge = `<div style="display:inline-block;background:${catColor};color:white;font-size:8px;font-weight:700;padding:1px 4px;border-radius:8px;margin-bottom:2px;white-space:nowrap">${cat.category_name}</div>`
         const amtDisp = catCatAmt > 0 ? `<div style="font-size:10px;font-weight:700;color:${catAmtColor}">${fmtMan(catCatAmt)}</div>` : `<div style="font-size:9px;color:#d1d5db">-</div>`
-        const pctDisp = catPct!==null ? `<div style="font-size:9px;color:${catAmtColor};font-weight:600">${catPct}%</div>` : ''
-        el.innerHTML = badge + amtDisp + pctDisp
+        const pctDisp = catPct!==null ? `<div style="font-size:9px;color:${catAmtColor};font-weight:600">${catPct}%${multidays>1?` <span style="font-size:7px;color:#9ca3af">(×${multidays})</span>`:''}</div>` : ''
+        const budgetDisp = catDB > 0 ? `<div style="font-size:8px;color:#9ca3af">/${fmtMan(catDB)}</div>` : ''
+        el.innerHTML = badge + amtDisp + pctDisp + budgetDisp
       }
     })
     // ── 아코디언 요약 행 카테고리 합계 셀 실시간 업데이트 ──
@@ -6133,9 +6227,7 @@ function updateDayTotal(date) {
       const vCount = vendorsBudget.length || 1
 
       vendorsBudget.forEach(v => {
-        const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
-        if (!accumEl) return
-        // _catDailyMap 기반 date 이하 날짜 누적 합산 (일 누적)
+        // _catDailyMap 기반 date 이하 날짜 누적 합산 (누적 발주)
         let vCatLiveTotal = 0
         if (v.is_card_type) {
           const vendorCardMap = window._cardDailyMap?.[v.id] || {}
@@ -6149,37 +6241,64 @@ function updateDayTotal(date) {
           })
         }
 
+        // 오늘 발주 금액 (당일만)
+        let vTodayLiveAmt = 0
+        if (v.is_card_type) {
+          vTodayLiveAmt = (window._cardDailyMap?.[v.id]?.[date]) || 0
+        } else {
+          const r = ((window._catDailyMap || {})[date]?.[v.id]?.[cat.id]) || {}
+          vTodayLiveAmt = r.total || 0
+          // 현재 편집 중인 셀이면 DOM 값 반영
+          if (aep && aep.date === date && String(aep.vendorId) === String(v.id) && String(aep.catId) === String(cat.id)) {
+            vTodayLiveAmt = (catTotals[cat.id] || 0)  // 이미 DOM 반영된 값
+          }
+        }
+
         // 업체 일 목표: v.monthly_budget ÷ 전체 working_days
         const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
-        const vMonthBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
+        const vDailyBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
+        const vTodayTarget5 = isCovered ? 0 : vDailyBudget5 * multidays  // N일치 적용
+        const vMonthBudget5 = vRawMonthBudget5  // 월 목표
+
+        // 오늘 발주 진행률
+        const vTodayPct5 = vTodayTarget5 > 0 ? Math.round(vTodayLiveAmt / vTodayTarget5 * 100) : null
+        const vTodayOver5 = vTodayPct5!==null&&vTodayPct5>=100
+        const vTodayWarn5 = vTodayPct5!==null&&vTodayPct5>=80&&!vTodayOver5
+        const vTodayColor5 = vTodayOver5?'#dc2626':vTodayWarn5?'#d97706':(vTodayLiveAmt>0?catColor:'#6b7280')
+
+        // 누적 발주 진행률
         const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
         const vMonthOver5 = vMonthPct5!==null&&vMonthPct5>=100
         const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
         const vMonthColor5 = vMonthOver5?'#dc2626':vMonthWarn5?'#d97706':catColor
 
-        accumEl.textContent = vCatLiveTotal > 0 ? fmtMan(vCatLiveTotal) : '0'
-        accumEl.style.color = vMonthColor5
+        // 오늘 발주 셀 업데이트
+        const todayAmtEl = document.getElementById(`vcat-today-amt-${v.id}-${cat.id}`)
+        if (todayAmtEl) {
+          todayAmtEl.textContent = vTodayLiveAmt > 0 ? fmtMan(vTodayLiveAmt) : '-'
+          todayAmtEl.style.color = vTodayColor5
+        }
+
+        // 누적 발주 셀 업데이트
+        const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
+        if (accumEl) {
+          accumEl.textContent = vCatLiveTotal > 0 ? fmtMan(vCatLiveTotal) : '0'
+          accumEl.style.color = vMonthColor5
+        }
 
         // 업체 카드 테두리 색상 업데이트
         const cardEl = document.getElementById(`vendor-card-${v.id}-${cat.id}-${date}`)
         if (cardEl) {
-          const hasAmt = (catTotals[cat.id] || 0) > 0
+          const hasAmt = vTodayLiveAmt > 0
           cardEl.style.borderColor = hasAmt ? catColor + '80' : '#e5e7eb'
-          // 진행률 바 업데이트
-          const barEl = cardEl.querySelector('[id^="vbar-"]')
-          if (!barEl && vMonthBudget5 > 0) {
-            // 진행률 바가 있으면 너비 업데이트 (동적 선택)
-            const bars = cardEl.querySelectorAll('[style*="height:4px"]')
-            bars.forEach(bar => {
-              if (bar.style.width !== undefined && bar.parentElement) {
-                // 진행률 바 내부 div
-                const innerBar = bar.style.background && bar.style.background !== '#e5e7eb' ? bar : null
-                if (innerBar) {
-                  innerBar.style.width = Math.min(vMonthPct5||0, 100) + '%'
-                  innerBar.style.background = vMonthColor5
-                }
-              }
-            })
+          // 오늘 발주 진행률 바 (첫 번째 3px 높이 바)
+          const allBars = cardEl.querySelectorAll('[style*="height:3px"]')
+          if (allBars.length >= 1) {
+            const innerBar = allBars[0].children[0]
+            if (innerBar) {
+              innerBar.style.width = Math.min(vTodayPct5||0, 100) + '%'
+              innerBar.style.background = vTodayColor5
+            }
           }
         }
       })

@@ -608,7 +608,45 @@ orders.get('/:year/:month', async (c) => {
      ORDER BY d.order_date, v.sort_order`
   ).bind(hospitalId, year, month).all<any>()
 
-  return c.json(data.results)
+  // 해당 월 발주일수 설정도 함께 반환
+  const multidaySettings = await c.env.DB.prepare(
+    `SELECT order_date, day_count, multi_day_end
+     FROM order_multiday_settings
+     WHERE hospital_id = ?
+       AND strftime('%Y', order_date) = ?
+       AND strftime('%m', order_date) = printf('%02d', ?)`
+  ).bind(hospitalId, year, month).all<any>()
+
+  return c.json({ orders: data.results, multidaySettings: multidaySettings.results || [] })
+})
+
+// 발주일수 설정 저장 (금액 없어도 저장 가능)
+orders.post('/multiday-setting', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const { orderDate, dayCount } = await c.req.json()
+
+  if (!orderDate || !dayCount) return c.json({ error: 'invalid params' }, 400)
+
+  const endDate = new Date(orderDate)
+  endDate.setDate(endDate.getDate() + dayCount - 1)
+  const multiDayEnd = `${endDate.getFullYear()}-${String(endDate.getMonth()+1).padStart(2,'0')}-${String(endDate.getDate()).padStart(2,'0')}`
+
+  if (dayCount <= 1) {
+    // 1일치면 설정 삭제
+    await c.env.DB.prepare(
+      `DELETE FROM order_multiday_settings WHERE hospital_id=? AND order_date=?`
+    ).bind(hospitalId, orderDate).run()
+  } else {
+    await c.env.DB.prepare(
+      `INSERT INTO order_multiday_settings (hospital_id, order_date, day_count, multi_day_end, updated_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(hospital_id, order_date) DO UPDATE SET
+         day_count=excluded.day_count, multi_day_end=excluded.multi_day_end, updated_at=CURRENT_TIMESTAMP`
+    ).bind(hospitalId, orderDate, dayCount, multiDayEnd).run()
+  }
+
+  return c.json({ success: true, orderDate, dayCount, multiDayEnd })
 })
 
 // ══════════════════════════════════════════════════════════════
