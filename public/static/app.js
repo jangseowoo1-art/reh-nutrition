@@ -3125,7 +3125,7 @@ async function renderOrders() {
                 <!-- 오늘 발주금액 / 오늘 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px">
                   <span style="color:#374151;font-weight:600">오늘 발주</span>
-                  <span id="vcat-today-amt-${v.id}-${cat.id}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
+                  <span id="vcat-today-amt-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
                 </div>
                 <div id="vcat-today-target-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
                   <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
@@ -3137,7 +3137,7 @@ async function renderOrders() {
                 <!-- 누적 발주 / 월 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
                   <span>누적 발주</span>
-                  <span id="vcat-month-accum-${v.id}-${cat.id}" style="font-weight:700;color:${vMonthColor}">${vCatMonthAccum>0?fmtMan(vCatMonthAccum):'0'}</span>
+                  <span id="vcat-month-accum-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${vMonthColor}">${vCatMonthAccum>0?fmtMan(vCatMonthAccum):'0'}</span>
                 </div>
                 ${vMonthBudget > 0 ? `
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
@@ -6285,8 +6285,8 @@ function updateDayTotal(date) {
         const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
         const vMonthColor5 = vMonthOver5?'#dc2626':vMonthWarn5?'#d97706':catColor
 
-        // 오늘 발주 셀 업데이트
-        const todayAmtEl = document.getElementById(`vcat-today-amt-${v.id}-${cat.id}`)
+        // 오늘 발주 셀 업데이트 (날짜 포함 ID)
+        const todayAmtEl = document.getElementById(`vcat-today-amt-${v.id}-${cat.id}-${date}`)
         if (todayAmtEl) {
           todayAmtEl.textContent = vTodayLiveAmt > 0 ? fmtMan(vTodayLiveAmt) : '-'
           todayAmtEl.style.color = vTodayColor5
@@ -6312,8 +6312,8 @@ function updateDayTotal(date) {
           if (barWrapEl) barWrapEl.style.display = 'none'
         }
 
-        // 누적 발주 셀 업데이트
-        const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
+        // 누적 발주 셀 업데이트 (날짜 포함 ID)
+        const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}-${date}`)
         if (accumEl) {
           accumEl.textContent = vCatLiveTotal > 0 ? fmtMan(vCatLiveTotal) : '0'
           accumEl.style.color = vMonthColor5
