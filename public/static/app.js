@@ -3127,14 +3127,13 @@ async function renderOrders() {
                   <span style="color:#374151;font-weight:600">오늘 발주</span>
                   <span id="vcat-today-amt-${v.id}-${cat.id}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
                 </div>
-                ${vTodayTarget > 0 ? `
-                <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
-                  <span>오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
-                  <span style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
+                <div id="vcat-today-target-row-${v.id}-${cat.id}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
+                  <span id="vcat-today-target-label-${v.id}-${cat.id}">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
+                  <span id="vcat-today-target-${v.id}-${cat.id}" style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
                 </div>
-                <div style="height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:3px;overflow:hidden">
-                  <div style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
-                </div>` : ''}
+                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}" style="display:${vTodayTarget>0?'block':'none'};height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:3px;overflow:hidden">
+                  <div id="vcat-today-bar-${v.id}-${cat.id}" style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
+                </div>
                 <!-- 누적 발주 / 월 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
                   <span>누적 발주</span>
@@ -6100,7 +6099,7 @@ function updateDayTotal(date) {
     const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0) + (isSingleCatU ? 0 : cardTotalForDay)
 
     const budget = window._ordersBudget
-    const row = document.querySelector(`tr[data-date="${date}"]`)
+    const row = document.querySelector(`tr.order-summary-row[data-date="${date}"]`) || document.querySelector(`tr[data-date="${date}"]`)
     const multidays = row ? parseInt(row.dataset.multidays || '1') : 1
     const isCovered = row ? row.dataset.covered === '1' : false
     const adjBudget = budget && !isCovered ? budget.dailyBudget * multidays : 0
@@ -6289,6 +6288,26 @@ function updateDayTotal(date) {
           todayAmtEl.style.color = vTodayColor5
         }
 
+        // 오늘 목표금액 / 레이블 / 진행률 바 실시간 업데이트 (multidays 반영)
+        const targetRowEl = document.getElementById(`vcat-today-target-row-${v.id}-${cat.id}`)
+        const targetLabelEl = document.getElementById(`vcat-today-target-label-${v.id}-${cat.id}`)
+        const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}`)
+        const barWrapEl = document.getElementById(`vcat-today-bar-wrap-${v.id}-${cat.id}`)
+        const barInnerEl = document.getElementById(`vcat-today-bar-${v.id}-${cat.id}`)
+        if (vTodayTarget5 > 0) {
+          if (targetRowEl) targetRowEl.style.display = 'flex'
+          if (barWrapEl) barWrapEl.style.display = 'block'
+          if (targetLabelEl) targetLabelEl.innerHTML = '오늘 목표' + (multidays > 1 ? ` <span style="color:#16a34a;font-weight:700">(×${multidays}일)</span>` : '')
+          if (targetAmtEl) targetAmtEl.textContent = fmtMan(vTodayTarget5)
+          if (barInnerEl) {
+            barInnerEl.style.width = Math.min(vTodayPct5 || 0, 100) + '%'
+            barInnerEl.style.background = vTodayColor5
+          }
+        } else {
+          if (targetRowEl) targetRowEl.style.display = 'none'
+          if (barWrapEl) barWrapEl.style.display = 'none'
+        }
+
         // 누적 발주 셀 업데이트
         const accumEl = document.getElementById(`vcat-month-accum-${v.id}-${cat.id}`)
         if (accumEl) {
@@ -6301,15 +6320,6 @@ function updateDayTotal(date) {
         if (cardEl) {
           const hasAmt = vTodayLiveAmt > 0
           cardEl.style.borderColor = hasAmt ? catColor + '80' : '#e5e7eb'
-          // 오늘 발주 진행률 바 (첫 번째 3px 높이 바)
-          const allBars = cardEl.querySelectorAll('[style*="height:3px"]')
-          if (allBars.length >= 1) {
-            const innerBar = allBars[0].children[0]
-            if (innerBar) {
-              innerBar.style.width = Math.min(vTodayPct5||0, 100) + '%'
-              innerBar.style.background = vTodayColor5
-            }
-          }
         }
       })
     })
