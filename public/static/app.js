@@ -3127,14 +3127,16 @@ async function renderOrders() {
                   <span style="color:#374151;font-weight:600">오늘 발주</span>
                   <span id="vcat-today-amt-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
                 </div>
-                <div id="vcat-today-target-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
-                  <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
+                <div id="vcat-today-target-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;align-items:center;font-size:9px;color:#9ca3af;margin-bottom:2px">
+                  <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}" style="flex-shrink:0">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
                   <span id="vcat-today-target-${v.id}-${cat.id}-${dateStr}" style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
                 </div>
-                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'block':'none'};height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
-                  <div id="vcat-today-bar-${v.id}-${cat.id}-${dateStr}" style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
+                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'block':'none'};height:5px;background:#e5e7eb;border-radius:3px;margin-bottom:3px;overflow:hidden">
+                  <div id="vcat-today-bar-${v.id}-${cat.id}-${dateStr}" style="height:5px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:3px;transition:width 0.3s"></div>
                 </div>
-                <div id="vcat-today-pct-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0&&vTodayPct!==null?'flex':'none'};justify-content:flex-end;font-size:8px;font-weight:700;color:${vTodayColor};margin-bottom:3px">${vTodayPct!==null?vTodayPct+'%':''}</div>
+                <div id="vcat-today-pct-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:flex-end;margin-bottom:3px">
+                  <span id="vcat-today-pct-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayPct!==null?'inline-block':'none'};background:${vTodayColor};color:white;font-size:10px;font-weight:800;padding:1px 6px;border-radius:10px;line-height:1.6;letter-spacing:0.3px">${vTodayPct!==null?vTodayPct+'%':''}</span>
+                </div>
                 <!-- 누적 발주 / 월 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
                   <span>누적 발주</span>
@@ -6302,25 +6304,28 @@ function updateDayTotal(date) {
         const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}-${date}`)
         const barWrapEl = document.getElementById(`vcat-today-bar-wrap-${v.id}-${cat.id}-${date}`)
         const barInnerEl = document.getElementById(`vcat-today-bar-${v.id}-${cat.id}-${date}`)
+        const pctRowEl = document.getElementById(`vcat-today-pct-row-${v.id}-${cat.id}-${date}`)
         const pctTextEl = document.getElementById(`vcat-today-pct-${v.id}-${cat.id}-${date}`)
         if (vTodayTarget5 > 0) {
           if (targetRowEl) targetRowEl.style.display = 'flex'
           if (barWrapEl) barWrapEl.style.display = 'block'
+          if (pctRowEl) pctRowEl.style.display = 'flex'
           if (targetLabelEl) targetLabelEl.innerHTML = '오늘 목표' + (multidays > 1 ? ` <span style="color:#16a34a;font-weight:700">(×${multidays}일)</span>` : '')
           if (targetAmtEl) targetAmtEl.textContent = fmtMan(vTodayTarget5)
           if (barInnerEl) {
             barInnerEl.style.width = Math.min(vTodayPct5 || 0, 100) + '%'
             barInnerEl.style.background = vTodayColor5
           }
-          // 진행률 % 텍스트 업데이트
+          // 진행률 % 뱃지 업데이트 (배경색 + 흰글씨)
           if (pctTextEl) {
-            pctTextEl.style.display = vTodayPct5 !== null ? 'flex' : 'none'
+            pctTextEl.style.display = vTodayPct5 !== null ? 'inline-block' : 'none'
             pctTextEl.textContent = vTodayPct5 !== null ? vTodayPct5 + '%' : ''
-            pctTextEl.style.color = vTodayColor5
+            pctTextEl.style.background = vTodayColor5
           }
         } else {
           if (targetRowEl) targetRowEl.style.display = 'none'
           if (barWrapEl) barWrapEl.style.display = 'none'
+          if (pctRowEl) pctRowEl.style.display = 'none'
           if (pctTextEl) pctTextEl.style.display = 'none'
         }
 
