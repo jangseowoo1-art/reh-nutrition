@@ -146,7 +146,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const totalUsed = totalUsedRow?.total || 0
   const totalBudget = settings?.total_budget || 0
   const eventBudget = settings?.event_budget || 0
-  const workingDays = settings?.working_days || 30
+  // working_days 미설정 시 해당 월의 실제 일수로 fallback (30일 고정값 대신)
+  const workingDays = settings?.working_days || new Date(parseInt(year as string), parseInt(month as string), 0).getDate()
   const progress = totalBudget > 0 ? ((totalUsed / totalBudget) * 100).toFixed(2) : '0.00'
   
   // 일/주/월 목표

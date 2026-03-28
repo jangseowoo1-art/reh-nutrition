@@ -10960,6 +10960,10 @@ async function openHospitalDetail(hospitalId) {
   const s = budget?.settings || {}
   const isFallback = budget?.isFallback || false
   const fallbackYearMonth = budget?.fallbackYearMonth || ''
+  // isFallback(이전 월 설정 사용)이거나 working_days가 0이면 현재 보는 월의 전체 일수로 자동 채움
+  const effectiveWorkingDays = (!isFallback && s.working_days > 0)
+    ? s.working_days
+    : getDefaultWorkingDays(App.currentYear, App.currentMonth)
   const vendors = vendorList || []
 
   // 현재 관리 중인 hospitalId를 전역에 저장
@@ -11168,13 +11172,13 @@ async function openHospitalDetail(hospitalId) {
             <div class="text-right">
               <div class="text-xs text-green-600 font-medium">영업일수</div>
               <div class="flex items-center gap-1 mt-0.5">
-                <input id="hb-workdays" type="number" class="form-input w-16 text-center text-sm py-1" value="${s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth)}" oninput="refreshVendorDayTargets()">
+                <input id="hb-workdays" type="number" class="form-input w-16 text-center text-sm py-1" value="${effectiveWorkingDays}" oninput="refreshVendorDayTargets()">
                 <span class="text-xs text-green-700 font-medium">일</span>
               </div>
             </div>
           </div>
           <div id="hospBudgetVendors">
-            ${renderBudgetVendorRows(vendors, s.working_days || getDefaultWorkingDays(App.currentYear, App.currentMonth))}
+            ${renderBudgetVendorRows(vendors, effectiveWorkingDays)}
           </div>
         </div>
 
@@ -12737,7 +12741,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           <input type="number" id="autoAlloc-workdays"
             class="form-input text-sm py-1 w-full"
             placeholder="영업일수"
-            value="${(function(){ const wd = document.getElementById('hb-workdays'); return wd ? wd.value : '' })()}"
+            value="${(function(){ const wd = document.getElementById('hb-workdays'); return wd && wd.value ? wd.value : getDefaultWorkingDays(App.currentYear, App.currentMonth) })()}"
             oninput="recalcAutoAlloc()">
         </div>
       </div>
@@ -12908,7 +12912,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
       </div>
       <div class="mb-2">
         <label class="block text-xs text-gray-500 mb-1">영업일수 (일)</label>
-        <input type="number" id="catWorkDays-${cat.id}" value="${s.working_days||0}"
+        <input type="number" id="catWorkDays-${cat.id}" value="${(!isFallback && s.working_days > 0) ? s.working_days : getDefaultWorkingDays(App.currentYear, App.currentMonth)}"
           class="form-input text-sm py-1" placeholder="0">
       </div>
       <!-- 식단가 계산 기준 (접기/펼치기) -->
