@@ -111,6 +111,118 @@ orders.get('/budget-status/:year/:month/:date', async (c) => {
   })
 })
 
+// ── 엑셀 자동입력: 기존 데이터 조회 (사전 경고용) ──────────────
+orders.get('/excel-check/:vendorId/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const { vendorId, year, month } = c.req.param()
+  const mm = month.padStart(2, '0')
+
+  const rows = await c.env.DB.prepare(`
+    SELECT id, order_date, total_amount, input_source, note
+    FROM daily_orders
+    WHERE hospital_id=? AND vendor_id=? 
+      AND strftime('%Y', order_date)=? AND strftime('%m', order_date)=?
+    ORDER BY order_date
+  `).bind(hospitalId, vendorId, year, mm).all<any>()
+
+  const results = rows.results || []
+  const totalAmount = results.reduce((s: number, r: any) => s + (r.total_amount || 0), 0)
+  const dateList = results.map((r: any) => r.order_date)
+  const sourceCounts = results.reduce((acc: any, r: any) => {
+    const src = r.input_source || 'direct'
+    acc[src] = (acc[src] || 0) + 1
+    return acc
+  }, {})
+
+  return c.json({
+    count: results.length,
+    totalAmount,
+    dateList,
+    sourceCounts,
+    rows: results
+  })
+})
+
+// ── 엑셀 자동입력: 월 전체 교체 저장 (기존 삭제 후 새 데이터 일괄 INSERT) ──
+orders.post('/excel-replace', async (c) => {
+  const user = c.get('user')
+  const hospitalId = Number(user.hospitalId)
+  const body = await c.req.json()
+  const { vendorId, year, month, items } = body
+  // items: [{ orderDate, taxableAmount, exemptAmount, vatAmount, totalAmount }]
+
+  if (!vendorId || !year || !month || !Array.isArray(items)) {
+    return c.json({ success: false, error: 'invalid params' }, 400)
+  }
+  const mm = String(month).padStart(2, '0')
+
+  // 1) 해당 업체 + 해당 월 기존 데이터 전체 삭제
+  await c.env.DB.prepare(`
+    DELETE FROM daily_orders
+    WHERE hospital_id=? AND vendor_id=?
+      AND strftime('%Y', order_date)=? AND strftime('%m', order_date)=?
+  `).bind(hospitalId, vendorId, String(year), mm).run()
+
+  // 2) 새 데이터 일괄 INSERT
+  let success = 0, fail = 0
+  const errors: string[] = []
+
+  for (const it of items) {
+    try {
+      const isMixedTotal = it.totalAmount !== undefined && (it.taxableAmount || 0) === 0 && (it.exemptAmount || 0) === 0 && (it.vatAmount || 0) === 0
+      const totalAmount = isMixedTotal
+        ? it.totalAmount
+        : (it.taxableAmount || 0) + (it.exemptAmount || 0) + (it.vatAmount || 0)
+
+      if (!it.orderDate || totalAmount <= 0) {
+        fail++
+        errors.push(`날짜(${it.orderDate}) 또는 금액(${totalAmount}) 오류`)
+        continue
+      }
+
+      await c.env.DB.prepare(`
+        INSERT INTO daily_orders
+          (hospital_id, vendor_id, order_date,
+           taxable_amount, exempt_amount, vat_amount, total_amount,
+           note, input_source)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).bind(
+        hospitalId, vendorId, it.orderDate,
+        it.taxableAmount || 0, it.exemptAmount || 0, it.vatAmount || 0, totalAmount,
+        '엑셀자동입력', 'excel'
+      ).run()
+      success++
+    } catch (e: any) {
+      fail++
+      errors.push(e?.message || '저장 오류')
+    }
+  }
+
+  // 3) 결과 요약 반환
+  const savedRows = await c.env.DB.prepare(`
+    SELECT order_date, total_amount FROM daily_orders
+    WHERE hospital_id=? AND vendor_id=?
+      AND strftime('%Y', order_date)=? AND strftime('%m', order_date)=?
+    ORDER BY order_date
+  `).bind(hospitalId, vendorId, String(year), mm).all<any>()
+
+  const savedList = savedRows.results || []
+  const savedTotal = savedList.reduce((s: number, r: any) => s + (r.total_amount || 0), 0)
+  const savedDates = [...new Set(savedList.map((r: any) => r.order_date))]
+
+  return c.json({
+    success: fail === 0,
+    saved: success,
+    failed: fail,
+    errors,
+    savedTotal,
+    savedDates,
+    dateMin: savedDates[0] || null,
+    dateMax: savedDates[savedDates.length - 1] || null
+  })
+})
+
 // 발주 저장/수정 (upsert)
 orders.post('/save', async (c) => {
   const user = c.get('user')
@@ -131,7 +243,7 @@ orders.post('/save', async (c) => {
   }
 
   const existing = await c.env.DB.prepare(
-    `SELECT id FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=? AND patient_category_id IS NULL`
+    `SELECT id, input_source FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=? AND patient_category_id IS NULL`
   ).bind(hospitalId, vendorId, orderDate).first<any>()
 
   // 모든 금액이 0이면 기존 레코드 삭제
@@ -142,21 +254,26 @@ orders.post('/save', async (c) => {
     return c.json({ success: true, totalAmount: 0, deleted: true })
   }
 
+  // 입력 출처 결정: 엑셀자동입력 note면 excel, 기존이 excel이면 edit, 나머지는 direct
+  const inputSource = note === '엑셀자동입력' ? 'excel'
+    : (existing?.input_source === 'excel' ? 'edit' : 'direct')
+
   if (existing) {
     await c.env.DB.prepare(
       `UPDATE daily_orders SET
        taxable_amount=?, exempt_amount=?, vat_amount=?, total_amount=?,
        note=?, is_multi_day=?, multi_day_start=?, multi_day_end=?,
-       updated_at=CURRENT_TIMESTAMP WHERE id=?`
+       input_source=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
     ).bind(taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
-           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null, existing.id).run()
+           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null,
+           inputSource, existing.id).run()
   } else {
     await c.env.DB.prepare(
       `INSERT INTO daily_orders
-       (hospital_id,vendor_id,order_date,taxable_amount,exempt_amount,vat_amount,total_amount,note,is_multi_day,multi_day_start,multi_day_end)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+       (hospital_id,vendor_id,order_date,taxable_amount,exempt_amount,vat_amount,total_amount,note,is_multi_day,multi_day_start,multi_day_end,input_source)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(hospitalId, vendorId, orderDate, taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
-           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null).run()
+           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null, inputSource).run()
   }
 
   return c.json({ success: true, totalAmount })

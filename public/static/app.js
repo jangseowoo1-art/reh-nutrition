@@ -9835,48 +9835,258 @@ function _showImportPreview(items, fileName, year, month) {
   document.body.appendChild(modal)
 }
 
-// ── #4 발주 자동입력 확정 ────────────────────────────────────────
+// ── #4 발주 자동입력 확정 (월 전체 교체 방식) ───────────────────
 window.confirmImportOrders = async function() {
   const items = window._importOrderItems
   if (!items || !items.length) return
 
-  const btn = document.getElementById('importOrderConfirmBtn')
-  if (btn) { btn.disabled = true; btn.textContent = '저장 중...' }
+  const year  = window._importOrderYear  || App.currentYear
+  const month = window._importOrderMonth || App.currentMonth
 
-  let success = 0, fail = 0
+  // 업체별로 그룹핑
+  const byVendor = {}
   for (const it of items) {
+    const vid = it.vendor.id
+    if (!byVendor[vid]) byVendor[vid] = { vendor: it.vendor, rows: [] }
+    byVendor[vid].rows.push(it)
+  }
+  const vendorIds = Object.keys(byVendor).map(Number)
+
+  // 기존 데이터 조회 (업체별 병렬)
+  const checkResults = await Promise.all(
+    vendorIds.map(vid =>
+      api('GET', `/api/orders/excel-check/${vid}/${year}/${month}`)
+        .then(r => ({ vid, ...r }))
+        .catch(() => ({ vid, count: 0, totalAmount: 0, dateList: [] }))
+    )
+  )
+  const existing = checkResults.filter(r => r.count > 0)
+
+  // 날짜 집중도 분석 (전체 items 기준)
+  const dateCounts = {}
+  for (const it of items) {
+    dateCounts[it.date] = (dateCounts[it.date] || 0) + 1
+  }
+  const dateEntries = Object.entries(dateCounts).sort((a,b) => b[1] - a[1])
+  const totalItems  = items.length
+  const topDate     = dateEntries[0]
+  const isDateConcentrated = topDate && totalItems > 1 && (topDate[1] / totalItems) >= 0.7
+
+  // 업로드 예정 데이터 요약
+  const newTotal = items.reduce((s, it) => {
+    const isMixed = it.vendor.tax_type === 'mixed_total'
+    return s + (isMixed ? (it.total || 0) : ((it.taxable||0)+(it.exempt||0)+(it.vat||0)))
+  }, 0)
+  const newDates  = [...new Set(items.map(it => it.date))].sort()
+  const newVendorNames = [...new Set(items.map(it => it.vendor.name))]
+
+  // ── 경고 모달 생성 ──────────────────────────────────────────────
+  const existingEl = document.getElementById('importOrderModal')
+  if (existingEl) existingEl.remove()
+
+  const hasExisting = existing.length > 0
+
+  // 기존 데이터 상세 행
+  const existingRows = existing.map(r => {
+    const srcLabel = r.sourceCounts
+      ? Object.entries(r.sourceCounts).map(([k,v]) => `${k==='direct'?'직접입력':k==='excel'?'엑셀업로드':'수정입력'} ${v}건`).join(', ')
+      : ''
+    return `<tr style="border-bottom:1px solid #f3f4f6">
+      <td style="padding:6px 8px;font-size:12px;font-weight:600">${byVendor[r.vid]?.vendor?.name || r.vid}</td>
+      <td style="padding:6px 8px;font-size:12px;text-align:center">${r.count}건</td>
+      <td style="padding:6px 8px;font-size:12px;text-align:right;color:#dc2626">${r.totalAmount.toLocaleString()}원</td>
+      <td style="padding:6px 8px;font-size:11px;color:#6b7280">${srcLabel}</td>
+    </tr>`
+  }).join('')
+
+  // 날짜 집중 경고 메시지
+  const dateWarnHtml = isDateConcentrated
+    ? `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#92400e;margin-bottom:4px">⚠️ 날짜 집중 감지</div>
+        <div style="font-size:12px;color:#92400e">
+          업로드 항목 <strong>${totalItems}건 중 ${topDate[1]}건</strong>이 <strong>${topDate[0]}</strong> 날짜로 집중되어 있습니다.<br>
+          엑셀 파일의 날짜 컬럼이 정상적으로 인식됐는지 확인해 주세요.
+        </div>
+      </div>`
+    : ''
+
+  // 날짜 범위 표시
+  const dateRangeStr = newDates.length > 0
+    ? (newDates.length === 1 ? newDates[0] : `${newDates[0]} ~ ${newDates[newDates.length-1]}`)
+    : '-'
+
+  const warnModal = document.createElement('div')
+  warnModal.id = 'importReplaceConfirmModal'
+  warnModal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px'
+  warnModal.innerHTML = `
+    <div style="background:white;border-radius:16px;max-width:520px;width:100%;padding:0;box-shadow:0 25px 50px rgba(0,0,0,0.3);overflow:hidden">
+      <!-- 헤더 -->
+      <div style="background:${hasExisting?'#dc2626':'#7c3aed'};padding:16px 20px;display:flex;align-items:center;gap:10px">
+        <i class="fas fa-${hasExisting?'exclamation-triangle':'file-import'}" style="color:white;font-size:18px"></i>
+        <div>
+          <div style="color:white;font-weight:700;font-size:15px">엑셀 자동입력 ${hasExisting?'⚠️ 기존 데이터 있음':''}</div>
+          <div style="color:rgba(255,255,255,0.85);font-size:12px">${year}년 ${month}월 발주 데이터 교체 확인</div>
+        </div>
+      </div>
+      <div style="padding:20px">
+        ${hasExisting ? `
+        <!-- 기존 데이터 경고 -->
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;margin-bottom:14px">
+          <div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:8px">🚨 이미 입력된 데이터가 있습니다</div>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="border-bottom:2px solid #fecaca">
+              <th style="padding:4px 8px;font-size:11px;text-align:left;color:#9ca3af">업체</th>
+              <th style="padding:4px 8px;font-size:11px;text-align:center;color:#9ca3af">건수</th>
+              <th style="padding:4px 8px;font-size:11px;text-align:right;color:#9ca3af">금액</th>
+              <th style="padding:4px 8px;font-size:11px;color:#9ca3af">입력방식</th>
+            </tr></thead>
+            <tbody>${existingRows}</tbody>
+          </table>
+          <div style="margin-top:8px;font-size:12px;color:#dc2626;font-weight:600">
+            ↓ 업로드 진행 시 위 데이터가 모두 삭제되고 새 파일 기준으로 교체됩니다.
+          </div>
+        </div>` : ''}
+
+        ${dateWarnHtml}
+
+        <!-- 새 업로드 데이터 미리보기 -->
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin-bottom:16px">
+          <div style="font-size:13px;font-weight:700;color:#15803d;margin-bottom:8px">📥 업로드 예정 데이터</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+            <div style="font-size:12px;color:#374151"><span style="color:#6b7280">업체:</span> ${newVendorNames.join(', ')}</div>
+            <div style="font-size:12px;color:#374151"><span style="color:#6b7280">건수:</span> <strong>${items.length}건</strong></div>
+            <div style="font-size:12px;color:#374151"><span style="color:#6b7280">날짜 범위:</span> ${dateRangeStr}</div>
+            <div style="font-size:12px;color:#374151"><span style="color:#6b7280">총금액:</span> <strong style="color:#15803d">${newTotal.toLocaleString()}원</strong></div>
+            <div style="font-size:12px;color:#374151;grid-column:1/-1"><span style="color:#6b7280">날짜 수:</span> ${newDates.length}일치 (${newDates.slice(0,5).join(', ')}${newDates.length>5?` 외 ${newDates.length-5}일`:''})</div>
+          </div>
+        </div>
+
+        <div style="font-size:12px;color:#374151;background:#f9fafb;border-radius:6px;padding:10px 12px;margin-bottom:16px;line-height:1.6">
+          ${hasExisting
+            ? `위 기존 데이터를 <strong style="color:#dc2626">삭제</strong>하고<br>새 파일 데이터 <strong>${items.length}건 / ${newTotal.toLocaleString()}원</strong>으로 교체합니다.<br>이 작업은 되돌릴 수 없습니다.`
+            : `새 파일 데이터 <strong>${items.length}건 / ${newTotal.toLocaleString()}원</strong>을 저장합니다.`
+          }
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="document.getElementById('importReplaceConfirmModal').remove()" style="background:#f3f4f6;color:#6b7280;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer">취소</button>
+          <button id="importReplaceBtn" onclick="executeExcelReplace()" style="background:${hasExisting?'#dc2626':'#7c3aed'};color:white;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:700;cursor:pointer">
+            <i class="fas fa-${hasExisting?'sync-alt':'check'} mr-1"></i>${hasExisting?'기존 삭제 후 교체':'저장'}
+          </button>
+        </div>
+      </div>
+    </div>`
+
+  document.body.appendChild(warnModal)
+}
+
+// ── 엑셀 교체 실행 ──────────────────────────────────────────────
+window.executeExcelReplace = async function() {
+  const items = window._importOrderItems
+  if (!items || !items.length) return
+  const year  = window._importOrderYear  || App.currentYear
+  const month = window._importOrderMonth || App.currentMonth
+
+  const btn = document.getElementById('importReplaceBtn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장 중...' }
+
+  // 업체별로 그룹핑
+  const byVendor = {}
+  for (const it of items) {
+    const vid = it.vendor.id
+    if (!byVendor[vid]) byVendor[vid] = { vendor: it.vendor, rows: [] }
+    const isMixed = it.vendor.tax_type === 'mixed_total'
+    byVendor[vid].rows.push({
+      orderDate: it.date,
+      totalAmount:    isMixed ? (it.total || 0)    : 0,
+      taxableAmount:  isMixed ? 0 : (it.taxable || 0),
+      exemptAmount:   isMixed ? 0 : (it.exempt  || 0),
+      vatAmount:      isMixed ? 0 : (it.vat     || 0),
+    })
+  }
+
+  let allSaved = 0, allFailed = 0, allErrors = []
+  let resultHtml = ''
+
+  for (const [vid, group] of Object.entries(byVendor)) {
     try {
-      const isMixedTotal = it.vendor.tax_type === 'mixed_total'
-      const payload = isMixedTotal
-        ? { vendorId: it.vendor.id, orderDate: it.date, totalAmount: it.total, taxableAmount:0, exemptAmount:0, vatAmount:0, note:'엑셀자동입력' }
-        : { vendorId: it.vendor.id, orderDate: it.date, taxableAmount: it.taxable, exemptAmount: it.exempt, vatAmount: it.vat, note:'엑셀자동입력' }
-      const res = await api('POST', '/api/orders/save', payload)
-      if (res?.success) success++
-      else fail++
+      const res = await api('POST', '/api/orders/excel-replace', {
+        vendorId: Number(vid), year, month, items: group.rows
+      })
+      if (res?.success || res?.saved > 0) {
+        allSaved += res.saved || 0
+        if (res.failed > 0) {
+          allFailed += res.failed
+          allErrors.push(...(res.errors || []))
+        }
+        resultHtml += `
+          <tr style="border-bottom:1px solid #f0fdf4">
+            <td style="padding:6px 8px;font-size:12px;font-weight:600">${group.vendor.name}</td>
+            <td style="padding:6px 8px;font-size:12px;text-align:center;color:#15803d">✅ ${res.saved}건</td>
+            <td style="padding:6px 8px;font-size:12px;text-align:right;color:#15803d">${(res.savedTotal||0).toLocaleString()}원</td>
+            <td style="padding:6px 8px;font-size:11px;color:#6b7280">${res.dateMin||''} ~ ${res.dateMax||''}</td>
+          </tr>`
+      } else {
+        allFailed += group.rows.length
+        resultHtml += `
+          <tr style="border-bottom:1px solid #fef2f2">
+            <td style="padding:6px 8px;font-size:12px;font-weight:600">${group.vendor.name}</td>
+            <td style="padding:6px 8px;font-size:12px;text-align:center;color:#dc2626" colspan="3">❌ 저장 실패</td>
+          </tr>`
+      }
     } catch(e) {
-      fail++
+      allFailed += group.rows.length
     }
   }
 
+  // 기존 모달 닫기
+  document.getElementById('importReplaceConfirmModal')?.remove()
   document.getElementById('importOrderModal')?.remove()
   delete window._importOrderItems
 
-  if (success > 0) {
-    showToast(`✅ ${success}건 발주 자동 입력 완료!${fail > 0 ? ` (실패 ${fail}건)` : ''}`, 'success')
-    // 저장된 연월로 화면 전환 후 갱신
-    const savedYear = window._importOrderYear || App.currentYear
-    const savedMonth = window._importOrderMonth || App.currentMonth
-    delete window._importOrderYear
-    delete window._importOrderMonth
-    App.currentYear = savedYear
-    App.currentMonth = savedMonth
-    if (App._panelReady) {
-      delete App._panelReady[`orders-${savedYear}-${savedMonth}`]
-    }
-    renderOrders()
-  } else {
-    showToast(`발주 입력 실패 (${fail}건)`, 'error')
-  }
+  // 결과 요약 모달
+  const resultModal = document.createElement('div')
+  resultModal.id = 'importResultModal'
+  resultModal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10002;display:flex;align-items:center;justify-content:center;padding:16px'
+  resultModal.innerHTML = `
+    <div style="background:white;border-radius:16px;max-width:460px;width:100%;padding:0;box-shadow:0 25px 50px rgba(0,0,0,0.25);overflow:hidden">
+      <div style="background:${allFailed===0?'#15803d':'#d97706'};padding:14px 20px;display:flex;align-items:center;gap:10px">
+        <i class="fas fa-${allFailed===0?'check-circle':'exclamation-circle'}" style="color:white;font-size:18px"></i>
+        <div style="color:white;font-weight:700;font-size:15px">
+          엑셀 자동입력 ${allFailed===0?'완료':'일부 실패'}
+        </div>
+      </div>
+      <div style="padding:20px">
+        <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+          <thead><tr style="border-bottom:2px solid #e5e7eb">
+            <th style="padding:6px 8px;font-size:11px;text-align:left;color:#9ca3af">업체</th>
+            <th style="padding:6px 8px;font-size:11px;text-align:center;color:#9ca3af">저장</th>
+            <th style="padding:6px 8px;font-size:11px;text-align:right;color:#9ca3af">금액</th>
+            <th style="padding:6px 8px;font-size:11px;color:#9ca3af">날짜 범위</th>
+          </tr></thead>
+          <tbody>${resultHtml}</tbody>
+        </table>
+        <div style="background:#f9fafb;border-radius:6px;padding:10px 12px;font-size:12px;color:#374151;margin-bottom:16px">
+          총 <strong>${allSaved}건</strong> 저장 완료${allFailed > 0 ? ` / <span style="color:#dc2626">${allFailed}건 실패</span>` : ''}
+          ${allErrors.length > 0 ? `<br><span style="color:#dc2626;font-size:11px">${allErrors.slice(0,3).join(', ')}</span>` : ''}
+        </div>
+        <div style="display:flex;justify-content:flex-end">
+          <button onclick="(function(){document.getElementById('importResultModal').remove();
+            const y=window._savedYear||App.currentYear, m=window._savedMonth||App.currentMonth;
+            delete window._savedYear; delete window._savedMonth;
+            App.currentYear=y; App.currentMonth=m;
+            if(App._panelReady){delete App._panelReady['orders-'+y+'-'+m]}
+            renderOrders()})()" 
+            style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:700;cursor:pointer">
+            확인 후 발주 화면 갱신
+          </button>
+        </div>
+      </div>
+    </div>`
+
+  window._savedYear  = year
+  window._savedMonth = month
+  document.body.appendChild(resultModal)
 }
 
 window.submitClosingRequest = async function(year, month) {
