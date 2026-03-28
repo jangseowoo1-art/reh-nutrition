@@ -6048,9 +6048,10 @@ function updateDayTotal(date) {
 
   // 카테고리 모드: dayRatioCell 업데이트
   const ratioCell = document.getElementById(`dayRatioCell-${date}`)
-  if (ratioCell) {
+  const _patientCatsForUpdate = window._patientCats || []
+  if (ratioCell || _patientCatsForUpdate.length > 0) {
     const vendors = window._ordersVendors || []
-    const patientCats = window._patientCats || []
+    const patientCats = _patientCatsForUpdate
     const catTotals = {}
     patientCats.forEach(cat => { catTotals[cat.id] = 0 })
 
@@ -6123,8 +6124,10 @@ function updateDayTotal(date) {
       </div>`
     }).join('')
 
-    ratioCell.innerHTML = `<div style="font-size:9px;color:#9ca3af;margin-bottom:1px">일별 발주</div><div style="font-size:10px;font-weight:700;color:${dColor}">${grandTotal>0?fmt(grandTotal):'-'}</div>${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%</div>`:(grandTotal>0&&adjBudget===0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}<div style="margin-top:3px;border-top:1px solid #e5e7eb;padding-top:2px">${barsHtml}</div>`
-    ratioCell.style.background = grandTotal > 0 ? dBg : '#f9fafb'
+    if (ratioCell) {
+      ratioCell.innerHTML = `<div style="font-size:9px;color:#9ca3af;margin-bottom:1px">일별 발주</div><div style="font-size:10px;font-weight:700;color:${dColor}">${grandTotal>0?fmt(grandTotal):'-'}</div>${dayPct!==null?`<div style="font-size:9px;color:${dColor};font-weight:600">${dayPct}%</div>`:(grandTotal>0&&adjBudget===0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}<div style="margin-top:3px;border-top:1px solid #e5e7eb;padding-top:2px">${barsHtml}</div>`
+      ratioCell.style.background = grandTotal > 0 ? dBg : '#f9fafb'
+    }
 
     // 카테고리별 소계 셀(vcatsubt) + 업체합산(vcat-sum) 업데이트
     // ── 근본 수정: _catDailyMap 기준, 현재 편집 중인 쌍만 DOM 값 반영 ──
