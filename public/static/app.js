@@ -3131,9 +3131,10 @@ async function renderOrders() {
                   <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
                   <span id="vcat-today-target-${v.id}-${cat.id}-${dateStr}" style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
                 </div>
-                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'block':'none'};height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:3px;overflow:hidden">
+                <div id="vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'block':'none'};height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
                   <div id="vcat-today-bar-${v.id}-${cat.id}-${dateStr}" style="height:3px;width:${Math.min(vTodayPct||0,100)}%;background:${vTodayColor};border-radius:2px;transition:width 0.3s"></div>
                 </div>
+                <div id="vcat-today-pct-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0&&vTodayPct!==null?'flex':'none'};justify-content:flex-end;font-size:8px;font-weight:700;color:${vTodayColor};margin-bottom:3px">${vTodayPct!==null?vTodayPct+'%':''}</div>
                 <!-- 누적 발주 / 월 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
                   <span>누적 발주</span>
@@ -6301,6 +6302,7 @@ function updateDayTotal(date) {
         const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}-${date}`)
         const barWrapEl = document.getElementById(`vcat-today-bar-wrap-${v.id}-${cat.id}-${date}`)
         const barInnerEl = document.getElementById(`vcat-today-bar-${v.id}-${cat.id}-${date}`)
+        const pctTextEl = document.getElementById(`vcat-today-pct-${v.id}-${cat.id}-${date}`)
         if (vTodayTarget5 > 0) {
           if (targetRowEl) targetRowEl.style.display = 'flex'
           if (barWrapEl) barWrapEl.style.display = 'block'
@@ -6310,9 +6312,16 @@ function updateDayTotal(date) {
             barInnerEl.style.width = Math.min(vTodayPct5 || 0, 100) + '%'
             barInnerEl.style.background = vTodayColor5
           }
+          // 진행률 % 텍스트 업데이트
+          if (pctTextEl) {
+            pctTextEl.style.display = vTodayPct5 !== null ? 'flex' : 'none'
+            pctTextEl.textContent = vTodayPct5 !== null ? vTodayPct5 + '%' : ''
+            pctTextEl.style.color = vTodayColor5
+          }
         } else {
           if (targetRowEl) targetRowEl.style.display = 'none'
           if (barWrapEl) barWrapEl.style.display = 'none'
+          if (pctTextEl) pctTextEl.style.display = 'none'
         }
 
         // 누적 발주 셀 업데이트 (날짜 포함 ID)
