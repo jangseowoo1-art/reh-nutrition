@@ -14301,7 +14301,7 @@ async function renderReport(selectedHospitalId = null) {
 
   // 식수 분류별 상세 breakdown (보고서 PAGE 6용)
   const rptMealFieldBreakdown = summaryData?.mealFieldBreakdown || []
-  const rptPrevMonth = summaryData?.prevMonth || {}
+  // rptPrevMonth는 아래(line ~14350)에서 선언됨
 
   // ── 새 보고서 섹션용 변수 매핑 ──────────────────────────────────────────
   // settings에서 meal_price 가져오기 (summaryData.settings 혹은 catDietPrices[0].targetPrice)
