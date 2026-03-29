@@ -7075,13 +7075,13 @@ function buildMealRow(day, mealMap, customFields, colCount) {
     include_in_meal_price: f.include_in_meal_price || 0,
   }))
 
-  // 소계: 커스텀 필드만 합산 (기본칸 제거)
-  const bfSum = cVals.reduce((s,c)=>s+c.bf,0)
-  const lSum  = cVals.reduce((s,c)=>s+c.l,0)
-  const dSum  = cVals.reduce((s,c)=>s+c.d,0)
-  // grandTotal: 비급여 include_in_meal_price=0 제외
+  // 소계/합계: 비급여(include_in_meal_price=0인 noncovered) 제외 기준으로 통일
   const cValsForGrand = cVals.filter(c => !(c.parent_type==='noncovered' && !c.include_in_meal_price))
-  const tGrand = cValsForGrand.reduce((s,c)=>s+c.bf+c.l+c.d,0)
+  const bfSum = cValsForGrand.reduce((s,c)=>s+c.bf,0)
+  const lSum  = cValsForGrand.reduce((s,c)=>s+c.l,0)
+  const dSum  = cValsForGrand.reduce((s,c)=>s+c.d,0)
+  // grandTotal: 조식소계 + 중식소계 + 석식소계 (동일 기준)
+  const tGrand = bfSum + lSum + dSum
 
   const mealSections = [
     { prefix:'bf', border:'#3b82f6', bg:'#dbeafe', cPrefix:'bf', sum:bfSum, sumId:`bf-sum-${dateStr}`, sumBg:'bg-blue-50 text-blue-800' },
@@ -7136,10 +7136,11 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
       cD[f.field_key]  += cd[f.field_key]?.d||0
     })
   })
-  // 커스텀 필드만 합산 (기본 직원/비급/보호 제거)
-  const bfTotal = customFields.reduce((s,f)=>s+cBf[f.field_key],0)
-  const lTotal  = customFields.reduce((s,f)=>s+cL[f.field_key],0)
-  const dTotal  = customFields.reduce((s,f)=>s+cD[f.field_key],0)
+  // 소계: 비급여(include_in_meal_price=0인 noncovered) 제외 기준으로 통일
+  const cfFiltered = customFields.filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
+  const bfTotal = cfFiltered.reduce((s,f)=>s+cBf[f.field_key],0)
+  const lTotal  = cfFiltered.reduce((s,f)=>s+cL[f.field_key],0)
+  const dTotal  = cfFiltered.reduce((s,f)=>s+cD[f.field_key],0)
 
   // diet type별 배경색
   const footBg = { patient:'bg-blue-50', therapy:'bg-green-50', noncovered:'bg-purple-50', staff:'bg-amber-50' }
@@ -7240,20 +7241,22 @@ function updateMealRowTotals(date) {
       }))
     : (window._mealCustomFields || [])
 
-  // 커스텀 합계만 (기본 직원/비급/보호 제거)
+  // 커스텀 합계: 비급여(include_in_meal_price=0인 noncovered) 제외 기준으로 통일
   let bfC=0, lC=0, dC=0
   const customTotals = {}
+  const cfFiltered = cf.filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
   cf.forEach(f => {
     const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
-    bfC+=bfv; lC+=lv; dC+=dv
     customTotals[f.field_key] = bfv+lv+dv
   })
+  cfFiltered.forEach(f => {
+    const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
+    bfC+=bfv; lC+=lv; dC+=dv
+  })
 
+  // 소계/합계 모두 비급여 제외 기준으로 통일 → 합계 = 조식소계 + 중식소계 + 석식소계
   const bfSum = bfC, lSum = lC, dSum = dC
-  // 총식수: 비급여 include_in_meal_price=0 제외
-  const tGrand = cf
-    .filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
-    .reduce((s,f) => s+(customTotals[f.field_key]||0), 0)
+  const tGrand = bfSum + lSum + dSum
 
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v||'' }
   set(`bf-sum-${date}`, bfSum)
@@ -7311,10 +7314,11 @@ function updateMealSummaryCards() {
     })
   }
 
-  // 하단 footer 행 실시간 업데이트 (커스텀 필드만)
-  const bfTotal = cf.reduce((s,f)=>s+bfC[f.field_key],0)
-  const lTotal  = cf.reduce((s,f)=>s+lC[f.field_key],0)
-  const dTotal  = cf.reduce((s,f)=>s+dC[f.field_key],0)
+  // 하단 footer 행 실시간 업데이트: 소계/합계 모두 비급여 제외 기준으로 통일
+  const cfFiltered = cf.filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
+  const bfTotal = cfFiltered.reduce((s,f)=>s+bfC[f.field_key],0)
+  const lTotal  = cfFiltered.reduce((s,f)=>s+lC[f.field_key],0)
+  const dTotal  = cfFiltered.reduce((s,f)=>s+dC[f.field_key],0)
   cf.forEach(f => { set(`mealFoot-bf-${f.field_key}`,bfC[f.field_key]); set(`mealFoot-l-${f.field_key}`,lC[f.field_key]); set(`mealFoot-d-${f.field_key}`,dC[f.field_key]) })
   set('mealFoot-bf-sum',bfTotal); set('mealFoot-l-sum',lTotal); set('mealFoot-d-sum',dTotal)
   cf.forEach(f => { set(`mealFoot-t-${f.field_key}`,customSums[f.field_key]) })
