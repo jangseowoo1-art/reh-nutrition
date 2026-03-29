@@ -305,6 +305,7 @@ function getAdminMenus() {
     { id: 'admin', icon: 'fa-th-large', label: '전체 현황', section: '관리자' },
     { id: 'hospital-manage', icon: 'fa-hospital', label: '병원 관리', section: null },
     { id: 'holiday-manage', icon: 'fa-calendar-times', label: '공휴일 관리', section: null },
+    { id: 'staff-manage', icon: 'fa-users-cog', label: '직원 관리', section: '인사' },
     { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
     { id: 'report', icon: 'fa-file-pdf', label: '보고서 출력', section: null },
     { id: 'ceo-dashboard', icon: 'fa-crown', label: '경영 대시보드', section: '경영' },
@@ -376,6 +377,7 @@ function navigateTo(page, forceReload = false) {
     admin: { title: '전체 병원 현황', sub: '관리자 - 실시간 모니터링' },
     'hospital-manage': { title: '병원 관리', sub: '병원 정보 및 예산 설정' },
     'holiday-manage': { title: '공휴일 관리', sub: '공휴일 조회 및 수동 추가' },
+    'staff-manage': { title: '직원 관리', sub: '전체 병원 직원 인사카드 관리' },
     report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' },
     'expense-doc': { title: '지출결의서', sub: '법인카드 사용 내역 결의서' },
     'ceo-dashboard': { title: '경영 대시보드', sub: 'CEO · 경영진 운영 현황 분석' },
@@ -415,6 +417,7 @@ function navigateTo(page, forceReload = false) {
     settings: renderSettings,  admin: renderAdminDashboard,
     'hospital-manage': renderHospitalManage,
     'holiday-manage':  renderHolidayManage,
+    'staff-manage': renderAdminStaffManage,
     report: renderReport,
     'expense-doc': renderExpenseDoc,
     'ingredient-prices': renderIngredientPricesPage,  // #8 독립 메뉴
@@ -423,7 +426,7 @@ function navigateTo(page, forceReload = false) {
   }
 
   // 영양사 역할에서 관리자 전용 메뉴 접근 차단
-  const adminOnlyPages = ['analysis', 'ingredient-prices']
+  const adminOnlyPages = ['analysis', 'ingredient-prices', 'staff-manage']
   if (App.role !== 'admin' && adminOnlyPages.includes(page)) {
     document.getElementById('pageContent').innerHTML =
       '<div class="text-center text-gray-400 py-20"><i class="fas fa-lock text-4xl mb-3 block"></i>관리자 전용 메뉴입니다</div>'
@@ -12035,6 +12038,466 @@ window.schedCycleShift = async (empId, date, cell, codesJson) => {
   }
 }
 
+
+// ══════════════════════════════════════════════════════════════
+//  관리자 직원 관리 페이지 (전체 병원)
+// ══════════════════════════════════════════════════════════════
+let adminStaffHospitalFilter = 'all'
+let adminStaffTeamFilter = 'all'
+let adminStaffSearchQuery = ''
+let adminStaffAllData = []  // 전체 직원 데이터 (병원명 포함)
+let adminStaffHospitals = []
+
+async function renderAdminStaffManage() {
+  const content = document.getElementById('pageContent')
+  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+
+  const [hospitals, employees, positions] = await Promise.all([
+    api('GET', '/api/admin/hospitals').catch(() => []),
+    api('GET', '/api/schedule/employees').catch(() => []),
+    api('GET', '/api/schedule/positions').catch(() => [])
+  ])
+
+  adminStaffHospitals = hospitals || []
+  adminStaffAllData = employees || []
+  schedulePositions = positions || []
+
+  renderAdminStaffContent(content)
+}
+
+function renderAdminStaffContent(content) {
+  const hospitals = adminStaffHospitals
+  const allEmps = adminStaffAllData
+
+  // 필터링
+  let filtered = allEmps
+  if (adminStaffHospitalFilter !== 'all') {
+    filtered = filtered.filter(e => String(e.hospital_id) === String(adminStaffHospitalFilter))
+  }
+  if (adminStaffTeamFilter !== 'all') {
+    filtered = filtered.filter(e => (e.team || 'cook') === adminStaffTeamFilter)
+  }
+  if (adminStaffSearchQuery) {
+    const q = adminStaffSearchQuery.toLowerCase()
+    filtered = filtered.filter(e =>
+      e.name?.toLowerCase().includes(q) ||
+      e.position?.toLowerCase().includes(q) ||
+      e.phone?.includes(q) ||
+      e.hospital_name?.toLowerCase().includes(q)
+    )
+  }
+
+  // 병원별 직원 수 집계
+  const hospCounts = {}
+  allEmps.forEach(e => {
+    hospCounts[e.hospital_id] = (hospCounts[e.hospital_id] || 0) + 1
+  })
+
+  // 보건증 만료 임박 집계
+  const today = new Date().toISOString().slice(0,10)
+  const d10 = new Date(); d10.setDate(d10.getDate()+10)
+  const d10Str = d10.toISOString().slice(0,10)
+  const certAlerts = allEmps.filter(e => e.health_cert_expire && e.health_cert_expire <= d10Str)
+
+  content.innerHTML = `
+  <div class="space-y-4">
+    <!-- 헤더 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+      <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
+        <div>
+          <h2 class="font-bold text-gray-800 text-lg">직원 관리 <span class="text-base font-normal text-gray-400">전체 병원</span></h2>
+          <p class="text-xs text-gray-400 mt-0.5">전체 ${allEmps.length}명 · 보건증 만료 임박 ${certAlerts.length}명</p>
+        </div>
+        <button onclick="openAdminEmpAddModal()"
+          class="btn btn-success">
+          <i class="fas fa-user-plus mr-2"></i>직원 추가
+        </button>
+      </div>
+
+      <!-- 통계 카드 -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div class="bg-blue-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-blue-700">${allEmps.length}</div>
+          <div class="text-xs text-blue-500 mt-0.5">전체 직원</div>
+        </div>
+        <div class="bg-green-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-green-700">${allEmps.filter(e=>e.team==='cook'||!e.team).length}</div>
+          <div class="text-xs text-green-500 mt-0.5">조리팀</div>
+        </div>
+        <div class="bg-pink-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-pink-700">${allEmps.filter(e=>e.team==='nutrition').length}</div>
+          <div class="text-xs text-pink-500 mt-0.5">영양팀</div>
+        </div>
+        <div class="bg-amber-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-amber-700">${certAlerts.length}</div>
+          <div class="text-xs text-amber-500 mt-0.5">보건증 만료임박</div>
+        </div>
+      </div>
+
+      <!-- 필터 -->
+      <div class="flex flex-wrap gap-3 items-center">
+        <!-- 병원 필터 -->
+        <select onchange="adminStaffHospitalFilter=this.value;renderAdminStaffContent(document.getElementById('pageContent'))"
+          class="form-input text-sm py-1.5 min-w-[160px]">
+          <option value="all" ${adminStaffHospitalFilter==='all'?'selected':''}>전체 병원</option>
+          ${hospitals.map(h => `
+            <option value="${h.id}" ${adminStaffHospitalFilter==h.id?'selected':''}>
+              ${h.name} (${hospCounts[h.id]||0}명)
+            </option>
+          `).join('')}
+        </select>
+        <!-- 팀 필터 -->
+        <div class="flex gap-1">
+          ${[['all','전체'],['cook','조리팀'],['nutrition','영양팀']].map(([v,l]) => `
+            <button onclick="adminStaffTeamFilter='${v}';renderAdminStaffContent(document.getElementById('pageContent'))"
+              class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${adminStaffTeamFilter===v
+                ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">
+              ${l}
+            </button>
+          `).join('')}
+        </div>
+        <!-- 검색 -->
+        <div class="relative flex-1 min-w-[200px]">
+          <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+          <input type="text" placeholder="이름/직위/연락처 검색..."
+            value="${adminStaffSearchQuery}"
+            oninput="adminStaffSearchQuery=this.value;renderAdminStaffContent(document.getElementById('pageContent'))"
+            class="form-input text-sm py-1.5 pl-8 w-full">
+        </div>
+        <span class="text-sm text-gray-500">${filtered.length}명 표시</span>
+      </div>
+    </div>
+
+    <!-- 보건증 만료 임박 알림 -->
+    ${certAlerts.length > 0 ? `
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <i class="fas fa-exclamation-triangle text-amber-500 animate-pulse"></i>
+        <span class="font-bold text-amber-800">보건증 만료 임박 직원 (${certAlerts.length}명)</span>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        ${certAlerts.map(e => {
+          const isExpired = e.health_cert_expire < today
+          const d3str = new Date(Date.now()+3*86400000).toISOString().slice(0,10)
+          const color = isExpired ? 'text-red-800 font-bold' : e.health_cert_expire <= d3str ? 'text-red-600' : 'text-yellow-700'
+          return `<span class="text-sm ${color} bg-white border border-amber-200 px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+            <span class="text-xs text-gray-400">${e.hospital_name || '병원'}</span>
+            <span class="font-semibold">${e.name}</span>
+            <span class="text-xs">${e.health_cert_expire} (${isExpired?'만료':e.health_cert_expire<=d3str?'D-3':'D-10'})</span>
+          </span>`
+        }).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- 직원 테이블 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+        <span class="text-sm font-semibold text-gray-700">직원 목록</span>
+        <span class="text-xs text-gray-400">${filtered.length}명</span>
+      </div>
+      ${filtered.length === 0 ? `
+      <div class="p-12 text-center text-gray-400">
+        <i class="fas fa-users text-4xl mb-3 block"></i>
+        <p>${adminStaffSearchQuery ? '검색 결과가 없습니다' : '등록된 직원이 없습니다'}</p>
+      </div>` : `
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-100">
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">병원</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[100px]">이름</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[70px]">팀</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">직위</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">고용형태</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">입사일</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[100px]">보건증만료</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">검진상태</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">연락처</th>
+              <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 min-w-[80px]">관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filtered.map((emp, idx) => {
+              const empType = EMPLOYMENT_LABELS[emp.employment_type] || EMPLOYMENT_LABELS.full
+              const tl = TEAM_LABELS[emp.team || 'cook'] || TEAM_LABELS.cook
+              const certExpire = emp.health_cert_expire
+              const d3str = new Date(Date.now()+3*86400000).toISOString().slice(0,10)
+              let certStatus = 'ok', certColor = 'text-gray-600'
+              if (certExpire) {
+                if (certExpire < today) { certStatus = 'expired'; certColor = 'text-red-700 font-bold' }
+                else if (certExpire <= d3str) { certStatus = 'urgent'; certColor = 'text-red-600' }
+                else if (certExpire <= d10Str) { certStatus = 'warning'; certColor = 'text-yellow-600' }
+              }
+              const es = EXAM_STATUS[emp.health_exam_status || 'pending']
+              const rowBg = idx % 2 === 0 ? '' : 'bg-gray-50/40'
+              return `
+              <tr class="border-b border-gray-100 hover:bg-blue-50/30 ${rowBg}">
+                <td class="px-4 py-2.5">
+                  <span class="text-xs font-medium text-gray-600">${emp.hospital_name || '-'}</span>
+                </td>
+                <td class="px-4 py-2.5">
+                  <div class="font-semibold text-gray-800">${emp.name}</div>
+                  ${emp.emp_number ? `<div class="text-xs text-gray-400">${emp.emp_number}</div>` : ''}
+                </td>
+                <td class="px-4 py-2.5">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${tl.color}">
+                    ${tl.label}
+                  </span>
+                </td>
+                <td class="px-4 py-2.5 text-gray-600 text-xs">${emp.position_name || emp.position || '-'}</td>
+                <td class="px-4 py-2.5">
+                  <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${empType.color}">
+                    ${empType.label}
+                  </span>
+                </td>
+                <td class="px-4 py-2.5 text-gray-500 text-xs">${emp.hire_date || '-'}</td>
+                <td class="px-4 py-2.5">
+                  ${certExpire
+                    ? `<span class="text-xs ${certColor}">${certExpire}${certStatus!=='ok'?` (${CERT_STATUS[certStatus]?.label})`:''}` + `</span>`
+                    : '<span class="text-gray-300 text-xs">-</span>'}
+                </td>
+                <td class="px-4 py-2.5">
+                  <span class="text-xs ${es.color}">${es.label}</span>
+                </td>
+                <td class="px-4 py-2.5 text-gray-500 text-xs">${emp.phone || '-'}</td>
+                <td class="px-4 py-2.5">
+                  <div class="flex items-center justify-center gap-1">
+                    <button onclick="openAdminEmpEditModal(${emp.id})"
+                      class="p-1.5 rounded hover:bg-blue-100 hover:text-blue-600 text-gray-400 transition-colors" title="수정">
+                      <i class="fas fa-pen text-xs"></i>
+                    </button>
+                    <button onclick="adminResignEmployee(${emp.id},'${emp.name}')"
+                      class="p-1.5 rounded hover:bg-red-100 hover:text-red-600 text-gray-400 transition-colors" title="퇴사처리">
+                      <i class="fas fa-user-minus text-xs"></i>
+                    </button>
+                  </div>
+                </td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+  </div>
+
+  <!-- 관리자 직원 추가/수정 모달 -->
+  <div id="adminEmpModal" class="hidden modal-overlay" style="z-index:1000">
+    <div class="modal-box max-w-2xl p-0 overflow-hidden">
+      <div class="bg-gray-800 text-white px-6 py-4 flex items-center justify-between">
+        <h3 class="font-bold text-lg" id="adminEmpModalTitle">
+          <i class="fas fa-id-card mr-2"></i>직원 추가
+        </h3>
+        <button onclick="document.getElementById('adminEmpModal').classList.add('hidden')"
+          class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
+      </div>
+      <div class="p-6 overflow-y-auto" style="max-height:75vh">
+        <input type="hidden" id="aem_id">
+        <div class="grid grid-cols-2 gap-x-6 gap-y-4">
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700">병원 선택 <span class="text-red-500">*</span></label>
+            <select id="aem_hospital" class="form-input mt-1">
+              ${hospitals.map(h => `<option value="${h.id}">${h.name}</option>`).join('')}
+            </select>
+          </div>
+          <div class="col-span-2"><h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide border-b pb-1">기본 정보</h4></div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">이름 <span class="text-red-500">*</span></label>
+            <input type="text" id="aem_name" class="form-input mt-1" placeholder="홍길동">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">직원번호</label>
+            <input type="text" id="aem_empNumber" class="form-input mt-1" placeholder="EMP-001">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">팀</label>
+            <select id="aem_team" class="form-input mt-1">
+              <option value="cook">조리팀</option>
+              <option value="nutrition">영양팀</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">직위</label>
+            <select id="aem_positionId" class="form-input mt-1">
+              <option value="">직접입력</option>
+              ${schedulePositions.map(p => `<option value="${p.id}">${p.name} (${p.team==='cook'?'조리':'영양'})</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
+            <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">고용형태</label>
+            <select id="aem_employmentType" class="form-input mt-1">
+              ${Object.entries(EMPLOYMENT_LABELS).map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="col-span-2"><h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide border-b pb-1 mt-1">날짜</h4></div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">생년월일</label>
+            <input type="date" id="aem_birthDate" class="form-input mt-1">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">입사일</label>
+            <input type="date" id="aem_hireDate" class="form-input mt-1">
+          </div>
+          <div class="col-span-2"><h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide border-b pb-1 mt-1">연락처</h4></div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">전화번호</label>
+            <input type="tel" id="aem_phone" class="form-input mt-1" placeholder="010-0000-0000">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">비상연락처</label>
+            <input type="tel" id="aem_emergencyContact" class="form-input mt-1" placeholder="010-0000-0000">
+          </div>
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700">주소</label>
+            <input type="text" id="aem_address" class="form-input mt-1" placeholder="서울시 강남구...">
+          </div>
+          <div class="col-span-2"><h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide border-b pb-1 mt-1">보건증 / 검진</h4></div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">보건증 만료일</label>
+            <input type="date" id="aem_healthCertExpire" class="form-input mt-1">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">건강검진일</label>
+            <input type="date" id="aem_healthExamDate" class="form-input mt-1">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">검진 제출 상태</label>
+            <select id="aem_healthExamStatus" class="form-input mt-1">
+              ${Object.entries(EXAM_STATUS).map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">연차 총일수</label>
+            <input type="number" id="aem_annualLeave" class="form-input mt-1" min="0" max="30" step="0.5" value="15">
+          </div>
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700">메모</label>
+            <textarea id="aem_note" class="form-input mt-1" rows="2" placeholder="특이사항..."></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t flex gap-3">
+        <button onclick="saveAdminEmployee()" class="btn btn-primary flex-1">
+          <i class="fas fa-save mr-2"></i><span id="aem_btnLabel">추가</span>
+        </button>
+        <button onclick="document.getElementById('adminEmpModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
+      </div>
+    </div>
+  </div>
+  `
+}
+
+// 관리자 직원 모달 핸들러
+window.openAdminEmpAddModal = () => {
+  document.getElementById('aem_id').value = ''
+  document.getElementById('adminEmpModalTitle').innerHTML = '<i class="fas fa-id-card mr-2"></i>직원 추가'
+  document.getElementById('aem_btnLabel').textContent = '추가'
+  // 폼 초기화
+  ;['aem_name','aem_empNumber','aem_position','aem_phone','aem_emergencyContact','aem_address','aem_note'].forEach(id => {
+    const el = document.getElementById(id)
+    if (el) el.value = ''
+  })
+  ;['aem_birthDate','aem_hireDate','aem_healthCertExpire','aem_healthExamDate'].forEach(id => {
+    const el = document.getElementById(id)
+    if (el) el.value = ''
+  })
+  const annEl = document.getElementById('aem_annualLeave')
+  if (annEl) annEl.value = 15
+  const stEl = document.getElementById('aem_healthExamStatus')
+  if (stEl) stEl.value = 'pending'
+  const emEl = document.getElementById('aem_employmentType')
+  if (emEl) emEl.value = 'full'
+  document.getElementById('adminEmpModal').classList.remove('hidden')
+}
+
+window.openAdminEmpEditModal = async (empId) => {
+  const emp = await api('GET', `/api/schedule/employees/${empId}`).catch(() => null)
+  if (!emp) { showToast('직원 정보를 불러올 수 없습니다', 'error'); return }
+
+  document.getElementById('aem_id').value = emp.id
+  document.getElementById('adminEmpModalTitle').innerHTML = `<i class="fas fa-id-card mr-2"></i>${emp.name} 수정`
+  document.getElementById('aem_btnLabel').textContent = '수정 저장'
+
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || '' }
+  setVal('aem_hospital', emp.hospital_id)
+  setVal('aem_name', emp.name)
+  setVal('aem_empNumber', emp.emp_number)
+  setVal('aem_team', emp.team || 'cook')
+  setVal('aem_positionId', emp.position_id || '')
+  setVal('aem_position', emp.position)
+  setVal('aem_employmentType', emp.employment_type || 'full')
+  setVal('aem_birthDate', emp.birth_date)
+  setVal('aem_hireDate', emp.hire_date)
+  setVal('aem_phone', emp.phone)
+  setVal('aem_emergencyContact', emp.emergency_contact)
+  setVal('aem_address', emp.address)
+  setVal('aem_healthCertExpire', emp.health_cert_expire)
+  setVal('aem_healthExamDate', emp.health_exam_date)
+  setVal('aem_healthExamStatus', emp.health_exam_status || 'pending')
+  setVal('aem_annualLeave', emp.annual_leave_total || 15)
+  setVal('aem_note', emp.note)
+
+  document.getElementById('adminEmpModal').classList.remove('hidden')
+}
+
+window.saveAdminEmployee = async () => {
+  const id = document.getElementById('aem_id').value
+  const name = document.getElementById('aem_name')?.value?.trim()
+  const hospitalId = document.getElementById('aem_hospital')?.value
+  if (!name) { showToast('이름은 필수입니다', 'error'); return }
+  if (!hospitalId) { showToast('병원을 선택하세요', 'error'); return }
+
+  const body = {
+    hospitalId: parseInt(hospitalId),
+    name,
+    empNumber: document.getElementById('aem_empNumber')?.value || '',
+    team: document.getElementById('aem_team')?.value || 'cook',
+    positionId: document.getElementById('aem_positionId')?.value || null,
+    position: document.getElementById('aem_position')?.value || '',
+    employmentType: document.getElementById('aem_employmentType')?.value || 'full',
+    birthDate: document.getElementById('aem_birthDate')?.value || '',
+    hireDate: document.getElementById('aem_hireDate')?.value || '',
+    phone: document.getElementById('aem_phone')?.value || '',
+    emergencyContact: document.getElementById('aem_emergencyContact')?.value || '',
+    address: document.getElementById('aem_address')?.value || '',
+    healthCertExpire: document.getElementById('aem_healthCertExpire')?.value || '',
+    healthExamDate: document.getElementById('aem_healthExamDate')?.value || '',
+    healthExamStatus: document.getElementById('aem_healthExamStatus')?.value || 'pending',
+    annualLeaveTotal: parseFloat(document.getElementById('aem_annualLeave')?.value || '15'),
+    note: document.getElementById('aem_note')?.value || ''
+  }
+
+  let res
+  if (id) {
+    res = await api('PUT', `/api/schedule/employees/${id}`, body)
+  } else {
+    res = await api('POST', '/api/schedule/employees', body)
+  }
+
+  if (res?.success) {
+    document.getElementById('adminEmpModal').classList.add('hidden')
+    showToast(id ? '수정되었습니다' : '직원이 추가되었습니다', 'success')
+    // 전체 데이터 리로드
+    adminStaffAllData = await api('GET', '/api/schedule/employees').catch(() => [])
+    renderAdminStaffContent(document.getElementById('pageContent'))
+  } else {
+    showToast(res?.error || '저장 실패', 'error')
+  }
+}
+
+window.adminResignEmployee = (empId, name) => {
+  if (!confirm(`"${name}" 직원을 퇴사 처리하시겠습니까?\n퇴사일이 오늘로 설정됩니다.`)) return
+  api('DELETE', `/api/schedule/employees/${empId}`).then(async res => {
+    if (res?.success) {
+      showToast(`${name}님 퇴사 처리됨`, 'success')
+      adminStaffAllData = await api('GET', '/api/schedule/employees').catch(() => [])
+      renderAdminStaffContent(document.getElementById('pageContent'))
+    }
+  })
+}
 
 // ══════════════════════════════════════════════════════════════
 //  병원 관리 페이지 (관리자)
