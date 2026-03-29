@@ -6537,17 +6537,55 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   const linkedTherapyIds = new Set(patientGroupStructure.flatMap(pg => pg.therapyItems.map(t => t.id)))
   const unlinkedTherapies = therapyDefs.filter(t => !linkedTherapyIds.has(t.id))
 
-  // dietCats를 커스텀필드 형태로 변환 (field_key = legacy_field_key || diet_key)
-  const toFieldObj = (dc) => ({
-    field_key: dc.legacy_field_key || dc.diet_key,
-    field_name: dc.diet_name,
-    unit_type: 'meal',
-    diet_id: dc.id,
-    parent_type: dc.parent_type,
-    diet_key: dc.diet_key,
-    linked_patient_group: dc.linked_patient_group || dc.patient_group || null,
-    include_in_meal_price: dc.include_in_meal_price || 0,
+  // ── patientCats의 meals_include_keys를 모두 합산해 inMealsFormula 판단 ──
+  // meals_include_keys: ["st_key_xxx","cat_xxx","th_key_xxx","nc_key_xxx"] 형태
+  // 각 dietCat의 diet_key가 해당 패턴으로 포함되어 있으면 inMealsFormula=true
+  const allMealsKeys = new Set()
+  patientCats.forEach(pc => {
+    try {
+      const keys = JSON.parse(pc.meals_include_keys || 'null') || []
+      keys.forEach(k => allMealsKeys.add(k))
+    } catch(e) {}
   })
+
+  // diet_key → meals_include_keys 패턴 매핑
+  // patient:    legacy_field_key가 있으면 그 값 직접 사용 (ex: cat_cancer), 없으면 cat_{diet_key}
+  // therapy:    th_key_{diet_key}
+  // noncovered: nc_key_{diet_key}
+  // staff:      st_key_{diet_key}
+  const getMealsKey = (dc) => {
+    const dk = dc.diet_key
+    if (dc.parent_type === 'patient') {
+      // legacy_field_key가 cat_xxx 형태이면 그대로 사용 (예: legacy_cancer → cat_cancer)
+      if (dc.legacy_field_key) return dc.legacy_field_key
+      return `cat_${dk}`
+    }
+    if (dc.parent_type === 'therapy')    return `th_key_${dk}`
+    if (dc.parent_type === 'noncovered') return `nc_key_${dk}`
+    if (dc.parent_type === 'staff')      return `st_key_${dk}`
+    return `cat_${dk}`
+  }
+
+  // dietCats를 커스텀필드 형태로 변환 (field_key = legacy_field_key || diet_key)
+  const toFieldObj = (dc) => {
+    const mealsKey = getMealsKey(dc)
+    // meals_include_keys 설정이 전혀 없는 경우(allMealsKeys 비어있음) → 기존 include_in_meal_price 폴백
+    const hasMealsConfig = allMealsKeys.size > 0
+    const inMealsFormula = hasMealsConfig
+      ? allMealsKeys.has(mealsKey)
+      : (dc.parent_type !== 'noncovered' || (dc.include_in_meal_price || 0) > 0)
+    return {
+      field_key: dc.legacy_field_key || dc.diet_key,
+      field_name: dc.diet_name,
+      unit_type: 'meal',
+      diet_id: dc.id,
+      parent_type: dc.parent_type,
+      diet_key: dc.diet_key,
+      linked_patient_group: dc.linked_patient_group || dc.patient_group || null,
+      include_in_meal_price: dc.include_in_meal_price || 0,
+      inMealsFormula,  // 식수 합산 포함 여부 (관리자 설정 기준)
+    }
+  }
 
   // ── 테이블 컬럼 순서 구성 ──
   // 일반식(환자군만) | 치료식(모든 치료식) | 비급여식 | 직원식
@@ -6604,16 +6642,10 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
     })
   })
 
-  // 기본 + 커스텀 합계 (커스텀 중 ea 단위는 grandTotal에서 제외)
-  // 비급여식 중 include_in_meal_price=0 인 항목은 식단가 계산(grandTotal)에서 제외
+  // 총 식수: ea 제외 + 관리자 meals_include_keys 설정(inMealsFormula) 기준
   const customTotalForMeals = effectiveCustomFields
-    .filter(f => {
-      if (f.unit_type === 'ea') return false  // ea 단위 제외
-      if (f.parent_type === 'noncovered' && !f.include_in_meal_price) return false  // 비급여 미포함 제외
-      return true
-    })
+    .filter(f => f.unit_type !== 'ea' && f.inMealsFormula)
     .reduce((s, f) => s + (monthTotal.custom[f.field_key] || 0), 0)
-  // 총 식수: ea 제외, 비급여 중 포함여부 OFF 제외
   const grandTotal = customTotalForMeals
 
   // ── 컬럼 구성: diet category 기반만, baseLabels(직원/비급/보호) 완전 제거 ──
@@ -7073,10 +7105,11 @@ function buildMealRow(day, mealMap, customFields, colCount) {
     d:  cd[f.field_key]?.d  || 0,
     parent_type: f.parent_type || 'patient',
     include_in_meal_price: f.include_in_meal_price || 0,
+    inMealsFormula: f.inMealsFormula !== undefined ? f.inMealsFormula : true,
   }))
 
-  // 소계/합계: 비급여(include_in_meal_price=0인 noncovered) 제외 기준으로 통일
-  const cValsForGrand = cVals.filter(c => !(c.parent_type==='noncovered' && !c.include_in_meal_price))
+  // 소계/합계: 관리자 meals_include_keys(inMealsFormula) 기준으로 통일
+  const cValsForGrand = cVals.filter(c => c.inMealsFormula)
   const bfSum = cValsForGrand.reduce((s,c)=>s+c.bf,0)
   const lSum  = cValsForGrand.reduce((s,c)=>s+c.l,0)
   const dSum  = cValsForGrand.reduce((s,c)=>s+c.d,0)
@@ -7136,8 +7169,8 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
       cD[f.field_key]  += cd[f.field_key]?.d||0
     })
   })
-  // 소계: 비급여(include_in_meal_price=0인 noncovered) 제외 기준으로 통일
-  const cfFiltered = customFields.filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
+  // 소계: 관리자 meals_include_keys(inMealsFormula) 기준으로 통일
+  const cfFiltered = customFields.filter(f => f.inMealsFormula !== false)
   const bfTotal = cfFiltered.reduce((s,f)=>s+cBf[f.field_key],0)
   const lTotal  = cfFiltered.reduce((s,f)=>s+cL[f.field_key],0)
   const dTotal  = cfFiltered.reduce((s,f)=>s+cD[f.field_key],0)
@@ -7231,30 +7264,26 @@ async function saveMealRow(date) {
 
 function updateMealRowTotals(date) {
   const g = (k) => getMealVal(k, date)
-  // dietCats 우선
+  // effectiveCustomFields(_mealDietCats) 우선: inMealsFormula 플래그 포함
   const cf = (window._mealDietCats||[]).length > 0
-    ? (window._mealDietCats||[]).map(dc => ({
-        field_key: dc.legacy_field_key || dc.diet_key,
-        unit_type: 'meal',
-        parent_type: dc.parent_type,
-        include_in_meal_price: dc.include_in_meal_price || 0,
-      }))
+    ? (window._mealDietCats||[])
     : (window._mealCustomFields || [])
 
-  // 커스텀 합계: 비급여(include_in_meal_price=0인 noncovered) 제외 기준으로 통일
+  // 전체 합산 (개별 셀 표시용)
   let bfC=0, lC=0, dC=0
   const customTotals = {}
-  const cfFiltered = cf.filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
   cf.forEach(f => {
     const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
     customTotals[f.field_key] = bfv+lv+dv
   })
+  // 소계/합계: 관리자 meals_include_keys(inMealsFormula) 기준으로 통일
+  const cfFiltered = cf.filter(f => f.inMealsFormula !== false)
   cfFiltered.forEach(f => {
     const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
     bfC+=bfv; lC+=lv; dC+=dv
   })
 
-  // 소계/합계 모두 비급여 제외 기준으로 통일 → 합계 = 조식소계 + 중식소계 + 석식소계
+  // 합계 = 조식소계 + 중식소계 + 석식소계 (동일 기준)
   const bfSum = bfC, lSum = lC, dSum = dC
   const tGrand = bfSum + lSum + dSum
 
@@ -7290,9 +7319,9 @@ function updateMealSummaryCards() {
       bfC[f.field_key]+=bfv; lC[f.field_key]+=lv; dC[f.field_key]+=dv
     })
   })
-  // 총식수: 비급여 include_in_meal_price=0 제외
+  // 총식수: 관리자 meals_include_keys(inMealsFormula) 기준
   const grand = cf
-    .filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
+    .filter(f => f.inMealsFormula !== false)
     .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
 
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=fmt(v) }
@@ -7314,8 +7343,8 @@ function updateMealSummaryCards() {
     })
   }
 
-  // 하단 footer 행 실시간 업데이트: 소계/합계 모두 비급여 제외 기준으로 통일
-  const cfFiltered = cf.filter(f => !(f.parent_type==='noncovered' && !f.include_in_meal_price))
+  // 하단 footer 행 실시간 업데이트: 소계/합계 모두 관리자 meals_include_keys(inMealsFormula) 기준
+  const cfFiltered = cf.filter(f => f.inMealsFormula !== false)
   const bfTotal = cfFiltered.reduce((s,f)=>s+bfC[f.field_key],0)
   const lTotal  = cfFiltered.reduce((s,f)=>s+lC[f.field_key],0)
   const dTotal  = cfFiltered.reduce((s,f)=>s+dC[f.field_key],0)
