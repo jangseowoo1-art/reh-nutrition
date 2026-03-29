@@ -36,19 +36,33 @@ function buildHospitalFilter(
 
 /**
  * 카테고리별 식수 계산
- * meals_include_keys: ["staff","guardian","cat_cancer"] 형태
+ * meals_include_keys: ["staff","guardian","cat_cancer","nc_key_xxx","th_key_yyy","st_key_zzz"] 형태
  * daily_meals 행 하나에서 해당 카테고리 식수 합산
  *
- * - "staff"    → breakfast_staff + lunch_staff + dinner_staff
- * - "guardian" → breakfast_guardian + lunch_guardian + dinner_guardian
- * - "patient"  → breakfast_patient + lunch_patient + dinner_patient
- * - "cat_xxx"  → custom_data.cat_xxx.bf + l + d
+ * - "staff"       → breakfast_staff + lunch_staff + dinner_staff
+ * - "guardian"    → breakfast_guardian + lunch_guardian + dinner_guardian
+ * - "patient"     → breakfast_patient + lunch_patient + dinner_patient
+ * - "cat_xxx"     → custom_data.cat_xxx.bf + l + d
+ * - "nc_key_xxx"  → custom_data.diet_xxx.bf + l + d (비급여식)
+ * - "th_key_xxx"  → custom_data.diet_xxx.bf + l + d (치료식)
+ * - "st_key_xxx"  → custom_data.diet_xxx.bf + l + d (직원식, 없으면 total_staff 폴백)
  */
 function calcCategoryMeals(
   mealRow: any,
   mealsIncludeKeys: string[]
 ): number {
   let total = 0
+  // custom_data 파싱 캐시
+  let cd: any = null
+  const getCustomData = () => {
+    if (!cd) {
+      try { cd = mealRow._customData || (mealRow._customData = JSON.parse(mealRow.custom_data || '{}')) }
+      catch { cd = {} }
+    }
+    return cd
+  }
+
+  let hasStKey = false
   for (const key of mealsIncludeKeys) {
     if (key === 'staff') {
       total += (mealRow.breakfast_staff || 0) + (mealRow.lunch_staff || 0) + (mealRow.dinner_staff || 0)
@@ -57,13 +71,39 @@ function calcCategoryMeals(
     } else if (key === 'patient') {
       total += (mealRow.breakfast_patient || 0) + (mealRow.lunch_patient || 0) + (mealRow.dinner_patient || 0)
     } else if (key.startsWith('cat_')) {
-      try {
-        const cd = mealRow._customData || (mealRow._customData = JSON.parse(mealRow.custom_data || '{}'))
-        const cat = cd[key]
-        if (cat) total += (cat.bf || 0) + (cat.l || 0) + (cat.d || 0)
-      } catch {}
+      const customData = getCustomData()
+      const catEntry = customData[key]
+      if (catEntry) total += (catEntry.bf || 0) + (catEntry.l || 0) + (catEntry.d || 0)
+    } else if (key.startsWith('nc_key_')) {
+      // 비급여식: nc_key_{diet_key} → custom_data["diet_{diet_key}"]
+      const dietKey = key.slice('nc_key_'.length)
+      const customData = getCustomData()
+      const fieldKey = customData['diet_' + dietKey] ? ('diet_' + dietKey) : dietKey
+      const entry = customData[fieldKey]
+      if (entry) total += (entry.bf || 0) + (entry.l || 0) + (entry.d || 0)
+    } else if (key.startsWith('th_key_')) {
+      // 치료식: th_key_{diet_key} → custom_data["diet_{diet_key}"]
+      const dietKey = key.slice('th_key_'.length)
+      const customData = getCustomData()
+      const fieldKey = customData['diet_' + dietKey] ? ('diet_' + dietKey) : dietKey
+      const entry = customData[fieldKey]
+      if (entry) total += (entry.bf || 0) + (entry.l || 0) + (entry.d || 0)
+    } else if (key.startsWith('st_key_')) {
+      // 직원식: st_key_{diet_key} → custom_data["diet_{diet_key}"], 없으면 breakfast_staff 등 폴백
+      hasStKey = true
+      const dietKey = key.slice('st_key_'.length)
+      const customData = getCustomData()
+      const fieldKey = customData['diet_' + dietKey] ? ('diet_' + dietKey) : dietKey
+      const entry = customData[fieldKey]
+      if (entry) {
+        total += (entry.bf || 0) + (entry.l || 0) + (entry.d || 0)
+      } else {
+        // 커스텀 데이터 없으면 레거시 직원식 컬럼 사용
+        total += (mealRow.breakfast_staff || 0) + (mealRow.lunch_staff || 0) + (mealRow.dinner_staff || 0)
+      }
     }
   }
+  // st_key_ 처리됐는데 'staff' 키도 있으면 중복이므로 주의 (meals_include_keys 설계상 둘 다 있으면 안 됨)
   return total
 }
 
