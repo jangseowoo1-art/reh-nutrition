@@ -2,83 +2,600 @@ import { Hono } from 'hono'
 
 const schedule = new Hono<{ Bindings: { DB: D1Database } }>()
 
+// ════════════════════════════════════════════════════════════════
+// 헬퍼: 권한 체크
+// ════════════════════════════════════════════════════════════════
+function isAdmin(user: any) { return user?.role === 'admin' }
+function isNutritionist(user: any) { return user?.role === 'hospital' || user?.role === 'admin' }
+function getHospitalId(user: any, paramHospitalId?: string): number {
+  if (isAdmin(user) && paramHospitalId) return parseInt(paramHospitalId)
+  return user.hospitalId
+}
+
+// ════════════════════════════════════════════════════════════════
+// 직위(포지션) 관리
+// ════════════════════════════════════════════════════════════════
+
+// 직위 목록 조회 (공통 기본직위 + 해당병원 커스텀)
+schedule.get('/positions', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const data = await c.env.DB.prepare(
+    `SELECT * FROM employee_positions
+     WHERE (hospital_id IS NULL OR hospital_id = ?) AND is_active = 1
+     ORDER BY team, sort_order, id`
+  ).bind(hospitalId).all<any>()
+  return c.json(data.results)
+})
+
+// 커스텀 직위 추가 (영양사: 본인 병원, 관리자: 전체)
+schedule.post('/positions', async (c) => {
+  const user = c.get('user')
+  const { name, team, sortOrder, hospitalId: bodyHospId } = await c.req.json()
+  const hid = isAdmin(user) && bodyHospId ? bodyHospId : user.hospitalId
+  if (!name || !team) return c.json({ error: '직위명과 팀은 필수입니다' }, 400)
+  
+  // 커스텀 직위의 sort_order: 기본직위(최대) + 100 이후
+  const maxRow = await c.env.DB.prepare(
+    `SELECT COALESCE(MAX(sort_order), 0) as max_order FROM employee_positions WHERE hospital_id = ? AND team = ?`
+  ).bind(hid, team).first<any>()
+  const defaultMax = await c.env.DB.prepare(
+    `SELECT COALESCE(MAX(sort_order), 70) as max_order FROM employee_positions WHERE hospital_id IS NULL AND team = ?`
+  ).bind(team).first<any>()
+  const newOrder = sortOrder ?? Math.max((maxRow?.max_order || 0), (defaultMax?.max_order || 70)) + 10
+
+  await c.env.DB.prepare(
+    `INSERT INTO employee_positions (hospital_id, team, name, sort_order, is_default) VALUES (?, ?, ?, ?, 0)`
+  ).bind(hid, team, name, newOrder).run()
+  return c.json({ success: true })
+})
+
+// 커스텀 직위 수정 (sort_order 포함)
+schedule.put('/positions/:id', async (c) => {
+  const user = c.get('user')
+  const { name, sortOrder } = await c.req.json()
+  const hid = user.hospitalId
+  const check = await c.env.DB.prepare(
+    `SELECT * FROM employee_positions WHERE id = ? AND is_default = 0 AND (hospital_id = ? OR ? = 1)`
+  ).bind(c.req.param('id'), hid, isAdmin(user) ? 1 : 0).first<any>()
+  if (!check) return c.json({ error: '수정 권한이 없거나 기본 직위입니다' }, 403)
+  
+  await c.env.DB.prepare(
+    `UPDATE employee_positions SET name = ?, sort_order = ? WHERE id = ?`
+  ).bind(name ?? check.name, sortOrder ?? check.sort_order, c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+// 커스텀 직위 삭제 (비활성화)
+schedule.delete('/positions/:id', async (c) => {
+  const user = c.get('user')
+  const check = await c.env.DB.prepare(
+    `SELECT * FROM employee_positions WHERE id = ? AND is_default = 0`
+  ).bind(c.req.param('id')).first<any>()
+  if (!check) return c.json({ error: '기본 직위는 삭제할 수 없습니다' }, 403)
+  if (!isAdmin(user) && check.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+  
+  await c.env.DB.prepare(
+    `UPDATE employee_positions SET is_active = 0 WHERE id = ?`
+  ).bind(c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 근무조(Shift) 설정
+// ════════════════════════════════════════════════════════════════
+
+schedule.get('/shifts', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const data = await c.env.DB.prepare(
+    `SELECT * FROM schedule_shifts WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+  ).bind(hospitalId).all<any>()
+  return c.json(data.results)
+})
+
+schedule.post('/shifts', async (c) => {
+  const user = c.get('user')
+  const { shiftCode, shiftName, startTime, endTime, color, team, hospitalId: bodyHospId } = await c.req.json()
+  const hid = isAdmin(user) && bodyHospId ? bodyHospId : user.hospitalId
+  if (!shiftCode || !shiftName) return c.json({ error: '코드와 이름은 필수입니다' }, 400)
+
+  const maxRow = await c.env.DB.prepare(
+    `SELECT COALESCE(MAX(sort_order), 0) as max_order FROM schedule_shifts WHERE hospital_id = ?`
+  ).bind(hid).first<any>()
+
+  await c.env.DB.prepare(
+    `INSERT INTO schedule_shifts (hospital_id, shift_code, shift_name, start_time, end_time, color, team, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(hospital_id, shift_code) DO UPDATE SET
+       shift_name=excluded.shift_name, start_time=excluded.start_time,
+       end_time=excluded.end_time, color=excluded.color, team=excluded.team`
+  ).bind(hid, shiftCode, shiftName, startTime || '09:00', endTime || '18:00',
+    color || '#3B82F6', team || null, (maxRow?.max_order || 0) + 10).run()
+  return c.json({ success: true })
+})
+
+schedule.put('/shifts/:id', async (c) => {
+  const user = c.get('user')
+  const { shiftCode, shiftName, startTime, endTime, color, team, sortOrder } = await c.req.json()
+  const hid = user.hospitalId
+  const check = await c.env.DB.prepare(
+    `SELECT * FROM schedule_shifts WHERE id = ? AND (hospital_id = ? OR ? = 1)`
+  ).bind(c.req.param('id'), hid, isAdmin(user) ? 1 : 0).first<any>()
+  if (!check) return c.json({ error: '권한이 없거나 존재하지 않는 근무조입니다' }, 403)
+
+  await c.env.DB.prepare(
+    `UPDATE schedule_shifts SET shift_code=?, shift_name=?, start_time=?, end_time=?, color=?, team=?, sort_order=?
+     WHERE id=?`
+  ).bind(shiftCode ?? check.shift_code, shiftName ?? check.shift_name,
+    startTime ?? check.start_time, endTime ?? check.end_time,
+    color ?? check.color, team ?? check.team, sortOrder ?? check.sort_order,
+    c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+schedule.delete('/shifts/:id', async (c) => {
+  const user = c.get('user')
+  const hid = user.hospitalId
+  const check = await c.env.DB.prepare(
+    `SELECT * FROM schedule_shifts WHERE id = ? AND (hospital_id = ? OR ? = 1)`
+  ).bind(c.req.param('id'), hid, isAdmin(user) ? 1 : 0).first<any>()
+  if (!check) return c.json({ error: '권한 없음' }, 403)
+
+  await c.env.DB.prepare(`UPDATE schedule_shifts SET is_active = 0 WHERE id = ?`).bind(c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 직원(인사카드) 관리
+// ════════════════════════════════════════════════════════════════
+
 // 직원 목록 조회
+// - 영양사: 본인 병원만, is_active=1
+// - 관리자: hospitalId 쿼리로 필터 (없으면 전체)
 schedule.get('/employees', async (c) => {
   const user = c.get('user')
+  
+  if (isAdmin(user)) {
+    const hospitalId = c.req.query('hospitalId')
+    let query: string
+    let params: any[]
+    if (hospitalId) {
+      query = `SELECT e.*, p.name as position_name, p.team as position_team
+               FROM employees e
+               LEFT JOIN employee_positions p ON e.position_id = p.id
+               WHERE e.hospital_id = ?
+               ORDER BY e.team, p.sort_order, e.hire_date, e.name`
+      params = [hospitalId]
+    } else {
+      query = `SELECT e.*, p.name as position_name, p.team as position_team,
+                      h.name as hospital_name
+               FROM employees e
+               LEFT JOIN employee_positions p ON e.position_id = p.id
+               LEFT JOIN hospitals h ON e.hospital_id = h.id
+               ORDER BY e.hospital_id, e.team, p.sort_order, e.hire_date, e.name`
+      params = []
+    }
+    const data = await c.env.DB.prepare(query).bind(...params).all<any>()
+    return c.json(data.results)
+  }
+  
+  // 영양사: 본인 병원 활성 직원만
   const data = await c.env.DB.prepare(
-    `SELECT * FROM employees WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+    `SELECT e.*, p.name as position_name, p.team as position_team
+     FROM employees e
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE e.hospital_id = ? AND e.is_active = 1
+     ORDER BY e.team, p.sort_order, e.hire_date, e.name`
   ).bind(user.hospitalId).all<any>()
   return c.json(data.results)
+})
+
+// 직원 단건 조회
+schedule.get('/employees/:id', async (c) => {
+  const user = c.get('user')
+  const emp = await c.env.DB.prepare(
+    `SELECT e.*, p.name as position_name, p.team as position_team
+     FROM employees e
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE e.id = ?`
+  ).bind(c.req.param('id')).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+  return c.json(emp)
 })
 
 // 직원 추가
 schedule.post('/employees', async (c) => {
   const user = c.get('user')
-  const { name, position, section, phone, annualLeaveTotal, sortOrder } = await c.req.json()
+  const body = await c.req.json()
+  const hid = isAdmin(user) && body.hospitalId ? body.hospitalId : user.hospitalId
+
+  const {
+    name, team, positionId, position, empNumber, birthDate, hireDate,
+    employmentType, workParts, phone, email, address, emergencyContact, note,
+    healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder
+  } = body
+
+  if (!name) return c.json({ error: '이름은 필수입니다' }, 400)
+
+  // sort_order 자동 계산
+  let finalSortOrder = sortOrder
+  if (finalSortOrder === undefined || finalSortOrder === null) {
+    const maxRow = await c.env.DB.prepare(
+      `SELECT COALESCE(MAX(sort_order), 0) as max_order FROM employees WHERE hospital_id = ?`
+    ).bind(hid).first<any>()
+    finalSortOrder = (maxRow?.max_order || 0) + 10
+  }
+
   await c.env.DB.prepare(
-    `INSERT INTO employees (hospital_id, name, position, section, phone, annual_leave_total, sort_order)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(user.hospitalId, name, position || '', section || 'cook', phone || null, annualLeaveTotal || 15, sortOrder || 99).run()
+    `INSERT INTO employees (
+       hospital_id, name, team, position_id, position, emp_number, birth_date, hire_date,
+       employment_type, work_parts, section, phone, email, address, emergency_contact,
+       note, health_cert_expire, health_exam_date, health_exam_status,
+       annual_leave_total, sort_order, is_active
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+  ).bind(
+    hid, name, team || 'cook', positionId || null, position || '',
+    empNumber || '', birthDate || '', hireDate || '',
+    employmentType || 'full', JSON.stringify(workParts || []),
+    team || 'cook', phone || '', email || '', address || '', emergencyContact || '',
+    note || '', healthCertExpire || '', healthExamDate || '',
+    healthExamStatus || 'pending', annualLeaveTotal || 15, finalSortOrder
+  ).run()
   return c.json({ success: true })
 })
 
 // 직원 수정
 schedule.put('/employees/:id', async (c) => {
   const user = c.get('user')
-  const { name, position, section, phone, annualLeaveTotal } = await c.req.json()
+  const body = await c.req.json()
+
+  // 권한 체크
+  const existing = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
+  if (!existing) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && existing.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const {
+    name, team, positionId, position, empNumber, birthDate, hireDate, resignDate,
+    employmentType, workParts, phone, email, address, emergencyContact, note,
+    healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder, isActive
+  } = body
+
   await c.env.DB.prepare(
-    `UPDATE employees SET name=?, position=?, section=?, phone=?, annual_leave_total=?
-     WHERE id=? AND hospital_id=?`
-  ).bind(name, position, section, phone||null, annualLeaveTotal||15, c.req.param('id'), user.hospitalId).run()
+    `UPDATE employees SET
+       name = ?, team = ?, position_id = ?, position = ?, emp_number = ?,
+       birth_date = ?, hire_date = ?, resign_date = ?,
+       employment_type = ?, work_parts = ?, section = ?,
+       phone = ?, email = ?, address = ?, emergency_contact = ?, note = ?,
+       health_cert_expire = ?, health_exam_date = ?, health_exam_status = ?,
+       annual_leave_total = ?, sort_order = ?, is_active = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`
+  ).bind(
+    name ?? existing.name,
+    team ?? existing.team,
+    positionId !== undefined ? positionId : existing.position_id,
+    position ?? existing.position,
+    empNumber ?? existing.emp_number,
+    birthDate ?? existing.birth_date,
+    hireDate ?? existing.hire_date,
+    resignDate !== undefined ? resignDate : existing.resign_date,
+    employmentType ?? existing.employment_type,
+    workParts !== undefined ? JSON.stringify(workParts) : existing.work_parts,
+    team ?? existing.team,
+    phone ?? existing.phone,
+    email ?? existing.email,
+    address ?? existing.address,
+    emergencyContact ?? existing.emergency_contact,
+    note ?? existing.note,
+    healthCertExpire ?? existing.health_cert_expire,
+    healthExamDate ?? existing.health_exam_date,
+    healthExamStatus ?? existing.health_exam_status,
+    annualLeaveTotal ?? existing.annual_leave_total,
+    sortOrder ?? existing.sort_order,
+    isActive !== undefined ? isActive : existing.is_active,
+    c.req.param('id')
+  ).run()
   return c.json({ success: true })
 })
 
-// 직원 비활성화
+// 직원 비활성화(퇴사처리)
 schedule.delete('/employees/:id', async (c) => {
   const user = c.get('user')
+  const existing = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
+  if (!existing) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && existing.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const today = new Date().toISOString().slice(0, 10)
   await c.env.DB.prepare(
-    `UPDATE employees SET is_active=0 WHERE id=? AND hospital_id=?`
-  ).bind(c.req.param('id'), user.hospitalId).run()
+    `UPDATE employees SET is_active = 0, resign_date = ?, updated_at = datetime('now') WHERE id = ?`
+  ).bind(today, c.req.param('id')).run()
   return c.json({ success: true })
 })
 
-// 월별 스케줄 조회
+// 보건증/검진 만료 임박 직원 목록 (D-10 경고, D-3 긴급)
+schedule.get('/alerts/health', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const today = new Date()
+  const d10 = new Date(today); d10.setDate(today.getDate() + 10)
+  const d3 = new Date(today); d3.setDate(today.getDate() + 3)
+  const todayStr = today.toISOString().slice(0, 10)
+  const d10Str = d10.toISOString().slice(0, 10)
+  const d3Str = d3.toISOString().slice(0, 10)
+
+  const data = await c.env.DB.prepare(
+    `SELECT id, name, team, position, health_cert_expire, health_exam_date, health_exam_status,
+            CASE
+              WHEN health_cert_expire != '' AND health_cert_expire < ? THEN 'expired'
+              WHEN health_cert_expire != '' AND health_cert_expire <= ? THEN 'urgent'
+              WHEN health_cert_expire != '' AND health_cert_expire <= ? THEN 'warning'
+              ELSE 'ok'
+            END as cert_status
+     FROM employees
+     WHERE hospital_id = ? AND is_active = 1
+       AND (health_cert_expire != '' OR health_exam_status = 'pending')
+     ORDER BY health_cert_expire`
+  ).bind(todayStr, d3Str, d10Str, hospitalId).all<any>()
+  return c.json(data.results)
+})
+
+// 연차 부여일수 자동 계산 (법정 기준)
+schedule.get('/employees/:id/leave-calc', async (c) => {
+  const user = c.get('user')
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const year = parseInt(c.req.query('year') || new Date().getFullYear().toString())
+  if (!emp.hire_date) return c.json({ legalDays: 0, note: '입사일 미입력' })
+
+  const hireDate = new Date(emp.hire_date)
+  const targetStart = new Date(`${year}-01-01`)
+  const diffMs = targetStart.getTime() - hireDate.getTime()
+  const yearsWorked = diffMs / (365.25 * 24 * 3600 * 1000)
+
+  let legalDays = 0
+  let note = ''
+
+  if (yearsWorked < 0) {
+    // 아직 입사 전
+    legalDays = 0; note = '해당연도 미입사'
+  } else if (yearsWorked < 1) {
+    // 1년 미만: 월 1일 (최대 11일)
+    const hireYear = hireDate.getFullYear()
+    const hireMonth = hireDate.getMonth() + 1
+    if (hireYear === year) {
+      const monthsInYear = 12 - hireMonth
+      legalDays = Math.min(monthsInYear, 11)
+    } else {
+      legalDays = 11
+    }
+    note = '1년 미만: 월 1일 (최대 11일)'
+  } else if (yearsWorked < 3) {
+    legalDays = 15; note = '기본 15일'
+  } else {
+    // 3년 이후 2년마다 1일 추가 (최대 25일)
+    const extra = Math.floor((yearsWorked - 1) / 2)
+    legalDays = Math.min(15 + extra, 25)
+    note = `${Math.floor(yearsWorked)}년차: ${legalDays}일`
+  }
+
+  return c.json({ legalDays, note, yearsWorked: Math.round(yearsWorked * 10) / 10 })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 연차/휴가 관리
+// ════════════════════════════════════════════════════════════════
+
+schedule.get('/employees/:id/leaves', async (c) => {
+  const user = c.get('user')
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const year = c.req.query('year') || new Date().getFullYear()
+  const data = await c.env.DB.prepare(
+    `SELECT * FROM employee_leaves WHERE employee_id = ? AND year = ? ORDER BY leave_type`
+  ).bind(c.req.param('id'), year).all<any>()
+  return c.json(data.results)
+})
+
+schedule.post('/employees/:id/leaves', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 연차를 수동 설정할 수 있습니다' }, 403)
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+
+  const { year, leaveType, totalDays, usedDays, note } = await c.req.json()
+  await c.env.DB.prepare(
+    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+       total_days = excluded.total_days, used_days = excluded.used_days, note = excluded.note,
+       updated_at = datetime('now')`
+  ).bind(emp.hospital_id, c.req.param('id'), year, leaveType || 'annual', totalDays || 0, usedDays || 0, note || '').run()
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 스케줄 (기존 + 확장)
+// ════════════════════════════════════════════════════════════════
+
+// 월별 스케줄 조회 (직위 포함, 정렬: 팀→직위순→입사일→이름)
 schedule.get('/:year/:month', async (c) => {
   const user = c.get('user')
   const { year, month } = c.req.param()
-  const data = await c.env.DB.prepare(
-    `SELECT s.*, e.name as employee_name, e.position
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+
+  const employees = await c.env.DB.prepare(
+    `SELECT e.*, p.name as position_name, p.sort_order as position_sort
+     FROM employees e
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE e.hospital_id = ? AND e.is_active = 1
+     ORDER BY e.team, COALESCE(p.sort_order, 999), e.hire_date, e.name`
+  ).bind(hospitalId).all<any>()
+
+  const schedules = await c.env.DB.prepare(
+    `SELECT s.*, sh.shift_name, sh.start_time, sh.end_time, sh.color as shift_color
      FROM daily_schedules s
-     JOIN employees e ON s.employee_id = e.id
+     LEFT JOIN schedule_shifts sh ON s.shift_id = sh.id
      WHERE s.hospital_id = ?
        AND strftime('%Y', s.work_date) = ?
        AND strftime('%m', s.work_date) = printf('%02d', ?)
-     ORDER BY e.sort_order, s.work_date`
-  ).bind(user.hospitalId, year, month).all<any>()
-  return c.json(data.results)
+     ORDER BY s.work_date`
+  ).bind(hospitalId, year, month).all<any>()
+
+  const shifts = await c.env.DB.prepare(
+    `SELECT * FROM schedule_shifts WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order`
+  ).bind(hospitalId).all<any>()
+
+  // 공휴일 조회
+  const paddedMonth = String(month).padStart(2, '0')
+  const holidays = await c.env.DB.prepare(
+    `SELECT * FROM holidays
+     WHERE (hospital_id IS NULL OR hospital_id = ?)
+       AND holiday_date LIKE ?`
+  ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+
+  return c.json({
+    employees: employees.results,
+    schedules: schedules.results,
+    shifts: shifts.results,
+    holidays: holidays.results
+  })
 })
 
 // 스케줄 저장 (upsert)
 schedule.post('/save', async (c) => {
   const user = c.get('user')
-  const { employeeId, workDate, shiftCode, note } = await c.req.json()
+  const { employeeId, workDate, shiftCode, shiftId, leaveType, isOvertime, overtimeHours, isTempStaff, note } = await c.req.json()
+  const hospitalId = getHospitalId(user, undefined)
+
+  // 영양사는 본인 병원만
+  const emp = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id = ?`).bind(employeeId).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
   await c.env.DB.prepare(
-    `INSERT INTO daily_schedules (hospital_id, employee_id, work_date, shift_code, note)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO daily_schedules (hospital_id, employee_id, work_date, shift_code, shift_id, leave_type, is_overtime, overtime_hours, is_temp_staff, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(hospital_id, employee_id, work_date) DO UPDATE SET
-     shift_code = excluded.shift_code,
-     note = excluded.note,
-     updated_at = CURRENT_TIMESTAMP`
-  ).bind(user.hospitalId, employeeId, workDate, shiftCode, note || null).run()
+       shift_code = excluded.shift_code,
+       shift_id = excluded.shift_id,
+       leave_type = excluded.leave_type,
+       is_overtime = excluded.is_overtime,
+       overtime_hours = excluded.overtime_hours,
+       is_temp_staff = excluded.is_temp_staff,
+       note = excluded.note,
+       updated_at = CURRENT_TIMESTAMP`
+  ).bind(
+    emp.hospital_id, employeeId, workDate, shiftCode || '', shiftId || null,
+    leaveType || null, isOvertime ? 1 : 0, overtimeHours || 0, isTempStaff ? 1 : 0, note || null
+  ).run()
   return c.json({ success: true })
+})
+
+// 스케줄 일괄 저장 (배치)
+schedule.post('/save-batch', async (c) => {
+  const user = c.get('user')
+  const { items } = await c.req.json()
+  if (!Array.isArray(items) || items.length === 0) return c.json({ success: true, count: 0 })
+
+  let count = 0
+  for (const item of items) {
+    const { employeeId, workDate, shiftCode, shiftId, leaveType, isOvertime, overtimeHours, isTempStaff, note } = item
+    const emp = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id = ?`).bind(employeeId).first<any>()
+    if (!emp) continue
+    if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) continue
+
+    await c.env.DB.prepare(
+      `INSERT INTO daily_schedules (hospital_id, employee_id, work_date, shift_code, shift_id, leave_type, is_overtime, overtime_hours, is_temp_staff, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(hospital_id, employee_id, work_date) DO UPDATE SET
+         shift_code = excluded.shift_code, shift_id = excluded.shift_id,
+         leave_type = excluded.leave_type, is_overtime = excluded.is_overtime,
+         overtime_hours = excluded.overtime_hours, is_temp_staff = excluded.is_temp_staff,
+         note = excluded.note, updated_at = CURRENT_TIMESTAMP`
+    ).bind(
+      emp.hospital_id, employeeId, workDate, shiftCode || '', shiftId || null,
+      leaveType || null, isOvertime ? 1 : 0, overtimeHours || 0, isTempStaff ? 1 : 0, note || null
+    ).run()
+    count++
+  }
+  return c.json({ success: true, count })
 })
 
 // 스케줄 삭제
 schedule.delete('/:employeeId/:workDate', async (c) => {
   const user = c.get('user')
+  const emp = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id = ?`).bind(c.req.param('employeeId')).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
   await c.env.DB.prepare(
     `DELETE FROM daily_schedules WHERE hospital_id=? AND employee_id=? AND work_date=?`
-  ).bind(user.hospitalId, c.req.param('employeeId'), c.req.param('workDate')).run()
+  ).bind(emp.hospital_id, c.req.param('employeeId'), c.req.param('workDate')).run()
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 공휴일 관리
+// ════════════════════════════════════════════════════════════════
+
+schedule.get('/holidays/:year', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const data = await c.env.DB.prepare(
+    `SELECT * FROM holidays
+     WHERE (hospital_id IS NULL OR hospital_id = ?)
+       AND holiday_date LIKE ?
+     ORDER BY holiday_date`
+  ).bind(hospitalId, `${c.req.param('year')}-%`).all<any>()
+  return c.json(data.results)
+})
+
+schedule.post('/holidays', async (c) => {
+  if (!isAdmin(c.get('user'))) return c.json({ error: '관리자 전용' }, 403)
+  const { holidayDate, holidayName, holidayType, hospitalId } = await c.req.json()
+  if (!holidayDate) return c.json({ error: '날짜는 필수입니다' }, 400)
+  await c.env.DB.prepare(
+    `INSERT OR IGNORE INTO holidays (hospital_id, holiday_date, holiday_name, holiday_type)
+     VALUES (?, ?, ?, ?)`
+  ).bind(hospitalId || null, holidayDate, holidayName || '', holidayType || 'national').run()
+  return c.json({ success: true })
+})
+
+schedule.delete('/holidays/:id', async (c) => {
+  if (!isAdmin(c.get('user'))) return c.json({ error: '관리자 전용' }, 403)
+  await c.env.DB.prepare(`DELETE FROM holidays WHERE id = ?`).bind(c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 최소인원 설정 (관리자 전용)
+// ════════════════════════════════════════════════════════════════
+
+schedule.get('/min-staff', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const data = await c.env.DB.prepare(
+    `SELECT ms.*, p.name as position_name FROM schedule_min_staff ms
+     LEFT JOIN employee_positions p ON ms.position_id = p.id
+     WHERE ms.hospital_id = ?`
+  ).bind(hospitalId).all<any>()
+  return c.json(data.results)
+})
+
+schedule.post('/min-staff', async (c) => {
+  if (!isAdmin(c.get('user'))) return c.json({ error: '관리자 전용' }, 403)
+  const { hospitalId, positionId, team, minCount, note } = await c.req.json()
+  await c.env.DB.prepare(
+    `INSERT INTO schedule_min_staff (hospital_id, position_id, team, min_count, note)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(hospital_id, position_id, team) DO UPDATE SET min_count=excluded.min_count, note=excluded.note`
+  ).bind(hospitalId, positionId || null, team || null, minCount || 1, note || '').run()
   return c.json({ success: true })
 })
 

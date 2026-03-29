@@ -11180,198 +11180,861 @@ function renderAdminCompareChart(hospitals) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  스케줄 관리 페이지
+//  스케줄 모듈 v1 - 인사카드 관리 + 근무조 설정
 // ══════════════════════════════════════════════════════════════
+
+// 현재 스케줄 탭 상태
+let scheduleTab = 'employees' // 'employees' | 'schedule' | 'shifts'
+let scheduleEmployees = []
+let scheduleShifts = []
+let schedulePositions = []
+let empModalMode = 'add' // 'add' | 'edit'
+let empModalData = null  // 편집 대상 직원 데이터
+
+// 고용유형 레이블
+const EMPLOYMENT_LABELS = {
+  full: { label: '정규직', color: 'bg-blue-100 text-blue-700' },
+  part: { label: '파트타임', color: 'bg-purple-100 text-purple-700' },
+  temp: { label: '파출/알바', color: 'bg-orange-100 text-orange-700' },
+  contract: { label: '계약직', color: 'bg-yellow-100 text-yellow-700' },
+  daily: { label: '일용직', color: 'bg-gray-100 text-gray-600' }
+}
+
+// 팀 레이블
+const TEAM_LABELS = {
+  cook: { label: '조리팀', color: 'bg-green-100 text-green-700', icon: 'fa-utensils' },
+  nutrition: { label: '영양팀', color: 'bg-pink-100 text-pink-700', icon: 'fa-heart' }
+}
+
+// 보건증 상태 레이블
+const CERT_STATUS = {
+  ok: { label: '정상', color: 'text-green-600' },
+  warning: { label: 'D-10', color: 'text-yellow-600' },
+  urgent: { label: 'D-3', color: 'text-red-600' },
+  expired: { label: '만료', color: 'text-red-800 font-bold' }
+}
+
+// 검진 상태 레이블
+const EXAM_STATUS = {
+  pending: { label: '미제출', color: 'text-gray-500' },
+  submitted: { label: '제출완료', color: 'text-blue-600' },
+  completed: { label: '완료', color: 'text-green-600' }
+}
+
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
-  const days = getDaysInMonth(App.currentYear, App.currentMonth)
-  
-  // 스케줄 데이터 로드 시도
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
-  
-  // 직원 목록과 스케줄 로드
-  const [empData, schedData] = await Promise.all([
-    api('GET', '/api/schedule/employees').catch(() => null),
-    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+
+  // 데이터 로드
+  const [empData, shiftData, posData] = await Promise.all([
+    api('GET', '/api/schedule/employees').catch(() => []),
+    api('GET', '/api/schedule/shifts').catch(() => []),
+    api('GET', '/api/schedule/positions').catch(() => [])
   ])
 
-  const employees = empData || []
-  const schedMap = {}
-  ;(schedData || []).forEach(s => {
-    if (!schedMap[s.employee_id]) schedMap[s.employee_id] = {}
-    schedMap[s.employee_id][s.work_date] = s.shift_code
-  })
+  scheduleEmployees = empData || []
+  scheduleShifts = shiftData || []
+  schedulePositions = posData || []
 
-  const SHIFTS = ['a', 'b', 'c', 'za', 'zb', 'F', '연', '휴', '반', '-']
-  const SHIFT_COLORS = {
-    'a': 'bg-blue-100 text-blue-700', 'b': 'bg-green-100 text-green-700',
-    'c': 'bg-pink-100 text-pink-700', 'za': 'bg-indigo-100 text-indigo-700',
-    'zb': 'bg-emerald-100 text-emerald-700', 'F': 'bg-red-100 text-red-700',
-    '연': 'bg-yellow-100 text-yellow-700', '휴': 'bg-orange-100 text-orange-700',
-    '반': 'bg-purple-100 text-purple-700', '-': 'bg-gray-50 text-gray-300'
-  }
+  renderScheduleTab(content)
+}
+
+function renderScheduleTab(content) {
+  const isAdm = App.userRole === 'admin'
+  const tab = scheduleTab
+
+  const tabs = [
+    { id: 'employees', label: '인사카드 관리', icon: 'fa-id-card' },
+    { id: 'schedule', label: '월간 스케줄', icon: 'fa-calendar-alt' },
+    { id: 'shifts', label: '근무조 설정', icon: 'fa-clock' }
+  ]
 
   content.innerHTML = `
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
-      <div>
-        <h2 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h2>
-        <p class="text-xs text-gray-400 mt-0.5">셀 클릭으로 근무코드 변경 · 자동 저장</p>
+  <div class="space-y-4">
+    <!-- 탭 헤더 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 class="font-bold text-gray-800 text-lg">스케줄 관리</h2>
+          <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월</p>
+        </div>
+        <div class="flex gap-2">
+          ${tabs.map(t => `
+            <button onclick="switchScheduleTab('${t.id}')"
+              class="px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === t.id
+                ? 'bg-blue-600 text-white shadow'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">
+              <i class="fas ${t.icon} mr-1.5"></i>${t.label}
+            </button>
+          `).join('')}
+        </div>
       </div>
-      <div class="flex gap-2 flex-wrap">
-        <button onclick="showAddEmployeeModal()" class="btn btn-success btn-sm">
-          <i class="fas fa-user-plus"></i> 직원 추가
-        </button>
-      </div>
-    </div>
-    
-    <!-- 근무코드 범례 -->
-    <div class="px-5 py-2 border-b border-gray-100 bg-gray-50 flex flex-wrap gap-2">
-      ${SHIFTS.filter(s=>s!=='-').map(s => `
-        <span class="inline-flex items-center px-2 py-1 rounded text-xs font-semibold ${SHIFT_COLORS[s]||'bg-gray-100 text-gray-600'}">${s}</span>
-      `).join('')}
-      <span class="text-xs text-gray-400 ml-2 self-center">클릭으로 변경</span>
     </div>
 
-    <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
-      <!-- 모바일 스크롤 안내 -->
-      <div class="md:hidden text-center py-1 text-xs text-gray-400 bg-blue-50 border-b border-blue-100">
-        <i class="fas fa-hand-point-right mr-1 text-blue-400"></i>좌우로 스크롤하여 전체 스케줄 확인
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
-        <thead>
-          <tr style="background:#166534;color:white;border-bottom:3px solid #14532d">
-            <th style="padding:8px 12px;text-align:left;min-width:90px;position:sticky;left:0;background:#166534;z-index:10;border-right:3px solid #14532d;border-bottom:3px solid #14532d">이름/직책</th>
-            ${Array.from({length:days},(_,i)=>{
-              const day=i+1, dow=getDayOfWeek(App.currentYear,App.currentMonth,day)
-              const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
-              const isSun=dow==='일', isSat=dow==='토'
-              const borderCol = isSun ? '#fca5a5' : isSat ? '#93c5fd' : 'rgba(255,255,255,0.2)'
-              return `<th style="padding:6px 2px;text-align:center;min-width:34px;font-weight:${isWknd?'bold':'normal'};color:${isSun?'#fca5a5':isSat?'#93c5fd':'white'};border-left:1px solid ${borderCol};border-bottom:3px solid #14532d;${isWknd?'background:#1a4731;':''}">
-                <div style="font-size:12px">${day}</div><div style="font-size:9px;opacity:0.85">${dow}</div>
-              </th>`
-            }).join('')}
-            <th style="padding:8px 6px;min-width:50px;border-left:3px solid #14532d;border-bottom:3px solid #14532d;background:#0f3d25">근무</th>
-            <th style="padding:8px 6px;min-width:40px;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25">연차</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${employees.length === 0 ? `
-            <tr><td colspan="${days+3}" class="text-center py-12 text-gray-400">
-              <i class="fas fa-users text-4xl mb-3 block"></i>
-              등록된 직원이 없습니다. 직원을 추가해주세요.
-            </td></tr>
-          ` : employees.map((emp, empIdx) => {
-            const empSchedule = schedMap[emp.id] || {}
-            let workDays = 0, annualDays = 0, restDays = 0
-            for (let d=1; d<=days; d++) {
-              const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-              const shift = empSchedule[dateStr]
-              if (shift && shift !== '-' && shift !== '휴' && shift !== '연') workDays++
-              if (shift === '연') annualDays++
-              if (shift === '휴') restDays++
-            }
-            const rowBg = empIdx % 2 === 0 ? 'white' : '#fafafa'
-            return `<tr style="border-bottom:1px solid #e2e8f0" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='${rowBg}'">
-              <td style="padding:6px 12px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:90px">
-                <div style="font-weight:600;color:#1f2937;font-size:12px">${emp.name}</div>
-                <div style="font-size:10px;color:#94a3b8">${emp.position}</div>
-              </td>
-              ${Array.from({length:days},(_,i)=>{
-                const day=i+1
-                const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-                const shift=empSchedule[dateStr]||''
-                const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
-                const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
-                const isSun2=dow2==='일'
-                const cellBg=isSun2?'background:#fff1f2;':isWknd?'background:#fffbeb;':`background:${rowBg};`
-                const borderLeft = `border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
-                const colorClass=SHIFT_COLORS[shift]||''
-                return `<td style="padding:3px 2px;text-align:center;${cellBg}${borderLeft}cursor:pointer;border-bottom:1px solid #e5e7eb" 
-                  onclick="cycleShift(${emp.id},'${dateStr}',this)"
-                  data-shift="${shift}" data-employee="${emp.id}" data-date="${dateStr}">
-                  <span class="inline-flex items-center justify-center w-7 h-7 rounded text-xs font-bold ${colorClass||'bg-gray-50 text-gray-300'}">${shift||'·'}</span>
-                </td>`
-              }).join('')}
-              <td style="padding:6px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;font-weight:700;color:#166534;font-size:13px">${workDays}</td>
-              <td style="padding:6px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;font-weight:700;color:#92400e;font-size:13px">${annualDays}</td>
-            </tr>`
-          }).join('')}
-        </tbody>
-      </table>
+    <!-- 탭 콘텐츠 -->
+    <div id="scheduleTabContent">
+      ${tab === 'employees' ? renderEmployeeTab() : ''}
+      ${tab === 'schedule' ? renderMonthlyScheduleTab() : ''}
+      ${tab === 'shifts' ? renderShiftsTab() : ''}
     </div>
   </div>
 
-  <!-- 직원 추가 모달 -->
-  <div id="empModal" class="hidden modal-overlay">
-    <div class="modal-box max-w-md p-6">
-      <h3 class="font-bold text-lg mb-4">직원 추가</h3>
-      <div class="space-y-3">
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-sm font-medium text-gray-600">이름 *</label>
-            <input type="text" id="empName" class="form-input mt-1" placeholder="홍길동">
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-600">직책 *</label>
-            <input type="text" id="empPosition" class="form-input mt-1" placeholder="조리장">
-          </div>
+  ${renderEmployeeModal()}
+  ${renderShiftModal()}
+  `
+}
+
+// ─── 인사카드 탭 ─────────────────────────────────────────────
+function renderEmployeeTab() {
+  const isAdm = App.userRole === 'admin'
+  const emps = scheduleEmployees
+
+  // 팀별 그룹핑
+  const cookEmps = emps.filter(e => e.team === 'cook' || !e.team)
+  const nutriEmps = emps.filter(e => e.team === 'nutrition')
+
+  function renderTeamTable(teamEmps, teamKey) {
+    const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
+    if (teamEmps.length === 0 && teamKey === 'nutrition') return ''
+    return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${tl.color}">
+            <i class="fas ${tl.icon} mr-1"></i>${tl.label}
+          </span>
+          <span class="text-sm text-gray-500">${teamEmps.length}명</span>
         </div>
+        <button onclick="openEmpModal('add',null,'${teamKey}')"
+          class="btn btn-success btn-sm">
+          <i class="fas fa-user-plus mr-1"></i>직원 추가
+        </button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-100">
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[100px]">이름</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">직위</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">고용형태</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">입사일</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">보건증 만료</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">검진상태</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">연차</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">연락처</th>
+              <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 min-w-[80px]">관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${teamEmps.length === 0 ? `
+              <tr><td colspan="9" class="text-center py-8 text-gray-400">
+                <i class="fas fa-users text-3xl mb-2 block"></i>
+                등록된 직원이 없습니다
+              </td></tr>
+            ` : teamEmps.map((emp, idx) => {
+              const empType = EMPLOYMENT_LABELS[emp.employment_type] || EMPLOYMENT_LABELS.full
+              const certExpire = emp.health_cert_expire
+              const today = new Date().toISOString().slice(0,10)
+              const d3 = new Date(); d3.setDate(d3.getDate()+3)
+              const d10 = new Date(); d10.setDate(d10.getDate()+10)
+              let certStatus = 'ok'
+              if (certExpire) {
+                if (certExpire < today) certStatus = 'expired'
+                else if (certExpire <= d3.toISOString().slice(0,10)) certStatus = 'urgent'
+                else if (certExpire <= d10.toISOString().slice(0,10)) certStatus = 'warning'
+              }
+              const cs = CERT_STATUS[certStatus]
+              const es = EXAM_STATUS[emp.health_exam_status || 'pending']
+              const rowBg = idx % 2 === 0 ? '' : 'bg-gray-50/50'
+              return `
+              <tr class="border-b border-gray-100 hover:bg-blue-50/30 ${rowBg}">
+                <td class="px-4 py-3">
+                  <div class="font-semibold text-gray-800">${emp.name}</div>
+                  ${emp.emp_number ? `<div class="text-xs text-gray-400">${emp.emp_number}</div>` : ''}
+                </td>
+                <td class="px-4 py-3 text-gray-600 text-sm">${emp.position_name || emp.position || '-'}</td>
+                <td class="px-4 py-3">
+                  <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${empType.color}">
+                    ${empType.label}
+                  </span>
+                </td>
+                <td class="px-4 py-3 text-gray-600 text-sm">${emp.hire_date || '-'}</td>
+                <td class="px-4 py-3">
+                  ${certExpire
+                    ? `<span class="text-sm ${cs.color}">${certExpire}${certStatus !== 'ok' ? ` (${cs.label})` : ''}</span>`
+                    : '<span class="text-gray-300 text-sm">-</span>'}
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-sm ${es.color}">${es.label}</span>
+                </td>
+                <td class="px-4 py-3 text-center">
+                  <span class="text-sm font-semibold text-gray-700">${emp.annual_leave_total || 15}일</span>
+                </td>
+                <td class="px-4 py-3 text-gray-500 text-sm">${emp.phone || '-'}</td>
+                <td class="px-4 py-3">
+                  <div class="flex items-center justify-center gap-1">
+                    <button onclick="openEmpModal('edit',${emp.id})"
+                      class="p-1.5 rounded-lg text-gray-500 hover:bg-blue-100 hover:text-blue-600 transition-colors" title="수정">
+                      <i class="fas fa-pen text-xs"></i>
+                    </button>
+                    <button onclick="confirmResignEmployee(${emp.id},'${emp.name}')"
+                      class="p-1.5 rounded-lg text-gray-500 hover:bg-red-100 hover:text-red-600 transition-colors" title="퇴사처리">
+                      <i class="fas fa-user-minus text-xs"></i>
+                    </button>
+                  </div>
+                </td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`
+  }
+
+  return `
+  <div class="space-y-4">
+    <!-- 알림 배너 (보건증 만료 임박) -->
+    ${renderHealthAlertBanner()}
+    <!-- 조리팀 -->
+    ${renderTeamTable(cookEmps, 'cook')}
+    <!-- 영양팀 -->
+    ${renderTeamTable(nutriEmps, 'nutrition')}
+    ${emps.length === 0 ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center text-gray-400">
+      <i class="fas fa-users text-5xl mb-4 block"></i>
+      <p class="font-semibold">등록된 직원이 없습니다</p>
+      <p class="text-sm mt-1">위 버튼에서 팀별로 직원을 추가하세요</p>
+    </div>` : ''}
+  </div>`
+}
+
+function renderHealthAlertBanner() {
+  const today = new Date().toISOString().slice(0,10)
+  const d10 = new Date(); d10.setDate(d10.getDate()+10)
+  const d10Str = d10.toISOString().slice(0,10)
+  const alerts = scheduleEmployees.filter(e =>
+    e.health_cert_expire && e.health_cert_expire <= d10Str
+  )
+  if (alerts.length === 0) return ''
+  return `
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+    <div class="flex items-center gap-2 mb-2">
+      <i class="fas fa-exclamation-triangle text-amber-500 animate-pulse"></i>
+      <span class="font-bold text-amber-800">보건증 만료 임박 (${alerts.length}명)</span>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      ${alerts.map(e => {
+        const cs = e.health_cert_expire < today ? CERT_STATUS.expired :
+                   e.health_cert_expire <= new Date(Date.now()+3*86400000).toISOString().slice(0,10) ? CERT_STATUS.urgent :
+                   CERT_STATUS.warning
+        return `<span class="text-sm ${cs.color} bg-white border border-amber-200 px-2 py-1 rounded-lg">
+          ${e.name} <span class="text-xs">${e.health_cert_expire}</span>
+        </span>`
+      }).join('')}
+    </div>
+  </div>`
+}
+
+// ─── 근무조 설정 탭 ──────────────────────────────────────────
+function renderShiftsTab() {
+  const shifts = scheduleShifts
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-gray-800">근무조 설정</h3>
+        <p class="text-xs text-gray-400 mt-0.5">스케줄 표에서 사용할 근무조를 정의합니다</p>
+      </div>
+      <button onclick="openShiftModal()" class="btn btn-primary btn-sm">
+        <i class="fas fa-plus mr-1"></i>근무조 추가
+      </button>
+    </div>
+    ${shifts.length === 0 ? `
+    <div class="p-12 text-center text-gray-400">
+      <i class="fas fa-clock text-4xl mb-3 block"></i>
+      <p>등록된 근무조가 없습니다</p>
+      <p class="text-sm mt-1 text-gray-300">근무조를 추가하면 스케줄 표에서 선택할 수 있습니다</p>
+    </div>` : `
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-100">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">코드</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">이름</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">시간</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">대상팀</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">색상</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500">관리</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${shifts.map((s, idx) => `
+          <tr class="border-b border-gray-100 hover:bg-gray-50 ${idx%2===1?'bg-gray-50/30':''}">
+            <td class="px-4 py-3">
+              <span class="inline-flex items-center justify-center w-9 h-9 rounded-lg text-sm font-bold text-white"
+                style="background-color:${s.color}">
+                ${s.shift_code}
+              </span>
+            </td>
+            <td class="px-4 py-3 font-medium text-gray-800">${s.shift_name}</td>
+            <td class="px-4 py-3 text-gray-600">${s.start_time} ~ ${s.end_time}</td>
+            <td class="px-4 py-3 text-gray-500">${s.team ? (TEAM_LABELS[s.team]?.label || s.team) : '전체'}</td>
+            <td class="px-4 py-3">
+              <span class="inline-block w-5 h-5 rounded" style="background-color:${s.color}"></span>
+              <span class="text-xs text-gray-400 ml-1">${s.color}</span>
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-center gap-1">
+                <button onclick="openShiftModal(${s.id})"
+                  class="p-1.5 rounded hover:bg-blue-100 hover:text-blue-600 text-gray-400 transition-colors">
+                  <i class="fas fa-pen text-xs"></i>
+                </button>
+                <button onclick="deleteShift(${s.id},'${s.shift_name}')"
+                  class="p-1.5 rounded hover:bg-red-100 hover:text-red-600 text-gray-400 transition-colors">
+                  <i class="fas fa-trash text-xs"></i>
+                </button>
+              </div>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`}
+  </div>`
+}
+
+// ─── 월간 스케줄 탭 ──────────────────────────────────────────
+function renderMonthlyScheduleTab() {
+  const days = getDaysInMonth(App.currentYear, App.currentMonth)
+  const emps = scheduleEmployees
+  const shifts = scheduleShifts
+
+  // 근무조 색상 맵
+  const shiftColorMap = {}
+  shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
+
+  // 기본 근무 코드 + 등록된 근무조 코드
+  const defaultCodes = ['연','휴','오전','오후','경조','OT','-']
+  const shiftCodes = shifts.map(s => s.shift_code)
+  const ALL_CODES = [...shiftCodes, ...defaultCodes]
+
+  function getShiftStyle(code) {
+    if (!code || code === '-') return 'background:#f9fafb;color:#9ca3af'
+    if (shiftColorMap[code]) {
+      const hex = shiftColorMap[code]
+      return `background:${hex}22;color:${hex};font-weight:700`
+    }
+    const defMap = {
+      '연': 'background:#fef9c3;color:#92400e',
+      '휴': 'background:#fee2e2;color:#b91c1c',
+      '오전': 'background:#ede9fe;color:#6d28d9',
+      '오후': 'background:#dbeafe;color:#1d4ed8',
+      '경조': 'background:#fce7f3;color:#9d174d',
+      'OT': 'background:#ecfdf5;color:#065f46'
+    }
+    return defMap[code] || 'background:#f3f4f6;color:#374151'
+  }
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <label class="text-sm font-medium text-gray-600">소속</label>
-          <select id="empSection" class="form-input mt-1">
-            <option value="cook">조리팀</option>
-            <option value="manager">매니저</option>
-            <option value="hall">홀/전포</option>
-            <option value="part">파트타임</option>
-          </select>
+          <h3 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h3>
+          <p class="text-xs text-gray-400 mt-0.5">셀 클릭 → 근무코드 순환 · 자동저장</p>
+        </div>
+        <div class="flex gap-2 flex-wrap items-center">
+          <!-- 근무코드 범례 -->
+          <div class="flex gap-1 flex-wrap">
+            ${shifts.map(s => `
+              <span class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold"
+                style="background:${s.color}22;color:${s.color};border:1px solid ${s.color}44"
+                title="${s.shift_name} ${s.start_time}~${s.end_time}">${s.shift_code}</span>
+            `).join('')}
+            ${defaultCodes.filter(c=>c!=='-').map(c => {
+              const st = getShiftStyle(c)
+              return `<span class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold" style="${st}">${c}</span>`
+            }).join('')}
+          </div>
         </div>
       </div>
-      <div class="flex gap-2 mt-5">
-        <button onclick="addEmployee()" class="btn btn-primary flex-1">추가</button>
-        <button onclick="document.getElementById('empModal').classList.add('hidden')" class="btn btn-secondary flex-1">취소</button>
+    </div>
+
+    <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
+        <thead>
+          <tr style="background:#166534;color:white;border-bottom:3px solid #14532d">
+            <th style="padding:8px 12px;text-align:left;min-width:100px;position:sticky;left:0;background:#166534;z-index:10;border-right:3px solid #14532d;border-bottom:3px solid #14532d">
+              <div style="font-size:11px">이름/직위</div>
+            </th>
+            ${Array.from({length:days},(_,i)=>{
+              const day=i+1, dow=getDayOfWeek(App.currentYear,App.currentMonth,day)
+              const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
+              const isSun=dow==='일',isSat=dow==='토'
+              const borderCol=isSun?'#fca5a5':isSat?'#93c5fd':'rgba(255,255,255,0.2)'
+              return `<th style="padding:5px 1px;text-align:center;min-width:32px;color:${isSun?'#fca5a5':isSat?'#93c5fd':'white'};border-left:1px solid ${borderCol};border-bottom:3px solid #14532d;${isWknd?'background:#1a4731;':''}">
+                <div style="font-size:11px">${day}</div>
+                <div style="font-size:9px;opacity:0.8">${dow}</div>
+              </th>`
+            }).join('')}
+            <th style="padding:6px 4px;min-width:40px;text-align:center;border-left:3px solid #14532d;border-bottom:3px solid #14532d;background:#0f3d25;font-size:10px">근무</th>
+            <th style="padding:6px 4px;min-width:35px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:10px">연차</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${emps.length === 0 ? `
+          <tr><td colspan="${days+3}" class="text-center py-12 text-gray-400">
+            <i class="fas fa-users text-4xl mb-3 block"></i>
+            직원을 먼저 등록하세요 (인사카드 탭)
+          </td></tr>
+          ` : (() => {
+            // 팀 구분선 포함 렌더링
+            const rows = []
+            const cookEmps = emps.filter(e => e.team === 'cook' || !e.team)
+            const nutriEmps = emps.filter(e => e.team === 'nutrition')
+            
+            function renderEmpRows(teamEmps, teamKey) {
+              if (teamEmps.length === 0) return ''
+              const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
+              let html = `<tr><td colspan="${days+3}" style="background:#f8fafc;padding:4px 12px;border-bottom:1px solid #e2e8f0">
+                <span style="font-size:11px;font-weight:700;color:#64748b">
+                  <i class="fas ${tl.icon}" style="margin-right:4px"></i>${tl.label} (${teamEmps.length}명)
+                </span>
+              </td></tr>`
+              teamEmps.forEach((emp, empIdx) => {
+                const rowBg = empIdx % 2 === 0 ? 'white' : '#fafafa'
+                // 스케줄 데이터는 schedMap에서 (월간 스케줄 로드 필요)
+                let workDays = 0, annualDays = 0
+                // 임시: 셀 렌더링
+                html += `<tr style="border-bottom:1px solid #e2e8f0" 
+                  onmouseover="this.style.background='#f0fdf4'" 
+                  onmouseout="this.style.background='${rowBg}'">
+                  <td style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:100px">
+                    <div style="font-weight:600;color:#1f2937;font-size:12px">${emp.name}</div>
+                    <div style="font-size:10px;color:#94a3b8">${emp.position_name || emp.position || ''}</div>
+                  </td>
+                  ${Array.from({length:days},(_,i)=>{
+                    const day=i+1
+                    const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                    const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
+                    const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
+                    const isSun2=dow2==='일'
+                    const cellBg=isSun2?'background:#fff1f2;':isWknd?'background:#fffbeb;':`background:${rowBg};`
+                    const borderLeft=`border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
+                    return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}cursor:pointer" 
+                      onclick="schedCycleShift(${emp.id},'${dateStr}',this,'${JSON.stringify(ALL_CODES).replace(/'/g,"\\x27")}')"
+                      data-shift="" data-empid="${emp.id}" data-date="${dateStr}">
+                      <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;background:#f9fafb;color:#d1d5db">·</span>
+                    </td>`
+                  }).join('')}
+                  <td style="padding:5px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;font-weight:700;color:#166534;font-size:12px" id="workdays-${emp.id}">-</td>
+                  <td style="padding:5px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;font-weight:700;color:#92400e;font-size:12px" id="annual-${emp.id}">-</td>
+                </tr>`
+              })
+              return html
+            }
+
+            return renderEmpRows(cookEmps, 'cook') + renderEmpRows(nutriEmps, 'nutrition')
+          })()}
+        </tbody>
+      </table>
+    </div>
+  </div>`
+}
+
+// ─── 모달: 직원 추가/수정 ───────────────────────────────────
+function renderEmployeeModal() {
+  const mode = empModalMode
+  const emp = empModalData
+  const isEdit = mode === 'edit' && emp
+
+  return `
+  <div id="empCardModal" class="hidden modal-overlay" style="z-index:1000">
+    <div class="modal-box max-w-2xl p-0 overflow-hidden">
+      <div class="bg-gray-800 text-white px-6 py-4 flex items-center justify-between">
+        <h3 class="font-bold text-lg">
+          <i class="fas fa-id-card mr-2"></i>
+          ${isEdit ? `${emp?.name || ''} 인사카드 수정` : '직원 추가'}
+        </h3>
+        <button onclick="document.getElementById('empCardModal').classList.add('hidden')"
+          class="text-white/70 hover:text-white">
+          <i class="fas fa-times text-lg"></i>
+        </button>
+      </div>
+      <div class="p-6 overflow-y-auto" style="max-height:75vh">
+        <div class="grid grid-cols-2 gap-x-6 gap-y-4">
+          <!-- 기본정보 섹션 -->
+          <div class="col-span-2">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">기본 정보</h4>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">이름 <span class="text-red-500">*</span></label>
+            <input type="text" id="ei_name" class="form-input mt-1" placeholder="홍길동" value="${isEdit ? (emp?.name||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">직원번호</label>
+            <input type="text" id="ei_empNumber" class="form-input mt-1" placeholder="EMP-001" value="${isEdit ? (emp?.emp_number||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">팀 <span class="text-red-500">*</span></label>
+            <select id="ei_team" class="form-input mt-1" onchange="updateEmpPositionOptions()">
+              <option value="cook" ${(!isEdit||emp?.team==='cook')?'selected':''}>조리팀</option>
+              <option value="nutrition" ${(isEdit&&emp?.team==='nutrition')?'selected':''}>영양팀</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">직위</label>
+            <select id="ei_positionId" class="form-input mt-1">
+              <option value="">직접입력</option>
+              ${schedulePositions.map(p => `
+                <option value="${p.id}" ${isEdit&&emp?.position_id==p.id?'selected':''}>${p.name} (${p.team==='cook'?'조리':'영양'})</option>
+              `).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
+            <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장" value="${isEdit ? (emp?.position||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">고용형태</label>
+            <select id="ei_employmentType" class="form-input mt-1">
+              ${Object.entries(EMPLOYMENT_LABELS).map(([k,v]) => `
+                <option value="${k}" ${(isEdit&&emp?.employment_type===k)||(!isEdit&&k==='full')?'selected':''}>${v.label}</option>
+              `).join('')}
+            </select>
+          </div>
+
+          <!-- 날짜 정보 -->
+          <div class="col-span-2 mt-1">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">날짜 정보</h4>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">생년월일</label>
+            <input type="date" id="ei_birthDate" class="form-input mt-1" value="${isEdit ? (emp?.birth_date||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">입사일</label>
+            <input type="date" id="ei_hireDate" class="form-input mt-1" value="${isEdit ? (emp?.hire_date||'') : ''}">
+          </div>
+
+          <!-- 연락처 -->
+          <div class="col-span-2 mt-1">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">연락처</h4>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">전화번호</label>
+            <input type="tel" id="ei_phone" class="form-input mt-1" placeholder="010-0000-0000" value="${isEdit ? (emp?.phone||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">비상연락처</label>
+            <input type="tel" id="ei_emergencyContact" class="form-input mt-1" placeholder="010-0000-0000" value="${isEdit ? (emp?.emergency_contact||'') : ''}">
+          </div>
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700">주소</label>
+            <input type="text" id="ei_address" class="form-input mt-1" placeholder="서울시 강남구..." value="${isEdit ? (emp?.address||'') : ''}">
+          </div>
+
+          <!-- 보건증/검진 -->
+          <div class="col-span-2 mt-1">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">보건증 / 건강검진</h4>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">보건증 만료일</label>
+            <input type="date" id="ei_healthCertExpire" class="form-input mt-1" value="${isEdit ? (emp?.health_cert_expire||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">건강검진일</label>
+            <input type="date" id="ei_healthExamDate" class="form-input mt-1" value="${isEdit ? (emp?.health_exam_date||'') : ''}">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">검진 제출 상태</label>
+            <select id="ei_healthExamStatus" class="form-input mt-1">
+              ${Object.entries(EXAM_STATUS).map(([k,v]) => `
+                <option value="${k}" ${isEdit&&emp?.health_exam_status===k?'selected':k==='pending'&&!isEdit?'selected':''}>${v.label}</option>
+              `).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">연차 총일수</label>
+            <input type="number" id="ei_annualLeave" class="form-input mt-1" min="0" max="30" step="0.5"
+              value="${isEdit ? (emp?.annual_leave_total||15) : 15}">
+          </div>
+
+          <!-- 근무 파트 -->
+          <div class="col-span-2 mt-1">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">근무 파트</h4>
+            <div class="flex gap-3">
+              ${['breakfast','lunch','dinner'].map(p => {
+                const pLabel = {breakfast:'조식',lunch:'중식',dinner:'석식'}[p]
+                const workParts = isEdit ? (JSON.parse(emp?.work_parts||'[]') || []) : ['breakfast','lunch','dinner']
+                return `<label class="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" id="ei_wp_${p}" class="w-4 h-4 text-blue-600"
+                    ${workParts.includes(p)?'checked':''}>
+                  <span class="text-sm text-gray-700">${pLabel}</span>
+                </label>`
+              }).join('')}
+            </div>
+          </div>
+
+          <!-- 메모 -->
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700">메모</label>
+            <textarea id="ei_note" class="form-input mt-1" rows="2" placeholder="특이사항...">${isEdit ? (emp?.note||'') : ''}</textarea>
+          </div>
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t border-gray-100 flex gap-3">
+        <button onclick="saveEmployeeCard(${isEdit ? emp?.id : 'null'})"
+          class="btn btn-primary flex-1">
+          <i class="fas fa-save mr-2"></i>${isEdit ? '수정 저장' : '직원 추가'}
+        </button>
+        <button onclick="document.getElementById('empCardModal').classList.add('hidden')"
+          class="btn btn-secondary">취소</button>
       </div>
     </div>
   </div>`
+}
 
-  // 근무 코드 순환 클릭 핸들러
-  window.cycleShift = async (empId, date, cell) => {
-    const currentShift = cell.dataset.shift || ''
-    const idx = SHIFTS.indexOf(currentShift)
-    const nextShift = SHIFTS[(idx + 1) % SHIFTS.length]
-    
-    cell.dataset.shift = nextShift
-    const span = cell.querySelector('span')
-    if (span) {
-      span.className = `inline-flex items-center justify-center w-7 h-7 rounded text-xs font-bold ${SHIFT_COLORS[nextShift]||'bg-gray-50 text-gray-300'}`
-      span.textContent = nextShift === '-' ? '·' : nextShift
-    }
+// ─── 모달: 근무조 추가/수정 ─────────────────────────────────
+function renderShiftModal() {
+  return `
+  <div id="shiftModal" class="hidden modal-overlay" style="z-index:1000">
+    <div class="modal-box max-w-md p-6">
+      <h3 class="font-bold text-lg mb-4"><i class="fas fa-clock mr-2"></i>근무조 <span id="shiftModalTitle">추가</span></h3>
+      <input type="hidden" id="sm_id">
+      <div class="space-y-4">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">근무코드 <span class="text-red-500">*</span></label>
+            <input type="text" id="sm_code" class="form-input mt-1" placeholder="A" maxlength="4">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">근무명 <span class="text-red-500">*</span></label>
+            <input type="text" id="sm_name" class="form-input mt-1" placeholder="주간A">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">시작시간</label>
+            <input type="time" id="sm_start" class="form-input mt-1" value="09:00">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">종료시간</label>
+            <input type="time" id="sm_end" class="form-input mt-1" value="18:00">
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">대상팀</label>
+          <select id="sm_team" class="form-input mt-1">
+            <option value="">전체</option>
+            <option value="cook">조리팀</option>
+            <option value="nutrition">영양팀</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">색상</label>
+          <div class="flex items-center gap-3 mt-1">
+            <input type="color" id="sm_color" value="#3B82F6" class="w-12 h-10 rounded cursor-pointer border border-gray-200">
+            <div class="flex gap-1 flex-wrap">
+              ${['#3B82F6','#10B981','#F59E0B','#EF4444','#8B5CF6','#EC4899','#14B8A6','#F97316'].map(c =>
+                `<button onclick="document.getElementById('sm_color').value='${c}'"
+                  class="w-6 h-6 rounded-full border-2 border-white shadow"
+                  style="background:${c}"></button>`
+              ).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-3 mt-6">
+        <button onclick="saveShift()" class="btn btn-primary flex-1">저장</button>
+        <button onclick="document.getElementById('shiftModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
+      </div>
+    </div>
+  </div>`
+}
 
-    // 저장
-    if (nextShift === '-') {
-      await api('DELETE', `/api/schedule/${empId}/${date}`).catch(() => null)
-    } else {
-      await api('POST', '/api/schedule/save', { employeeId: empId, workDate: date, shiftCode: nextShift }).catch(() => null)
-    }
+// ════════════════════════════════════════════════════════════════
+// 이벤트 핸들러 (window 바인딩)
+// ════════════════════════════════════════════════════════════════
+
+window.switchScheduleTab = (tab) => {
+  scheduleTab = tab
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+}
+
+window.openEmpModal = async (mode, empId, defaultTeam) => {
+  empModalMode = mode
+  empModalData = null
+  if (mode === 'edit' && empId) {
+    empModalData = await api('GET', `/api/schedule/employees/${empId}`).catch(() => null)
+  } else if (defaultTeam) {
+    empModalData = { team: defaultTeam }
+    empModalMode = 'add'
   }
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+  setTimeout(() => {
+    document.getElementById('empCardModal').classList.remove('hidden')
+  }, 50)
 }
 
-window.showAddEmployeeModal = () => {
-  document.getElementById('empModal').classList.remove('hidden')
-}
+window.saveEmployeeCard = async (empId) => {
+  const name = document.getElementById('ei_name')?.value?.trim()
+  if (!name) { showToast('이름은 필수입니다', 'error'); return }
 
-window.addEmployee = async () => {
-  const name = document.getElementById('empName').value.trim()
-  const position = document.getElementById('empPosition').value.trim()
-  const section = document.getElementById('empSection').value
-  if (!name || !position) { showToast('이름과 직책을 입력하세요', 'error'); return }
-  const res = await api('POST', '/api/schedule/employees', { name, position, section })
+  const workParts = ['breakfast','lunch','dinner'].filter(p =>
+    document.getElementById(`ei_wp_${p}`)?.checked
+  )
+
+  const body = {
+    name,
+    team: document.getElementById('ei_team')?.value || 'cook',
+    positionId: document.getElementById('ei_positionId')?.value || null,
+    position: document.getElementById('ei_position')?.value || '',
+    empNumber: document.getElementById('ei_empNumber')?.value || '',
+    birthDate: document.getElementById('ei_birthDate')?.value || '',
+    hireDate: document.getElementById('ei_hireDate')?.value || '',
+    employmentType: document.getElementById('ei_employmentType')?.value || 'full',
+    workParts,
+    phone: document.getElementById('ei_phone')?.value || '',
+    emergencyContact: document.getElementById('ei_emergencyContact')?.value || '',
+    address: document.getElementById('ei_address')?.value || '',
+    healthCertExpire: document.getElementById('ei_healthCertExpire')?.value || '',
+    healthExamDate: document.getElementById('ei_healthExamDate')?.value || '',
+    healthExamStatus: document.getElementById('ei_healthExamStatus')?.value || 'pending',
+    annualLeaveTotal: parseFloat(document.getElementById('ei_annualLeave')?.value || '15'),
+    note: document.getElementById('ei_note')?.value || ''
+  }
+
+  let res
+  if (empId) {
+    res = await api('PUT', `/api/schedule/employees/${empId}`, body)
+  } else {
+    res = await api('POST', '/api/schedule/employees', body)
+  }
+
   if (res?.success) {
-    document.getElementById('empModal').classList.add('hidden')
-    showToast('직원이 추가되었습니다', 'success')
-    renderSchedule()
+    document.getElementById('empCardModal').classList.add('hidden')
+    showToast(empId ? '수정되었습니다' : '직원이 추가되었습니다', 'success')
+    // 데이터 리로드
+    scheduleEmployees = await api('GET', '/api/schedule/employees').catch(() => [])
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  } else {
+    showToast(res?.error || '저장 실패', 'error')
   }
 }
+
+window.confirmResignEmployee = (empId, name) => {
+  if (!confirm(`"${name}" 직원을 퇴사 처리하시겠습니까?\n퇴사일이 오늘로 설정됩니다.`)) return
+  api('DELETE', `/api/schedule/employees/${empId}`).then(res => {
+    if (res?.success) {
+      showToast(`${name}님 퇴사 처리됨`, 'success')
+      api('GET', '/api/schedule/employees').then(data => {
+        scheduleEmployees = data || []
+        const content = document.getElementById('pageContent')
+        renderScheduleTab(content)
+      })
+    }
+  })
+}
+
+window.openShiftModal = (shiftId) => {
+  if (shiftId) {
+    const s = scheduleShifts.find(x => x.id === shiftId)
+    if (!s) return
+    document.getElementById('shiftModalTitle').textContent = '수정'
+    document.getElementById('sm_id').value = s.id
+    document.getElementById('sm_code').value = s.shift_code
+    document.getElementById('sm_name').value = s.shift_name
+    document.getElementById('sm_start').value = s.start_time
+    document.getElementById('sm_end').value = s.end_time
+    document.getElementById('sm_team').value = s.team || ''
+    document.getElementById('sm_color').value = s.color
+  } else {
+    document.getElementById('shiftModalTitle').textContent = '추가'
+    document.getElementById('sm_id').value = ''
+    document.getElementById('sm_code').value = ''
+    document.getElementById('sm_name').value = ''
+    document.getElementById('sm_start').value = '09:00'
+    document.getElementById('sm_end').value = '18:00'
+    document.getElementById('sm_team').value = ''
+    document.getElementById('sm_color').value = '#3B82F6'
+  }
+  document.getElementById('shiftModal').classList.remove('hidden')
+}
+
+window.saveShift = async () => {
+  const id = document.getElementById('sm_id').value
+  const body = {
+    shiftCode: document.getElementById('sm_code').value.trim(),
+    shiftName: document.getElementById('sm_name').value.trim(),
+    startTime: document.getElementById('sm_start').value,
+    endTime: document.getElementById('sm_end').value,
+    team: document.getElementById('sm_team').value || null,
+    color: document.getElementById('sm_color').value
+  }
+  if (!body.shiftCode || !body.shiftName) { showToast('코드와 이름은 필수입니다', 'error'); return }
+
+  let res
+  if (id) {
+    res = await api('PUT', `/api/schedule/shifts/${id}`, body)
+  } else {
+    res = await api('POST', '/api/schedule/shifts', body)
+  }
+
+  if (res?.success) {
+    document.getElementById('shiftModal').classList.add('hidden')
+    showToast('저장되었습니다', 'success')
+    scheduleShifts = await api('GET', '/api/schedule/shifts').catch(() => [])
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  } else {
+    showToast(res?.error || '저장 실패', 'error')
+  }
+}
+
+window.deleteShift = async (id, name) => {
+  if (!confirm(`"${name}" 근무조를 삭제하시겠습니까?`)) return
+  const res = await api('DELETE', `/api/schedule/shifts/${id}`)
+  if (res?.success) {
+    showToast('삭제되었습니다', 'success')
+    scheduleShifts = await api('GET', '/api/schedule/shifts').catch(() => [])
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  }
+}
+
+window.schedCycleShift = async (empId, date, cell, codesJson) => {
+  const codes = JSON.parse(codesJson)
+  const currentShift = cell.dataset.shift || ''
+  const idx = codes.indexOf(currentShift)
+  const nextShift = codes[(idx + 1) % codes.length]
+  
+  cell.dataset.shift = nextShift
+  const span = cell.querySelector('span')
+  if (span) {
+    const st = nextShift && nextShift !== '-'
+      ? (() => {
+          const sf = scheduleShifts.find(s => s.shift_code === nextShift)
+          if (sf) return `background:${sf.color}22;color:${sf.color};font-weight:700`
+          const dm = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
+            '오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8',
+            '경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'}
+          return dm[nextShift] || 'background:#f3f4f6;color:#374151'
+        })()
+      : 'background:#f9fafb;color:#d1d5db'
+    span.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;${st}`
+    span.textContent = (!nextShift || nextShift === '-') ? '·' : nextShift
+  }
+
+  if (!nextShift || nextShift === '-') {
+    await api('DELETE', `/api/schedule/${empId}/${date}`).catch(() => null)
+  } else {
+    await api('POST', '/api/schedule/save', { employeeId: empId, workDate: date, shiftCode: nextShift }).catch(() => null)
+  }
+}
+
 
 // ══════════════════════════════════════════════════════════════
 //  병원 관리 페이지 (관리자)
