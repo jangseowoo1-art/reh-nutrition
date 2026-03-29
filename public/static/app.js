@@ -752,6 +752,7 @@ async function renderDashboard() {
   const todayPatientMealsDash = data.todayPatientMeals || 0
   const mealCustomFields = data.mealCustomFields || []
   const mealCustomTotals = data.mealCustomTotals || {}
+  const mealFieldBreakdown = data.mealFieldBreakdown || []  // 식수 분류별 상세 + 전달 대비
   // ea 단위 커스텀 필드는 총식수에서 제외
   const customMealTotal = mealCustomFields
     .filter(f => (f.unit_type||'meal') !== 'ea')
@@ -1219,35 +1220,90 @@ async function renderDashboard() {
   </div>` : ''}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center justify-between mb-3">
         <h2 class="font-bold text-gray-800">이번달 식수 현황</h2>
         <button onclick="navigateTo('meals')" class="text-xs text-blue-500 hover:underline">식수 입력 →</button>
       </div>
-      <div class="grid grid-cols-2 gap-3 mb-4">
-        ${(mealCustomFields.length > 0
-          ? mealCustomFields.map(f => ({ label: f.field_name, value: mealCustomTotals[f.field_key]||0, color: f.unit_type==='ea'?'bg-orange-100 text-orange-700':'bg-indigo-100 text-indigo-700', icon: 'fa-utensils', unit: f.unit_type||'meal' }))
-          : [
-              { label: '환자식', value: ms.total_patient, color: 'bg-blue-100 text-blue-700', icon: 'fa-bed' },
-              { label: '직원식', value: ms.total_staff, color: 'bg-green-100 text-green-700', icon: 'fa-user' },
-              { label: '비급여', value: ms.total_noncovered, color: 'bg-purple-100 text-purple-700', icon: 'fa-receipt' },
-              { label: '보호자', value: ms.total_guardian, color: 'bg-orange-100 text-orange-700', icon: 'fa-users' },
-            ]
-        ).map(item => `
-          <div class="flex items-center gap-3 p-3 rounded-xl ${item.color.split(' ')[0]}">
-            <div class="w-9 h-9 rounded-lg flex items-center justify-center ${item.color}">
-              <i class="fas ${item.icon} text-xs"></i>
-            </div>
-            <div>
-              <div class="text-xs font-medium opacity-75">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
-              <div class="font-bold text-lg">${fmt(item.value)}<span class="text-xs font-normal opacity-60 ml-1">${item.unit==='ea'?'개':'식'}</span></div>
-            </div>
+      ${(() => {
+        // mealFieldBreakdown 우선 사용 (전달 대비 포함)
+        const fbdAll = mealFieldBreakdown.length > 0 ? mealFieldBreakdown : []
+        const fbdActive = fbdAll.filter(f => f.thisMonth > 0 || f.prevMonth > 0)
+        const prevLabelDash = pm.month ? `${pm.month}월` : '전달'
+        const getDashFieldStyle = (key, name) => {
+          if (key.startsWith('diet_preset_staff_') || name.includes('직원')) return {bg:'bg-blue-50',text:'text-blue-700',badge:'bg-blue-100 text-blue-700',color:'#3b82f6'}
+          if (key.startsWith('diet_preset_nc_') || name.includes('보호자') || name.includes('비급여')) return {bg:'bg-purple-50',text:'text-purple-700',badge:'bg-purple-100 text-purple-700',color:'#9333ea'}
+          if (key.startsWith('diet_preset_therapy_') || name.includes('치료식') || name.includes('절제') || name.includes('잔사') || name.includes('요오드') || name.includes('기타 치료')) return {bg:'bg-orange-50',text:'text-orange-700',badge:'bg-orange-100 text-orange-700',color:'#ea580c'}
+          if (key.startsWith('cat_') || name.includes('항암') || name.includes('요양') || name.includes('일반')) return {bg:'bg-green-50',text:'text-green-700',badge:'bg-green-100 text-green-700',color:'#16a34a'}
+          return {bg:'bg-gray-50',text:'text-gray-600',badge:'bg-gray-100 text-gray-600',color:'#6b7280'}
+        }
+        if (fbdActive.length > 0) {
+          // 세부 분류 테이블 (전달 대비 포함)
+          return `
+          <div class="overflow-hidden rounded-xl border border-gray-100 mb-3">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="bg-teal-50 text-teal-800">
+                  <th class="text-left px-3 py-2 font-semibold">식단 유형</th>
+                  <th class="text-right px-3 py-2 font-semibold">이번달</th>
+                  <th class="text-right px-3 py-2 font-semibold">${prevLabelDash}</th>
+                  <th class="text-right px-3 py-2 font-semibold">증감</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${fbdAll.map((f, i) => {
+                  const st = getDashFieldStyle(f.field_key, f.field_name)
+                  const unit = f.unit_type === 'ea' ? '개' : '식'
+                  const diffStr = f.diff > 0 ? `<span class="text-emerald-600 font-bold">+${fmt(f.diff)}</span>`
+                                : f.diff < 0 ? `<span class="text-red-500 font-bold">${fmt(f.diff)}</span>`
+                                : `<span class="text-gray-300">-</span>`
+                  const rowBg = i % 2 === 0 ? 'bg-white' : 'bg-gray-50/40'
+                  return `<tr class="${rowBg}">
+                    <td class="px-3 py-1.5"><span class="inline-block px-1.5 py-0.5 rounded text-xs font-medium ${st.badge}">${f.field_name}</span></td>
+                    <td class="text-right px-3 py-1.5 font-bold ${st.text}">${f.thisMonth > 0 ? fmt(f.thisMonth)+unit : f.prevMonth > 0 ? '<span class="text-gray-300">0</span>' : '-'}</td>
+                    <td class="text-right px-3 py-1.5 text-gray-400">${f.prevMonth > 0 ? fmt(f.prevMonth)+unit : '-'}</td>
+                    <td class="text-right px-3 py-1.5">${diffStr}</td>
+                  </tr>`
+                }).join('')}
+              </tbody>
+              <tfoot>
+                <tr class="bg-teal-100/60 font-semibold text-teal-800">
+                  <td class="px-3 py-1.5 text-xs">합계</td>
+                  <td class="text-right px-3 py-1.5 text-xs">${fmt(totalMeals)}식</td>
+                  <td class="text-right px-3 py-1.5 text-xs text-gray-500">${fmt(fbdAll.reduce((s,f)=>s+f.prevMonth,0))}식</td>
+                  <td class="text-right px-3 py-1.5 text-xs">${(()=>{const d=fbdAll.reduce((s,f)=>s+f.diff,0);return d>0?`<span class="text-emerald-600">+${fmt(d)}</span>`:d<0?`<span class="text-red-500">${fmt(d)}</span>`:`<span class="text-gray-300">-</span>`})()}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>`
+        } else {
+          // fallback: 기존 카드 형태
+          return `<div class="grid grid-cols-2 gap-3 mb-3">
+            ${(mealCustomFields.length > 0
+              ? mealCustomFields.map(f => ({ label: f.field_name, value: mealCustomTotals[f.field_key]||0, color: f.unit_type==='ea'?'bg-orange-100 text-orange-700':'bg-indigo-100 text-indigo-700', icon: 'fa-utensils', unit: f.unit_type||'meal' }))
+              : [
+                  { label: '환자식', value: ms.total_patient, color: 'bg-blue-100 text-blue-700', icon: 'fa-bed' },
+                  { label: '직원식', value: ms.total_staff, color: 'bg-green-100 text-green-700', icon: 'fa-user' },
+                  { label: '비급여', value: ms.total_noncovered, color: 'bg-purple-100 text-purple-700', icon: 'fa-receipt' },
+                  { label: '보호자', value: ms.total_guardian, color: 'bg-orange-100 text-orange-700', icon: 'fa-users' },
+                ]
+            ).map(item => `
+              <div class="flex items-center gap-3 p-3 rounded-xl ${item.color.split(' ')[0]}">
+                <div class="w-9 h-9 rounded-lg flex items-center justify-center ${item.color}">
+                  <i class="fas ${item.icon} text-xs"></i>
+                </div>
+                <div>
+                  <div class="text-xs font-medium opacity-75">${item.label}${item.unit==='ea'?'<span style="font-size:9px;color:#f97316">(ea)</span>':''}</div>
+                  <div class="font-bold text-lg">${fmt(item.value)}<span class="text-xs font-normal opacity-60 ml-1">${item.unit==='ea'?'개':'식'}</span></div>
+                </div>
+              </div>
+            `).join('')}
           </div>
-        `).join('')}
-      </div>
-      <div class="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
-        <span class="text-sm font-medium text-gray-600">총 식수</span>
-        <span class="font-bold text-lg text-gray-800">${fmt(totalMeals)}<span class="text-xs font-normal text-gray-400 ml-1">식</span></span>
-      </div>
+          <div class="flex items-center justify-between p-3 bg-gray-50 rounded-xl mb-0">
+            <span class="text-sm font-medium text-gray-600">총 식수</span>
+            <span class="font-bold text-lg text-gray-800">${fmt(totalMeals)}<span class="text-xs font-normal text-gray-400 ml-1">식</span></span>
+          </div>`
+        }
+      })()}
       <!-- 식단가 3종 -->
       <div class="mt-3 space-y-2">
         <div class="flex items-center justify-between mb-1">
@@ -10610,58 +10666,78 @@ async function renderAdminDashboard() {
             })() : ''}
           </div>
 
-          <!-- ③ 월간 누적 식수 현황 -->
+          <!-- ③ 월간 누적 식수 현황 (분류별 상세) -->
           <div class="mb-3 p-2.5 bg-gradient-to-r from-teal-50 to-cyan-50 rounded-xl border border-teal-100">
             <div class="flex items-center justify-between mb-2">
               <span class="text-xs font-semibold text-teal-700"><i class="fas fa-people-group mr-1"></i>이번달 누적 식수</span>
               <span class="text-xs font-bold text-teal-800">${monthGrandTotal>0?`전체 ${fmt(monthGrandTotal)}식`:'입력 없음'}</span>
             </div>
-            <!-- 직원/보호자/환자군 월간 합계 -->
+            <!-- 식단 유형별 상세 분류표 (mealFieldBreakdown 기반) -->
             ${(() => {
-              // 직원/보호자가 카테고리 meals_include_keys에 이미 포함된 경우 별도 칸 생략
-              const _catStIncluded    = _allMealsKeys.some(k => k.startsWith('st_key_') || k==='staff')
-              const _catGuardIncluded = _allMealsKeys.some(k => k==='guardian') ||
-                                        _allMealsKeys.some(k => k.startsWith('nc_key_') && k.includes('guardian'))
-              // 별도 칸 표시 여부 (카테고리에 포함 안 됐고 값이 있을 때만)
-              const _staffCol  = !_catStIncluded    && monthStaffMeals  > 0
-              const _guardCol  = !_catGuardIncluded && monthGuardMeals  > 0
-              const _colCount  = (h.catDietPrices||[]).length + (_staffCol?1:0) + (_guardCol?1:0) || 1
-              return `<div class="grid grid-cols-${Math.min(_colCount, 4)} gap-1 text-center mb-1.5">
-                ${_staffCol ? `<div class="p-1.5 bg-white rounded-lg border border-blue-100">
-                  <div class="text-xs text-blue-600 font-medium">직원</div>
-                  <div class="text-sm font-bold text-blue-700">${fmt(monthStaffMeals)}</div>
-                  <div class="text-xs text-gray-400">식</div>
-                </div>` : ''}
-                ${_guardCol ? `<div class="p-1.5 bg-white rounded-lg border border-purple-100">
-                  <div class="text-xs text-purple-600 font-medium">보호자</div>
-                  <div class="text-sm font-bold text-purple-700">${fmt(monthGuardMeals)}</div>
-                  <div class="text-xs text-gray-400">식</div>
-                </div>` : ''}
-                ${(h.catDietPrices||[]).map(cat => {
-                  const color = getCategoryColorHex(cat.category_key)
-                  // cat.monthMeals: meals_include_keys 기반 전체 식수 (백엔드 계산값 우선)
-                  // cat_cancer + st_key_(직원) + nc_key_(비급여) + th_key_(치료식) 모두 포함
-                  const meals = cat.monthMeals || customTotals['cat_'+cat.category_key] || 0
-                  return '<div class="p-1.5 bg-white rounded-lg border" style="border-color:'+color+'30">'
-                    + '<div class="text-xs font-medium" style="color:'+color+'">'+cat.category_name+'</div>'
-                    + '<div class="text-sm font-bold" style="color:'+color+'">'+(meals>0?fmt(meals):'-')+'</div>'
-                    + '<div class="text-xs text-gray-400">식</div>'
-                    + '</div>'
-                }).join('')}
+              const fbd = (h.mealFieldBreakdown||[]).filter(f => f.unit_type !== 'ea' && (f.thisMonth > 0 || f.prevMonth > 0))
+              if (fbd.length === 0) {
+                return monthGrandTotal > 0
+                  ? `<div class="text-xs text-gray-400 text-center py-1">분류 정보 없음</div>`
+                  : `<div class="text-xs text-gray-400 text-center py-1">입력 없음</div>`
+              }
+              // 필드명으로 유형 색상 결정
+              const getFieldColor = (key, name) => {
+                if (key.startsWith('diet_preset_staff_') || name.includes('직원')) return {bg:'bg-blue-50',text:'text-blue-700',border:'border-blue-100',badge:'bg-blue-100 text-blue-700'}
+                if (key.startsWith('diet_preset_nc_') || name.includes('보호자') || name.includes('비급여')) return {bg:'bg-purple-50',text:'text-purple-700',border:'border-purple-100',badge:'bg-purple-100 text-purple-700'}
+                if (key.startsWith('diet_preset_therapy_') || name.includes('치료식') || name.includes('절제') || name.includes('잔사') || name.includes('요오드')) return {bg:'bg-orange-50',text:'text-orange-700',border:'border-orange-100',badge:'bg-orange-100 text-orange-700'}
+                if (key.startsWith('cat_') || name.includes('항암') || name.includes('요양') || name.includes('일반')) return {bg:'bg-green-50',text:'text-green-700',border:'border-green-100',badge:'bg-green-100 text-green-700'}
+                return {bg:'bg-gray-50',text:'text-gray-700',border:'border-gray-100',badge:'bg-gray-100 text-gray-600'}
+              }
+              const prevMonthLabel = h.prevMonth ? `${h.prevMonth.month}월` : '전달'
+              return `
+              <div class="overflow-hidden rounded-lg border border-teal-100">
+                <table class="w-full text-xs">
+                  <thead>
+                    <tr class="bg-teal-100 text-teal-800">
+                      <th class="text-left px-2 py-1 font-semibold">식단 유형</th>
+                      <th class="text-right px-2 py-1 font-semibold">이번달</th>
+                      <th class="text-right px-2 py-1 font-semibold">${prevMonthLabel}</th>
+                      <th class="text-right px-2 py-1 font-semibold">증감</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${fbd.map((f, i) => {
+                      const c = getFieldColor(f.field_key, f.field_name)
+                      const diffStr = f.diff > 0 ? `<span class="text-emerald-600 font-semibold">+${fmt(f.diff)}</span>`
+                                    : f.diff < 0 ? `<span class="text-red-500 font-semibold">${fmt(f.diff)}</span>`
+                                    : `<span class="text-gray-400">-</span>`
+                      const rowBg = i % 2 === 0 ? 'bg-white' : 'bg-teal-50/30'
+                      return `<tr class="${rowBg}">
+                        <td class="px-2 py-1">
+                          <span class="inline-block px-1.5 py-0.5 rounded text-xs font-medium ${c.badge}">${f.field_name}</span>
+                        </td>
+                        <td class="text-right px-2 py-1 font-bold ${c.text}">${f.thisMonth > 0 ? fmt(f.thisMonth)+'식' : '-'}</td>
+                        <td class="text-right px-2 py-1 text-gray-500">${f.prevMonth > 0 ? fmt(f.prevMonth)+'식' : '-'}</td>
+                        <td class="text-right px-2 py-1">${diffStr}</td>
+                      </tr>`
+                    }).join('')}
+                  </tbody>
+                  <tfoot>
+                    <tr class="bg-teal-100/50 font-semibold text-teal-800">
+                      <td class="px-2 py-1">합계</td>
+                      <td class="text-right px-2 py-1">${fmt(fbd.reduce((s,f)=>s+f.thisMonth,0))}식</td>
+                      <td class="text-right px-2 py-1 text-gray-500">${fmt(fbd.reduce((s,f)=>s+f.prevMonth,0))}식</td>
+                      <td class="text-right px-2 py-1">${(()=>{const d=fbd.reduce((s,f)=>s+f.diff,0); return d>0?`<span class="text-emerald-600">+${fmt(d)}</span>`:d<0?`<span class="text-red-500">${fmt(d)}</span>`:`<span class="text-gray-400">-</span>`})()} </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>`
             })()}
             <!-- 오늘 입력된 식수 (소형) -->
             ${todayTotalMeals>0 ? `
-            <div class="mt-1.5 flex items-center justify-between text-xs bg-white border border-teal-100 rounded-lg px-2 py-1">
+            <div class="mt-2 flex items-center justify-between text-xs bg-white border border-teal-100 rounded-lg px-2 py-1">
               <span class="text-teal-600 font-medium"><i class="fas fa-clock mr-1"></i>오늘 입력</span>
               <span class="font-semibold text-teal-700">${fmt(todayTotalMeals)}식
                 <span class="text-gray-400 font-normal ml-1">(조${todayBreakfast}/중${todayLunch}/석${todayDinner}
                 ${(h.catDietPrices||[]).map(cat=>`· ${cat.category_name} ${(todayCatMeals[cat.id]||0)}식`).join('')})</span>
               </span>
             </div>` : `
-            <div class="mt-1.5 text-center text-xs text-gray-400 py-0.5">오늘 식수 미입력</div>`}
-            ${monthNonCovMeals > 0 ? `
-            <div class="mt-1 text-xs text-gray-400 text-right">비급여 ${fmt(monthNonCovMeals)}식 (합계 제외)</div>` : ''}
+            <div class="mt-2 text-center text-xs text-gray-400 py-0.5">오늘 식수 미입력</div>`}
           </div>
 
           <!-- ④ 법인카드 사용 현황 -->
@@ -14223,6 +14299,10 @@ async function renderReport(selectedHospitalId = null) {
   const mealPriceForRpt = rptTotalMealsFromApi > 0 && (s.totalUsed||0) > 0
     ? Math.round((s.totalUsed||0) / rptTotalMealsFromApi) : (s.mealPrice || 0)
 
+  // 식수 분류별 상세 breakdown (보고서 PAGE 6용)
+  const rptMealFieldBreakdown = summaryData?.mealFieldBreakdown || []
+  const rptPrevMonth = summaryData?.prevMonth || {}
+
   // ── 새 보고서 섹션용 변수 매핑 ──────────────────────────────────────────
   // settings에서 meal_price 가져오기 (summaryData.settings 혹은 catDietPrices[0].targetPrice)
   const _settings = summaryData?.settings || {}
@@ -14752,36 +14832,116 @@ async function renderReport(selectedHospitalId = null) {
     </div>`
 
     // ══ PAGE 6: 식수 현황 분석 ══════════════════════════════════
-    const mealColors = ['#064e3b','#1d4ed8','#7c3aed','#d97706','#dc2626','#0891b2']
-    const mealCatList = rptCatMeals.length>0 ? rptCatMeals : [
-      {name:'환자식',count:s.normalCount||0},{name:'직원식',count:s.staffCount||0}
-    ].filter(c=>c.count>0)
+    const mealColors6 = ['#064e3b','#1d4ed8','#7c3aed','#d97706','#dc2626','#0891b2','#0891b2','#9333ea']
+    // rptMealFieldBreakdown 우선 사용 (전달 대비 포함), 없으면 rptCatMeals fallback
+    const fbdRpt = rptMealFieldBreakdown.length > 0 ? rptMealFieldBreakdown : []
+    const fbdRptActive = fbdRpt.filter(f => f.thisMonth > 0 || f.prevMonth > 0)
+    const mealCatList = fbdRptActive.length > 0
+      ? fbdRptActive.filter(f => f.unit_type !== 'ea').map(f => ({name: f.field_name, count: f.thisMonth, key: f.field_key}))
+      : (rptCatMeals.length > 0 ? rptCatMeals : [{name:'환자식',count:s.normalCount||0},{name:'직원식',count:s.staffCount||0}].filter(c=>c.count>0))
     const totalMealSum = mealCatList.reduce((s,c)=>s+c.count,0)||1
-    const staffRatio = totalMeals>0?Math.round((s.staffCount||0)/totalMeals*100):0
-    const waterAnalysis = totalMeals===0?'식수 데이터를 분석합니다. 식수 입력 후 자동 분석됩니다.'
-      :`이번 달 총 식수는 ${fmt(totalMeals)}명이며, 일 평균 ${Math.round(totalMeals/daysInMonth).toLocaleString()}명 수준입니다.`
+    const p6PrevMonthLabel = rptPrevMonth.month ? `${rptPrevMonth.month}월` : '전달'
+    const p6PrevTotalMeals = fbdRpt.reduce((s,f)=>s+f.prevMonth,0) || (rptPrevMonth.totalMeals||0)
+    const p6StaffCount = fbdRpt.filter(f=>f.field_key.startsWith('diet_preset_staff_')).reduce((s,f)=>s+f.thisMonth,0) || (s.staffCount||0)
+    const staffRatio = totalMeals>0?Math.round(p6StaffCount/totalMeals*100):0
+    const p6MealDiff = totalMeals - p6PrevTotalMeals
+    const p6MealDiffStr = p6PrevTotalMeals > 0
+      ? (p6MealDiff > 0 ? `전달 대비 +${fmt(p6MealDiff)}식 증가` : p6MealDiff < 0 ? `전달 대비 ${fmt(p6MealDiff)}식 감소` : `전달과 동일`)
+      : ''
+    const waterAnalysis = totalMeals===0
+      ? '식수 데이터를 분석합니다. 식수 입력 후 자동 분석됩니다.'
+      : `이번 달(${reportMonth}월) 총 식수는 ${fmt(totalMeals)}식이며, 일 평균 ${Math.round(totalMeals/daysInMonth).toLocaleString()}식 수준입니다.${p6MealDiffStr ? ' ' + p6MealDiffStr + '.' : ''}`
     const waterWarn = staffRatio>=70?`⚠ 직원식 비중(${staffRatio}%)이 비정상적으로 높습니다. 환자 식수 데이터를 확인하세요.`:null
+    const p6GetColor = (key, name) => {
+      if (!key && !name) return '#6b7280'
+      if ((key||'').startsWith('diet_preset_staff_') || (name||'').includes('직원')) return '#3b82f6'
+      if ((key||'').startsWith('diet_preset_nc_') || (name||'').includes('보호자') || (name||'').includes('비급여')) return '#9333ea'
+      if ((key||'').startsWith('diet_preset_therapy_') || (name||'').includes('치료식') || (name||'').includes('절제') || (name||'').includes('잔사') || (name||'').includes('요오드')) return '#ea580c'
+      if ((key||'').startsWith('cat_') || (name||'').includes('항암') || (name||'').includes('요양') || (name||'').includes('일반')) return '#16a34a'
+      return '#6b7280'
+    }
     const slide6 = `
     <div class="report-slide rpt-report-page">
-      ${SH(6,'식수 현황 분석','Meal Count')}
-      <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:28px;flex:1;min-height:0;margin-bottom:20px">
-        <!-- 가로 바 차트 -->
-        <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;display:flex;flex-direction:column">
-          <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">식종별 식수 현황 (명수 레이블 포함)</div>
-          <div id="rptWaterChart" style="width:100%;flex:1;min-height:280px"></div>
+      ${SH(6,'식수 현황 분석','Meal Count Analysis')}
+      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:20px;flex:1;min-height:0;margin-bottom:16px">
+        <!-- 왼쪽: KPI + 차트 -->
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+            <div style="background:#f0fdf4;border-radius:10px;padding:10px 12px;border:1px solid #bbf7d0;text-align:center">
+              <div style="font-size:11px;color:#16a34a;font-weight:600;margin-bottom:4px">이번달 총 식수</div>
+              <div style="font-size:20px;font-weight:900;color:#064e3b">${fmt(totalMeals)}</div>
+              <div style="font-size:11px;color:#4b5563">식</div>
+            </div>
+            <div style="background:#eff6ff;border-radius:10px;padding:10px 12px;border:1px solid #bfdbfe;text-align:center">
+              <div style="font-size:11px;color:#2563eb;font-weight:600;margin-bottom:4px">${p6PrevMonthLabel} 식수</div>
+              <div style="font-size:20px;font-weight:900;color:#1d4ed8">${p6PrevTotalMeals>0?fmt(p6PrevTotalMeals):'-'}</div>
+              <div style="font-size:11px;color:#4b5563">식</div>
+            </div>
+            <div style="background:${p6MealDiff>=0?'#f0fdf4':'#fef2f2'};border-radius:10px;padding:10px 12px;border:1px solid ${p6MealDiff>=0?'#bbf7d0':'#fecaca'};text-align:center">
+              <div style="font-size:11px;color:${p6MealDiff>=0?'#16a34a':'#dc2626'};font-weight:600;margin-bottom:4px">전달 대비</div>
+              <div style="font-size:20px;font-weight:900;color:${p6MealDiff>0?'#16a34a':p6MealDiff<0?'#dc2626':'#6b7280'}">${p6PrevTotalMeals>0?(p6MealDiff>0?'+':'')+fmt(p6MealDiff):'-'}</div>
+              <div style="font-size:11px;color:#4b5563">식</div>
+            </div>
+          </div>
+          <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;display:flex;flex-direction:column">
+            <div style="font-size:13px;font-weight:700;color:#1f2937;margin-bottom:10px">식종별 식수 현황</div>
+            <div id="rptWaterChart" style="width:100%;flex:1;min-height:200px"></div>
+          </div>
         </div>
-        <!-- 식수 카드들 -->
-        <div style="display:flex;flex-direction:column;gap:8px">
-          ${mealCatList.map((c,i)=>`
-            <div style="background:${catBgs[i%catBgs.length]};border-radius:10px;padding:12px 14px;border-left:4px solid ${mealColors[i%mealColors.length]}">
-              <div style="font-size:13px;color:#374151;font-weight:700;margin-bottom:6px">${c.name}</div>
-              <div style="font-size:24px;font-weight:900;color:${mealColors[i%mealColors.length]}">${fmt(c.count)}<span style="font-size:13px;font-weight:600">명</span></div>
-              <div style="font-size:12px;color:#4b5563;font-weight:600">${Math.round(c.count/totalMealSum*100)}%</div>
-            </div>`).join('')}
-          <div style="background:#f8fafc;border-radius:10px;padding:12px 14px;border:1px solid #e2e8f0;margin-top:2px">
-            <div style="font-size:13px;color:#374151;font-weight:700;margin-bottom:6px">총 식수 / 일평균</div>
-            <div style="font-size:22px;font-weight:900;color:#064e3b">${fmt(totalMeals)}명</div>
-            <div style="font-size:13px;color:#374151">일평균 ${Math.round(totalMeals/daysInMonth).toLocaleString()}명</div>
+        <!-- 오른쪽: 전달 대비 상세 테이블 -->
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:13px;font-weight:700;color:#1f2937">식종별 분류 현황 (${p6PrevMonthLabel} 대비)</div>
+          <div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;flex:1">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead>
+                <tr style="background:#f1f5f9">
+                  <th style="text-align:left;padding:8px 10px;font-weight:700;color:#475569;font-size:11px">식단 유형</th>
+                  <th style="text-align:right;padding:8px 6px;font-weight:700;color:#475569;font-size:11px">이번달</th>
+                  <th style="text-align:right;padding:8px 6px;font-weight:700;color:#475569;font-size:11px">${p6PrevMonthLabel}</th>
+                  <th style="text-align:right;padding:8px 10px;font-weight:700;color:#475569;font-size:11px">증감</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${(fbdRpt.length > 0 ? fbdRpt : mealCatList.map(c=>({field_key:c.key||'',field_name:c.name,unit_type:'meal',thisMonth:c.count,prevMonth:0,diff:c.count}))).map((f, i) => {
+                  const color6 = p6GetColor(f.field_key, f.field_name)
+                  const unit6 = f.unit_type === 'ea' ? '개' : '식'
+                  const pct6 = totalMeals > 0 && f.unit_type !== 'ea' ? (f.thisMonth/totalMeals*100).toFixed(1) : '0.0'
+                  const diff6Str = f.diff > 0 ? `<span style="color:#16a34a;font-weight:700">+${fmt(f.diff)}</span>`
+                                 : f.diff < 0 ? `<span style="color:#dc2626;font-weight:700">${fmt(f.diff)}</span>`
+                                 : `<span style="color:#9ca3af">-</span>`
+                  return `<tr style="border-top:1px solid #f3f4f6;background:${i%2===0?'#fff':'#f9fafb'}">
+                    <td style="padding:7px 10px">
+                      <div style="display:flex;align-items:center;gap:5px">
+                        <span style="width:7px;height:7px;border-radius:50%;background:${color6};flex-shrink:0"></span>
+                        <span style="font-weight:600;color:#374151;font-size:11px">${f.field_name}</span>
+                      </div>
+                      ${f.unit_type !== 'ea' && parseFloat(pct6) > 0 ? `<div style="font-size:10px;color:#9ca3af;margin-left:12px">${pct6}%</div>` : ''}
+                    </td>
+                    <td style="text-align:right;padding:7px 6px;font-weight:700;color:${color6};font-size:12px">${fmt(f.thisMonth)}${unit6}</td>
+                    <td style="text-align:right;padding:7px 6px;color:#6b7280;font-size:11px">${f.prevMonth > 0 ? fmt(f.prevMonth)+unit6 : '-'}</td>
+                    <td style="text-align:right;padding:7px 10px">${diff6Str}</td>
+                  </tr>`
+                }).join('')}
+              </tbody>
+              <tfoot>
+                <tr style="background:#f0fdf4;border-top:2px solid #bbf7d0">
+                  <td style="padding:8px 10px;font-weight:700;color:#064e3b;font-size:11px">합계</td>
+                  <td style="text-align:right;padding:8px 6px;font-weight:900;color:#064e3b;font-size:12px">${fmt(totalMeals)}식</td>
+                  <td style="text-align:right;padding:8px 6px;color:#6b7280;font-size:11px">${p6PrevTotalMeals>0?fmt(p6PrevTotalMeals)+'식':'-'}</td>
+                  <td style="text-align:right;padding:8px 10px;font-size:12px">${p6PrevTotalMeals>0?(p6MealDiff>0?`<span style="color:#16a34a;font-weight:700">+${fmt(p6MealDiff)}</span>`:p6MealDiff<0?`<span style="color:#dc2626;font-weight:700">${fmt(p6MealDiff)}</span>`:`<span style="color:#9ca3af">-</span>`):'-'}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-size:11px;color:#6b7280;font-weight:600">일 평균 식수</div>
+              <div style="font-size:18px;font-weight:900;color:#064e3b">${fmt(Math.round(totalMeals/daysInMonth))}<span style="font-size:11px;font-weight:600">식/일</span></div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:#6b7280">총 일수</div>
+              <div style="font-size:13px;font-weight:700;color:#374151">${daysInMonth}일</div>
+            </div>
           </div>
         </div>
       </div>
@@ -15667,9 +15827,25 @@ async function renderReport(selectedHospitalId = null) {
 
     // ── PAGE 6: 식수 현황 가로 바 (두께 40px, 명수 레이블 강화) ────
     ;(()=>{
-      const mealColors = ['#064e3b','#1d4ed8','#9333ea','#f97316','#ef4444','#0891b2']
+      const p6ChartColors = {
+        'diet_preset_staff_': '#3b82f6',
+        'diet_preset_nc_': '#9333ea',
+        'diet_preset_therapy_': '#ea580c',
+        'cat_': '#16a34a'
+      }
+      const p6GetChartColor = (key) => {
+        for (const [prefix, color] of Object.entries(p6ChartColors)) {
+          if ((key||'').startsWith(prefix)) return color
+        }
+        return '#6b7280'
+      }
       let catList = []
-      if (rptCatMeals.length > 0) {
+      // rptMealFieldBreakdown 우선 사용 (ea 제외, 이번달 > 0인 항목)
+      if (rptMealFieldBreakdown.length > 0) {
+        catList = rptMealFieldBreakdown
+          .filter(f => f.unit_type !== 'ea' && f.thisMonth > 0)
+          .map(f => ({name: f.field_name, count: f.thisMonth, key: f.field_key}))
+      } else if (rptCatMeals.length > 0) {
         catList = rptCatMeals
       } else {
         const ms = summaryData?.mealStats||{}
@@ -15679,6 +15855,7 @@ async function renderReport(selectedHospitalId = null) {
         if ((ms.total_noncovered||0)>0)catList.push({name:'비급여',   count:ms.total_noncovered})
       }
       if (!catList.length) { console.warn('[차트] rptWaterChart: 식수 데이터 없음'); return }
+      const mealColors = catList.map(c => p6GetChartColor(c.key||''))
       const waterLabel = {
         id:'_waterLabel',
         afterDatasetsDraw(chart){
@@ -15690,7 +15867,7 @@ async function renderReport(selectedHospitalId = null) {
               ctx.save()
               ctx.font='bold 12px sans-serif'; ctx.fillStyle='#1f2937'
               ctx.textAlign='left'; ctx.textBaseline='middle'
-              ctx.fillText(val.toLocaleString()+'명', bar.x+8, bar.y)
+              ctx.fillText(val.toLocaleString()+'식', bar.x+8, bar.y)
               ctx.restore()
             })
           })
@@ -15700,15 +15877,15 @@ async function renderReport(selectedHospitalId = null) {
         type:'bar',
         data:{
           labels:catList.map(c=>c.name),
-          datasets:[{label:'식수(명)',data:catList.map(c=>c.count),
-            backgroundColor:mealColors.slice(0,catList.length).map(c=>_hex2r(c,0.8)),
-            borderRadius:6,borderWidth:0,barThickness:40}]
+          datasets:[{label:'식수(식)',data:catList.map(c=>c.count),
+            backgroundColor:mealColors.map(c=>_hex2r(c,0.8)),
+            borderRadius:6,borderWidth:0,barThickness:36}]
         },
         options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
           layout:{padding:{right:80}},
           plugins:{legend:{display:false},
-            tooltip:{callbacks:{label:(ctx)=>`${ctx.parsed.x.toLocaleString()}명`}}},
-          scales:{x:{ticks:{callback:v=>`${v.toLocaleString()}명`,font:{size:10},color:'#374151'},
+            tooltip:{callbacks:{label:(ctx)=>`${ctx.parsed.x.toLocaleString()}식`}}},
+          scales:{x:{ticks:{callback:v=>`${v.toLocaleString()}식`,font:{size:10},color:'#374151'},
                      grid:{color:'rgba(0,0,0,0.06)'},beginAtZero:true},
                  y:{ticks:{font:{size:12,weight:'bold'},color:'#1f2937'}}}
         }

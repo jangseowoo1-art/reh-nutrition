@@ -508,16 +508,42 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           })
         } catch(e) {}
       })
-      const customMealTotal = (customFieldsList.results || [])
-        .filter((f: any) => f.unit_type !== 'ea')
-        .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
-
-      // ── 카테고리 목록 먼저 조회 (오늘 식수 custom_data 파싱에 필요) ──
+      // ── 카테고리 목록 먼저 조회 (meals_include_keys 적용 및 오늘 식수 파싱에 필요) ──
       const patientCatsListEarly = await c.env.DB.prepare(`
         SELECT * FROM hospital_patient_categories
         WHERE hospital_id = ? AND is_active = 1
         ORDER BY sort_order, id
       `).bind(h.id).all<any>()
+
+      // meals_include_keys 기반으로 포함할 field_key Set 구성 (dashboard.ts와 동일 로직)
+      const adminAllMealsIncludeKeys = new Set<string>()
+      ;(patientCatsListEarly.results || []).forEach((cat: any) => {
+        try {
+          const keys: string[] = JSON.parse(cat.meals_include_keys || '[]')
+          keys.forEach((k: string) => adminAllMealsIncludeKeys.add(k))
+        } catch(e) {}
+      })
+      const adminMealsIncludeFieldKeys = new Set<string>()
+      if (adminAllMealsIncludeKeys.size > 0) {
+        ;(customFieldsList.results || []).forEach((f: any) => {
+          const fk: string = f.field_key
+          if (adminAllMealsIncludeKeys.has(fk)) { adminMealsIncludeFieldKeys.add(fk); return }
+          if (adminAllMealsIncludeKeys.has('cat_' + fk)) { adminMealsIncludeFieldKeys.add(fk); return }
+          for (const prefix of ['nc_key_', 'th_key_', 'st_key_']) {
+            const dietKey = fk.startsWith('diet_') ? fk.slice('diet_'.length) : fk
+            if (adminAllMealsIncludeKeys.has(prefix + dietKey)) { adminMealsIncludeFieldKeys.add(fk); return }
+          }
+        })
+      }
+      const adminHasIncludeKeys = adminAllMealsIncludeKeys.size > 0
+      // meals_include_keys 기준 커스텀 식수 합계 (dashboard.ts와 동일 기준)
+      const customMealTotal = (customFieldsList.results || [])
+        .filter((f: any) => {
+          if (f.unit_type === 'ea') return false
+          if (adminHasIncludeKeys) return adminMealsIncludeFieldKeys.has(f.field_key)
+          return true
+        })
+        .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
       // 오늘 식수 상세 (조식/중식/석식 × 환자/직원/비급여/보호자) + custom_data
       const todayMeals = await c.env.DB.prepare(`
@@ -612,8 +638,10 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 
       // 식단가 계산 (3종) - 커스텀 식수 포함
       const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-      // 총식수: 비급여 제외 (환자+직원+보호자) + 커스텀
-      const totalMeals = ms.total_patient + ms.total_staff + ms.total_guardian + customMealTotal
+      // 총식수: dashboard.ts와 동일 기준 - 직원+보호자+커스텀(meals_include_keys 기반)
+      // ms.total_patient는 무이재 등 커스텀 필드 방식 병원에서 항상 0이므로 제외
+      // (레거시 병원도 total_patient는 cat_ 커스텀 필드로 대체됨)
+      const totalMeals = (ms.total_staff||0) + (ms.total_guardian||0) + customMealTotal
       // supply/card 카테고리 제외 금액
       const supplyCardUsed = (vendors.results || [])
         .filter((v: any) => v.category === 'supply' || v.category === 'card')
@@ -640,6 +668,24 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
                COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
         FROM daily_meals WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
       `).bind(h.id, prevYearStr, prevMonthNum).first<any>()
+
+      // 전달 커스텀 필드 식수 합계 (필드별 전달 대비용)
+      const prevCustomDataRows = await c.env.DB.prepare(
+        `SELECT custom_data FROM daily_meals
+         WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)
+           AND custom_data IS NOT NULL AND custom_data != '{}'`
+      ).bind(h.id, prevYearStr, prevMonthNum).all<any>()
+      const prevCustomFieldTotals: Record<string, number> = {}
+      ;(customFieldsList.results || []).forEach((f: any) => { prevCustomFieldTotals[f.field_key] = 0 })
+      ;(prevCustomDataRows.results || []).forEach((row: any) => {
+        try {
+          const cd = JSON.parse(row.custom_data || '{}')
+          ;(customFieldsList.results || []).forEach((f: any) => {
+            const fv = cd[f.field_key] || {}
+            prevCustomFieldTotals[f.field_key] = (prevCustomFieldTotals[f.field_key] || 0) + (fv.bf||0) + (fv.l||0) + (fv.d||0)
+          })
+        } catch(e) {}
+      })
       const prevOrders = await c.env.DB.prepare(`
         SELECT COALESCE(SUM(total_amount),0) as total_used FROM daily_orders
         WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)
@@ -651,8 +697,16 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           AND (v.category='supply' OR v.category='card')
       `).bind(h.id, prevYearStr, prevMonthNum).first<any>()
       const pms = prevMealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
-      // 전월 총식수: 비급여 제외
-      const prevTotalMeals = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
+      // 전월 총식수: 커스텀 필드 기반 (meals_include_keys 적용)
+      const prevCustomMealTotal = (customFieldsList.results || [])
+        .filter((f: any) => {
+          if (f.unit_type === 'ea') return false
+          if (adminHasIncludeKeys) return adminMealsIncludeFieldKeys.has(f.field_key)
+          return true
+        })
+        .reduce((s: number, f: any) => s + (prevCustomFieldTotals[f.field_key] || 0), 0)
+      const prevTotalMealsLegacy = (pms.total_patient||0)+(pms.total_staff||0)+(pms.total_guardian||0)
+      const prevTotalMeals = prevCustomMealTotal > 0 ? prevCustomMealTotal : prevTotalMealsLegacy
       const prevTotalUsed  = prevOrders?.total_used || 0
       const prevSupplyUsed = prevSupply?.supply_used || 0
       const prevStaffRatio = prevTotalMeals > 0 ? (pms.total_staff||0) / prevTotalMeals : 0
@@ -744,10 +798,45 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const totalCatBudget2 = (catSettingsForDash.results||[]).reduce((s:number, c2:any) => s+(c2.monthly_budget||0), 0)
 
       // ── 카테고리별 월 식수 집계 (custom_data의 cat_ 키 기반) ──
+      // 단순 cat_ 키가 아닌 meals_include_keys formula가 있는 카테고리는 buildMealsFromKeys로 처리
+      const adminMonthMealStatsRow = { total_staff: ms.total_staff||0, total_guardian: ms.total_guardian||0 }
+      const adminBuildMealsFromKeys = (mealsKeys: string[], mealStatsRow: {total_staff?:number,total_guardian?:number}|null, customTotalsMap: Record<string,number>): number => {
+        if (!mealsKeys || mealsKeys.length === 0) return 0
+        let total = 0
+        if (mealsKeys.includes('staff')) total += (mealStatsRow?.total_staff || 0)
+        if (mealsKeys.some((k: string) => k.startsWith('st_key_'))) {
+          let staffFromCustom = 0
+          mealsKeys.filter((k: string) => k.startsWith('st_key_')).forEach((k: string) => {
+            const dietKey = k.replace('st_key_', '')
+            staffFromCustom += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
+          })
+          total += staffFromCustom > 0 ? staffFromCustom : (mealStatsRow?.total_staff || 0)
+        }
+        if (mealsKeys.includes('guardian')) total += (mealStatsRow?.total_guardian || 0)
+        mealsKeys.filter((k: string) => k.startsWith('cat_')).forEach((k: string) => { total += (customTotalsMap[k] || 0) })
+        mealsKeys.filter((k: string) => k.startsWith('nc_key_')).forEach((k: string) => {
+          const dietKey = k.replace('nc_key_', '')
+          total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
+        })
+        mealsKeys.filter((k: string) => k.startsWith('th_key_')).forEach((k: string) => {
+          const dietKey = k.replace('th_key_', '')
+          total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
+        })
+        return total
+      }
+      const catKeyToIdMapAdmin: Record<string, number> = {}
+      ;(patientCatsList.results||[]).forEach((cat:any) => { catKeyToIdMapAdmin[cat.category_key] = cat.id })
       const catMonthMealMap: Record<number, number> = {}
       ;(patientCatsList.results||[]).forEach((cat:any) => {
-        const fk = `cat_${cat.category_key}`
-        catMonthMealMap[cat.id] = customFieldTotals[fk] || 0
+        let mealsKeys: string[] = []
+        try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+        if (mealsKeys.length > 0) {
+          catMonthMealMap[cat.id] = adminBuildMealsFromKeys(mealsKeys, adminMonthMealStatsRow, customFieldTotals)
+        } else {
+          // formula 없으면 이전 방식: cat_{category_key} 로만 집계
+          const fk = `cat_${cat.category_key}`
+          catMonthMealMap[cat.id] = customFieldTotals[fk] || 0
+        }
       })
 
       // 카테고리별 발주금액 맵
@@ -791,6 +880,10 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         const prevTargetPrice = prevSet.target_meal_price || 0
         const prevMonthBudget = prevSet.monthly_budget || 0
 
+        // mealsKeys: formulaMealPriceTotal의 catStaffIncluded 체크에 필요
+        let catMealsKeys: string[] = []
+        try { catMealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+
         return {
           id: cat.id,
           category_key: cat.category_key,
@@ -808,21 +901,22 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           // 보고서 PAGE3 식단가 표시에 필요한 필드
           monthMeals,
           mealPrice,
-          monthDietPrice
+          monthDietPrice,
+          mealsKeys: catMealsKeys  // formulaMealPriceTotal 중복 방지용
         }
       })
 
-      // ── 현재 식단가: 전체발주 ÷ 전체식수(카테고리+직원+보호자) ──
-      // 수정 방식: 영양사 페이지와 동일하게 전체 발주금액을 전체 식수(카테고리+직원+보호자)로 나눔
-      // 카테고리 식수만으로 나누면 직원/보호자 식분 발주가 분모에 빠져 과대계상됨
+      // ── 현재 식단가: dashboard.ts와 동일 로직 적용 ──
+      // catStaffIncluded: meals_include_keys에 st_key_ 포함된 카테고리의 경우 직원식이 이미 catMeals에 포함 → extraStaff 제외
       const activeCatPricesAdmin = catDietPrices.filter((c: any) => c.monthMeals > 0 && c.monthAmt > 0)
-      let formulaMealPriceTotal = mealPriceTotal  // 기본값 (카테고리 없는 병원: 전체발주÷전체식수)
+      let formulaMealPriceTotal = mealPriceTotal  // 기본값 (카테고리 없는 병원)
       if (activeCatPricesAdmin.length >= 1) {
-        // 카테고리 식수 합산
+        const catStaffIncludedAdmin = activeCatPricesAdmin.some((c: any) => (c.mealsKeys || []).some((k: string) => k.startsWith('st_key_') || k === 'staff'))
+        const catGuardianIncludedAdmin = activeCatPricesAdmin.some((c: any) => (c.mealsKeys || []).includes('guardian'))
         const sumCatMeals = activeCatPricesAdmin.reduce((s: number, c: any) => s + c.monthMeals, 0)
-        // 전체 식수 = 카테고리 식수 + 직원 + 보호자 (비급여 제외)
-        const totalMealsForPrice = sumCatMeals + ms.total_staff + ms.total_guardian
-        // 전체 발주금액 ÷ 전체 식수 (영양사 페이지 기준과 동일)
+        const extraStaff2    = catStaffIncludedAdmin    ? 0 : (ms.total_staff    || 0)
+        const extraGuardian2 = catGuardianIncludedAdmin ? 0 : (ms.total_guardian || 0)
+        const totalMealsForPrice = sumCatMeals + extraStaff2 + extraGuardian2
         if (totalMealsForPrice > 0) formulaMealPriceTotal = Math.round(totalUsed / totalMealsForPrice)
       }
 
@@ -909,6 +1003,17 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
           totalMeals: prevTotalMeals,
           totalUsed: prevTotalUsed
         },
+        // ── 식수 분류별 상세 breakdown (관리자/운영진 분류별 식수 확인용) ──
+        // 각 커스텀 필드의 이번달 식수 + 전달 식수를 배열로 제공
+        mealFieldBreakdown: (customFieldsList.results || []).map((f: any) => ({
+          field_key: f.field_key,
+          field_name: f.field_name,
+          unit_type: f.unit_type,
+          sort_order: f.sort_order,
+          thisMonth: customFieldTotals[f.field_key] || 0,
+          prevMonth: prevCustomFieldTotals[f.field_key] || 0,
+          diff: (customFieldTotals[f.field_key] || 0) - (prevCustomFieldTotals[f.field_key] || 0)
+        })),
         // ── 2.3 예산 소진 예상일 (관리자 카드용) ──
         // 계산: (남은 예산) / (일평균 사용액) = 남은 일수 → 오늘 + 남은 일수 = 소진 예상일
         // 조건: 소진 예상일이 이번 달 말일 이전일 때만 ⚠️ 표시 (연도 일치 필수)

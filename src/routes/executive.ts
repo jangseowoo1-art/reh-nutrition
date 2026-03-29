@@ -174,6 +174,26 @@ executive.get('/summary/:year/:month', async (c) => {
     `SELECT total_budget, meal_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
   ).bind(hospitalId, prevYear, prevMonth).first<any>()
 
+  // 전달 커스텀 필드 식수 합계 (필드별 전달 대비용)
+  const prevMealCustomData = await c.env.DB.prepare(
+    `SELECT custom_data FROM daily_meals
+     WHERE hospital_id = ?
+       AND strftime('%Y', meal_date) = ?
+       AND strftime('%m', meal_date) = printf('%02d', ?)
+       AND custom_data IS NOT NULL AND custom_data != '{}'`
+  ).bind(hospitalId, prevYear, prevMonth).all<any>()
+  const prevCustomFieldTotals: Record<string, number> = {}
+  ;(customFieldsList.results || []).forEach((f: any) => { prevCustomFieldTotals[f.field_key] = 0 })
+  ;(prevMealCustomData.results || []).forEach((row: any) => {
+    try {
+      const cd = JSON.parse(row.custom_data || '{}')
+      ;(customFieldsList.results || []).forEach((f: any) => {
+        const fv = cd[f.field_key] || {}
+        prevCustomFieldTotals[f.field_key] = (prevCustomFieldTotals[f.field_key]||0) + (fv.bf||0) + (fv.l||0) + (fv.d||0)
+      })
+    } catch(e) {}
+  })
+
   // 10. 예산 소진율
   const totalBudget = settings?.total_budget || 0
   const progress = totalBudget > 0 ? parseFloat(((totalUsed / totalBudget) * 100).toFixed(1)) : 0
@@ -303,7 +323,17 @@ executive.get('/summary/:year/:month', async (c) => {
       totalUsed: prevUsedRow?.total || 0,
       totalBudget: prevSettings?.total_budget || 0,
       mealPrice: prevSettings?.meal_price || 0,
-    }
+    },
+    // ── 식수 분류별 상세 breakdown (운영진 분류별 식수 확인 및 전달 대비용) ──
+    mealFieldBreakdown: (customFieldsList.results || []).map((f: any) => ({
+      field_key: f.field_key,
+      field_name: f.field_name,
+      unit_type: f.unit_type,
+      sort_order: f.sort_order,
+      thisMonth: customFieldTotals[f.field_key] || 0,
+      prevMonth: prevCustomFieldTotals[f.field_key] || 0,
+      diff: (customFieldTotals[f.field_key] || 0) - (prevCustomFieldTotals[f.field_key] || 0)
+    }))
   })
 })
 

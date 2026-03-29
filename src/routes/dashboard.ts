@@ -878,6 +878,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealStats,
     mealCustomFields: customFieldsList.results || [],
     mealCustomTotals: customFieldTotals,
+    // 식수 분류별 상세 breakdown (이번달 + 전달 + 증감) - 보고서/운영진 페이지용
+    mealFieldBreakdown: (customFieldsList.results || []).map((f: any) => ({
+      field_key: f.field_key,
+      field_name: f.field_name,
+      unit_type: f.unit_type,
+      sort_order: f.sort_order,
+      thisMonth: customFieldTotals[f.field_key] || 0,
+      prevMonth: prevCustomFieldTotals[f.field_key] || 0,
+      diff: (customFieldTotals[f.field_key] || 0) - (prevCustomFieldTotals[f.field_key] || 0)
+    })),
     overBudgetVendors,
     mealPriceTotal: formulaMealPriceTotal,  // formula 기반 가중평균 (카테고리 없으면 기존 방식)
     mealPriceRaw: mealPriceTotal,            // 기존 총발주÷총식수 방식 (참고용)

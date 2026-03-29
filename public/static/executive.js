@@ -336,16 +336,17 @@ window.execSwitchTab = function(tab) {
   if (!content || !d) return
   content.innerHTML = renderTabContent(tab,
     d.vendorOrders||[], d.mealStats||{}, d.cardExpenses||[],
-    d.transactions||[], d.schedules||[], d.catOrders||[], d.budget||{})
+    d.transactions||[], d.schedules||[], d.catOrders||[], d.budget||{},
+    d.mealFieldBreakdown||[], d.prevMonth||{})
   // 차트 재초기화
   if (tab === 'vendors') setTimeout(() => initVendorChart(d.vendorOrders||[]), 100)
 }
 
-function renderTabContent(tab, vendorOrders, mealStats, cardExpenses, transactions, schedules, catOrders, budget) {
+function renderTabContent(tab, vendorOrders, mealStats, cardExpenses, transactions, schedules, catOrders, budget, mealFieldBreakdown, prevMonthData) {
   switch(tab) {
-    case 'overview': return renderOverviewTab(vendorOrders, mealStats, catOrders, budget)
+    case 'overview': return renderOverviewTab(vendorOrders, mealStats, catOrders, budget, mealFieldBreakdown, prevMonthData)
     case 'vendors': return renderVendorsTab(vendorOrders, budget)
-    case 'meals': return renderMealsTab(mealStats)
+    case 'meals': return renderMealsTab(mealStats, mealFieldBreakdown, prevMonthData)
     case 'card': return renderCardTab(cardExpenses)
     case 'transactions': return renderTransactionsTab(transactions)
     case 'schedule': return renderScheduleTab(schedules)
@@ -354,7 +355,7 @@ function renderTabContent(tab, vendorOrders, mealStats, cardExpenses, transactio
 }
 
 // ── 종합 현황 탭 ──────────────────────────────────────────────────
-function renderOverviewTab(vendorOrders, mealStats, catOrders, budget) {
+function renderOverviewTab(vendorOrders, mealStats, catOrders, budget, mealFieldBreakdown, prevMonthData) {
   const top5 = [...vendorOrders].sort((a,b) => (b.total_used||0)-(a.total_used||0)).slice(0,5)
   const customFields = mealStats.mealCustomFields || []
   const customTotals = mealStats.customFieldTotals || {}
@@ -404,24 +405,71 @@ function renderOverviewTab(vendorOrders, mealStats, catOrders, budget) {
       </div>
     </div>` : ''}
 
-    ${customFields.length > 0 ? `
-    <!-- 식수 현황 요약 -->
-    <div>
-      <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-        <i class="fas fa-utensils text-green-500 text-sm"></i>이번 달 식수 요약
-      </h3>
-      <div class="grid grid-cols-2 gap-2 md:grid-cols-3">
-        ${customFields.map(f => `
-        <div class="bg-gray-50 rounded-xl p-3 text-center">
-          <div class="text-xs text-gray-400 mb-1 truncate">${f.field_name}</div>
-          <div class="font-bold text-gray-800">${fmt(customTotals[f.field_key]||0)}${f.unit_type === 'ea' ? '개' : '식'}</div>
-        </div>`).join('')}
-        <div class="bg-blue-50 rounded-xl p-3 text-center">
-          <div class="text-xs text-blue-400 mb-1">합계</div>
-          <div class="font-bold text-blue-800">${fmt(mealStats.totalMeals||0)}식</div>
-        </div>
-      </div>
-    </div>` : ''}
+    <!-- 식수 현황 요약 (분류별 + 전달 대비) -->
+    ${(() => {
+      const fbd = (mealFieldBreakdown||[]).filter(f => f.thisMonth > 0 || f.prevMonth > 0)
+      if (fbd.length === 0 && (mealStats.totalMeals||0) === 0) return ''
+      const prevLabel = prevMonthData && prevMonthData.month ? `${prevMonthData.month}월` : '전달'
+      const getFieldColor = (key, name) => {
+        if (key.startsWith('diet_preset_staff_') || name.includes('직원')) return '#3b82f6'
+        if (key.startsWith('diet_preset_nc_') || name.includes('보호자') || name.includes('비급여')) return '#9333ea'
+        if (key.startsWith('diet_preset_therapy_') || name.includes('치료식') || name.includes('절제') || name.includes('잔사') || name.includes('요오드')) return '#ea580c'
+        if (key.startsWith('cat_') || name.includes('항암') || name.includes('요양') || name.includes('일반')) return '#16a34a'
+        return '#6b7280'
+      }
+      return `
+      <div>
+        <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
+          <i class="fas fa-utensils text-green-500 text-sm"></i>이번 달 식수 요약
+          <span class="text-xs font-normal text-gray-400 ml-auto">총 ${fmt(mealStats.totalMeals||0)}식</span>
+        </h3>
+        ${fbd.length > 0 ? `
+        <div class="overflow-hidden rounded-xl border border-gray-100">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-gray-50 text-gray-600">
+                <th class="text-left px-3 py-2 font-semibold text-xs">식단 유형</th>
+                <th class="text-right px-3 py-2 font-semibold text-xs">이번달</th>
+                <th class="text-right px-3 py-2 font-semibold text-xs">${prevLabel}</th>
+                <th class="text-right px-3 py-2 font-semibold text-xs">증감</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              ${fbd.map((f,i) => {
+                const color = getFieldColor(f.field_key, f.field_name)
+                const unit = f.unit_type === 'ea' ? '개' : '식'
+                const diffStr = f.diff > 0 ? `<span class="text-emerald-600 font-semibold text-xs">+${fmt(f.diff)}</span>`
+                              : f.diff < 0 ? `<span class="text-red-500 font-semibold text-xs">${fmt(f.diff)}</span>`
+                              : `<span class="text-gray-300 text-xs">-</span>`
+                const pct = (mealStats.totalMeals||0) > 0 ? Math.round(f.thisMonth/(mealStats.totalMeals||1)*100) : 0
+                return `<tr class="${i%2===0?'bg-white':'bg-gray-50/50'}">
+                  <td class="px-3 py-2">
+                    <div class="flex items-center gap-2">
+                      <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${color}"></span>
+                      <span class="font-medium text-gray-700">${f.field_name}</span>
+                    </div>
+                  </td>
+                  <td class="text-right px-3 py-2">
+                    <span class="font-bold" style="color:${color}">${fmt(f.thisMonth)}${unit}</span>
+                    ${pct > 0 ? `<span class="text-xs text-gray-400 ml-1">(${pct}%)</span>` : ''}
+                  </td>
+                  <td class="text-right px-3 py-2 text-gray-500 text-xs">${f.prevMonth > 0 ? fmt(f.prevMonth)+unit : '-'}</td>
+                  <td class="text-right px-3 py-2">${diffStr}</td>
+                </tr>`
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr class="bg-green-50 font-semibold text-green-800">
+                <td class="px-3 py-2 text-sm">합계</td>
+                <td class="text-right px-3 py-2 text-sm">${fmt(fbd.reduce((s,f)=>s+f.thisMonth,0))}식</td>
+                <td class="text-right px-3 py-2 text-xs text-gray-500">${fmt(fbd.reduce((s,f)=>s+f.prevMonth,0))}식</td>
+                <td class="text-right px-3 py-2 text-xs">${(()=>{const d=fbd.reduce((s,f)=>s+f.diff,0);return d>0?`<span class="text-emerald-600">+${fmt(d)}</span>`:d<0?`<span class="text-red-500">${fmt(d)}</span>`:`<span class="text-gray-300">-</span>`})()}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>` : `<p class="text-gray-400 text-sm text-center py-3">이번 달 식수 입력 없음</p>`}
+      </div>`
+    })()}
   </div>`
 }
 
@@ -483,21 +531,35 @@ function renderVendorsTab(vendorOrders, budget) {
   </div>`
 }
 
-// ── 식수 현황 탭 ──────────────────────────────────────────────────
-function renderMealsTab(mealStats) {
-  const customFields = mealStats.mealCustomFields || []
-  const customTotals = mealStats.customFieldTotals || {}
+// ── 식수 현황 탭 (분류별 상세 + 전달 대비) ───────────────────────
+function renderMealsTab(mealStats, mealFieldBreakdown, prevMonthData) {
   const totalMeals = mealStats.totalMeals || 0
   const daysEntered = mealStats.daysEntered || 0
   const avgPerDay = daysEntered > 0 ? Math.round(totalMeals / daysEntered) : 0
+  const fbd = (mealFieldBreakdown||[])
+  const fbdActive = fbd.filter(f => f.thisMonth > 0 || f.prevMonth > 0)
+  const prevLabel = prevMonthData && prevMonthData.month ? `${prevMonthData.month}월` : '전달'
+
+  const getFieldStyle = (key, name) => {
+    if (key.startsWith('diet_preset_staff_') || name.includes('직원'))
+      return {color:'#3b82f6', bg:'bg-blue-50', text:'text-blue-700', badge:'bg-blue-100 text-blue-700', label:'직원식'}
+    if (key.startsWith('diet_preset_nc_') || name.includes('보호자') || name.includes('비급여'))
+      return {color:'#9333ea', bg:'bg-purple-50', text:'text-purple-700', badge:'bg-purple-100 text-purple-700', label:'비급여식'}
+    if (key.startsWith('diet_preset_therapy_') || name.includes('치료식') || name.includes('절제') || name.includes('잔사') || name.includes('요오드') || name.includes('기타 치료'))
+      return {color:'#ea580c', bg:'bg-orange-50', text:'text-orange-700', badge:'bg-orange-100 text-orange-700', label:'치료식'}
+    if (key.startsWith('cat_') || name.includes('항암') || name.includes('요양') || name.includes('일반'))
+      return {color:'#16a34a', bg:'bg-green-50', text:'text-green-700', badge:'bg-green-100 text-green-700', label:'환자식'}
+    return {color:'#6b7280', bg:'bg-gray-50', text:'text-gray-600', badge:'bg-gray-100 text-gray-600', label:'기타'}
+  }
 
   return `
   <div class="space-y-4">
-    <!-- 요약 -->
+    <!-- 요약 3개 KPI -->
     <div class="grid grid-cols-3 gap-3">
       <div class="bg-green-50 rounded-xl p-3 text-center">
         <div class="text-xs text-green-600 mb-1">총 식수</div>
         <div class="font-bold text-green-800 text-lg">${fmt(totalMeals)}식</div>
+        ${prevMonthData && (prevMonthData.totalMeals||0) > 0 ? `<div class="text-xs text-gray-400 mt-0.5">전달 ${fmt(prevMonthData.totalMeals||0)}식</div>` : ''}
       </div>
       <div class="bg-blue-50 rounded-xl p-3 text-center">
         <div class="text-xs text-blue-600 mb-1">입력일수</div>
@@ -509,37 +571,98 @@ function renderMealsTab(mealStats) {
       </div>
     </div>
 
-    <!-- 카테고리별 식수 -->
-    ${customFields.length > 0 ? `
+    <!-- 식단 유형별 분류 + 전달 대비 상세 테이블 -->
     <div>
-      <h3 class="font-semibold text-gray-700 mb-3">식이 분류별 식수</h3>
-      <div class="space-y-3">
-        ${customFields.map(f => {
-          const cnt = customTotals[f.field_key] || 0
-          const pct = totalMeals > 0 ? Math.round(cnt / totalMeals * 100) : 0
-          // diet_type이 없으므로 field_key에서 추론
-          const key = f.field_key || ''
-          const dietType = key.includes('therapy') ? 'therapy' : key.includes('staff') ? 'staff' : key.includes('noncovered') || key.includes('nc_') ? 'noncovered' : 'patient'
-          const barColors = {'patient':'#3b82f6','therapy':'#16a34a','noncovered':'#9333ea','staff':'#d97706'}
-          const barColor = barColors[dietType] || '#6b7280'
-          return `
-          <div>
-            <div class="flex justify-between text-sm mb-1">
-              <span class="font-medium text-gray-700">${f.field_name}</span>
-              <span class="font-bold text-gray-800">${fmt(cnt)}${f.unit_type==='ea'?'개':'식'} <span class="text-gray-400 font-normal text-xs">(${pct}%)</span></span>
-            </div>
-            <div class="progress-bar">
-              <div class="progress-fill" style="width:${pct}%;background:${barColor}"></div>
-            </div>
-          </div>`
-        }).join('')}
+      <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
+        <i class="fas fa-list-ul text-teal-500 text-sm"></i>식단 유형별 분류 현황
+        <span class="text-xs font-normal text-gray-400 ml-auto">전달(${prevLabel}) 대비</span>
+      </h3>
+      ${fbdActive.length > 0 ? `
+      <div class="overflow-hidden rounded-xl border border-gray-100 shadow-sm">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 text-gray-600 border-b border-gray-100">
+              <th class="text-left px-3 py-2.5 font-semibold text-xs">유형</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-xs">이번달</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-xs">비율</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-xs">${prevLabel}</th>
+              <th class="text-right px-3 py-2.5 font-semibold text-xs">증감</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-50">
+            ${fbdActive.map((f, i) => {
+              const st = getFieldStyle(f.field_key, f.field_name)
+              const unit = f.unit_type === 'ea' ? '개' : '식'
+              const pct = totalMeals > 0 ? (f.thisMonth/totalMeals*100).toFixed(1) : '0.0'
+              const prevPct = (fbd.reduce((s,x)=>s+x.prevMonth,0)) > 0 ? (f.prevMonth/fbd.reduce((s,x)=>s+x.prevMonth,0)*100).toFixed(1) : '0.0'
+              const diffStr = f.diff > 0 ? `<span class="text-emerald-600 font-bold">+${fmt(f.diff)}</span>`
+                            : f.diff < 0 ? `<span class="text-red-500 font-bold">${fmt(f.diff)}</span>`
+                            : `<span class="text-gray-300">-</span>`
+              return `<tr class="${i%2===0?'bg-white':'bg-gray-50/40'}">
+                <td class="px-3 py-2.5">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${st.color}"></span>
+                    <div>
+                      <div class="font-medium text-gray-800">${f.field_name}</div>
+                      <div class="text-xs text-gray-400">${st.label}</div>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-right px-3 py-2.5">
+                  <span class="font-bold text-base" style="color:${st.color}">${fmt(f.thisMonth)}</span>
+                  <span class="text-xs text-gray-500 ml-0.5">${unit}</span>
+                </td>
+                <td class="text-right px-3 py-2.5">
+                  <div class="flex items-center justify-end gap-1">
+                    <div class="w-12 bg-gray-100 rounded-full overflow-hidden" style="height:4px">
+                      <div style="width:${Math.min(parseFloat(pct),100)}%;height:100%;background:${st.color};border-radius:9999px"></div>
+                    </div>
+                    <span class="text-xs text-gray-500 w-8 text-right">${pct}%</span>
+                  </div>
+                </td>
+                <td class="text-right px-3 py-2.5 text-gray-500 text-xs">${f.prevMonth > 0 ? fmt(f.prevMonth)+unit : '-'}</td>
+                <td class="text-right px-3 py-2.5">${diffStr}</td>
+              </tr>`
+            }).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="bg-teal-50 font-semibold text-teal-800 border-t border-teal-100">
+              <td class="px-3 py-2.5 text-sm">합계</td>
+              <td class="text-right px-3 py-2.5 text-sm">${fmt(fbdActive.reduce((s,f)=>s+f.thisMonth,0))}식</td>
+              <td class="text-right px-3 py-2.5 text-xs text-teal-600">100%</td>
+              <td class="text-right px-3 py-2.5 text-xs text-gray-500">${fmt(fbdActive.reduce((s,f)=>s+f.prevMonth,0))}식</td>
+              <td class="text-right px-3 py-2.5 text-xs">${(()=>{const d=fbdActive.reduce((s,f)=>s+f.diff,0);return d>0?`<span class="text-emerald-600">+${fmt(d)}</span>`:d<0?`<span class="text-red-500">${fmt(d)}</span>`:`<span class="text-gray-300">-</span>`})()}</td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
-    </div>` : `
-    <div class="text-center py-8 text-gray-400">
-      <i class="fas fa-utensils text-4xl mb-3 block text-gray-300"></i>
-      <p>식이 분류가 설정되지 않았습니다</p>
-      <p class="text-xs mt-1">관리자 페이지에서 식이 분류를 설정해주세요</p>
-    </div>`}
+
+      <!-- 시각화: 구성 비율 바 -->
+      <div class="mt-4 p-3 bg-gray-50 rounded-xl">
+        <div class="text-xs text-gray-500 mb-2 font-medium">식단 유형 구성 비율</div>
+        <div class="flex rounded-full overflow-hidden h-4">
+          ${fbdActive.filter(f=>f.unit_type!=='ea'&&f.thisMonth>0).map(f => {
+            const st = getFieldStyle(f.field_key, f.field_name)
+            const pct = totalMeals > 0 ? (f.thisMonth/totalMeals*100).toFixed(1) : 0
+            return `<div title="${f.field_name}: ${pct}%" style="width:${pct}%;background:${st.color};min-width:2px" class="transition-all"></div>`
+          }).join('')}
+        </div>
+        <div class="flex flex-wrap gap-2 mt-2">
+          ${fbdActive.filter(f=>f.unit_type!=='ea'&&f.thisMonth>0).map(f => {
+            const st = getFieldStyle(f.field_key, f.field_name)
+            const pct = totalMeals > 0 ? (f.thisMonth/totalMeals*100).toFixed(1) : 0
+            return `<div class="flex items-center gap-1 text-xs text-gray-600">
+              <span class="w-2 h-2 rounded-full" style="background:${st.color}"></span>
+              <span>${f.field_name} ${pct}%</span>
+            </div>`
+          }).join('')}
+        </div>
+      </div>` : `
+      <div class="text-center py-8 text-gray-400">
+        <i class="fas fa-utensils text-4xl mb-3 block text-gray-300"></i>
+        <p>이번 달 식수 데이터가 없습니다</p>
+      </div>`}
+    </div>
   </div>`
 }
 
