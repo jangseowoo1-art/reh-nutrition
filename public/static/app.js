@@ -11235,25 +11235,34 @@ const LEAVE_ALERT_LEVELS = {
 
 // 연차 촉진 알림 데이터 (로드 시 채워짐)
 let scheduleLeaveAlerts = []
+// 월별 부여휴무 데이터
+let scheduleOffGrants = null   // { granted_days, substitute_days, summary }
 
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // 데이터 로드 (연차 촉진 알림 포함)
-  const [empData, shiftData, posData, leaveAlerts] = await Promise.all([
+  // 데이터 로드 (연차 촉진 알림 + 월별 부여휴무 포함)
+  const [empData, shiftData, posData, leaveAlerts, offGrants] = await Promise.all([
     api('GET', '/api/schedule/employees').catch(() => []),
     api('GET', '/api/schedule/shifts').catch(() => []),
     api('GET', '/api/schedule/positions').catch(() => []),
-    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => [])
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
   ])
 
   scheduleEmployees = empData || []
   scheduleShifts = shiftData || []
   schedulePositions = posData || []
   scheduleLeaveAlerts = leaveAlerts || []
+  scheduleOffGrants = offGrants || null
 
   renderScheduleTab(content)
+}
+
+// 월별 부여휴무 재로드 (월 변경 시 호출)
+async function reloadOffGrants() {
+  scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
 }
 
 function renderScheduleTab(content) {
@@ -11599,6 +11608,199 @@ function renderShiftsTab() {
   </div>`
 }
 
+// ─── 월별 부여휴무 패널 렌더 ─────────────────────────────────
+function renderOffGrantsPanel() {
+  const og = scheduleOffGrants
+  const isAdm = App.userRole === 'admin'
+  const sm = og?.summary || {}
+  const gd = og?.granted_days || []
+  const sd = og?.substitute_days || []
+
+  // 날짜별 맵 (스케줄 그리드에서 하이라이트용)
+  const DOW_COLORS = {
+    sunday:   { bg: '#fee2e2', color: '#b91c1c', label: '일' },
+    saturday: { bg: '#fffbeb', color: '#b45309', label: '토' },
+    holiday:  { bg: '#fef3c7', color: '#92400e', label: '공휴' }
+  }
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+      <div class="flex items-center gap-2">
+        <i class="fas fa-calendar-check text-blue-500"></i>
+        <div>
+          <span class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 부여휴무</span>
+          <span class="text-xs text-gray-400 ml-2">토·일·공휴일 자동 집계 + 대체휴무 수동 등록</span>
+        </div>
+      </div>
+      ${isAdm ? `
+      <button onclick="openSubstituteOffModal()"
+        class="btn btn-sm bg-orange-500 hover:bg-orange-600 text-white">
+        <i class="fas fa-plus mr-1"></i>대체휴무 추가
+      </button>` : ''}
+    </div>
+
+    <!-- 요약 카드 -->
+    <div class="px-5 py-4">
+      <div class="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
+        <div class="bg-blue-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-blue-700">${sm.grand_total || 0}</div>
+          <div class="text-xs text-blue-500 mt-0.5">총 휴무일</div>
+        </div>
+        <div class="bg-red-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-red-600">${sm.sundays || 0}</div>
+          <div class="text-xs text-red-400 mt-0.5">일요일</div>
+        </div>
+        <div class="bg-yellow-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-yellow-600">${sm.saturdays || 0}</div>
+          <div class="text-xs text-yellow-500 mt-0.5">토요일</div>
+        </div>
+        <div class="bg-amber-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-amber-700">${sm.national_holidays || 0}</div>
+          <div class="text-xs text-amber-500 mt-0.5">공휴일</div>
+        </div>
+        <div class="bg-orange-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-orange-600">${sm.substitute_count || 0}</div>
+          <div class="text-xs text-orange-400 mt-0.5">대체휴무</div>
+        </div>
+        <div class="bg-gray-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-gray-600">${og ? (new Date(App.currentYear, App.currentMonth, 0).getDate() - (sm.grand_total||0)) : '-'}</div>
+          <div class="text-xs text-gray-400 mt-0.5">실근무일</div>
+        </div>
+      </div>
+
+      <!-- 부여휴무 날짜 목록 -->
+      ${gd.length > 0 ? `
+      <div class="mb-3">
+        <div class="text-xs font-bold text-gray-500 mb-2">📅 부여휴무 일정 (토·일·공휴일)</div>
+        <div class="flex flex-wrap gap-1.5">
+          ${gd.map(d => {
+            const cfg = DOW_COLORS[d.type] || { bg: '#f3f4f6', color: '#374151', label: d.type }
+            return `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border"
+              style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33">
+              <span>${d.date.slice(5)}</span>
+              <span class="opacity-60">${d.day_of_week}</span>
+              ${d.type === 'holiday' ? `<span class="font-semibold">${d.label}</span>` : ''}
+            </span>`
+          }).join('')}
+        </div>
+      </div>` : '<div class="text-xs text-gray-400 mb-3">이 달 공휴일 정보가 없습니다 (관리자 → 공휴일 관리에서 등록)</div>'}
+
+      <!-- 대체휴무 목록 -->
+      ${sd.length > 0 ? `
+      <div>
+        <div class="text-xs font-bold text-gray-500 mb-2">🔄 대체휴무 (수동 등록)</div>
+        <div class="flex flex-wrap gap-1.5">
+          ${sd.map(d => `
+            <span class="inline-flex items-center gap-1.5 bg-orange-50 border border-orange-200 px-2.5 py-1 rounded-lg text-xs">
+              <span class="font-bold text-orange-700">${d.date.slice(5)}</span>
+              <span class="text-orange-600">${d.name}</span>
+              ${d.reason ? `<span class="text-gray-400">(${d.reason})</span>` : ''}
+              ${isAdm ? `<button onclick="deleteSubstituteOff(${d.id})" class="text-red-400 hover:text-red-600 ml-1">✕</button>` : ''}
+            </span>
+          `).join('')}
+        </div>
+      </div>` : `
+      <div class="text-xs text-gray-400">
+        대체휴무 없음 ${isAdm ? '· <button onclick="openSubstituteOffModal()" class="text-orange-500 hover:underline">추가하기</button>' : ''}
+      </div>`}
+    </div>
+  </div>
+
+  <!-- 대체휴무 추가 모달 -->
+  <div id="substituteOffModal" class="hidden modal-overlay" style="z-index:1100">
+    <div class="modal-box max-w-sm p-0 overflow-hidden">
+      <div class="bg-orange-500 text-white px-5 py-4 flex items-center justify-between">
+        <span class="font-bold">대체휴무 추가</span>
+        <button onclick="closeSubstituteOffModal()" class="text-white/70 hover:text-white">✕</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div class="bg-orange-50 border border-orange-200 rounded-lg p-3 text-xs text-orange-800">
+          <i class="fas fa-info-circle mr-1"></i>
+          대체휴무는 정부·지자체가 지정하는 임시공휴일 / 대체공휴일입니다.<br>
+          부여 확정 시 수동으로 등록해 주세요.
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1">날짜 <span class="text-red-500">*</span></label>
+          <input type="date" id="subOffDate"
+            value="${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-01"
+            class="form-input w-full text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1">명칭</label>
+          <input type="text" id="subOffName" placeholder="예: 임시공휴일, 대체공휴일"
+            value="대체휴무" class="form-input w-full text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1">사유</label>
+          <input type="text" id="subOffReason" placeholder="예: 부처님오신날 대체"
+            class="form-input w-full text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1">적용 범위</label>
+          <select id="subOffHospital" class="form-input w-full text-sm">
+            <option value="">전체 공통</option>
+            ${(scheduleEmployees.length > 0 && App.userRole === 'admin') ? '' : ''}
+          </select>
+          <div class="text-xs text-gray-400 mt-1">전체 공통 선택 시 모든 병원에 적용됩니다</div>
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button onclick="closeSubstituteOffModal()" class="btn btn-secondary flex-1">취소</button>
+          <button onclick="saveSubstituteOff()" class="btn btn-primary flex-1 bg-orange-500 hover:bg-orange-600 border-orange-500">등록</button>
+        </div>
+      </div>
+    </div>
+  </div>`
+}
+
+// 대체휴무 모달 열기/닫기
+function openSubstituteOffModal() {
+  // 병원 목록 select 채우기 (관리자)
+  const sel = document.getElementById('subOffHospital')
+  if (sel && App.userRole === 'admin') {
+    // adminStaffHospitals가 있으면 활용
+    const hosps = typeof adminStaffHospitals !== 'undefined' ? adminStaffHospitals : []
+    sel.innerHTML = `<option value="">전체 공통</option>` +
+      hosps.map(h => `<option value="${h.id}">${h.name}</option>`).join('')
+  }
+  document.getElementById('substituteOffModal')?.classList.remove('hidden')
+}
+function closeSubstituteOffModal() {
+  document.getElementById('substituteOffModal')?.classList.add('hidden')
+}
+
+async function saveSubstituteOff() {
+  const offDate    = document.getElementById('subOffDate')?.value
+  const offName    = document.getElementById('subOffName')?.value || '대체휴무'
+  const offReason  = document.getElementById('subOffReason')?.value || ''
+  const hospitalId = document.getElementById('subOffHospital')?.value || null
+
+  if (!offDate) { showToast('날짜를 입력해주세요', 'error'); return }
+
+  const res = await api('POST', '/api/schedule/off-grants/substitute', { offDate, offName, offReason, hospitalId })
+  if (res?.success) {
+    closeSubstituteOffModal()
+    showToast('대체휴무가 등록되었습니다', 'success')
+    // 재로드
+    scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  } else {
+    showToast(res?.error || '등록 실패', 'error')
+  }
+}
+
+async function deleteSubstituteOff(id) {
+  if (!confirm('대체휴무를 삭제하시겠습니까?')) return
+  const res = await api('DELETE', `/api/schedule/off-grants/substitute/${id}`)
+  if (res?.success) {
+    showToast('삭제되었습니다', 'success')
+    scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  }
+}
+
 // ─── 월간 스케줄 탭 ──────────────────────────────────────────
 function renderMonthlyScheduleTab() {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
@@ -11631,7 +11833,19 @@ function renderMonthlyScheduleTab() {
     return defMap[code] || 'background:#f3f4f6;color:#374151'
   }
 
+  // 부여휴무 날짜 Set (그리드 하이라이트용)
+  const og = scheduleOffGrants
+  const grantedSet = new Set((og?.granted_days || []).map(d => d.date))
+  const substituteSet = new Set((og?.substitute_days || []).map(d => d.date))
+  const allOffSet = new Set([...grantedSet, ...substituteSet])
+
+  // 날짜별 휴무 라벨 맵
+  const offLabelMap = {}
+  ;(og?.granted_days || []).forEach(d => { offLabelMap[d.date] = d.label })
+  ;(og?.substitute_days || []).forEach(d => { offLabelMap[d.date] = d.name })
+
   return `
+  ${renderOffGrantsPanel()}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <div class="px-5 py-4 border-b border-gray-100">
       <div class="flex items-center justify-between flex-wrap gap-2">
@@ -11675,6 +11889,33 @@ function renderMonthlyScheduleTab() {
             }).join('')}
             <th style="padding:6px 4px;min-width:40px;text-align:center;border-left:3px solid #14532d;border-bottom:3px solid #14532d;background:#0f3d25;font-size:10px">근무</th>
             <th style="padding:6px 4px;min-width:35px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:10px">연차</th>
+          </tr>
+          <!-- 부여휴무 행 -->
+          <tr style="background:#1e3a2f;border-bottom:2px solid #14532d">
+            <td style="padding:5px 10px;position:sticky;left:0;background:#1e3a2f;z-index:5;border-right:3px solid #14532d;min-width:100px">
+              <div style="font-size:10px;font-weight:700;color:#86efac">부여휴무</div>
+              <div style="font-size:9px;color:#4ade80;opacity:0.7">토·일·공휴·대체</div>
+            </td>
+            ${Array.from({length:days},(_,i)=>{
+              const day=i+1
+              const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+              const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
+              const isSub = substituteSet.has(dateStr)
+              const isHoliday = grantedSet.has(dateStr) && !['일','토'].includes(dow2)
+              const isSun2 = dow2==='일', isSat2 = dow2==='토'
+              const isOff = allOffSet.has(dateStr)
+              let cellBg = 'transparent', cellIcon = '', cellTitle = ''
+              if (isSub) { cellBg='#ea580c'; cellIcon='대'; cellTitle=offLabelMap[dateStr]||'대체휴무' }
+              else if (isHoliday) { cellBg='#d97706'; cellIcon='공'; cellTitle=offLabelMap[dateStr]||'공휴일' }
+              else if (isSun2) { cellBg='#dc2626'; cellIcon='휴'; cellTitle='일요일' }
+              else if (isSat2) { cellBg='#b45309'; cellIcon='휴'; cellTitle='토요일' }
+              const borderLeft=`border-left:1px solid ${isSun2?'rgba(252,165,165,0.3)':isSat2?'rgba(147,197,253,0.3)':'rgba(255,255,255,0.1)'};`
+              return `<td style="padding:2px;text-align:center;${borderLeft}" title="${cellTitle}">
+                ${cellIcon ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:3px;font-size:9px;font-weight:800;background:${cellBg};color:white">${cellIcon}</span>` : '<span style="color:rgba(255,255,255,0.15);font-size:10px">·</span>'}
+              </td>`
+            }).join('')}
+            <td style="padding:5px;text-align:center;background:#0f3d25;border-left:3px solid #14532d;font-weight:700;color:#86efac;font-size:11px">${(og?.summary?.grand_total||0)}일</td>
+            <td style="padding:5px;text-align:center;background:#0f3d25;border-left:1px solid rgba(255,255,255,0.15);font-size:10px;color:#4ade80">-</td>
           </tr>
         </thead>
         <tbody>

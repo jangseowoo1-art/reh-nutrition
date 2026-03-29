@@ -720,4 +720,125 @@ schedule.post('/min-staff', async (c) => {
   return c.json({ success: true })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 월별 부여휴무 API
+// ════════════════════════════════════════════════════════════════
+//
+// [개념]
+//  ① 부여휴무 (granted_off): 토요일 + 일요일 + 공휴일 (자동 계산)
+//  ② 대체휴무 (substitute_off): 임시공휴일·대체공휴일 → 수동 등록
+//
+// GET  /off-grants?year=&month=   → 해당 월 부여휴무(자동) + 대체휴무 목록
+// POST /off-grants/substitute     → 대체휴무 추가 (관리자만)
+// DELETE /off-grants/substitute/:date → 대체휴무 삭제 (관리자만)
+// ════════════════════════════════════════════════════════════════
+
+schedule.get('/off-grants', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year  = parseInt(c.req.query('year')  || new Date().getFullYear().toString())
+  const month = parseInt(c.req.query('month') || (new Date().getMonth() + 1).toString())
+
+  // ─── 해당 월의 공휴일 조회 (전국 공통) ────────────────────────
+  const monthStr = String(month).padStart(2, '0')
+  const prefix   = `${year}-${monthStr}`
+
+  const holidayRows = await c.env.DB.prepare(
+    `SELECT holiday_date, name as holiday_name
+     FROM holidays
+     WHERE holiday_date LIKE ?
+     ORDER BY holiday_date`
+  ).bind(`${prefix}-%`).all<any>()
+
+  const nationalHolidayDates = new Set(
+    (holidayRows.results || []).map((h: any) => h.holiday_date)
+  )
+
+  // ─── 해당 월 날짜별 자동 계산 ────────────────────────────────
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const grantedDays: { date: string; day_of_week: string; type: string; label: string }[] = []
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateObj = new Date(year, month - 1, d)
+    const dow = dateObj.getDay()   // 0=일, 6=토
+    const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
+    const DOW_LABEL = ['일', '월', '화', '수', '목', '금', '토']
+
+    const isNationalHoliday = nationalHolidayDates.has(dateStr)
+    // 공휴일이 이미 일/토이면 중복 제외
+    if (dow === 0) {
+      grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일' })
+    } else if (dow === 6) {
+      grantedDays.push({ date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일' })
+    } else if (isNationalHoliday) {
+      const h = (holidayRows.results || []).find((r: any) => r.holiday_date === dateStr)
+      grantedDays.push({ date: dateStr, day_of_week: DOW_LABEL[dow], type: 'holiday', label: h?.holiday_name || '공휴일' })
+    }
+  }
+
+  // ─── 대체휴무 조회 ────────────────────────────────────────────
+  const subRows = await c.env.DB.prepare(
+    `SELECT * FROM substitute_off_days
+     WHERE (hospital_id IS NULL OR hospital_id = ?)
+       AND off_date LIKE ?
+     ORDER BY off_date`
+  ).bind(hospitalId, `${prefix}-%`).all<any>()
+
+  const substituteDays = (subRows.results || []).map((r: any) => ({
+    id:         r.id,
+    date:       r.off_date,
+    name:       r.off_name,
+    reason:     r.off_reason || '',
+    hospital_id: r.hospital_id,
+    created_by: r.created_by || ''
+  }))
+
+  // ─── 요약 집계 ────────────────────────────────────────────────
+  const summary = {
+    total_granted:    grantedDays.length,
+    sundays:          grantedDays.filter(d => d.type === 'sunday').length,
+    saturdays:        grantedDays.filter(d => d.type === 'saturday').length,
+    national_holidays: grantedDays.filter(d => d.type === 'holiday').length,
+    substitute_count: substituteDays.length,
+    grand_total:      grantedDays.length + substituteDays.length
+  }
+
+  return c.json({
+    year, month,
+    granted_days:    grantedDays,
+    substitute_days: substituteDays,
+    summary
+  })
+})
+
+// 대체휴무 추가 (관리자만)
+schedule.post('/off-grants/substitute', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자 전용' }, 403)
+
+  const { offDate, offName, offReason, hospitalId: reqHospId } = await c.req.json()
+  if (!offDate) return c.json({ error: '날짜는 필수입니다' }, 400)
+
+  const hid = reqHospId ? parseInt(reqHospId) : null  // null = 전체 공통
+
+  await c.env.DB.prepare(
+    `INSERT INTO substitute_off_days (hospital_id, off_date, off_name, off_reason, created_by)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(hospital_id, off_date) DO UPDATE SET
+       off_name   = excluded.off_name,
+       off_reason = excluded.off_reason,
+       created_by = excluded.created_by`
+  ).bind(hid, offDate, offName || '대체휴무', offReason || '', user.username || '').run()
+
+  return c.json({ success: true })
+})
+
+// 대체휴무 삭제 (관리자만)
+schedule.delete('/off-grants/substitute/:id', async (c) => {
+  if (!isAdmin(c.get('user'))) return c.json({ error: '관리자 전용' }, 403)
+  await c.env.DB.prepare(`DELETE FROM substitute_off_days WHERE id = ?`)
+    .bind(c.req.param('id')).run()
+  return c.json({ success: true })
+})
+
 export default schedule
