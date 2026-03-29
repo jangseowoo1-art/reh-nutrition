@@ -140,6 +140,20 @@
 .meal-table input[type="number"] { width: 52px; text-align: center; padding: 4px 2px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; }
 .meal-table input[type="number"]:focus { border-color: #16a34a; outline: none; }
 
+/* ── 식수 입력 테이블 sticky 헤더/열 ── */
+.meal-table thead th { position: sticky; top: 0; z-index: 20; }
+.meal-table td.meal-sticky-left,
+.meal-table td.meal-sticky-dow { white-space: nowrap; }
+/* box-shadow로 가로 스크롤 시 경계선 표시 */
+.meal-table td.meal-sticky-left { box-shadow: 2px 0 4px rgba(0,0,0,0.06); }
+.meal-table td.meal-sticky-dow { box-shadow: 2px 0 4px rgba(0,0,0,0.04); }
+
+/* 식수 테이블 주말/공휴일 sticky 열 배경 override */
+.meal-table .weekend-row td.meal-sticky-left,
+.meal-table .weekend-row td.meal-sticky-dow { background: #fef9c3 !important; }
+.meal-table .holiday-row td.meal-sticky-left,
+.meal-table .holiday-row td.meal-sticky-dow { background: #fee2e2 !important; }
+
 /* ══════════════════════════════════════════
    발주 입력 테이블
 ══════════════════════════════════════════ */
@@ -330,6 +344,8 @@
 
 /* ── 발주 테이블 sticky 헤더 ── */
 .order-table thead th { position: sticky; top: 0; z-index: 20; }
+/* 발주 테이블 thead 좌측 sticky 셀 (일/요/몇일분) → 헤더 최상단 */
+.order-table thead th.sticky { z-index: 30 !important; }
 
 /* ── 우측 합계/진행률 컬럼 sticky 고정 ── */
 .order-table th.sticky-right,

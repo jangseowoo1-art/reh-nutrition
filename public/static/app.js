@@ -2543,7 +2543,7 @@ async function renderOrders() {
         <div id="orders-hscroll-top-inner" style="height:1px"></div>
       </div>
       <!-- 가로 스크롤 컨테이너 -->
-      <div id="ordersTableScroller" style="overflow-x:auto;overflow-y:visible;width:100%;max-width:100%;-webkit-overflow-scrolling:touch;scroll-behavior:smooth">
+      <div id="ordersTableScroller" style="overflow-x:auto;overflow-y:auto;max-height:80vh;width:100%;max-width:100%;-webkit-overflow-scrolling:touch;scroll-behavior:smooth">
       <table class="order-table" id="ordersTable" style="table-layout:auto;border-collapse:collapse;width:100%;min-width:max-content">
         <thead style="position:sticky;top:0;z-index:20">
           <tr>
@@ -6709,14 +6709,14 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         </button>
       </div>
     </div>
-    <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
+    <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;overflow-y:auto;max-height:80vh;">
       <div class="scroll-hint"><i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 식수 입력</div>
       <table class="meal-table w-full" id="mealMainTable" style="font-size:12px;border-collapse:collapse">
-        <thead>
+        <thead style="position:sticky;top:0;z-index:20">
           <!-- 1행: 식사 구분 (조식/중식/석식/합계) - 큰 글씨, 진한 색, 명확한 구분 -->
           <tr>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:30px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 4px">일</th>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="min-width:24px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 2px">요</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="position:sticky;left:0;z-index:25;min-width:30px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 4px">일</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="position:sticky;left:30px;z-index:25;min-width:24px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 2px">요</th>
             ${mealSections.map((s, si) => {
               const span = si < 3 ? colCount : allLabels.length + 1
               return `<th colspan="${span}" style="
@@ -7152,9 +7152,10 @@ function buildMealRow(day, mealMap, customFields, colCount) {
   })
   cells += `<td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd;border-left:3px solid #6b7280">${tGrand||''}</td>`
 
+  const dayBg = dow==='일' ? '#fee2e2' : dow==='토' ? '#fef9c3' : 'white'
   return `<tr class="${rowClass}" data-date="${dateStr}">
-    <td class="font-semibold text-center" style="border:1px solid #d1d5db">${day}</td>
-    <td class="text-center ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="border:1px solid #d1d5db">${dow}</td>
+    <td class="font-semibold text-center meal-sticky-left" style="position:sticky;left:0;z-index:5;background:${dayBg};border:1px solid #d1d5db;min-width:30px">${day}</td>
+    <td class="text-center meal-sticky-dow ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="position:sticky;left:30px;z-index:5;background:${dayBg};border:1px solid #d1d5db;min-width:24px">${dow}</td>
     ${cells}
   </tr>`
 }
@@ -7180,7 +7181,7 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
   // diet type별 배경색
   const footBg = { patient:'bg-blue-50', therapy:'bg-green-50', noncovered:'bg-purple-50', staff:'bg-amber-50' }
 
-  let cells = `<td colspan="2" class="text-center py-2 font-bold">월 합계</td>`
+  let cells = `<td colspan="2" class="text-center py-2 font-bold" style="position:sticky;left:0;z-index:5;background:#f3f4f6">월 합계</td>`
   // 조식: 커스텀 필드만
   customFields.forEach(f => {
     const bg = footBg[f.parent_type] || ''
