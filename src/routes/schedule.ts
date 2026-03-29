@@ -875,4 +875,229 @@ schedule.delete('/off-grants/substitute/:id', async (c) => {
   return c.json({ success: true })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 운영 분석 API (9번 요청사항)
+// ════════════════════════════════════════════════════════════════
+
+// 월별 운영 분석 데이터
+schedule.get('/analysis/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const paddedMonth = String(month).padStart(2, '0')
+
+  const [schedRows, empRows, minStaffRows] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT s.*, e.name as emp_name, e.team, p.name as position_name
+       FROM daily_schedules s
+       LEFT JOIN employees e ON s.employee_id = e.id
+       LEFT JOIN employee_positions p ON e.position_id = p.id
+       WHERE s.hospital_id = ?
+         AND strftime('%Y', s.work_date) = ?
+         AND strftime('%m', s.work_date) = printf('%02d', ?)
+       ORDER BY s.work_date, e.team, s.employee_id`
+    ).bind(hospitalId, year, month).all<any>(),
+
+    c.env.DB.prepare(
+      `SELECT e.*, p.name as position_name
+       FROM employees e
+       LEFT JOIN employee_positions p ON e.position_id = p.id
+       WHERE e.hospital_id = ? AND e.is_active = 1`
+    ).bind(hospitalId).all<any>(),
+
+    c.env.DB.prepare(
+      `SELECT ms.*, p.name as position_name FROM schedule_min_staff ms
+       LEFT JOIN employee_positions p ON ms.position_id = p.id
+       WHERE ms.hospital_id = ?`
+    ).bind(hospitalId).all<any>()
+  ])
+
+  const scheds = schedRows.results || []
+  const emps   = empRows.results   || []
+  const minStaff = minStaffRows.results || []
+
+  // 날짜별 집계
+  const dateMap: Record<string, {
+    work: number, rest: number, annual: number, halfAM: number, halfPM: number,
+    event: number, ot: number, tempStaff: number, alba: number,
+    byPosition: Record<string, number>
+  }> = {}
+
+  for (const s of scheds) {
+    const d = s.work_date
+    if (!dateMap[d]) dateMap[d] = { work:0, rest:0, annual:0, halfAM:0, halfPM:0, event:0, ot:0, tempStaff:0, alba:0, byPosition:{} }
+    const code = s.shift_code || ''
+    const pos  = s.position_name || '기타'
+    if (!dateMap[d].byPosition[pos]) dateMap[d].byPosition[pos] = 0
+
+    if (code === '연')     { dateMap[d].annual++;  dateMap[d].rest++ }
+    else if (code === '휴') dateMap[d].rest++
+    else if (code === '오전') { dateMap[d].halfAM++; dateMap[d].rest++ }
+    else if (code === '오후') { dateMap[d].halfPM++; dateMap[d].rest++ }
+    else if (code === '경조') { dateMap[d].event++;  dateMap[d].rest++ }
+    else if (code === 'OT')   { dateMap[d].ot++;     dateMap[d].work++; dateMap[d].byPosition[pos]++ }
+    else if (s.is_temp_staff)  { dateMap[d].tempStaff++; dateMap[d].work++; dateMap[d].byPosition[pos]++ }
+    else if (code && code !== '-') { dateMap[d].work++;  dateMap[d].byPosition[pos]++ }
+  }
+
+  // 월 전체 집계
+  const monthly = {
+    totalWork: 0, totalRest: 0, totalAnnual: 0, totalHalfAM: 0, totalHalfPM: 0,
+    totalEvent: 0, totalOT: 0, totalTempStaff: 0,
+    otByEmp: {} as Record<string, number>
+  }
+  for (const s of scheds) {
+    const code = s.shift_code || ''
+    if (code === '연') { monthly.totalAnnual++; monthly.totalRest++ }
+    else if (code === '휴') monthly.totalRest++
+    else if (code === '오전') { monthly.totalHalfAM++; monthly.totalRest++ }
+    else if (code === '오후') { monthly.totalHalfPM++; monthly.totalRest++ }
+    else if (code === '경조') { monthly.totalEvent++; monthly.totalRest++ }
+    else if (code === 'OT')   { monthly.totalOT++;    monthly.totalWork++ }
+    else if (s.is_temp_staff)  { monthly.totalTempStaff++; monthly.totalWork++ }
+    else if (code && code !== '-') monthly.totalWork++
+
+    if (s.overtime_hours > 0) {
+      const empKey = s.emp_name || String(s.employee_id)
+      monthly.otByEmp[empKey] = (monthly.otByEmp[empKey] || 0) + s.overtime_hours
+    }
+  }
+
+  // 최소 인력 미달 날짜 감지
+  const shortDates: Record<string, Array<{position: string, required: number, actual: number}>> = {}
+  for (const [date, data] of Object.entries(dateMap)) {
+    const shorts = []
+    for (const ms of minStaff) {
+      const actual = data.byPosition[ms.position_name] || 0
+      if (actual < ms.min_count) {
+        shorts.push({ position: ms.position_name, required: ms.min_count, actual })
+      }
+    }
+    if (shorts.length > 0) shortDates[date] = shorts
+  }
+
+  // 연차/휴무 쏠림 감지 (같은 날 3명 이상 연차/휴무)
+  const clusterDates: Record<string, {annual: number, rest: number, warning: boolean}> = {}
+  for (const [date, data] of Object.entries(dateMap)) {
+    if (data.annual >= 3 || data.rest >= 5) {
+      clusterDates[date] = { annual: data.annual, rest: data.rest, warning: true }
+    }
+  }
+
+  return c.json({
+    year, month,
+    date_map:    dateMap,
+    monthly,
+    short_dates: shortDates,
+    cluster_dates: clusterDates,
+    total_employees: emps.length
+  })
+})
+
+// 직원별 연차 목록 (연도별)
+schedule.get('/leaves/all', async (c) => {
+  const user = c.get('user')
+  const year = c.req.query('year') || new Date().getFullYear()
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+
+  const rows = await c.env.DB.prepare(
+    `SELECT l.*, e.name as emp_name, e.team, p.name as position_name, e.hire_date
+     FROM employee_leaves l
+     JOIN employees e ON l.employee_id = e.id
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE l.hospital_id = ? AND l.year = ?
+     ORDER BY e.team, p.sort_order, e.hire_date, e.name`
+  ).bind(hospitalId, year).all<any>()
+
+  return c.json(rows.results || [])
+})
+
+// 식수 카테고리별 집계 (Admin & Operation용)
+schedule.get('/meal-stats/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const paddedMonth = String(month).padStart(2, '0')
+  const datePattern = `${year}-${paddedMonth}-%`
+
+  // 카테고리 목록
+  const cats = await c.env.DB.prepare(
+    `SELECT * FROM hospital_patient_categories WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order`
+  ).bind(hospitalId).all<any>()
+
+  // 해당 월 식수 데이터
+  const meals = await c.env.DB.prepare(
+    `SELECT * FROM daily_meals WHERE hospital_id = ? AND meal_date LIKE ? ORDER BY meal_date`
+  ).bind(hospitalId, datePattern).all<any>()
+
+  const catList = cats.results || []
+  const mealList = meals.results || []
+
+  // 카테고리별 집계
+  const catStats: Record<string, { name: string, breakfast: number, lunch: number, dinner: number, total: number }> = {}
+  for (const cat of catList) {
+    catStats[cat.category_key] = { name: cat.category_name, breakfast: 0, lunch: 0, dinner: 0, total: 0 }
+  }
+
+  // 전통 필드 (직원식, 보호자식 등)
+  const legacyStats = { staff: 0, guardian: 0, noncovered: 0, patient: 0 }
+
+  for (const meal of mealList) {
+    legacyStats.staff      += (meal.breakfast_staff    || 0) + (meal.lunch_staff    || 0) + (meal.dinner_staff    || 0)
+    legacyStats.guardian   += (meal.breakfast_guardian || 0) + (meal.lunch_guardian || 0) + (meal.dinner_guardian || 0)
+    legacyStats.noncovered += (meal.breakfast_noncovered||0) + (meal.lunch_noncovered||0) + (meal.dinner_noncovered||0)
+    legacyStats.patient    += (meal.breakfast_patient  || 0) + (meal.lunch_patient  || 0) + (meal.dinner_patient  || 0)
+
+    // custom_data 파싱
+    if (meal.custom_data) {
+      try {
+        const cd = JSON.parse(meal.custom_data)
+        for (const cat of catList) {
+          const mealKeys: string[] = JSON.parse(cat.meals_include_keys || '[]')
+          for (const mk of mealKeys) {
+            if (cd[mk]) {
+              if (!catStats[cat.category_key]) continue
+              catStats[cat.category_key].breakfast += cd[mk].bf || 0
+              catStats[cat.category_key].lunch     += cd[mk].l  || 0
+              catStats[cat.category_key].dinner    += cd[mk].d  || 0
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+  }
+
+  // total 계산
+  for (const key of Object.keys(catStats)) {
+    const c2 = catStats[key]
+    c2.total = c2.breakfast + c2.lunch + c2.dinner
+  }
+
+  return c.json({
+    year, month,
+    categories: catStats,
+    legacy: legacyStats,
+    total_days: mealList.length
+  })
+})
+
+// 직원별 연차 일괄 수정
+schedule.put('/employees/:id/leaves', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+
+  const { year, totalDays, usedDays, note } = await c.req.json()
+  await c.env.DB.prepare(
+    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+     VALUES (?, ?, ?, 'annual', ?, ?, ?)
+     ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+       total_days = excluded.total_days, used_days = excluded.used_days,
+       note = excluded.note, updated_at = datetime('now')`
+  ).bind(emp.hospital_id, emp.id, year, totalDays, usedDays || 0, note || '').run()
+
+  return c.json({ success: true })
+})
+
 export default schedule

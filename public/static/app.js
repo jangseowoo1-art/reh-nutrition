@@ -10343,6 +10343,9 @@ async function renderAdminDashboard() {
     <button id="adminTab-chart" onclick="switchAdminTab('chart')" class="px-3 py-2 text-xs md:text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap flex-shrink-0">
       <i class="fas fa-chart-bar mr-1"></i>비교
     </button>
+    <button id="adminTab-mealcat" onclick="switchAdminTab('mealcat')" class="px-3 py-2 text-xs md:text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap flex-shrink-0">
+      <i class="fas fa-layer-group mr-1 text-purple-500"></i>식수 카테고리
+    </button>
   </div>
 
   <!-- 병원별 카드 탭 -->
@@ -10900,6 +10903,24 @@ async function renderAdminDashboard() {
     </div>`}
   </div>
 
+  <!-- 식수 카테고리별 집계 탭 -->
+  <div id="adminContent-mealcat" class="hidden">
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h3 class="font-bold text-gray-800"><i class="fas fa-layer-group text-purple-500 mr-2"></i>${App.currentYear}년 ${App.currentMonth}월 식수 카테고리별 집계</h3>
+          <p class="text-xs text-gray-400 mt-0.5">항암, 위절제식, 저잔사식 등 병원별 실시간 현황</p>
+        </div>
+        <button onclick="loadAdminMealCatStats()" class="px-3 py-1.5 rounded-lg text-xs bg-purple-600 text-white hover:bg-purple-700">
+          <i class="fas fa-sync-alt mr-1"></i>새로고침
+        </button>
+      </div>
+      <div id="adminMealCatContent" class="p-4">
+        <div class="flex items-center justify-center h-20 text-gray-400"><div class="loading-spinner mr-2"></div>로딩 중...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- 발주 비교 탭 -->
   <div id="adminContent-chart" class="hidden">
     <!-- 병원별 비교 차트 -->
@@ -11007,13 +11028,13 @@ async function renderAdminDashboard() {
 }
 
 window.switchAdminTab = (tab) => {
-  ;['cards','issues','chart'].forEach(t => {
+  ;['cards','issues','chart','mealcat'].forEach(t => {
     document.getElementById(`adminContent-${t}`)?.classList.toggle('hidden', t !== tab)
     const btn = document.getElementById(`adminTab-${t}`)
     if (btn) {
       btn.className = t === tab
-        ? 'px-4 py-2 text-sm font-medium border-b-2 border-green-600 text-green-700'
-        : 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700'
+        ? 'px-3 py-2 text-xs md:text-sm font-medium border-b-2 border-green-600 text-green-700 whitespace-nowrap flex-shrink-0'
+        : 'px-3 py-2 text-xs md:text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap flex-shrink-0'
     }
   })
   if (tab === 'chart') {
@@ -11021,6 +11042,134 @@ window.switchAdminTab = (tab) => {
       if (App.charts.adminCompare) App.charts.adminCompare.resize()
       if (App.charts.adminMealPrice) App.charts.adminMealPrice.resize()
     }, 100)
+  }
+  if (tab === 'mealcat') {
+    loadAdminMealCatStats()
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// Admin 식수 카테고리별 집계
+// ════════════════════════════════════════════════════════════════
+window.loadAdminMealCatStats = async () => {
+  const el = document.getElementById('adminMealCatContent')
+  if (!el) return
+  el.innerHTML = `<div class="flex items-center justify-center h-20 text-gray-400"><div class="loading-spinner mr-2"></div>로딩 중...</div>`
+
+  try {
+    // 모든 병원의 식수 카테고리 통계를 병렬로 조회
+    const data = await api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`)
+    const hospitals = data?.hospitals || []
+
+    // 병원별 식수 카테고리 통계 병렬 조회
+    const statsAll = await Promise.all(
+      hospitals.map(h =>
+        api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}?hospitalId=${h.hospital.id}`)
+          .then(r => ({ hospital: h.hospital, stats: r }))
+          .catch(() => ({ hospital: h.hospital, stats: null }))
+      )
+    )
+
+    if (statsAll.length === 0) {
+      el.innerHTML = `<div class="text-center py-8 text-gray-400">병원 데이터가 없습니다</div>`
+      return
+    }
+
+    // 전체 카테고리 키 수집
+    const allCatKeys = new Set()
+    const catNames = {}
+    statsAll.forEach(({ stats }) => {
+      if (!stats?.categories) return
+      Object.entries(stats.categories).forEach(([k, v]) => {
+        allCatKeys.add(k)
+        if (v.name) catNames[k] = v.name
+      })
+    })
+    const catKeyList = [...allCatKeys]
+
+    if (catKeyList.length === 0) {
+      el.innerHTML = `<div class="text-center py-8 text-gray-400"><i class="fas fa-info-circle mr-1"></i>카테고리 데이터가 없습니다. 병원별 환자군 카테고리를 설정해 주세요.</div>`
+      return
+    }
+
+    // 테이블 렌더링
+    const catColors = ['bg-red-100 text-red-700','bg-orange-100 text-orange-700','bg-amber-100 text-amber-700','bg-green-100 text-green-700','bg-teal-100 text-teal-700','bg-blue-100 text-blue-700','bg-indigo-100 text-indigo-700','bg-purple-100 text-purple-700','bg-pink-100 text-pink-700']
+
+    let html = `
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-collapse">
+        <thead>
+          <tr class="bg-gray-800 text-white">
+            <th class="px-4 py-3 text-left min-w-[120px] sticky left-0 bg-gray-800">병원</th>
+            ${catKeyList.map((k, i) => `
+              <th class="px-3 py-3 text-center min-w-[100px]">
+                <span class="inline-block px-2 py-0.5 rounded text-xs font-bold ${catColors[i % catColors.length]}">${catNames[k] || k}</span>
+                <div class="text-xs font-normal text-gray-300 mt-0.5">조식/중식/석식</div>
+              </th>`).join('')}
+            <th class="px-3 py-3 text-center min-w-[80px] bg-gray-700">합계</th>
+          </tr>
+        </thead>
+        <tbody>`
+
+    // 병원별 전체 합계 계산
+    const grandTotalByCat = {}
+    catKeyList.forEach(k => { grandTotalByCat[k] = { breakfast:0, lunch:0, dinner:0, total:0 } })
+    let grandTotal = 0
+
+    statsAll.forEach(({ hospital, stats }) => {
+      const cats = stats?.categories || {}
+      let rowTotal = 0
+      catKeyList.forEach(k => {
+        const c = cats[k] || { breakfast:0, lunch:0, dinner:0, total:0 }
+        grandTotalByCat[k].breakfast += c.breakfast || 0
+        grandTotalByCat[k].lunch     += c.lunch     || 0
+        grandTotalByCat[k].dinner    += c.dinner    || 0
+        grandTotalByCat[k].total     += c.total     || 0
+        rowTotal += c.total || 0
+      })
+      grandTotal += rowTotal
+
+      html += `<tr class="border-b hover:bg-gray-50">
+        <td class="px-4 py-3 font-semibold text-gray-800 sticky left-0 bg-white">${hospital.name}</td>
+        ${catKeyList.map((k, i) => {
+          const c = cats[k] || { breakfast:0, lunch:0, dinner:0, total:0 }
+          const total = (c.breakfast||0) + (c.lunch||0) + (c.dinner||0)
+          return `<td class="px-3 py-3 text-center">
+            ${total > 0 ? `
+              <div class="font-bold text-gray-800">${total.toLocaleString()}식</div>
+              <div class="text-xs text-gray-400 mt-0.5">${(c.breakfast||0).toLocaleString()}/${(c.lunch||0).toLocaleString()}/${(c.dinner||0).toLocaleString()}</div>
+            ` : '<span class="text-gray-300">-</span>'}
+          </td>`
+        }).join('')}
+        <td class="px-3 py-3 text-center font-bold text-blue-700 bg-blue-50">${rowTotal.toLocaleString()}식</td>
+      </tr>`
+    })
+
+    // 합계 행
+    html += `</tbody>
+      <tfoot>
+        <tr class="bg-gray-100 font-bold border-t-2">
+          <td class="px-4 py-3 sticky left-0 bg-gray-100 text-gray-700">전체 합계</td>
+          ${catKeyList.map(k => {
+            const c = grandTotalByCat[k]
+            const total = c.total || 0
+            return `<td class="px-3 py-3 text-center">
+              ${total > 0 ? `
+                <div class="font-bold text-purple-700">${total.toLocaleString()}식</div>
+                <div class="text-xs text-gray-500">${(c.breakfast||0).toLocaleString()}/${(c.lunch||0).toLocaleString()}/${(c.dinner||0).toLocaleString()}</div>
+              ` : '<span class="text-gray-400">0</span>'}
+            </td>`
+          }).join('')}
+          <td class="px-3 py-3 text-center font-bold text-blue-700 bg-blue-100">${grandTotal.toLocaleString()}식</td>
+        </tr>
+      </tfoot>
+    </table>
+    </div>
+    <p class="text-xs text-gray-400 mt-2 px-1"><i class="fas fa-info-circle mr-1"></i>조식/중식/석식 순서로 표시 · 이번 달 누적 합계</p>`
+
+    el.innerHTML = html
+  } catch(e) {
+    el.innerHTML = `<div class="text-center py-8 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>데이터 로드 실패: ${e.message}</div>`
   }
 }
 
@@ -11187,12 +11336,15 @@ function renderAdminCompareChart(hospitals) {
 // ══════════════════════════════════════════════════════════════
 
 // 현재 스케줄 탭 상태
-let scheduleTab = 'employees' // 'employees' | 'schedule' | 'shifts'
+let scheduleTab = 'employees' // 'employees' | 'schedule' | 'shifts' | 'leaves' | 'analysis'
 let scheduleEmployees = []
 let scheduleShifts = []
 let schedulePositions = []
 let empModalMode = 'add' // 'add' | 'edit'
 let empModalData = null  // 편집 대상 직원 데이터
+let scheduleAnalysisData = null  // 운영 분석 데이터
+let scheduleLeavesData = []     // 연차 관리 데이터
+let scheduleMealStats  = null   // 식수 카테고리별 집계
 
 // 고용유형 레이블
 const EMPLOYMENT_LABELS = {
@@ -11245,13 +11397,16 @@ async function renderSchedule() {
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
   // 모든 데이터 병렬 로드
-  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData] = await Promise.all([
+  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats] = await Promise.all([
     api('GET', '/api/schedule/employees').catch(() => []),
     api('GET', '/api/schedule/shifts').catch(() => []),
     api('GET', '/api/schedule/positions').catch(() => []),
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
     api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => []),
+    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null)
   ])
 
   scheduleEmployees = empData || []
@@ -11260,6 +11415,9 @@ async function renderSchedule() {
   scheduleLeaveAlerts = leaveAlerts || []
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
+  scheduleLeavesData = leavesData || []
+  scheduleAnalysisData = analysisData || null
+  scheduleMealStats = mealStats || null
 
   renderScheduleTab(content)
 }
@@ -11271,15 +11429,22 @@ async function reloadScheduleMonth() {
   const tc = document.getElementById('scheduleTabContent')
   if (tc) tc.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [offGrants, monthData, leaveAlerts] = await Promise.all([
+  const [offGrants, monthData, leaveAlerts, analysisData, mealStats] = await Promise.all([
     api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
     api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => [])
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
+    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null)
   ])
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
   scheduleLeaveAlerts = leaveAlerts || []
-  if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  scheduleAnalysisData = analysisData || null
+  scheduleMealStats = mealStats || null
+  if (tc) {
+    if (scheduleTab === 'schedule') tc.innerHTML = renderMonthlyScheduleTab()
+    else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
+  }
 }
 
 function renderScheduleTab(content) {
@@ -11287,9 +11452,11 @@ function renderScheduleTab(content) {
   const tab = scheduleTab
 
   const tabs = [
-    { id: 'employees', label: '인사카드 관리', icon: 'fa-id-card' },
-    { id: 'schedule', label: '월간 스케줄', icon: 'fa-calendar-alt' },
-    { id: 'shifts', label: '근무조 설정', icon: 'fa-clock' }
+    { id: 'employees', label: '인사카드', icon: 'fa-id-card' },
+    { id: 'schedule',  label: '월간 스케줄', icon: 'fa-calendar-alt' },
+    { id: 'leaves',    label: '연차 관리', icon: 'fa-umbrella-beach' },
+    { id: 'analysis',  label: '운영 분석', icon: 'fa-chart-bar' },
+    { id: 'shifts',    label: '근무조 설정', icon: 'fa-clock' }
   ]
 
   content.innerHTML = `
@@ -11321,15 +11488,22 @@ function renderScheduleTab(content) {
             </button>
           </div>
         </div>
-        <div class="flex gap-2">
+        <div class="flex gap-1 flex-wrap">
           ${tabs.map(t => `
             <button onclick="switchScheduleTab('${t.id}')"
-              class="px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === t.id
+              class="px-3 py-2 rounded-lg text-xs font-medium transition-all ${tab === t.id
                 ? 'bg-blue-600 text-white shadow'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">
-              <i class="fas ${t.icon} mr-1.5"></i>${t.label}
+              <i class="fas ${t.icon} mr-1"></i>${t.label}
             </button>
           `).join('')}
+          ${tab === 'schedule' ? `
+          <button onclick="printSchedule()" class="px-3 py-2 rounded-lg text-xs font-medium bg-gray-700 text-white hover:bg-gray-800 ml-2">
+            <i class="fas fa-print mr-1"></i>인쇄/PDF
+          </button>
+          <button onclick="exportScheduleExcel()" class="px-3 py-2 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800 ml-1">
+            <i class="fas fa-file-excel mr-1"></i>엑셀
+          </button>` : ''}
         </div>
       </div>
     </div>
@@ -11338,12 +11512,15 @@ function renderScheduleTab(content) {
     <div id="scheduleTabContent">
       ${tab === 'employees' ? renderEmployeeTab() : ''}
       ${tab === 'schedule' ? renderMonthlyScheduleTab() : ''}
+      ${tab === 'leaves' ? renderLeavesTab() : ''}
+      ${tab === 'analysis' ? renderAnalysisTab() : ''}
       ${tab === 'shifts' ? renderShiftsTab() : ''}
     </div>
   </div>
 
   ${renderEmployeeModal()}
   ${renderShiftModal()}
+  ${renderLeaveEditModal()}
   `
 }
 
@@ -11852,6 +12029,7 @@ function renderMonthlyScheduleTab() {
   const defaultCodes = ['연','휴','오전','오후','경조','OT','-']
   const shiftCodes = shifts.map(s => s.shift_code)
   const ALL_CODES = [...shiftCodes, ...defaultCodes]
+  window._schedAllCodes = ALL_CODES  // 전역 참조 (onclick 이스케이프 문제 방지)
 
   function getShiftStyle(code) {
     if (!code || code === '-') return 'background:#f9fafb;color:#9ca3af'
@@ -11912,11 +12090,11 @@ function renderMonthlyScheduleTab() {
       </div>
     </div>
 
-    <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch;">
+    <div class="overflow-x-auto overflow-y-auto" style="-webkit-overflow-scrolling:touch;max-height:65vh;">
       <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
-        <thead>
+        <thead style="position:sticky;top:0;z-index:20">
           <tr style="background:#166534;color:white;border-bottom:3px solid #14532d">
-            <th style="padding:8px 12px;text-align:left;min-width:100px;position:sticky;left:0;background:#166534;z-index:10;border-right:3px solid #14532d;border-bottom:3px solid #14532d">
+            <th style="padding:8px 12px;text-align:left;min-width:110px;position:sticky;left:0;background:#166534;z-index:30;border-right:3px solid #14532d;border-bottom:3px solid #14532d">
               <div style="font-size:11px">이름/직위</div>
             </th>
             ${Array.from({length:days},(_,i)=>{
@@ -12028,7 +12206,7 @@ function renderMonthlyScheduleTab() {
                   }
 
                   return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}cursor:pointer"
-                    onclick="schedCycleShift(${emp.id},'${dateStr}',this,'${JSON.stringify(ALL_CODES).replace(/'/g,"\\x27")}')"
+                    onclick="schedCycleShift(${emp.id},'${dateStr}',this,null)"
                     data-shift="${code}" data-empid="${emp.id}" data-date="${dateStr}">
                     <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle}">${spanText}</span>
                   </td>`
@@ -12191,11 +12369,12 @@ function renderEmployeeModal() {
 
           <!-- 근무 파트 -->
           <div class="col-span-2 mt-1">
-            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">근무 파트</h4>
-            <div class="flex gap-3">
-              ${['breakfast','lunch','dinner'].map(p => {
-                const pLabel = {breakfast:'조식',lunch:'중식',dinner:'석식'}[p]
-                const workParts = isEdit ? (JSON.parse(emp?.work_parts||'[]') || []) : ['breakfast','lunch','dinner']
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">근무 가능 파트 (복수 선택)</h4>
+            <div class="flex gap-4 flex-wrap">
+              ${['cooking','serving','washing','nutrition','breakfast','lunch','dinner'].map(p => {
+                const pLabel = {cooking:'조리',serving:'배식',washing:'세척',nutrition:'영양',breakfast:'조식',lunch:'중식',dinner:'석식'}[p]
+                let workParts = []
+                try { workParts = isEdit ? (JSON.parse(emp?.work_parts||'[]') || []) : [] } catch(e) { workParts = [] }
                 return `<label class="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" id="ei_wp_${p}" class="w-4 h-4 text-blue-600"
                     ${workParts.includes(p)?'checked':''}>
@@ -12283,11 +12462,711 @@ function renderShiftModal() {
 }
 
 // ════════════════════════════════════════════════════════════════
+// 연차 관리 탭 (4번 요청)
+// ════════════════════════════════════════════════════════════════
+function renderLeavesTab() {
+  const isAdm = App.userRole === 'admin'
+  const year = App.currentYear
+  const emps = scheduleEmployees
+  const leaves = scheduleLeavesData  // [{ employee_id, emp_name, position_name, team, total_days, used_days, year }]
+
+  // leave map by empId
+  const leaveByEmp = {}
+  for (const l of leaves) leaveByEmp[l.employee_id] = l
+
+  // 직원별 법정 연차 계산
+  function calcLegal(emp) {
+    if (!emp.hire_date) return 0
+    const hired = new Date(emp.hire_date)
+    const now   = new Date(year + '-12-31')
+    const diffMs = now - hired
+    const years = diffMs / (1000*60*60*24*365)
+    if (years < 0) return 0
+    if (years < 1) {
+      const months = Math.floor(diffMs / (1000*60*60*24*30))
+      return Math.min(months, 11)
+    }
+    const base = 15
+    const extra = Math.floor((years - 1) / 2)
+    return Math.min(base + extra, 25)
+  }
+
+  const cookEmps  = emps.filter(e => e.team === 'cook' || !e.team)
+  const nutriEmps = emps.filter(e => e.team === 'nutrition')
+
+  function renderRows(teamEmps, teamKey) {
+    if (!teamEmps.length) return ''
+    const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
+    let html = `<tr class="bg-gray-50">
+      <td colspan="8" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase border-b">
+        <i class="fas ${tl.icon} mr-1"></i>${tl.label} (${teamEmps.length}명)
+      </td></tr>`
+    for (const emp of teamEmps) {
+      const legal = calcLegal(emp)
+      const lv    = leaveByEmp[emp.id]
+      const total = lv?.total_days ?? null
+      const used  = lv?.used_days  ?? 0
+      const remain= total !== null ? total - used : null
+      const pct   = total ? Math.round(used / total * 100) : 0
+      const pctColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
+      html += `<tr class="border-b hover:bg-blue-50 transition-colors">
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800">${emp.name}</div>
+          <div class="text-xs text-gray-400">${emp.position_name||emp.position||''}</div>
+        </td>
+        <td class="px-3 py-3 text-sm text-center text-gray-600">${emp.hire_date ? emp.hire_date.substring(0,7) : '-'}</td>
+        <td class="px-3 py-3 text-center">
+          <span class="inline-block px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700 font-bold">${legal}일</span>
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${total !== null
+            ? `<span class="text-sm font-bold text-gray-800">${total}일</span>`
+            : `<span class="text-xs text-orange-600 font-bold">미부여</span>`}
+        </td>
+        <td class="px-3 py-3 text-center">
+          <span class="text-sm font-bold ${used > 0 ? 'text-blue-700' : 'text-gray-400'}">${used}일</span>
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${remain !== null
+            ? `<span class="text-sm font-bold ${remain <= 3 ? 'text-red-600' : remain <= 7 ? 'text-yellow-600' : 'text-green-700'}">${remain}일</span>`
+            : `<span class="text-xs text-gray-400">-</span>`}
+        </td>
+        <td class="px-3 py-3">
+          ${total !== null ? `
+          <div class="flex items-center gap-2">
+            <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:60px">
+              <div class="${pctColor} h-2 rounded-full transition-all" style="width:${Math.min(pct,100)}%"></div>
+            </div>
+            <span class="text-xs text-gray-500">${pct}%</span>
+          </div>` : ''}
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${isAdm ? `<button onclick="openLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\\x27')}',${total??legal},${used})"
+            class="px-2 py-1 rounded text-xs bg-blue-600 text-white hover:bg-blue-700">수정</button>
+          ${total === null ? `<button onclick="autoGrantLeave(${emp.id},${legal})"
+            class="ml-1 px-2 py-1 rounded text-xs bg-green-600 text-white hover:bg-green-700">자동부여</button>` : ''}` : '-'}
+        </td>
+      </tr>`
+    }
+    return html
+  }
+
+  // 전체 통계
+  const statAssigned  = leaves.length
+  const statUnassigned= emps.length - statAssigned
+  const statTotalDays = leaves.reduce((a,l) => a + (l.total_days||0), 0)
+  const statUsedDays  = leaves.reduce((a,l) => a + (l.used_days||0), 0)
+
+  return `
+  <div class="space-y-4">
+    <!-- 통계 카드 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-500 mb-1">연차 부여 직원</div>
+        <div class="text-2xl font-bold text-blue-700">${statAssigned}명</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-orange-200 shadow-sm">
+        <div class="text-xs text-orange-600 mb-1">미부여 직원</div>
+        <div class="text-2xl font-bold text-orange-700">${statUnassigned}명</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-500 mb-1">총 부여 연차</div>
+        <div class="text-2xl font-bold text-gray-800">${statTotalDays}일</div>
+      </div>
+      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+        <div class="text-xs text-gray-500 mb-1">총 사용 연차</div>
+        <div class="text-2xl font-bold text-green-700">${statUsedDays}일</div>
+        <div class="text-xs text-gray-400">잔여 ${statTotalDays - statUsedDays}일</div>
+      </div>
+    </div>
+
+    <!-- 연차 테이블 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h3 class="font-bold text-gray-800">${year}년 연차 현황</h3>
+          <p class="text-xs text-gray-400 mt-0.5">법정 연차 = 입사 1년 미만:월1개, 1년 이상:15일+근속증가(최대25일)</p>
+        </div>
+        ${isAdm ? `<button onclick="autoGrantAllLeaves()" class="px-3 py-1.5 rounded-lg text-xs bg-green-600 text-white hover:bg-green-700">
+          <i class="fas fa-magic mr-1"></i>미부여 전체 자동부여
+        </button>` : ''}
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600">직원</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">입사월</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-blue-600">법정일수</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">부여일수</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">사용</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">잔여</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">사용률</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${emps.length === 0
+              ? `<tr><td colspan="8" class="text-center py-12 text-gray-400">직원이 없습니다</td></tr>`
+              : renderRows(cookEmps, 'cook') + renderRows(nutriEmps, 'nutrition')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 연차 수정 모달
+// ════════════════════════════════════════════════════════════════
+function renderLeaveEditModal() {
+  return `
+  <div id="leaveEditModal" class="hidden modal-overlay" style="z-index:1010">
+    <div class="modal-box max-w-sm p-6">
+      <h3 class="font-bold text-gray-800 text-lg mb-4">
+        <i class="fas fa-umbrella-beach text-blue-500 mr-2"></i>
+        연차 수정: <span id="leaveEditEmpName"></span>
+      </h3>
+      <input type="hidden" id="leaveEditEmpId">
+      <div class="space-y-4">
+        <div>
+          <label class="text-sm font-medium text-gray-700">부여 연차 (총 일수)</label>
+          <input type="number" id="leaveEditTotal" min="0" max="30" step="0.5" class="form-input mt-1" placeholder="15">
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">사용 연차</label>
+          <input type="number" id="leaveEditUsed" min="0" max="30" step="0.5" class="form-input mt-1" placeholder="0">
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">메모</label>
+          <input type="text" id="leaveEditNote" class="form-input mt-1" placeholder="비고 (선택)">
+        </div>
+      </div>
+      <div class="flex gap-3 mt-6">
+        <button onclick="saveLeaveEdit()" class="btn btn-primary flex-1">저장</button>
+        <button onclick="document.getElementById('leaveEditModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
+      </div>
+    </div>
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 운영 분석 탭 (9번 요청)
+// ════════════════════════════════════════════════════════════════
+function renderAnalysisTab() {
+  const year  = App.currentYear
+  const month = App.currentMonth
+  const ad    = scheduleAnalysisData
+  if (!ad) return `<div class="bg-white rounded-2xl p-8 text-center text-gray-400">분석 데이터 로딩 중...</div>`
+
+  const dateMap    = ad.date_map    || {}
+  const monthly    = ad.monthly     || {}
+  const shortDates = ad.short_dates || {}
+  const clusterDates = ad.cluster_dates || {}
+  const days = getDaysInMonth(year, month)
+
+  // 날짜 목록
+  const dateList = []
+  for (let d = 1; d <= days; d++) {
+    const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    dateList.push({ d, ds, data: dateMap[ds] || null })
+  }
+
+  // 주별 집계
+  const weeks = []
+  let wk = { num: 1, work: 0, rest: 0, annual: 0, ot: 0, temp: 0 }
+  for (const { d, ds, data } of dateList) {
+    const dow = getDayOfWeek(year, month, d)
+    if (data) {
+      wk.work   += data.work   || 0
+      wk.rest   += data.rest   || 0
+      wk.annual += data.annual || 0
+      wk.ot     += data.ot     || 0
+      wk.temp   += data.tempStaff || 0
+    }
+    if (dow === '일' || d === days) {
+      weeks.push({ ...wk })
+      wk = { num: wk.num + 1, work: 0, rest: 0, annual: 0, ot: 0, temp: 0 }
+    }
+  }
+
+  const shortCount   = Object.keys(shortDates).length
+  const clusterCount = Object.keys(clusterDates).length
+
+  return `
+  <div class="space-y-4">
+    <!-- 월간 요약 카드 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+      ${[
+        { label:'총 근무', value: monthly.totalWork||0, unit:'건', color:'text-green-700', bg:'bg-green-50' },
+        { label:'총 휴무', value: monthly.totalRest||0, unit:'건', color:'text-red-700', bg:'bg-red-50' },
+        { label:'연차 사용', value: monthly.totalAnnual||0, unit:'건', color:'text-yellow-700', bg:'bg-yellow-50' },
+        { label:'반차(오전)', value: monthly.totalHalfAM||0, unit:'건', color:'text-purple-700', bg:'bg-purple-50' },
+        { label:'반차(오후)', value: monthly.totalHalfPM||0, unit:'건', color:'text-blue-700', bg:'bg-blue-50' },
+        { label:'경조사', value: monthly.totalEvent||0, unit:'건', color:'text-pink-700', bg:'bg-pink-50' },
+      ].map(c => `
+        <div class="bg-white rounded-xl p-3 border border-gray-100 shadow-sm ${c.bg}">
+          <div class="text-xs text-gray-500 mb-1">${c.label}</div>
+          <div class="text-xl font-bold ${c.color}">${c.value}<span class="text-xs ml-0.5">${c.unit}</span></div>
+        </div>`).join('')}
+    </div>
+
+    <!-- 경고 섹션 -->
+    ${(shortCount > 0 || clusterCount > 0) ? `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      ${shortCount > 0 ? `
+      <div class="bg-red-50 border border-red-200 rounded-xl p-4">
+        <h4 class="font-bold text-red-700 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>최소 인력 미달 (${shortCount}일)</h4>
+        <div class="space-y-1 max-h-32 overflow-y-auto">
+          ${Object.entries(shortDates).slice(0,10).map(([date, items]) =>
+            `<div class="text-xs text-red-600">📅 ${date}: ${items.map(i => `${i.position} ${i.actual}/${i.required}명`).join(', ')}</div>`
+          ).join('')}
+        </div>
+      </div>` : ''}
+      ${clusterCount > 0 ? `
+      <div class="bg-orange-50 border border-orange-200 rounded-xl p-4">
+        <h4 class="font-bold text-orange-700 mb-2"><i class="fas fa-users-slash mr-1"></i>휴무/연차 쏠림 (${clusterCount}일)</h4>
+        <div class="space-y-1 max-h-32 overflow-y-auto">
+          ${Object.entries(clusterDates).slice(0,10).map(([date, info]) =>
+            `<div class="text-xs text-orange-600">📅 ${date}: 연차 ${info.annual}명, 휴무 ${info.rest}명</div>`
+          ).join('')}
+        </div>
+      </div>` : ''}
+    </div>` : ''}
+
+    <!-- 날짜별 상세 분석 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-4 border-b flex items-center justify-between">
+        <h3 class="font-bold text-gray-800">${year}년 ${month}월 일별 분석</h3>
+      </div>
+      <div class="overflow-x-auto overflow-y-auto" style="max-height:50vh">
+        <table class="w-full text-xs">
+          <thead class="bg-gray-800 text-white sticky top-0">
+            <tr>
+              <th class="px-3 py-2 text-left sticky left-0 bg-gray-800 min-w-[70px]">날짜</th>
+              <th class="px-2 py-2 text-center">근무</th>
+              <th class="px-2 py-2 text-center">휴무</th>
+              <th class="px-2 py-2 text-center">연차</th>
+              <th class="px-2 py-2 text-center">오전반차</th>
+              <th class="px-2 py-2 text-center">오후반차</th>
+              <th class="px-2 py-2 text-center">경조</th>
+              <th class="px-2 py-2 text-center">OT</th>
+              <th class="px-2 py-2 text-center">파출/알바</th>
+              <th class="px-2 py-2 text-left">경고</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dateList.map(({ d, ds, data }) => {
+              const dow = getDayOfWeek(year, month, d)
+              const isWknd = ['토','일'].includes(dow)
+              const hasShort = shortDates[ds]
+              const hasCluster = clusterDates[ds]
+              const bg = hasShort ? '#fff1f2' : hasCluster ? '#fffbeb' : isWknd ? '#f8fafc' : 'white'
+              return `<tr style="background:${bg};border-bottom:1px solid #e5e7eb">
+                <td class="px-3 py-2 sticky left-0 font-semibold" style="background:${bg}">
+                  <span style="color:${dow==='일'?'#dc2626':dow==='토'?'#b45309':'#374151'}">${d}일(${dow})</span>
+                </td>
+                <td class="px-2 py-2 text-center font-bold text-green-700">${data?.work||0}</td>
+                <td class="px-2 py-2 text-center text-red-600">${data?.rest||0}</td>
+                <td class="px-2 py-2 text-center text-yellow-600">${data?.annual||0}</td>
+                <td class="px-2 py-2 text-center text-purple-600">${data?.halfAM||0}</td>
+                <td class="px-2 py-2 text-center text-blue-600">${data?.halfPM||0}</td>
+                <td class="px-2 py-2 text-center text-pink-600">${data?.event||0}</td>
+                <td class="px-2 py-2 text-center text-emerald-600">${data?.ot||0}</td>
+                <td class="px-2 py-2 text-center text-orange-600">${data?.tempStaff||0}</td>
+                <td class="px-2 py-2 text-xs">
+                  ${hasShort ? `<span class="text-red-600 font-bold">⚠인력부족</span> ` : ''}
+                  ${hasCluster ? `<span class="text-orange-600 font-bold">⚠쏠림</span>` : ''}
+                </td>
+              </tr>`
+            }).join('')}
+          </tbody>
+          <tfoot class="bg-gray-100 border-t-2 sticky bottom-0">
+            <tr class="font-bold">
+              <td class="px-3 py-2 sticky left-0 bg-gray-100">월 합계</td>
+              <td class="px-2 py-2 text-center text-green-700">${monthly.totalWork||0}</td>
+              <td class="px-2 py-2 text-center text-red-600">${monthly.totalRest||0}</td>
+              <td class="px-2 py-2 text-center text-yellow-600">${monthly.totalAnnual||0}</td>
+              <td class="px-2 py-2 text-center text-purple-600">${monthly.totalHalfAM||0}</td>
+              <td class="px-2 py-2 text-center text-blue-600">${monthly.totalHalfPM||0}</td>
+              <td class="px-2 py-2 text-center text-pink-600">${monthly.totalEvent||0}</td>
+              <td class="px-2 py-2 text-center text-emerald-600">${monthly.totalOT||0}</td>
+              <td class="px-2 py-2 text-center text-orange-600">${monthly.totalTempStaff||0}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- 주별 집계 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 border-b"><h3 class="font-bold text-gray-800 text-sm">주별 집계</h3></div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="px-4 py-2 text-left text-xs text-gray-600">주차</th>
+              <th class="px-3 py-2 text-center text-xs text-green-700">근무</th>
+              <th class="px-3 py-2 text-center text-xs text-red-600">휴무</th>
+              <th class="px-3 py-2 text-center text-xs text-yellow-600">연차</th>
+              <th class="px-3 py-2 text-center text-xs text-emerald-600">OT</th>
+              <th class="px-3 py-2 text-center text-xs text-orange-600">파출/알바</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${weeks.map(w => `<tr class="border-b">
+              <td class="px-4 py-2 font-medium text-gray-700">${w.num}주차</td>
+              <td class="px-3 py-2 text-center font-bold text-green-700">${w.work}</td>
+              <td class="px-3 py-2 text-center text-red-600">${w.rest}</td>
+              <td class="px-3 py-2 text-center text-yellow-600">${w.annual}</td>
+              <td class="px-3 py-2 text-center text-emerald-600">${w.ot}</td>
+              <td class="px-3 py-2 text-center text-orange-600">${w.temp}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- OT 직원별 집계 -->
+    ${Object.keys(monthly.otByEmp||{}).length > 0 ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 border-b"><h3 class="font-bold text-gray-800 text-sm">개인별 오버타임 집계</h3></div>
+      <div class="p-4 flex flex-wrap gap-2">
+        ${Object.entries(monthly.otByEmp||{}).sort((a,b)=>b[1]-a[1]).map(([name, hrs]) =>
+          `<div class="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-sm">
+            <span class="font-medium text-gray-700">${name}</span>
+            <span class="ml-2 font-bold text-emerald-700">${hrs}시간</span>
+          </div>`
+        ).join('')}
+      </div>
+    </div>` : ''}
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 인쇄/PDF 출력
+// ════════════════════════════════════════════════════════════════
+window.printSchedule = () => {
+  const year  = App.currentYear
+  const month = App.currentMonth
+  const days  = getDaysInMonth(year, month)
+  const emps  = scheduleEmployees
+  const og    = scheduleOffGrants
+  const md    = scheduleMonthData
+  const schedMap = md?.sched_map || {}
+  const leaveMap = md?.leave_map || {}
+  const grantedSet = new Set((og?.granted_days||[]).map(d=>d.date))
+  const subSet     = new Set((og?.substitute_days||[]).map(d=>d.date))
+  const allOffSet  = new Set([...grantedSet, ...subSet])
+
+  const SHIFT_COLORS = {}
+  ;(scheduleShifts||[]).forEach(s => { SHIFT_COLORS[s.shift_code] = s.color })
+  function getCellStyle(code) {
+    if (!code || code==='-') return 'background:#f9fafb;color:#d1d5db'
+    if (SHIFT_COLORS[code]) return `background:${SHIFT_COLORS[code]}33;color:${SHIFT_COLORS[code]};font-weight:700`
+    const dm = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c','오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8','경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'}
+    return dm[code]||'background:#f3f4f6;color:#374151'
+  }
+
+  let tableRows = ''
+  const allEmps = [...emps.filter(e=>e.team==='cook'||!e.team), ...emps.filter(e=>e.team==='nutrition')]
+  for (const emp of allEmps) {
+    let cells = ''
+    let workCount = 0, annualCount = 0
+    for (let d=1; d<=days; d++) {
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const dow = getDayOfWeek(year, month, d)
+      const isOff = allOffSet.has(ds)
+      const code  = schedMap[`${emp.id}_${ds}`]?.shift_code || ''
+      const bg    = dow==='일'?'#fff1f2':dow==='토'?'#fffbeb':isOff?'#fffde7':'white'
+      const st    = getCellStyle(code)
+      if (code && code!=='-') {
+        if (code==='연') annualCount++
+        else if (!['휴','경조','병가'].includes(code)) workCount++
+      }
+      cells += `<td style="padding:2px;text-align:center;background:${bg};border:1px solid #e5e7eb">
+        <span style="display:inline-block;width:22px;height:22px;line-height:22px;border-radius:3px;font-size:9px;${st}">${code||'·'}</span>
+      </td>`
+    }
+    const lv = leaveMap[emp.id]
+    const total = lv?.annual?.total ?? '-'
+    const used  = lv?.annual?.used  ?? 0
+    const remain = total !== '-' ? total - used : '-'
+    tableRows += `<tr>
+      <td style="padding:4px 8px;font-weight:600;font-size:11px;border:1px solid #e5e7eb;position:sticky;left:0;background:white;min-width:90px">${emp.name}<br><span style="font-size:9px;color:#94a3b8">${emp.position_name||''}</span></td>
+      ${cells}
+      <td style="padding:4px;text-align:center;font-weight:700;font-size:11px;border:1px solid #e5e7eb;background:#f0fdf4">${workCount}</td>
+      <td style="padding:4px;text-align:center;font-size:10px;border:1px solid #e5e7eb;background:#fef9c3">${annualCount}일<br><span style="font-size:8px">잔${remain}</span></td>
+    </tr>`
+  }
+
+  const dayHeaders = Array.from({length:days},(_,i)=>{
+    const d=i+1, dow=getDayOfWeek(year,month,d)
+    return `<th style="padding:3px 1px;text-align:center;min-width:28px;font-size:10px;background:#166534;color:${dow==='일'?'#fca5a5':dow==='토'?'#93c5fd':'white'};border:1px solid #14532d">${d}<br>${dow}</th>`
+  }).join('')
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <title>${year}년 ${month}월 근무 스케줄</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: 'Malgun Gothic', sans-serif; font-size: 11px; }
+    @page { size: A4 landscape; margin: 10mm; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    table { border-collapse: collapse; width: 100%; }
+    h1 { text-align: center; font-size: 14px; margin-bottom: 8px; color: #166534; }
+    .legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: 9px; }
+    .legend-item { padding: 2px 6px; border-radius: 3px; }
+  </style>
+  </head><body>
+  <h1>${year}년 ${month}월 근무 스케줄</h1>
+  <div class="legend">
+    <span class="legend-item" style="background:#fef9c3;color:#92400e">연 = 연차</span>
+    <span class="legend-item" style="background:#fee2e2;color:#b91c1c">휴 = 휴무</span>
+    <span class="legend-item" style="background:#ede9fe;color:#6d28d9">오전 = 오전반차</span>
+    <span class="legend-item" style="background:#dbeafe;color:#1d4ed8">오후 = 오후반차</span>
+    <span class="legend-item" style="background:#fce7f3;color:#9d174d">경조 = 경조사</span>
+    <span class="legend-item" style="background:#ecfdf5;color:#065f46">OT = 오버타임</span>
+    ${scheduleShifts.map(s=>`<span class="legend-item" style="background:${s.color}33;color:${s.color}">${s.shift_code} = ${s.shift_name}</span>`).join('')}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="padding:4px 8px;text-align:left;background:#166534;color:white;border:1px solid #14532d;min-width:90px">이름/직위</th>
+        ${dayHeaders}
+        <th style="padding:4px;background:#0f3d25;color:white;border:1px solid #14532d;min-width:35px;font-size:9px">근무</th>
+        <th style="padding:4px;background:#0f3d25;color:white;border:1px solid #14532d;min-width:35px;font-size:9px">연차</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  <p style="text-align:right;font-size:9px;color:#94a3b8;margin-top:4px">출력일: ${new Date().toLocaleDateString('ko-KR')}</p>
+  <script>window.onload = function(){ window.print(); }<\/script>
+  </body></html>`
+
+  const win = window.open('', '_blank')
+  if (win) {
+    win.document.write(html)
+    win.document.close()
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 엑셀 내보내기
+// ════════════════════════════════════════════════════════════════
+window.exportScheduleExcel = async () => {
+  // XLSX 라이브러리 동적 로드
+  if (typeof XLSX === 'undefined') {
+    showToast('엑셀 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
+    const s = document.createElement('script')
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    document.head.appendChild(s)
+    await new Promise(r => { s.onload = r })
+  }
+
+  const year     = App.currentYear
+  const month    = App.currentMonth
+  const days     = getDaysInMonth(year, month)
+  const emps     = scheduleEmployees
+  const og       = scheduleOffGrants
+  const md       = scheduleMonthData
+  const schedMap = md?.sched_map || {}
+  const leaveMap = md?.leave_map || {}
+  const grantedSet = new Set((og?.granted_days    || []).map(d => d.date))
+  const subSet     = new Set((og?.substitute_days || []).map(d => d.date))
+  const allOffSet  = new Set([...grantedSet, ...subSet])
+
+  const wb = XLSX.utils.book_new()
+
+  // ─── 시트1: 월간 스케줄 ──────────────────────────────────
+  const schedData = []
+
+  // 헤더행 1: 날짜
+  const hdr1 = ['이름', '직위', '팀']
+  for (let d = 1; d <= days; d++) hdr1.push(String(d))
+  hdr1.push('근무일', '연차사용', '연차잔여')
+  schedData.push(hdr1)
+
+  // 헤더행 2: 요일
+  const hdr2 = ['', '', '']
+  for (let d = 1; d <= days; d++) hdr2.push(getDayOfWeek(year, month, d))
+  hdr2.push('', '', '')
+  schedData.push(hdr2)
+
+  // 팀별 직원 행
+  const allEmps = [...emps.filter(e=>e.team==='cook'||!e.team), ...emps.filter(e=>e.team==='nutrition')]
+  const REST_CODES = new Set(['휴','연','경조','병가','오전','오후'])
+
+  for (const emp of allEmps) {
+    let workCount = 0, annualCount = 0
+    const row = [emp.name, emp.position_name || emp.position || '', emp.team === 'nutrition' ? '영양팀' : '조리팀']
+    for (let d = 1; d <= days; d++) {
+      const ds  = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const key = `${emp.id}_${ds}`
+      const code = schedMap[key]?.shift_code || ''
+      row.push(code || '')
+      if (code && code !== '-') {
+        if (code === '연') annualCount++
+        else if (!REST_CODES.has(code)) workCount++
+      }
+    }
+    const lv = leaveMap[emp.id]
+    const annualTot  = lv?.annual?.total ?? null
+    const annualUsed = lv?.annual?.used  ?? 0
+    const annualRemain = annualTot !== null ? annualTot - annualUsed : '-'
+    row.push(workCount, annualCount, annualRemain)
+    schedData.push(row)
+  }
+
+  const ws1 = XLSX.utils.aoa_to_sheet(schedData)
+
+  // 열 너비 설정
+  const colWidths = [{ wch: 10 }, { wch: 8 }, { wch: 6 }]
+  for (let d = 1; d <= days; d++) colWidths.push({ wch: 4 })
+  colWidths.push({ wch: 6 }, { wch: 6 }, { wch: 6 })
+  ws1['!cols'] = colWidths
+
+  XLSX.utils.book_append_sheet(wb, ws1, `${month}월 스케줄`)
+
+  // ─── 시트2: 연차 현황 ──────────────────────────────────
+  const leaveData = [
+    ['이름', '팀', '직위', '입사일', '법정연차(일)', '부여연차(일)', '사용(일)', '잔여(일)', '사용률(%)']
+  ]
+
+  function calcLegal(emp) {
+    if (!emp.hire_date) return 0
+    const hired = new Date(emp.hire_date)
+    const now   = new Date(year + '-12-31')
+    const yrs   = (now - hired) / (1000*60*60*24*365)
+    if (yrs < 0) return 0
+    if (yrs < 1) return Math.min(Math.floor((now - hired) / (1000*60*60*24*30)), 11)
+    return Math.min(15 + Math.floor((yrs - 1) / 2), 25)
+  }
+
+  for (const emp of allEmps) {
+    const legal = calcLegal(emp)
+    const lv    = leaveMap[emp.id] || {}
+    const total  = lv?.annual?.total ?? null
+    const used   = lv?.annual?.used  ?? 0
+    const remain = total !== null ? total - used : '-'
+    const pct    = total ? Math.round(used / total * 100) : 0
+    leaveData.push([
+      emp.name,
+      emp.team === 'nutrition' ? '영양팀' : '조리팀',
+      emp.position_name || '',
+      emp.hire_date || '',
+      legal,
+      total !== null ? total : '미부여',
+      used,
+      remain,
+      total ? `${pct}%` : '-'
+    ])
+  }
+
+  const ws2 = XLSX.utils.aoa_to_sheet(leaveData)
+  ws2['!cols'] = [{ wch:10 },{ wch:6 },{ wch:8 },{ wch:12 },{ wch:10 },{ wch:10 },{ wch:8 },{ wch:8 },{ wch:8 }]
+  XLSX.utils.book_append_sheet(wb, ws2, '연차현황')
+
+  // ─── 파일 저장 ──────────────────────────────────────────
+  const mm = String(month).padStart(2, '0')
+  XLSX.writeFile(wb, `근무스케줄_${year}년${mm}월.xlsx`)
+  showToast('엑셀 파일이 다운로드됩니다', 'success')
+}
+
+// ════════════════════════════════════════════════════════════════
 // 이벤트 핸들러 (window 바인딩)
 // ════════════════════════════════════════════════════════════════
 
-window.switchScheduleTab = (tab) => {
+window.switchScheduleTab = async (tab) => {
   scheduleTab = tab
+  const content = document.getElementById('pageContent')
+  // 연차/분석 탭은 데이터 새로고침
+  if (tab === 'leaves') {
+    scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+  } else if (tab === 'analysis') {
+    scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+  }
+  renderScheduleTab(content)
+}
+
+// 연차 수정 모달 열기
+window.openLeaveEditModal = (empId, empName, totalDays, usedDays) => {
+  document.getElementById('leaveEditEmpId').value = empId
+  document.getElementById('leaveEditEmpName').textContent = empName
+  document.getElementById('leaveEditTotal').value = totalDays || ''
+  document.getElementById('leaveEditUsed').value  = usedDays  || 0
+  document.getElementById('leaveEditNote').value  = ''
+  document.getElementById('leaveEditModal').classList.remove('hidden')
+}
+
+window.saveLeaveEdit = async () => {
+  const empId    = document.getElementById('leaveEditEmpId').value
+  const totalDays= parseFloat(document.getElementById('leaveEditTotal').value)
+  const usedDays = parseFloat(document.getElementById('leaveEditUsed').value  || 0)
+  const note     = document.getElementById('leaveEditNote').value
+  if (isNaN(totalDays) || totalDays < 0) { showToast('부여 일수를 입력하세요', 'error'); return }
+
+  const res = await api('PUT', `/api/schedule/employees/${empId}/leaves`, {
+    year: App.currentYear, totalDays, usedDays, note
+  })
+  if (res?.success) {
+    showToast('연차가 저장되었습니다', 'success')
+    document.getElementById('leaveEditModal').classList.add('hidden')
+    scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+    scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  } else {
+    showToast(res?.error || '저장 실패', 'error')
+  }
+}
+
+// 자동 부여 (단일 직원)
+window.autoGrantLeave = async (empId, legalDays) => {
+  if (!confirm(`법정 연차 ${legalDays}일을 자동 부여하시겠습니까?`)) return
+  const res = await api('PUT', `/api/schedule/employees/${empId}/leaves`, {
+    year: App.currentYear, totalDays: legalDays, usedDays: 0, note: '자동부여'
+  })
+  if (res?.success) {
+    showToast('연차가 부여되었습니다', 'success')
+    scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+    scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  }
+}
+
+// 미부여 직원 전체 자동 부여
+window.autoGrantAllLeaves = async () => {
+  const leaves  = scheduleLeavesData
+  const leaveByEmp = {}
+  for (const l of leaves) leaveByEmp[l.employee_id] = true
+
+  const unassigned = scheduleEmployees.filter(e => !leaveByEmp[e.id] && e.hire_date)
+  if (unassigned.length === 0) { showToast('미부여 직원이 없습니다', 'info'); return }
+  if (!confirm(`${unassigned.length}명에게 법정 연차를 자동 부여하시겠습니까?`)) return
+
+  let count = 0
+  for (const emp of unassigned) {
+    const hired = new Date(emp.hire_date)
+    const now   = new Date(App.currentYear + '-12-31')
+    const years = (now - hired) / (1000*60*60*24*365)
+    let legal = 0
+    if (years >= 1) {
+      legal = Math.min(15 + Math.floor((years-1)/2), 25)
+    } else {
+      legal = Math.min(Math.floor((now - hired) / (1000*60*60*24*30)), 11)
+    }
+    if (legal > 0) {
+      await api('PUT', `/api/schedule/employees/${emp.id}/leaves`, {
+        year: App.currentYear, totalDays: legal, usedDays: 0, note: '자동부여'
+      }).catch(()=>null)
+      count++
+    }
+  }
+  showToast(`${count}명에게 연차를 부여했습니다`, 'success')
+  scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+  scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
   const content = document.getElementById('pageContent')
   renderScheduleTab(content)
 }
@@ -12336,7 +13215,7 @@ window.saveEmployeeCard = async (empId) => {
   const name = document.getElementById('ei_name')?.value?.trim()
   if (!name) { showToast('이름은 필수입니다', 'error'); return }
 
-  const workParts = ['breakfast','lunch','dinner'].filter(p =>
+  const workParts = ['cooking','serving','washing','nutrition','breakfast','lunch','dinner'].filter(p =>
     document.getElementById(`ei_wp_${p}`)?.checked
   )
 
@@ -12460,7 +13339,8 @@ window.deleteShift = async (id, name) => {
 }
 
 window.schedCycleShift = async (empId, date, cell, codesJson) => {
-  const codes = JSON.parse(codesJson)
+  // codesJson이 null이면 전역 변수에서 가져옴 (onclick 이스케이프 문제 방지)
+  const codes = codesJson ? JSON.parse(codesJson) : (window._schedAllCodes || ['연','휴','오전','오후','경조','OT','-'])
   const currentShift = cell.dataset.shift || ''
   const idx = codes.indexOf(currentShift)
   const nextShift = codes[(idx + 1) % codes.length]
@@ -21864,6 +22744,24 @@ async function renderCeoDashboard() {
         ${alertsHtml}
       </div>
 
+      <!-- 식수 카테고리별 집계 -->
+      <div id="ceoMealCatSection" class="mb-5">
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <h3 class="font-bold text-gray-800"><i class="fas fa-layer-group text-purple-500 mr-2"></i>식수 카테고리별 집계 (병원별)</h3>
+              <p class="text-xs text-gray-400 mt-0.5">항암, 위절제식, 저잔사식 등 카테고리별 이번달 식수 현황</p>
+            </div>
+            <button onclick="loadCeoMealCatStats()" class="px-3 py-1.5 rounded-lg text-xs bg-purple-600 text-white hover:bg-purple-700">
+              <i class="fas fa-sync-alt mr-1"></i>새로고침
+            </button>
+          </div>
+          <div id="ceoMealCatContent" class="p-4">
+            <div class="flex items-center justify-center h-20 text-gray-400"><div class="loading-spinner mr-2"></div>로딩 중...</div>
+          </div>
+        </div>
+      </div>
+
       <!-- 지출 사용내역 조회 -->
       <div id="ceoExpensesSection">
         ${expensesHtml}
@@ -21875,6 +22773,8 @@ async function renderCeoDashboard() {
     requestAnimationFrame(() => {
       renderCeoCharts(graphsData, safeHospitals)
       console.log('[CEO] 8. 차트 렌더 완료')
+      // 식수 카테고리 집계 로드
+      loadCeoMealCatStats()
     })
   } catch(err) {
     console.error('[CeoDashboard] 렌더링 오류:', err)
@@ -21886,6 +22786,127 @@ async function renderCeoDashboard() {
         <button onclick="renderCeoDashboard()" class="text-xs bg-indigo-500 text-white rounded-lg px-4 py-2 hover:bg-indigo-600">다시 시도</button>
       </div>
     `
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// CEO 식수 카테고리별 집계 (loadAdminMealCatStats 공통 로직 재사용)
+// ════════════════════════════════════════════════════════════════
+window.loadCeoMealCatStats = async () => {
+  const el = document.getElementById('ceoMealCatContent')
+  if (!el) return
+  el.innerHTML = `<div class="flex items-center justify-center h-20 text-gray-400"><div class="loading-spinner mr-2"></div>로딩 중...</div>`
+
+  const f = window._ceoFilter || { year: new Date().getFullYear(), month: new Date().getMonth()+1 }
+
+  try {
+    let allHospitals = []
+    try { allHospitals = (await api('GET', '/api/admin/hospitals')) || [] } catch(e) {}
+    if (!Array.isArray(allHospitals)) allHospitals = []
+
+    if (allHospitals.length === 0) {
+      el.innerHTML = `<div class="text-center py-8 text-gray-400">병원 데이터가 없습니다</div>`
+      return
+    }
+
+    const statsAll = await Promise.all(
+      allHospitals.map(h =>
+        api('GET', `/api/schedule/meal-stats/${f.year}/${f.month}?hospitalId=${h.id}`)
+          .then(r => ({ hospital: h, stats: r }))
+          .catch(() => ({ hospital: h, stats: null }))
+      )
+    )
+
+    const allCatKeys = new Set()
+    const catNames = {}
+    statsAll.forEach(({ stats }) => {
+      if (!stats?.categories) return
+      Object.entries(stats.categories).forEach(([k, v]) => {
+        allCatKeys.add(k)
+        if (v.name) catNames[k] = v.name
+      })
+    })
+    const catKeyList = [...allCatKeys]
+
+    if (catKeyList.length === 0) {
+      el.innerHTML = `<div class="text-center py-8 text-gray-400"><i class="fas fa-info-circle mr-1"></i>카테고리 데이터가 없습니다.</div>`
+      return
+    }
+
+    const catColors = ['bg-red-100 text-red-700','bg-orange-100 text-orange-700','bg-amber-100 text-amber-700','bg-green-100 text-green-700','bg-teal-100 text-teal-700','bg-blue-100 text-blue-700','bg-indigo-100 text-indigo-700','bg-purple-100 text-purple-700','bg-pink-100 text-pink-700']
+    let html = `
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border-collapse">
+        <thead>
+          <tr class="bg-purple-900 text-white">
+            <th class="px-4 py-3 text-left min-w-[120px] sticky left-0 bg-purple-900">병원</th>
+            ${catKeyList.map((k, i) => `
+              <th class="px-3 py-3 text-center min-w-[100px]">
+                <span class="inline-block px-2 py-0.5 rounded text-xs font-bold ${catColors[i % catColors.length]}">${catNames[k] || k}</span>
+                <div class="text-xs font-normal text-purple-200 mt-0.5">조식/중식/석식</div>
+              </th>`).join('')}
+            <th class="px-3 py-3 text-center min-w-[80px] bg-purple-800">합계</th>
+          </tr>
+        </thead>
+        <tbody>`
+
+    const grandTotalByCat = {}
+    catKeyList.forEach(k => { grandTotalByCat[k] = { breakfast:0, lunch:0, dinner:0, total:0 } })
+    let grandTotal = 0
+
+    statsAll.forEach(({ hospital, stats }) => {
+      const cats = stats?.categories || {}
+      let rowTotal = 0
+      catKeyList.forEach(k => {
+        const c = cats[k] || { breakfast:0, lunch:0, dinner:0, total:0 }
+        grandTotalByCat[k].breakfast += c.breakfast || 0
+        grandTotalByCat[k].lunch     += c.lunch     || 0
+        grandTotalByCat[k].dinner    += c.dinner    || 0
+        grandTotalByCat[k].total     += c.total     || 0
+        rowTotal += c.total || 0
+      })
+      grandTotal += rowTotal
+
+      html += `<tr class="border-b hover:bg-purple-50">
+        <td class="px-4 py-3 font-semibold text-gray-800 sticky left-0 bg-white">${hospital.name}</td>
+        ${catKeyList.map(k => {
+          const c = cats[k] || { breakfast:0, lunch:0, dinner:0, total:0 }
+          const total = (c.breakfast||0) + (c.lunch||0) + (c.dinner||0)
+          return `<td class="px-3 py-3 text-center">
+            ${total > 0 ? `
+              <div class="font-bold text-gray-800">${total.toLocaleString()}식</div>
+              <div class="text-xs text-gray-400 mt-0.5">${(c.breakfast||0).toLocaleString()}/${(c.lunch||0).toLocaleString()}/${(c.dinner||0).toLocaleString()}</div>
+            ` : '<span class="text-gray-300">-</span>'}
+          </td>`
+        }).join('')}
+        <td class="px-3 py-3 text-center font-bold text-purple-700 bg-purple-50">${rowTotal.toLocaleString()}식</td>
+      </tr>`
+    })
+
+    html += `</tbody>
+      <tfoot>
+        <tr class="bg-gray-100 font-bold border-t-2">
+          <td class="px-4 py-3 sticky left-0 bg-gray-100 text-gray-700">전체 합계</td>
+          ${catKeyList.map(k => {
+            const c = grandTotalByCat[k]
+            const total = c.total || 0
+            return `<td class="px-3 py-3 text-center">
+              ${total > 0 ? `
+                <div class="font-bold text-purple-700">${total.toLocaleString()}식</div>
+                <div class="text-xs text-gray-500">${(c.breakfast||0).toLocaleString()}/${(c.lunch||0).toLocaleString()}/${(c.dinner||0).toLocaleString()}</div>
+              ` : '<span class="text-gray-400">0</span>'}
+            </td>`
+          }).join('')}
+          <td class="px-3 py-3 text-center font-bold text-purple-700 bg-purple-100">${grandTotal.toLocaleString()}식</td>
+        </tr>
+      </tfoot>
+    </table>
+    </div>
+    <p class="text-xs text-gray-400 mt-2 px-1"><i class="fas fa-info-circle mr-1"></i>${f.year}년 ${f.month}월 기준 · 조식/중식/석식 순서로 표시</p>`
+
+    el.innerHTML = html
+  } catch(e) {
+    el.innerHTML = `<div class="text-center py-8 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>데이터 로드 실패: ${e.message}</div>`
   }
 }
 
