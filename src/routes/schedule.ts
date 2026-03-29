@@ -558,33 +558,67 @@ schedule.get('/:year/:month', async (c) => {
      ORDER BY e.team, COALESCE(p.sort_order, 999), e.hire_date, e.name`
   ).bind(hospitalId).all<any>()
 
-  const schedules = await c.env.DB.prepare(
-    `SELECT s.*, sh.shift_name, sh.start_time, sh.end_time, sh.color as shift_color
-     FROM daily_schedules s
-     LEFT JOIN schedule_shifts sh ON s.shift_id = sh.id
-     WHERE s.hospital_id = ?
-       AND strftime('%Y', s.work_date) = ?
-       AND strftime('%m', s.work_date) = printf('%02d', ?)
-     ORDER BY s.work_date`
-  ).bind(hospitalId, year, month).all<any>()
-
-  const shifts = await c.env.DB.prepare(
-    `SELECT * FROM schedule_shifts WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order`
-  ).bind(hospitalId).all<any>()
-
-  // 공휴일 조회
   const paddedMonth = String(month).padStart(2, '0')
-  const holidays = await c.env.DB.prepare(
-    `SELECT * FROM holidays
-     WHERE (hospital_id IS NULL OR hospital_id = ?)
-       AND holiday_date LIKE ?`
-  ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+
+  const [schedRows, shiftRows, holidayRows, leaveRows, subRows] = await Promise.all([
+    // 해당 월 스케줄
+    c.env.DB.prepare(
+      `SELECT s.employee_id, s.work_date, s.shift_code, s.leave_type,
+              s.is_overtime, s.overtime_hours,
+              sh.shift_name, sh.start_time, sh.end_time, sh.color as shift_color
+       FROM daily_schedules s
+       LEFT JOIN schedule_shifts sh ON s.shift_id = sh.id
+       WHERE s.hospital_id = ?
+         AND strftime('%Y', s.work_date) = ?
+         AND strftime('%m', s.work_date) = printf('%02d', ?)
+       ORDER BY s.employee_id, s.work_date`
+    ).bind(hospitalId, year, month).all<any>(),
+
+    // 근무조 설정
+    c.env.DB.prepare(
+      `SELECT * FROM schedule_shifts WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order`
+    ).bind(hospitalId).all<any>(),
+
+    // 공휴일
+    c.env.DB.prepare(
+      `SELECT holiday_date, name as holiday_name FROM holidays WHERE holiday_date LIKE ?`
+    ).bind(`${year}-${paddedMonth}-%`).all<any>(),
+
+    // 연차·휴가 정보 (해당 연도)
+    c.env.DB.prepare(
+      `SELECT employee_id, leave_type, total_days, used_days
+       FROM employee_leaves
+       WHERE hospital_id = ? AND year = ?`
+    ).bind(hospitalId, year).all<any>(),
+
+    // 대체휴무
+    c.env.DB.prepare(
+      `SELECT off_date, off_name FROM substitute_off_days
+       WHERE (hospital_id IS NULL OR hospital_id = ?) AND off_date LIKE ?`
+    ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+  ])
+
+  // schedMap: { "empId_YYYY-MM-DD": { shift_code, leave_type, ... } }
+  const schedMap: Record<string, any> = {}
+  for (const s of (schedRows.results || [])) {
+    const key = `${s.employee_id}_${s.work_date}`
+    schedMap[key] = s
+  }
+
+  // leaveMap: { empId: { annual: {total, used}, ... } }
+  const leaveMap: Record<number, Record<string, { total: number; used: number }>> = {}
+  for (const l of (leaveRows.results || [])) {
+    if (!leaveMap[l.employee_id]) leaveMap[l.employee_id] = {}
+    leaveMap[l.employee_id][l.leave_type] = { total: l.total_days, used: l.used_days }
+  }
 
   return c.json({
-    employees: employees.results,
-    schedules: schedules.results,
-    shifts: shifts.results,
-    holidays: holidays.results
+    employees:       employees.results || [],
+    sched_map:       schedMap,
+    shifts:          shiftRows.results || [],
+    holidays:        holidayRows.results || [],
+    leave_map:       leaveMap,
+    substitute_days: subRows.results || []
   })
 })
 

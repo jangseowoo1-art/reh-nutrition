@@ -11237,18 +11237,21 @@ const LEAVE_ALERT_LEVELS = {
 let scheduleLeaveAlerts = []
 // 월별 부여휴무 데이터
 let scheduleOffGrants = null   // { granted_days, substitute_days, summary }
+// 월간 스케줄 데이터 (API 응답 전체)
+let scheduleMonthData = null   // { employees, sched_map, shifts, holidays, leave_map, substitute_days }
 
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // 데이터 로드 (연차 촉진 알림 + 월별 부여휴무 포함)
-  const [empData, shiftData, posData, leaveAlerts, offGrants] = await Promise.all([
+  // 모든 데이터 병렬 로드
+  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData] = await Promise.all([
     api('GET', '/api/schedule/employees').catch(() => []),
     api('GET', '/api/schedule/shifts').catch(() => []),
     api('GET', '/api/schedule/positions').catch(() => []),
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
-    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
   ])
 
   scheduleEmployees = empData || []
@@ -11256,13 +11259,27 @@ async function renderSchedule() {
   schedulePositions = posData || []
   scheduleLeaveAlerts = leaveAlerts || []
   scheduleOffGrants = offGrants || null
+  scheduleMonthData = monthData || null
 
   renderScheduleTab(content)
 }
 
-// 월별 부여휴무 재로드 (월 변경 시 호출)
-async function reloadOffGrants() {
-  scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+// 월 이동 후 스케줄·부여휴무·연차알림 재로드
+async function reloadScheduleMonth() {
+  const content = document.getElementById('pageContent')
+  // 스피너만 월간 스케줄 탭 영역에 표시
+  const tc = document.getElementById('scheduleTabContent')
+  if (tc) tc.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+
+  const [offGrants, monthData, leaveAlerts] = await Promise.all([
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => [])
+  ])
+  scheduleOffGrants = offGrants || null
+  scheduleMonthData = monthData || null
+  scheduleLeaveAlerts = leaveAlerts || []
+  if (tc) tc.innerHTML = renderMonthlyScheduleTab()
 }
 
 function renderScheduleTab(content) {
@@ -11280,9 +11297,29 @@ function renderScheduleTab(content) {
     <!-- 탭 헤더 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h2 class="font-bold text-gray-800 text-lg">스케줄 관리</h2>
-          <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월</p>
+        <div class="flex items-center gap-3">
+          <div>
+            <h2 class="font-bold text-gray-800 text-lg">스케줄 관리</h2>
+            <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월</p>
+          </div>
+          <!-- 월 이동 버튼 -->
+          <div class="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+            <button onclick="schedMoveMonth(-1)"
+              class="w-8 h-8 rounded-lg bg-white shadow-sm hover:bg-gray-50 flex items-center justify-center text-gray-600 transition-all">
+              <i class="fas fa-chevron-left text-xs"></i>
+            </button>
+            <span class="px-3 text-sm font-bold text-gray-700 min-w-[80px] text-center">
+              ${App.currentYear}. ${String(App.currentMonth).padStart(2,'0')}
+            </span>
+            <button onclick="schedMoveMonth(1)"
+              class="w-8 h-8 rounded-lg bg-white shadow-sm hover:bg-gray-50 flex items-center justify-center text-gray-600 transition-all">
+              <i class="fas fa-chevron-right text-xs"></i>
+            </button>
+            <button onclick="schedMoveToToday()"
+              class="px-2 h-8 rounded-lg bg-white shadow-sm hover:bg-gray-50 text-xs font-medium text-blue-600 transition-all ml-1">
+              오늘
+            </button>
+          </div>
         </div>
         <div class="flex gap-2">
           ${tabs.map(t => `
@@ -11835,14 +11872,19 @@ function renderMonthlyScheduleTab() {
 
   // 부여휴무 날짜 Set (그리드 하이라이트용)
   const og = scheduleOffGrants
-  const grantedSet = new Set((og?.granted_days || []).map(d => d.date))
+  const grantedSet    = new Set((og?.granted_days    || []).map(d => d.date))
   const substituteSet = new Set((og?.substitute_days || []).map(d => d.date))
-  const allOffSet = new Set([...grantedSet, ...substituteSet])
+  const allOffSet     = new Set([...grantedSet, ...substituteSet])
 
   // 날짜별 휴무 라벨 맵
   const offLabelMap = {}
-  ;(og?.granted_days || []).forEach(d => { offLabelMap[d.date] = d.label })
+  ;(og?.granted_days    || []).forEach(d => { offLabelMap[d.date] = d.label })
   ;(og?.substitute_days || []).forEach(d => { offLabelMap[d.date] = d.name })
+
+  // 월간 스케줄 데이터 맵 { "empId_date": { shift_code, leave_type } }
+  const md        = scheduleMonthData
+  const schedMap  = md?.sched_map  || {}
+  const leaveMap  = md?.leave_map  || {}   // { empId: { annual:{total,used}, ... } }
 
   return `
   ${renderOffGrantsPanel()}
@@ -11940,32 +11982,82 @@ function renderMonthlyScheduleTab() {
               </td></tr>`
               teamEmps.forEach((emp, empIdx) => {
                 const rowBg = empIdx % 2 === 0 ? 'white' : '#fafafa'
-                // 스케줄 데이터는 schedMap에서 (월간 스케줄 로드 필요)
-                let workDays = 0, annualDays = 0
-                // 임시: 셀 렌더링
-                html += `<tr style="border-bottom:1px solid #e2e8f0" 
-                  onmouseover="this.style.background='#f0fdf4'" 
+
+                // ── 이 직원의 해당 월 스케줄 집계 ──────────────────
+                let workDayCount = 0   // 실 근무일 (휴·연·경조 제외)
+                let annualUsed   = 0   // 연차 사용일 (이 달)
+                let leaveUsed    = 0   // 기타 휴가 사용일 (이 달)
+                const REST_CODES = new Set(['휴','연','경조','병가'])
+
+                const cells = Array.from({length:days},(_,i)=>{
+                  const day     = i+1
+                  const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                  const isWknd  = isWeekend(App.currentYear,App.currentMonth,day)
+                  const dow2    = getDayOfWeek(App.currentYear,App.currentMonth,day)
+                  const isSun2  = dow2==='일'
+                  const isOff2  = allOffSet.has(dateStr)
+
+                  // 기존 스케줄 데이터
+                  const key     = `${emp.id}_${dateStr}`
+                  const sched   = schedMap[key]
+                  const code    = sched?.shift_code || ''
+                  const ltype   = sched?.leave_type || ''
+
+                  // 집계
+                  if (code && code !== '-') {
+                    if (code === '연' || ltype === 'annual') annualUsed += 1
+                    else if (REST_CODES.has(code) || ltype) leaveUsed += 1
+                    else workDayCount += 1
+                  } else if (code === '' && !isOff2) {
+                    // 미입력이지만 평일이면 근무일로 간주하지 않음 (입력 안 됨)
+                  }
+
+                  // 셀 배경
+                  let cellBg    = isSun2 ? 'background:#fff1f2;' : isWknd ? 'background:#fffbeb;' : `background:${rowBg};`
+                  if (isOff2 && !code) cellBg = isSun2 ? 'background:#fff1f2;' : 'background:#fffde7;'
+                  const borderLeft = `border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
+
+                  // 셀 내 스팬 스타일
+                  let spanStyle, spanText
+                  if (code && code !== '-') {
+                    spanStyle = getShiftStyle(code)
+                    spanText  = code
+                  } else {
+                    spanStyle = 'background:#f9fafb;color:#d1d5db'
+                    spanText  = '·'
+                  }
+
+                  return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}cursor:pointer"
+                    onclick="schedCycleShift(${emp.id},'${dateStr}',this,'${JSON.stringify(ALL_CODES).replace(/'/g,"\\x27")}')"
+                    data-shift="${code}" data-empid="${emp.id}" data-date="${dateStr}">
+                    <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle}">${spanText}</span>
+                  </td>`
+                }).join('')
+
+                // ── 우측 집계: 연차 잔여 ─────────────────────────
+                const empLeave  = leaveMap[emp.id] || {}
+                const annualTot = empLeave.annual?.total ?? null
+                const annualRemain = annualTot !== null ? (annualTot - (empLeave.annual?.used ?? 0)) : null
+                // 이번 달 연차 사용일 표시 (used는 연간 누적, 이달 사용은 annualUsed)
+                const annualCell = annualTot !== null
+                  ? `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일</div>`
+                  : `<div style="font-size:10px;color:#d1d5db">-</div>`
+
+                html += `<tr style="border-bottom:1px solid #e2e8f0"
+                  onmouseover="this.style.background='#f0fdf4'"
                   onmouseout="this.style.background='${rowBg}'">
                   <td style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:100px">
                     <div style="font-weight:600;color:#1f2937;font-size:12px">${emp.name}</div>
                     <div style="font-size:10px;color:#94a3b8">${emp.position_name || emp.position || ''}</div>
                   </td>
-                  ${Array.from({length:days},(_,i)=>{
-                    const day=i+1
-                    const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-                    const isWknd=isWeekend(App.currentYear,App.currentMonth,day)
-                    const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
-                    const isSun2=dow2==='일'
-                    const cellBg=isSun2?'background:#fff1f2;':isWknd?'background:#fffbeb;':`background:${rowBg};`
-                    const borderLeft=`border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
-                    return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}cursor:pointer" 
-                      onclick="schedCycleShift(${emp.id},'${dateStr}',this,'${JSON.stringify(ALL_CODES).replace(/'/g,"\\x27")}')"
-                      data-shift="" data-empid="${emp.id}" data-date="${dateStr}">
-                      <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;background:#f9fafb;color:#d1d5db">·</span>
-                    </td>`
-                  }).join('')}
-                  <td style="padding:5px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;font-weight:700;color:#166534;font-size:12px" id="workdays-${emp.id}">-</td>
-                  <td style="padding:5px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;font-weight:700;color:#92400e;font-size:12px" id="annual-${emp.id}">-</td>
+                  ${cells}
+                  <td id="workdays-${emp.id}" style="padding:4px 3px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;min-width:38px">
+                    <div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div>
+                    <div style="font-size:9px;color:#4ade80;opacity:0.8">근무</div>
+                  </td>
+                  <td id="annual-${emp.id}" style="padding:4px 3px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;min-width:40px">
+                    ${annualCell}
+                  </td>
                 </tr>`
               })
               return html
@@ -12200,6 +12292,30 @@ window.switchScheduleTab = (tab) => {
   renderScheduleTab(content)
 }
 
+// 월 이동 (이전/다음달)
+window.schedMoveMonth = async (delta) => {
+  let y = App.currentYear, m = App.currentMonth + delta
+  if (m < 1)  { y -= 1; m = 12 }
+  if (m > 12) { y += 1; m = 1  }
+  App.currentYear  = y
+  App.currentMonth = m
+  scheduleTab = 'schedule'  // 월 이동 시 월간 탭으로 유지
+  await reloadScheduleMonth()
+  // 탭 헤더 월 표시도 갱신
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+}
+
+window.schedMoveToToday = async () => {
+  const now = new Date()
+  App.currentYear  = now.getFullYear()
+  App.currentMonth = now.getMonth() + 1
+  scheduleTab = 'schedule'
+  await reloadScheduleMonth()
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+}
+
 window.openEmpModal = async (mode, empId, defaultTeam) => {
   empModalMode = mode
   empModalData = null
@@ -12348,28 +12464,88 @@ window.schedCycleShift = async (empId, date, cell, codesJson) => {
   const currentShift = cell.dataset.shift || ''
   const idx = codes.indexOf(currentShift)
   const nextShift = codes[(idx + 1) % codes.length]
-  
+
+  // 1. 셀 즉시 업데이트 (optimistic UI)
   cell.dataset.shift = nextShift
   const span = cell.querySelector('span')
   if (span) {
-    const st = nextShift && nextShift !== '-'
-      ? (() => {
-          const sf = scheduleShifts.find(s => s.shift_code === nextShift)
-          if (sf) return `background:${sf.color}22;color:${sf.color};font-weight:700`
-          const dm = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
-            '오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8',
-            '경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'}
-          return dm[nextShift] || 'background:#f3f4f6;color:#374151'
-        })()
-      : 'background:#f9fafb;color:#d1d5db'
+    const isEmpty = !nextShift || nextShift === '-'
+    const st = isEmpty ? 'background:#f9fafb;color:#d1d5db' : (() => {
+      const sf = scheduleShifts.find(s => s.shift_code === nextShift)
+      if (sf) return `background:${sf.color}22;color:${sf.color};font-weight:700`
+      const dm = {
+        '연':'background:#fef9c3;color:#92400e',  '휴':'background:#fee2e2;color:#b91c1c',
+        '오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8',
+        '경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'
+      }
+      return dm[nextShift] || 'background:#f3f4f6;color:#374151'
+    })()
     span.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;${st}`
     span.textContent = (!nextShift || nextShift === '-') ? '·' : nextShift
   }
 
+  // 2. schedMap 인메모리 업데이트
+  if (!scheduleMonthData) scheduleMonthData = { sched_map: {}, leave_map: {} }
+  if (!scheduleMonthData.sched_map) scheduleMonthData.sched_map = {}
+  const key = `${empId}_${date}`
+  if (!nextShift || nextShift === '-') {
+    delete scheduleMonthData.sched_map[key]
+  } else {
+    scheduleMonthData.sched_map[key] = { ...(scheduleMonthData.sched_map[key]||{}), shift_code: nextShift }
+  }
+
+  // 3. 해당 직원 행의 집계열 실시간 업데이트
+  schedRecalcRow(empId)
+
+  // 4. DB 저장
   if (!nextShift || nextShift === '-') {
     await api('DELETE', `/api/schedule/${empId}/${date}`).catch(() => null)
   } else {
     await api('POST', '/api/schedule/save', { employeeId: empId, workDate: date, shiftCode: nextShift }).catch(() => null)
+  }
+}
+
+// 해당 직원 행의 근무일수·연차 집계 재계산
+function schedRecalcRow(empId) {
+  const days = getDaysInMonth(App.currentYear, App.currentMonth)
+  const REST_CODES = new Set(['휴','연','경조','병가'])
+  const sm  = scheduleMonthData?.sched_map || {}
+  const lm  = scheduleMonthData?.leave_map || {}
+  const og  = scheduleOffGrants
+  const allOff = new Set([
+    ...(og?.granted_days    || []).map(d => d.date),
+    ...(og?.substitute_days || []).map(d => d.date)
+  ])
+
+  let workDayCount = 0, annualUsed = 0
+
+  for (let d = 1; d <= days; d++) {
+    const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    const isOff   = allOff.has(dateStr)
+    const sched   = sm[`${empId}_${dateStr}`]
+    const code    = sched?.shift_code || ''
+    if (!code || code === '-') continue
+    if (code === '연' || sched?.leave_type === 'annual') annualUsed += 1
+    else if (!REST_CODES.has(code) && !sched?.leave_type) workDayCount += 1
+  }
+
+  // 근무일 셀 업데이트
+  const wdEl = document.getElementById(`workdays-${empId}`)
+  if (wdEl) {
+    wdEl.innerHTML = `<div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div><div style="font-size:9px;color:#4ade80;opacity:0.8">근무</div>`
+  }
+
+  // 연차 셀 업데이트
+  const anEl = document.getElementById(`annual-${empId}`)
+  if (anEl) {
+    const empLeave     = lm[empId] || {}
+    const annualTot    = empLeave.annual?.total ?? null
+    const annualRemain = annualTot !== null ? (annualTot - (empLeave.annual?.used ?? 0)) : null
+    if (annualTot !== null) {
+      anEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일</div>`
+    } else {
+      anEl.innerHTML = `<div style="font-size:10px;color:#d1d5db">-</div>`
+    }
   }
 }
 
