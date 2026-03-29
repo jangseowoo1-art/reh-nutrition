@@ -391,6 +391,11 @@ dashboard.get('/summary/:year/:month', async (c) => {
       const dietKey = k.replace('nc_key_', '')
       total += (customTotalsMap[dietKey] || 0)
     })
+    // 치료식 식수: th_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
+    mealsKeys.filter(k => k.startsWith('th_key_')).forEach(k => {
+      const dietKey = k.replace('th_key_', '')
+      total += (customTotalsMap[dietKey] || 0)
+    })
     return total
   }
 

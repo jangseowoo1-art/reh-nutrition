@@ -5482,9 +5482,14 @@ function updateBudgetProgressPanel() {
           if (mealsKeys3.includes('staff') || mealsKeys3.some(k => k.startsWith('st_key_'))) catMonthMeals += staffMeals3
           if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
           mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
-          // 비급여식 식수: nc_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
+          // 비급여식 식수: nc_key_{diet_key} 형식
           mealsKeys3.filter(k => k.startsWith('nc_key_')).forEach(k => {
             const dietKey = k.replace('nc_key_', '')
+            catMonthMeals += (orderMealStats[dietKey] || 0)
+          })
+          // 치료식 식수: th_key_{diet_key} 형식
+          mealsKeys3.filter(k => k.startsWith('th_key_')).forEach(k => {
+            const dietKey = k.replace('th_key_', '')
             catMonthMeals += (orderMealStats[dietKey] || 0)
           })
         } else {
@@ -5731,6 +5736,11 @@ function updateInsightPanel() {
         // 비급여식 식수: nc_key_{diet_key} 형식
         mealsKeys2.filter(k => k.startsWith('nc_key_')).forEach(k => {
           const dietKey = k.replace('nc_key_', '')
+          catMealCount += (orderMealStats2[dietKey] || 0)
+        })
+        // 치료식 식수: th_key_{diet_key} 형식
+        mealsKeys2.filter(k => k.startsWith('th_key_')).forEach(k => {
+          const dietKey = k.replace('th_key_', '')
           catMealCount += (orderMealStats2[dietKey] || 0)
         })
       } else {
@@ -13245,6 +13255,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         const k = (dc.diet_key || '').toLowerCase()
         return !k.includes('rice_extra') && !k.includes('rice_add')
       })
+    // 치료식: 각 환자군(cat)에 linked_patient_group으로 연결된 치료식 목록
+    const therapyDietsForMeals = (window._dietCategories || [])
+      .filter(dc => dc.parent_type === 'therapy' && dc.is_active)
 
     // 식수/가중 비중 표시
     const mealInfo = mealTotalsMap[cat.category_key] || {}
@@ -13341,16 +13354,55 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             </div>` : ''}
             ${cats.length > 0 ? `
             <div class="mb-1.5">
-              <div class="text-xs text-blue-700 font-medium mb-0.5"><i class="fas fa-user-injured mr-1"></i>환자군</div>
-              <div class="grid grid-cols-2 gap-1 pl-2">
-                ${cats.map(c => `
-                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                    <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="cat_${c.category_key}"
-                      ${mealsKeys.includes('cat_' + c.category_key) ? 'checked' : ''}>
-                    <span>${c.category_name} 식수</span>
-                  </label>`).join('')}
+              <div class="text-xs text-blue-700 font-medium mb-0.5"><i class="fas fa-user-injured mr-1"></i>환자군 (일반식)</div>
+              <div class="pl-2 space-y-1">
+                ${cats.map(c => {
+                  // 이 환자군에 연결된 치료식 목록
+                  const linkedTherapies = therapyDietsForMeals.filter(t =>
+                    (t.linked_patient_group || t.patient_group) === c.category_key
+                  )
+                  const therapyHtml = linkedTherapies.length > 0 ? `
+                    <div class="mt-0.5 ml-4 space-y-0.5">
+                      <div class="text-xs text-green-600 font-medium" style="font-size:10px">↳ 치료식 (환자군에 자동포함)</div>
+                      ${linkedTherapies.map(t => `
+                        <label class="flex items-center gap-1.5 cursor-pointer" style="font-size:11px">
+                          <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="th_key_${t.diet_key}"
+                            ${mealsKeys.includes('th_key_' + t.diet_key) ? 'checked' : ''}>
+                          <span style="color:#16a34a">${t.diet_name}</span>
+                        </label>`).join('')}
+                    </div>` : ''
+                  return `
+                  <div>
+                    <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="cat_${c.category_key}"
+                        ${mealsKeys.includes('cat_' + c.category_key) ? 'checked' : ''}>
+                      <span class="font-medium">${c.category_name} 일반식</span>
+                    </label>
+                    ${therapyHtml}
+                  </div>`
+                }).join('')}
               </div>
             </div>` : ''}
+            ${(() => {
+              // 어떤 환자군에도 연결되지 않은 독립 치료식
+              const linkedKeys = new Set(cats.flatMap(c =>
+                therapyDietsForMeals.filter(t => (t.linked_patient_group || t.patient_group) === c.category_key).map(t => t.diet_key)
+              ))
+              const unlinkedTherapies = therapyDietsForMeals.filter(t => !linkedKeys.has(t.diet_key))
+              if (unlinkedTherapies.length === 0) return ''
+              return `
+            <div class="mb-1.5">
+              <div class="text-xs text-green-700 font-medium mb-0.5"><i class="fas fa-pills mr-1"></i>치료식 (독립)</div>
+              <div class="grid grid-cols-2 gap-1 pl-2">
+                ${unlinkedTherapies.map(dc => `
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="th_key_${dc.diet_key}"
+                      ${mealsKeys.includes('th_key_' + dc.diet_key) ? 'checked' : ''}>
+                    <span>${dc.diet_name}</span>
+                  </label>`).join('')}
+              </div>
+            </div>`
+            })()}
             ${noncoveredForMeals.length > 0 ? `
             <div>
               <div class="text-xs text-purple-700 font-medium mb-0.5"><i class="fas fa-hand-holding-usd mr-1"></i>비급여식</div>
