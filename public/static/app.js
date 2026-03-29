@@ -11224,20 +11224,34 @@ const EXAM_STATUS = {
   completed: { label: '완료', color: 'text-green-600' }
 }
 
+// 연차 촉진 알림 레벨 정의
+const LEAVE_ALERT_LEVELS = {
+  critical:     { label: '12월 소멸위험', color: 'text-red-800',    bg: 'bg-red-50',    border: 'border-red-200',    icon: '🚨' },
+  urgent:       { label: '연차촉진',     color: 'text-red-600',    bg: 'bg-red-50',    border: 'border-red-200',    icon: '⚠️' },
+  not_assigned: { label: '미부여',       color: 'text-orange-700', bg: 'bg-orange-50', border: 'border-orange-200', icon: '📋' },
+  encourage:    { label: '사용권장',     color: 'text-yellow-700', bg: 'bg-yellow-50', border: 'border-yellow-200', icon: '💡' },
+  none_used:    { label: '미사용',       color: 'text-blue-700',   bg: 'bg-blue-50',   border: 'border-blue-200',   icon: '📌' }
+}
+
+// 연차 촉진 알림 데이터 (로드 시 채워짐)
+let scheduleLeaveAlerts = []
+
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  // 데이터 로드
-  const [empData, shiftData, posData] = await Promise.all([
+  // 데이터 로드 (연차 촉진 알림 포함)
+  const [empData, shiftData, posData, leaveAlerts] = await Promise.all([
     api('GET', '/api/schedule/employees').catch(() => []),
     api('GET', '/api/schedule/shifts').catch(() => []),
-    api('GET', '/api/schedule/positions').catch(() => [])
+    api('GET', '/api/schedule/positions').catch(() => []),
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => [])
   ])
 
   scheduleEmployees = empData || []
   scheduleShifts = shiftData || []
   schedulePositions = posData || []
+  scheduleLeaveAlerts = leaveAlerts || []
 
   renderScheduleTab(content)
 }
@@ -11398,6 +11412,8 @@ function renderEmployeeTab() {
   <div class="space-y-4">
     <!-- 알림 배너 (보건증 만료 임박) -->
     ${renderHealthAlertBanner()}
+    <!-- 알림 배너 (연차 촉진) -->
+    ${renderLeaveAlertBanner()}
     <!-- 조리팀 -->
     ${renderTeamTable(cookEmps, 'cook')}
     <!-- 영양팀 -->
@@ -11434,6 +11450,84 @@ function renderHealthAlertBanner() {
           ${e.name} <span class="text-xs">${e.health_cert_expire}</span>
         </span>`
       }).join('')}
+    </div>
+  </div>`
+}
+
+// ─── 연차 촉진 알림 배너 ────────────────────────────────────
+function renderLeaveAlertBanner() {
+  const alerts = scheduleLeaveAlerts
+  if (!alerts || alerts.length === 0) return ''
+
+  const lvlOrder = ['critical','urgent','not_assigned','encourage','none_used']
+  const groups = {}
+  alerts.forEach(a => {
+    if (!groups[a.alert_level]) groups[a.alert_level] = []
+    groups[a.alert_level].push(a)
+  })
+
+  const topLevel = lvlOrder.find(l => groups[l])
+  if (!topLevel) return ''
+  const topCfg = LEAVE_ALERT_LEVELS[topLevel]
+
+  const titleMap = {
+    critical:     '연차 소멸 위험',
+    urgent:       '연차 촉진 대상',
+    not_assigned: '연차 미부여 직원',
+    encourage:    '연차 사용 권장',
+    none_used:    '연차 미사용 직원'
+  }
+  // not_assigned 별도 안내 문구
+  const notAssigned = groups['not_assigned'] || []
+
+  return `
+  <div class="${topCfg.bg} border ${topCfg.border} rounded-xl p-4">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <span class="text-lg">${topCfg.icon}</span>
+        <span class="font-bold ${topCfg.color}">연차 촉진 알림 (${alerts.length}명)</span>
+        <span class="text-xs text-gray-500">${App.currentYear}년 기준</span>
+      </div>
+      <button onclick="this.closest('[class*=rounded-xl]').remove()"
+        class="text-gray-400 hover:text-gray-600 text-xs px-2 py-1 rounded hover:bg-white/60">닫기 ✕</button>
+    </div>
+
+    ${notAssigned.length > 0 ? `
+    <div class="bg-orange-100 border border-orange-300 rounded-lg px-3 py-2 mb-3 flex items-start gap-2">
+      <span class="text-orange-500 mt-0.5">📋</span>
+      <div class="text-xs text-orange-800">
+        <span class="font-bold">연차 미부여 ${notAssigned.length}명</span> — 아직 연차(employee_leaves)가 생성되지 않은 직원입니다.
+        인사카드에서 해당 직원을 선택 후 <strong>연차 등록</strong>을 진행해 주세요.
+        <span class="text-orange-500">정규직·계약직 기준 법정 연차가 자동 계산됩니다.</span>
+      </div>
+    </div>` : ''}
+
+    <div class="space-y-2">
+      ${lvlOrder.filter(l => groups[l]).map(level => {
+        const cfg = LEAVE_ALERT_LEVELS[level]
+        const members = groups[level]
+        return `
+        <div>
+          <div class="text-xs font-bold ${cfg.color} mb-1.5">${cfg.icon} ${titleMap[level]} (${members.length}명)</div>
+          <div class="flex flex-wrap gap-1.5">
+            ${members.map(a => `
+              <span class="inline-flex items-center gap-1 bg-white border ${cfg.border} px-2.5 py-1 rounded-lg text-xs">
+                <span class="font-semibold ${cfg.color}">${a.name}</span>
+                <span class="text-gray-400">|</span>
+                ${level === 'not_assigned'
+                  ? `<span class="text-orange-600 font-medium">법정 ${a.legal_days}일 <span class="text-gray-400 font-normal">미부여</span></span>`
+                  : `<span class="text-gray-500">잔여 <strong>${a.remaining_days}</strong>일 / ${a.total_days}일</span>`
+                }
+                ${a.hire_date ? `<span class="text-gray-300">·</span><span class="text-gray-400">${a.hire_date.slice(0,7)} 입사</span>` : ''}
+              </span>
+            `).join('')}
+          </div>
+        </div>`
+      }).join('')}
+    </div>
+    <div class="mt-3 pt-3 border-t ${topCfg.border} flex flex-wrap gap-4 text-xs text-gray-500">
+      <span>📌 미부여: 정규직·계약직, 입사 3개월↑, 연차 레코드 미생성</span>
+      <span>📌 촉진 기준: 10월~잔여5일↑ 권장 · 11월~잔여3일↑ 촉진 · 12월 소멸위험</span>
     </div>
   </div>`
 }
@@ -12047,6 +12141,8 @@ let adminStaffTeamFilter = 'all'
 let adminStaffSearchQuery = ''
 let adminStaffAllData = []  // 전체 직원 데이터 (병원명 포함)
 let adminStaffHospitals = []
+let adminStaffLeaveAlerts = []  // 전체 연차 촉진 알림 (병원별)
+let adminStaffLeaveHospitalFilter = 'all'  // 연차 알림 병원 필터
 
 async function renderAdminStaffManage() {
   const content = document.getElementById('pageContent')
@@ -12061,6 +12157,16 @@ async function renderAdminStaffManage() {
   adminStaffHospitals = hospitals || []
   adminStaffAllData = employees || []
   schedulePositions = positions || []
+
+  // 각 병원별 연차 알림 병렬 로드
+  const leaveResults = await Promise.all(
+    (hospitals || []).map(h =>
+      api('GET', `/api/schedule/alerts/leave?hospitalId=${h.id}&year=${App.currentYear}`)
+        .then(r => (r || []).map(a => ({ ...a, hospital_id: h.id, hospital_name: h.name })))
+        .catch(() => [])
+    )
+  )
+  adminStaffLeaveAlerts = leaveResults.flat()
 
   renderAdminStaffContent(content)
 }
@@ -12106,7 +12212,7 @@ function renderAdminStaffContent(content) {
       <div class="flex items-center justify-between flex-wrap gap-3 mb-4">
         <div>
           <h2 class="font-bold text-gray-800 text-lg">직원 관리 <span class="text-base font-normal text-gray-400">전체 병원</span></h2>
-          <p class="text-xs text-gray-400 mt-0.5">전체 ${allEmps.length}명 · 보건증 만료 임박 ${certAlerts.length}명</p>
+          <p class="text-xs text-gray-400 mt-0.5">전체 ${allEmps.length}명 · 보건증 만료 임박 ${certAlerts.length}명 · 연차촉진 대상 ${adminStaffLeaveAlerts.length}명</p>
         </div>
         <button onclick="openAdminEmpAddModal()"
           class="btn btn-success">
@@ -12131,6 +12237,10 @@ function renderAdminStaffContent(content) {
         <div class="bg-amber-50 rounded-xl p-3 text-center">
           <div class="text-2xl font-bold text-amber-700">${certAlerts.length}</div>
           <div class="text-xs text-amber-500 mt-0.5">보건증 만료임박</div>
+        </div>
+        <div class="bg-orange-50 rounded-xl p-3 text-center cursor-pointer hover:bg-orange-100 transition-colors" onclick="document.getElementById('adminLeaveAlertBanner')?.scrollIntoView({behavior:'smooth'})">
+          <div class="text-2xl font-bold text-orange-700">${adminStaffLeaveAlerts.length}</div>
+          <div class="text-xs text-orange-500 mt-0.5">연차촉진 대상</div>
         </div>
       </div>
 
@@ -12188,6 +12298,74 @@ function renderAdminStaffContent(content) {
         }).join('')}
       </div>
     </div>` : ''}
+
+    <!-- 연차 촉진 알림 배너 -->
+    ${(() => {
+      const la = adminStaffLeaveAlerts.filter(a =>
+        adminStaffLeaveHospitalFilter === 'all' || String(a.hospital_id) === String(adminStaffLeaveHospitalFilter)
+      )
+      if (!la || la.length === 0) return ''
+      const lvlOrder = ['critical','urgent','not_assigned','encourage','none_used']
+      const groups = {}
+      la.forEach(a => { if (!groups[a.alert_level]) groups[a.alert_level] = []; groups[a.alert_level].push(a) })
+      const topLevel = lvlOrder.find(l => groups[l])
+      if (!topLevel) return ''
+      const topCfg = LEAVE_ALERT_LEVELS[topLevel]
+      const titleMap = {
+        critical: '연차 소멸 위험',
+        urgent: '연차 촉진 대상',
+        not_assigned: '연차 미부여 직원',
+        encourage: '연차 사용 권장',
+        none_used: '연차 미사용 직원'
+      }
+      return `
+      <div id="adminLeaveAlertBanner" class="${topCfg.bg} border ${topCfg.border} rounded-xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="text-lg">${topCfg.icon}</span>
+            <span class="font-bold ${topCfg.color}">연차 촉진 알림 (${la.length}명)</span>
+            <span class="text-xs text-gray-500">${App.currentYear}년 기준</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <select onchange="adminStaffLeaveHospitalFilter=this.value;renderAdminStaffContent(document.getElementById('pageContent'))"
+              class="form-input text-xs py-1 min-w-[120px]">
+              <option value="all" ${adminStaffLeaveHospitalFilter==='all'?'selected':''}>전체 병원</option>
+              ${adminStaffHospitals.map(h => `<option value="${h.id}" ${String(adminStaffLeaveHospitalFilter)===String(h.id)?'selected':''}>${h.name}</option>`).join('')}
+            </select>
+            <button onclick="document.getElementById('adminLeaveAlertBanner').remove()"
+              class="text-gray-400 hover:text-gray-600 text-xs px-2 py-1 rounded hover:bg-white/60">닫기 ✕</button>
+          </div>
+        </div>
+        <div class="space-y-2">
+          ${lvlOrder.filter(l => groups[l] && groups[l].length > 0).map(level => {
+            const cfg = LEAVE_ALERT_LEVELS[level]
+            const members = groups[level]
+            return `
+            <div>
+              <div class="text-xs font-bold ${cfg.color} mb-1.5">${cfg.icon} ${titleMap[level]} (${members.length}명)</div>
+              <div class="flex flex-wrap gap-1.5">
+                ${members.map(a => `
+                  <span class="inline-flex items-center gap-1 bg-white border ${cfg.border} px-2.5 py-1 rounded-lg text-xs">
+                    ${a.hospital_name ? `<span class="text-gray-400 text-xs">${a.hospital_name}</span><span class="text-gray-300">·</span>` : ''}
+                    <span class="font-semibold ${cfg.color}">${a.name}</span>
+                    <span class="text-gray-400">|</span>
+                    ${level === 'not_assigned'
+                      ? `<span class="text-gray-500">법정 ${a.legal_days}일 미부여</span>`
+                      : `<span class="text-gray-500">잔여 <strong>${a.remaining_days}</strong>일 / ${a.total_days}일</span>`
+                    }
+                    ${a.hire_date ? `<span class="text-gray-300">·</span><span class="text-gray-400">${a.hire_date.slice(0,7)} 입사</span>` : ''}
+                  </span>
+                `).join('')}
+              </div>
+            </div>`
+          }).join('')}
+        </div>
+        <div class="mt-3 pt-3 border-t ${topCfg.border} flex flex-wrap gap-4 text-xs text-gray-500">
+          <span>📌 촉진 기준: 10월~잔여5일↑ 권장 · 11월~잔여3일↑ 촉진 · 12월 소멸위험</span>
+          <span>📌 미부여: 정규직/계약직 입사 3개월↑ 연차 미등록</span>
+        </div>
+      </div>`
+    })()}
 
     <!-- 직원 테이블 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">

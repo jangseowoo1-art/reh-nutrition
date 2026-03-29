@@ -385,6 +385,127 @@ schedule.get('/employees/:id/leave-calc', async (c) => {
   return c.json({ legalDays, note, yearsWorked: Math.round(yearsWorked * 10) / 10 })
 })
 
+// 연차 촉진 알림 목록
+// - 연차 미부여 직원 (employee_leaves 레코드 없음)
+// - 잔여 연차 > 0 이면서 연도 말까지 사용 권장 구간 진입 직원
+//   · 10월 이후: 잔여 5일 이상 → 'encourage' (연차 사용 권장)
+//   · 11월 이후: 잔여 3일 이상 → 'urgent' (연차 촉진)
+//   · 12월:      잔여 1일 이상 → 'critical' (연차 소멸 위험)
+//   · 연중 모두: 연차 소진율 0% (부여됐지만 하루도 안 씀, 입사 6개월+ ) → 'none_used'
+schedule.get('/alerts/leave', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year = parseInt(c.req.query('year') || new Date().getFullYear().toString())
+  const today = new Date()
+  const currentMonth = today.getMonth() + 1  // 1~12
+
+  // 해당 병원 활성 직원 + 해당 연도 연차 정보 LEFT JOIN
+  const emps = await c.env.DB.prepare(
+    `SELECT e.id, e.name, e.team, e.position, e.hire_date, e.employment_type,
+            e.annual_leave_total,
+            l.total_days, l.used_days, l.leave_type
+     FROM employees e
+     LEFT JOIN employee_leaves l
+       ON l.employee_id = e.id AND l.year = ? AND l.leave_type = 'annual'
+     WHERE e.hospital_id = ? AND e.is_active = 1
+       AND e.employment_type IN ('full','contract')
+     ORDER BY e.team, e.hire_date`
+  ).bind(year, hospitalId).all<any>()
+
+  const alerts: any[] = []
+
+  for (const emp of emps.results) {
+    // 입사일 없으면 skip
+    if (!emp.hire_date) continue
+
+    const hireDate = new Date(emp.hire_date)
+    // 해당연도 기준 근속 개월 계산
+    const yearStart = new Date(`${year}-01-01`)
+    const yearEnd   = new Date(`${year}-12-31`)
+    const diffMonths = (today.getTime() - hireDate.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
+
+    // 입사 3개월 미만이면 skip (연차 촉진 대상 아님)
+    if (diffMonths < 3) continue
+
+    // 법정 연차 계산 (leave-calc 로직 재사용)
+    const yearsWorked = (yearStart.getTime() - hireDate.getTime()) / (365.25 * 24 * 3600 * 1000)
+    let legalDays = 0
+    if (yearsWorked < 0) {
+      // 당해 입사: 입사월 이후 월 1일
+      const hireYear = hireDate.getFullYear()
+      const hireMonth = hireDate.getMonth() + 1
+      if (hireYear === year) {
+        legalDays = Math.min(12 - hireMonth, 11)
+      } else {
+        legalDays = 11
+      }
+    } else if (yearsWorked < 3) {
+      legalDays = 15
+    } else {
+      legalDays = Math.min(15 + Math.floor((yearsWorked - 1) / 2), 25)
+    }
+
+    const totalDays = emp.total_days ?? legalDays   // 수동 설정 or 법정 계산
+    const usedDays  = emp.used_days ?? 0
+    const remaining = Math.max(totalDays - usedDays, 0)
+    const isAssigned = emp.total_days != null         // employee_leaves 레코드 존재 여부
+    const useRate = totalDays > 0 ? usedDays / totalDays : 0
+
+    let alertLevel: string | null = null
+    let alertMsg = ''
+
+    // ① 연차 미부여 (레코드 없음, 법정 연차 > 0)
+    if (!isAssigned && legalDays > 0) {
+      alertLevel = 'not_assigned'
+      alertMsg = `연차 ${legalDays}일 미부여`
+    }
+    // ② 연도말 촉진 구간
+    else if (remaining > 0) {
+      if (currentMonth === 12) {
+        alertLevel = 'critical'
+        alertMsg = `잔여 ${remaining}일 · 12월 연차 소멸 위험`
+      } else if (currentMonth >= 11 && remaining >= 3) {
+        alertLevel = 'urgent'
+        alertMsg = `잔여 ${remaining}일 · 연차 촉진 필요`
+      } else if (currentMonth >= 10 && remaining >= 5) {
+        alertLevel = 'encourage'
+        alertMsg = `잔여 ${remaining}일 · 연차 사용 권장`
+      }
+    }
+    // ③ 연중 미사용 (부여 후 6개월 경과, 소진율 0%)
+    if (!alertLevel && isAssigned && totalDays > 0 && usedDays === 0 && diffMonths >= 6) {
+      alertLevel = 'none_used'
+      alertMsg = `${totalDays}일 부여 후 미사용`
+    }
+
+    if (alertLevel) {
+      alerts.push({
+        id: emp.id,
+        name: emp.name,
+        team: emp.team,
+        position: emp.position,
+        hire_date: emp.hire_date,
+        employment_type: emp.employment_type,
+        legal_days: legalDays,
+        total_days: totalDays,
+        used_days: usedDays,
+        remaining_days: remaining,
+        is_assigned: isAssigned,
+        alert_level: alertLevel,
+        alert_msg: alertMsg
+      })
+    }
+  }
+
+  // 정렬: critical → urgent → not_assigned → encourage → none_used
+  const ORDER: Record<string, number> = {
+    critical: 0, urgent: 1, not_assigned: 2, encourage: 3, none_used: 4
+  }
+  alerts.sort((a, b) => (ORDER[a.alert_level] ?? 9) - (ORDER[b.alert_level] ?? 9))
+
+  return c.json(alerts)
+})
+
 // ════════════════════════════════════════════════════════════════
 // 연차/휴가 관리
 // ════════════════════════════════════════════════════════════════
