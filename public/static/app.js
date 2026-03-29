@@ -13358,47 +13358,34 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             <div class="mb-1.5">
               <div class="text-xs text-blue-700 font-medium mb-0.5"><i class="fas fa-user-injured mr-1"></i>환자군 (일반식)</div>
               <div class="pl-2 space-y-1">
-                ${cats.map(c => {
-                  // 이 환자군에 연결된 치료식 목록
-                  const linkedTherapies = therapyDietsForMeals.filter(t =>
-                    (t.linked_patient_group || t.patient_group) === c.category_key
-                  )
-                  const therapyHtml = linkedTherapies.length > 0 ? `
-                    <div class="mt-0.5 ml-4 space-y-0.5">
-                      <div class="text-xs text-green-600 font-medium" style="font-size:10px">↳ 치료식 (환자군에 자동포함)</div>
-                      ${linkedTherapies.map(t => `
-                        <label class="flex items-center gap-1.5 cursor-pointer" style="font-size:11px">
-                          <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="th_key_${t.diet_key}"
-                            ${mealsKeys.includes('th_key_' + t.diet_key) ? 'checked' : ''}>
-                          <span style="color:#16a34a">${t.diet_name}</span>
-                        </label>`).join('')}
-                    </div>` : ''
-                  return `
+                ${cats.map(c => `
                   <div>
                     <label class="flex items-center gap-1.5 text-xs cursor-pointer">
                       <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="cat_${c.category_key}"
                         ${mealsKeys.includes('cat_' + c.category_key) ? 'checked' : ''}>
                       <span class="font-medium">${c.category_name} 일반식</span>
                     </label>
-                    ${therapyHtml}
-                  </div>`
-                }).join('')}
+                  </div>`).join('')}
               </div>
             </div>` : ''}
             ${(() => {
-              // 어떤 환자군에도 연결되지 않은 독립 치료식
-              const linkedKeys = new Set(cats.flatMap(c =>
-                therapyDietsForMeals.filter(t => (t.linked_patient_group || t.patient_group) === c.category_key).map(t => t.diet_key)
-              ))
-              const unlinkedTherapies = therapyDietsForMeals.filter(t => !linkedKeys.has(t.diet_key))
-              if (unlinkedTherapies.length === 0) return ''
+              // 치료식 전체 목록 (linked + unlinked 구분 없이 모두 포함)
+              if (therapyDietsForMeals.length === 0) return ''
               return `
             <div class="mb-1.5">
-              <div class="text-xs text-green-700 font-medium mb-0.5"><i class="fas fa-pills mr-1"></i>치료식 (독립)</div>
+              <div class="flex items-center justify-between mb-0.5">
+                <div class="text-xs text-green-700 font-medium"><i class="fas fa-pills mr-1"></i>환자군 (치료식)</div>
+                <div class="flex gap-1">
+                  <button type="button" onclick="checkAllFormulaCbs('therapy-include-cb','${cat.id}',true)"
+                    class="text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">전체선택</button>
+                  <button type="button" onclick="checkAllFormulaCbs('therapy-include-cb','${cat.id}',false)"
+                    class="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 font-medium">전체해제</button>
+                </div>
+              </div>
               <div class="grid grid-cols-2 gap-1 pl-2">
-                ${unlinkedTherapies.map(dc => `
+                ${therapyDietsForMeals.map(dc => `
                   <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                    <input type="checkbox" class="meals-include-cb" data-cat="${cat.id}" value="th_key_${dc.diet_key}"
+                    <input type="checkbox" class="meals-include-cb therapy-include-cb" data-cat="${cat.id}" value="th_key_${dc.diet_key}"
                       ${mealsKeys.includes('th_key_' + dc.diet_key) ? 'checked' : ''}>
                     <span>${dc.diet_name}</span>
                   </label>`).join('')}
