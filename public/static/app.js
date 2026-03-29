@@ -10306,9 +10306,49 @@ async function renderAdminDashboard() {
         // 월간 누적 식수 (mealStats + mealCustomTotals 기반)
         const ms = h.mealStats || {}
         const customTotals = h.mealCustomTotals || {}
-        const monthStaffMeals = ms.total_staff || 0
-        const monthGuardMeals = ms.total_guardian || 0
-        const monthNonCovMeals = ms.total_noncovered || 0
+        // ── meals_include_keys 기반 실제 직원·보호자·비급여·치료식 식수 계산 ──
+        // 무이재처럼 레거시 컬럼(total_staff/total_guardian)이 0이고
+        // 커스텀 필드(diet_preset_staff_general_2 등)에만 데이터 있는 병원 대응
+        const _allMealsKeys = (h.catDietPrices||[]).flatMap(c => c.mealsKeys||[])
+        // 직원식: st_key_ 패턴 → customTotals['diet_{dietKey}'], 없으면 레거시 total_staff
+        let monthStaffMeals = ms.total_staff || 0
+        const _stKeys = _allMealsKeys.filter(k => k.startsWith('st_key_'))
+        if (_stKeys.length > 0) {
+          let _stCustom = 0
+          _stKeys.forEach(k => {
+            const dk = k.slice('st_key_'.length)
+            _stCustom += (customTotals['diet_'+dk] || customTotals[dk] || 0)
+          })
+          if (_stCustom > 0) monthStaffMeals = _stCustom
+        }
+        // 보호자식: guardian 패턴 → 레거시 total_guardian OR nc_key_ 중 guardian 계열
+        let monthGuardMeals = ms.total_guardian || 0
+        if (monthGuardMeals === 0) {
+          // nc_key_ 중 guardian 관련 키 합산 (nc_key_preset_nc_guardian_2 등)
+          const _ncGuardKeys = _allMealsKeys.filter(k => k.startsWith('nc_key_') && k.includes('guardian'))
+          if (_ncGuardKeys.length > 0) {
+            _ncGuardKeys.forEach(k => {
+              const dk = k.slice('nc_key_'.length)
+              monthGuardMeals += (customTotals['diet_'+dk] || customTotals[dk] || 0)
+            })
+          }
+        }
+        // 비급여식 전체: nc_key_ 패턴 합산 (보호자 포함)
+        let monthNcMeals = 0
+        const _ncKeys = _allMealsKeys.filter(k => k.startsWith('nc_key_'))
+        _ncKeys.forEach(k => {
+          const dk = k.slice('nc_key_'.length)
+          monthNcMeals += (customTotals['diet_'+dk] || customTotals[dk] || 0)
+        })
+        const monthNonCovMeals = ms.total_noncovered || monthNcMeals
+        // 치료식: th_key_ 패턴 합산
+        let monthThMeals = 0
+        const _thKeys = _allMealsKeys.filter(k => k.startsWith('th_key_'))
+        _thKeys.forEach(k => {
+          const dk = k.slice('th_key_'.length)
+          monthThMeals += (customTotals['diet_'+dk] || customTotals[dk] || 0)
+        })
+        // 카테고리 환자 식수: cat_ 패턴
         const monthCatCustomTotal = (h.catDietPrices||[]).reduce((s, cat) => {
           return s + (customTotals[`cat_${cat.category_key}`] || 0)
         }, 0)
@@ -10577,27 +10617,39 @@ async function renderAdminDashboard() {
               <span class="text-xs font-bold text-teal-800">${monthGrandTotal>0?`전체 ${fmt(monthGrandTotal)}식`:'입력 없음'}</span>
             </div>
             <!-- 직원/보호자/환자군 월간 합계 -->
-            <div class="grid grid-cols-${Math.min((h.catDietPrices||[]).length+2, 4)} gap-1 text-center mb-1.5">
-              <div class="p-1.5 bg-white rounded-lg border border-blue-100">
-                <div class="text-xs text-blue-600 font-medium">직원</div>
-                <div class="text-sm font-bold text-blue-700">${monthStaffMeals>0?fmt(monthStaffMeals):'-'}</div>
-                <div class="text-xs text-gray-400">식</div>
-              </div>
-              <div class="p-1.5 bg-white rounded-lg border border-purple-100">
-                <div class="text-xs text-purple-600 font-medium">보호자</div>
-                <div class="text-sm font-bold text-purple-700">${monthGuardMeals>0?fmt(monthGuardMeals):'-'}</div>
-                <div class="text-xs text-gray-400">식</div>
-              </div>
-              ${(h.catDietPrices||[]).map(cat => {
-                const color = getCategoryColorHex(cat.category_key)
-                const meals = customTotals[`cat_${cat.category_key}`] || 0
-                return `<div class="p-1.5 bg-white rounded-lg border" style="border-color:${color}30">
-                  <div class="text-xs font-medium" style="color:${color}">${cat.category_name}</div>
-                  <div class="text-sm font-bold" style="color:${color}">${meals>0?fmt(meals):'-'}</div>
+            ${(() => {
+              // 직원/보호자가 카테고리 meals_include_keys에 이미 포함된 경우 별도 칸 생략
+              const _catStIncluded    = _allMealsKeys.some(k => k.startsWith('st_key_') || k==='staff')
+              const _catGuardIncluded = _allMealsKeys.some(k => k==='guardian') ||
+                                        _allMealsKeys.some(k => k.startsWith('nc_key_') && k.includes('guardian'))
+              // 별도 칸 표시 여부 (카테고리에 포함 안 됐고 값이 있을 때만)
+              const _staffCol  = !_catStIncluded    && monthStaffMeals  > 0
+              const _guardCol  = !_catGuardIncluded && monthGuardMeals  > 0
+              const _colCount  = (h.catDietPrices||[]).length + (_staffCol?1:0) + (_guardCol?1:0) || 1
+              return `<div class="grid grid-cols-${Math.min(_colCount, 4)} gap-1 text-center mb-1.5">
+                ${_staffCol ? `<div class="p-1.5 bg-white rounded-lg border border-blue-100">
+                  <div class="text-xs text-blue-600 font-medium">직원</div>
+                  <div class="text-sm font-bold text-blue-700">${fmt(monthStaffMeals)}</div>
                   <div class="text-xs text-gray-400">식</div>
-                </div>`
-              }).join('')}
-            </div>
+                </div>` : ''}
+                ${_guardCol ? `<div class="p-1.5 bg-white rounded-lg border border-purple-100">
+                  <div class="text-xs text-purple-600 font-medium">보호자</div>
+                  <div class="text-sm font-bold text-purple-700">${fmt(monthGuardMeals)}</div>
+                  <div class="text-xs text-gray-400">식</div>
+                </div>` : ''}
+                ${(h.catDietPrices||[]).map(cat => {
+                  const color = getCategoryColorHex(cat.category_key)
+                  // cat.monthMeals: meals_include_keys 기반 전체 식수 (백엔드 계산값 우선)
+                  // cat_cancer + st_key_(직원) + nc_key_(비급여) + th_key_(치료식) 모두 포함
+                  const meals = cat.monthMeals || customTotals['cat_'+cat.category_key] || 0
+                  return '<div class="p-1.5 bg-white rounded-lg border" style="border-color:'+color+'30">'
+                    + '<div class="text-xs font-medium" style="color:'+color+'">'+cat.category_name+'</div>'
+                    + '<div class="text-sm font-bold" style="color:'+color+'">'+(meals>0?fmt(meals):'-')+'</div>'
+                    + '<div class="text-xs text-gray-400">식</div>'
+                    + '</div>'
+                }).join('')}
+              </div>`
+            })()}
             <!-- 오늘 입력된 식수 (소형) -->
             ${todayTotalMeals>0 ? `
             <div class="mt-1.5 flex items-center justify-between text-xs bg-white border border-teal-100 rounded-lg px-2 py-1">
