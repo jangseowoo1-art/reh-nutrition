@@ -6620,6 +6620,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   const allDietFields = DIET_GROUP_ORDER.flatMap(t => dietGroups[t])
   // customFields fallback (dietCats 없으면 기존처럼)
   const effectiveCustomFields = useDietGroups ? allDietFields : customFields
+  // 전역 저장: updateMealRowTotals·updateMealSummaryCards에서 inMealsFormula·field_key 정확히 참조
+  window._effectiveCustomFields = effectiveCustomFields
 
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   const mealMap = {}
@@ -7269,10 +7271,15 @@ async function saveMealRow(date) {
 
 function updateMealRowTotals(date) {
   const g = (k) => getMealVal(k, date)
-  // effectiveCustomFields(_mealDietCats) 우선: inMealsFormula 플래그 포함
-  const cf = (window._mealDietCats||[]).length > 0
-    ? (window._mealDietCats||[])
-    : (window._mealCustomFields || [])
+  // _effectiveCustomFields 우선 (toFieldObj 변환 완료 + inMealsFormula 포함)
+  // fallback: _mealDietCats 원본(field_key 보정) → _mealCustomFields
+  const cf = window._effectiveCustomFields
+    || ((window._mealDietCats||[]).length > 0
+        ? (window._mealDietCats||[]).map(dc => ({
+            ...dc,
+            field_key: dc.field_key || dc.legacy_field_key || dc.diet_key,
+          }))
+        : (window._mealCustomFields || []))
 
   // 전체 합산 (개별 셀 표시용)
   let bfC=0, lC=0, dC=0
@@ -7302,16 +7309,17 @@ function updateMealRowTotals(date) {
 }
 
 function updateMealSummaryCards() {
-  // dietCats 우선 (include_in_meal_price, parent_type, inMealsFormula 포함)
-  const cf = (window._mealDietCats||[]).length > 0
-    ? (window._mealDietCats||[]).map(dc => ({
-        field_key: dc.legacy_field_key || dc.diet_key,
-        unit_type: 'meal',
-        parent_type: dc.parent_type,
-        include_in_meal_price: dc.include_in_meal_price || 0,
-        inMealsFormula: dc.inMealsFormula,
-      }))
-    : (window._mealCustomFields || [])
+  // _effectiveCustomFields 우선 (inMealsFormula 포함, field_key 정확)
+  const cf = window._effectiveCustomFields
+    || ((window._mealDietCats||[]).length > 0
+        ? (window._mealDietCats||[]).map(dc => ({
+            field_key: dc.legacy_field_key || dc.diet_key,
+            unit_type: 'meal',
+            parent_type: dc.parent_type,
+            include_in_meal_price: dc.include_in_meal_price || 0,
+            inMealsFormula: dc.inMealsFormula,
+          }))
+        : (window._mealCustomFields || []))
   const customSums = {}
   const bfC = {}, lC = {}, dC = {}
   cf.forEach(f => { customSums[f.field_key]=0; bfC[f.field_key]=0; lC[f.field_key]=0; dC[f.field_key]=0 })
