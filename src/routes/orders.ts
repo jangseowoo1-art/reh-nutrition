@@ -681,8 +681,16 @@ orders.get('/category-annual/:year', async (c) => {
         if (mealsKeys.includes('staff') || mealsKeys.some((k: string) => k.startsWith('st_key_'))) total += mStaff
         if (mealsKeys.includes('guardian')) total += mGuardian
         mealsKeys.filter((k: string) => k.startsWith('cat_')).forEach((k: string) => { total += (mCustom[k] || 0) })
-        mealsKeys.filter((k: string) => k.startsWith('nc_key_')).forEach((k: string) => { total += (mCustom[k.replace('nc_key_', '')] || 0) })
-        mealsKeys.filter((k: string) => k.startsWith('th_key_')).forEach((k: string) => { total += (mCustom[k.replace('th_key_', '')] || 0) })
+        // nc_key_/th_key_ 처리: diet_categories.diet_key 기반 → meal_custom_fields.field_key는 'diet_' 접두사 추가
+        // nc_key_preset_nc_guardian_1 → dietKey='preset_nc_guardian_1' → field_key='diet_preset_nc_guardian_1'
+        mealsKeys.filter((k: string) => k.startsWith('nc_key_')).forEach((k: string) => {
+          const dietKey = k.replace('nc_key_', '')
+          total += (mCustom['diet_' + dietKey] || mCustom[dietKey] || 0)
+        })
+        mealsKeys.filter((k: string) => k.startsWith('th_key_')).forEach((k: string) => {
+          const dietKey = k.replace('th_key_', '')
+          total += (mCustom['diet_' + dietKey] || mCustom[dietKey] || 0)
+        })
         monthMeals = total
       } else {
         const defaultCatKey = `cat_${cat.category_key}`

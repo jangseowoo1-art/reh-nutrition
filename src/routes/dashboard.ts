@@ -386,15 +386,20 @@ dashboard.get('/summary/:year/:month', async (c) => {
     else if (mealsKeys.some(k => k.startsWith('st_key_'))) total += (mealStatsRow?.total_staff || 0)
     if (mealsKeys.includes('guardian')) total += (mealStatsRow?.total_guardian || 0)
     mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (customTotalsMap[k] || 0) })
-    // 비급여식 식수: nc_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
+    // 비급여식 식수: nc_key_{diet_key} 형식
+    // diet_categories.diet_key = 'preset_nc_guardian_1'
+    // meal_custom_fields.field_key = 'diet_preset_nc_guardian_1' (앞에 'diet_' 추가)
+    // customTotalsMap 키는 field_key 기준이므로 'diet_' 접두사를 붙여 조회
     mealsKeys.filter(k => k.startsWith('nc_key_')).forEach(k => {
-      const dietKey = k.replace('nc_key_', '')
-      total += (customTotalsMap[dietKey] || 0)
+      const dietKey = k.replace('nc_key_', '')  // e.g. 'preset_nc_guardian_1'
+      total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
     })
-    // 치료식 식수: th_key_{diet_key} 형식 - mealCustomTotals에서 diet_key로 조회
+    // 치료식 식수: th_key_{diet_key} 형식
+    // diet_categories.diet_key = 'preset_therapy_gastrectomy_1'
+    // meal_custom_fields.field_key = 'diet_preset_therapy_gastrectomy_1'
     mealsKeys.filter(k => k.startsWith('th_key_')).forEach(k => {
-      const dietKey = k.replace('th_key_', '')
-      total += (customTotalsMap[dietKey] || 0)
+      const dietKey = k.replace('th_key_', '')  // e.g. 'preset_therapy_gastrectomy_1'
+      total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
     })
     return total
   }
@@ -521,10 +526,17 @@ dashboard.get('/summary/:year/:month', async (c) => {
   let formulaMealPriceTotal = mealPriceTotal  // 기본값: 기존 계산 (카테고리 없는 병원)
   const activeCatDietPrices = catDietPrices.filter(c => c.monthMeals > 0 && c.monthAmt > 0)
   if (activeCatDietPrices.length >= 1) {
-    // 카테고리 식수 합산
+    // 카테고리별 monthMeals에 이미 직원식(st_key_)·보호자·비급여가 포함될 수 있음
+    // → 중복 방지를 위해 catDietPrices의 meals_include_keys를 확인
+    // meals_include_keys에 'st_key_' 가 포함된 카테고리는 직원식을 이미 가산함
+    const catStaffIncluded = activeCatDietPrices.some(c => (c.mealsKeys || []).some((k: string) => k.startsWith('st_key_') || k === 'staff'))
+    const catGuardianIncluded = activeCatDietPrices.some(c => (c.mealsKeys || []).includes('guardian'))
+    // 카테고리 식수 합산 (meals_include_keys 기반으로 이미 직원/보호자 포함 가능)
     const totalCatMeals = activeCatDietPrices.reduce((s, c) => s + c.monthMeals, 0)
-    // 전체 식수 = 카테고리 식수 + 직원 + 보호자 (비급여 제외)
-    const totalMealsForFormula = totalCatMeals + (ms.total_staff || 0) + (ms.total_guardian || 0)
+    // 전체 식수 = 카테고리 식수 + (직원 - 이미 포함된 경우 제외) + (보호자 - 이미 포함된 경우 제외)
+    const extraStaff = catStaffIncluded ? 0 : (ms.total_staff || 0)
+    const extraGuardian = catGuardianIncluded ? 0 : (ms.total_guardian || 0)
+    const totalMealsForFormula = totalCatMeals + extraStaff + extraGuardian
     // 전체 발주금액 ÷ 전체 식수 (영양사/어드민 페이지와 동일 기준)
     if (totalMealsForFormula > 0) {
       formulaMealPriceTotal = Math.round(totalUsed / totalMealsForFormula)

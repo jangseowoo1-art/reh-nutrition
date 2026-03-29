@@ -5483,14 +5483,15 @@ function updateBudgetProgressPanel() {
           if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
           mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
           // 비급여식 식수: nc_key_{diet_key} 형식
+          // diet_categories.diet_key='preset_nc_guardian_1', field_key='diet_preset_nc_guardian_1'
           mealsKeys3.filter(k => k.startsWith('nc_key_')).forEach(k => {
             const dietKey = k.replace('nc_key_', '')
-            catMonthMeals += (orderMealStats[dietKey] || 0)
+            catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
           })
           // 치료식 식수: th_key_{diet_key} 형식
           mealsKeys3.filter(k => k.startsWith('th_key_')).forEach(k => {
             const dietKey = k.replace('th_key_', '')
-            catMonthMeals += (orderMealStats[dietKey] || 0)
+            catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
           })
         } else {
           catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0)
@@ -5734,14 +5735,15 @@ function updateInsightPanel() {
         if (mealsKeys2.includes('guardian')) catMealCount += guardianMeals2
         mealsKeys2.filter(k => k.startsWith('cat_')).forEach(k => { catMealCount += (orderMealStats2[k] || 0) })
         // 비급여식 식수: nc_key_{diet_key} 형식
+        // diet_categories.diet_key='preset_nc_guardian_1', field_key='diet_preset_nc_guardian_1'
         mealsKeys2.filter(k => k.startsWith('nc_key_')).forEach(k => {
           const dietKey = k.replace('nc_key_', '')
-          catMealCount += (orderMealStats2[dietKey] || 0)
+          catMealCount += (orderMealStats2['diet_' + dietKey] || orderMealStats2[dietKey] || 0)
         })
         // 치료식 식수: th_key_{diet_key} 형식
         mealsKeys2.filter(k => k.startsWith('th_key_')).forEach(k => {
           const dietKey = k.replace('th_key_', '')
-          catMealCount += (orderMealStats2[dietKey] || 0)
+          catMealCount += (orderMealStats2['diet_' + dietKey] || orderMealStats2[dietKey] || 0)
         })
       } else {
         // formula 없으면 카테고리 key로 식수 직접 조회
