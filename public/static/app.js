@@ -7215,7 +7215,9 @@ function bindMealInputEvents() {
     input.addEventListener('input', function() { updateMealRowTotals(this.dataset.date) })
     input.addEventListener('change', async function() {
       const date = this.dataset.date
+      // 저장 후 즉시 소계/합계 재계산 (삭제 포함 모든 변경에 반영)
       await saveMealRow(date)
+      updateMealRowTotals(date)
       sendActivityLog('식수 입력')
     })
     input.addEventListener('keydown', function(e) {
@@ -7226,6 +7228,9 @@ function bindMealInputEvents() {
       }
     })
   })
+  // 초기 렌더링 후 모든 행의 소계/합계 즉시 계산
+  const dates = new Set([...document.querySelectorAll('.meal-input')].map(el => el.dataset.date))
+  dates.forEach(date => updateMealRowTotals(date))
 }
 
 function getMealVal(key, date) {
@@ -7297,13 +7302,14 @@ function updateMealRowTotals(date) {
 }
 
 function updateMealSummaryCards() {
-  // dietCats 우선 (include_in_meal_price, parent_type 포함)
+  // dietCats 우선 (include_in_meal_price, parent_type, inMealsFormula 포함)
   const cf = (window._mealDietCats||[]).length > 0
     ? (window._mealDietCats||[]).map(dc => ({
         field_key: dc.legacy_field_key || dc.diet_key,
         unit_type: 'meal',
         parent_type: dc.parent_type,
         include_in_meal_price: dc.include_in_meal_price || 0,
+        inMealsFormula: dc.inMealsFormula,
       }))
     : (window._mealCustomFields || [])
   const customSums = {}

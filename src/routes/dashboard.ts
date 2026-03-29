@@ -107,9 +107,51 @@ dashboard.get('/summary/:year/:month', async (c) => {
       })
     } catch(e) {}
   })
+
+  // 관리자 meals_include_keys 기반으로 포함할 field_key Set 구성
+  // hospital_patient_categories.meals_include_keys: ["cat_cancer","nc_key_preset_nc_guardian_2","st_key_...","th_key_..."]
+  const patientCatsForMeals = await c.env.DB.prepare(
+    `SELECT meals_include_keys FROM hospital_patient_categories WHERE hospital_id = ? AND is_active = 1`
+  ).bind(hospitalId).all<any>()
+  const allMealsIncludeKeys = new Set<string>()
+  ;(patientCatsForMeals.results || []).forEach((cat: any) => {
+    try {
+      const keys: string[] = JSON.parse(cat.meals_include_keys || '[]')
+      keys.forEach(k => allMealsIncludeKeys.add(k))
+    } catch(e) {}
+  })
+
+  // meals_include_keys를 field_key로 변환하는 헬퍼
+  // meals_include_keys의 키 패턴:
+  //   cat_{legacy_field_key or diet_key}  → 환자식 (meal_custom_fields.field_key 직접 매칭)
+  //   nc_key_{diet_key}  → 비급여식 (field_key = 'diet_' + diet_key 또는 diet_key)
+  //   th_key_{diet_key}  → 치료식 (field_key = 'diet_' + diet_key 또는 diet_key)
+  //   st_key_{diet_key}  → 직원식 (field_key = 'diet_' + diet_key 또는 diet_key)
+  const mealsIncludeFieldKeys = new Set<string>()
+  if (allMealsIncludeKeys.size > 0) {
+    ;(customFieldsList.results || []).forEach((f: any) => {
+      const fk: string = f.field_key
+      // cat_ 으로 시작하는 키: cat_{field_key} 직접 매칭
+      if (allMealsIncludeKeys.has(fk)) { mealsIncludeFieldKeys.add(fk); return }
+      if (allMealsIncludeKeys.has('cat_' + fk)) { mealsIncludeFieldKeys.add(fk); return }
+      // nc_key_/th_key_/st_key_ 접두사 제거 후 'diet_' 접두사 붙이거나 그대로 매칭
+      for (const prefix of ['nc_key_', 'th_key_', 'st_key_']) {
+        const dietKey = fk.startsWith('diet_') ? fk.slice('diet_'.length) : fk
+        if (allMealsIncludeKeys.has(prefix + dietKey)) { mealsIncludeFieldKeys.add(fk); return }
+      }
+    })
+  }
+
+  // meals_include_keys 설정이 없는 병원은 기존 방식 (ea 제외만) 사용
+  const hasIncludeKeys = allMealsIncludeKeys.size > 0
   // ea 단위 필드는 식수 합산에서 제외 (unit_type='ea')
+  // meals_include_keys가 있는 병원: 해당 키에 포함된 필드만 합산
   const mealCustomTotal = (customFieldsList.results || [])
-    .filter((f: any) => f.unit_type !== 'ea')
+    .filter((f: any) => {
+      if (f.unit_type === 'ea') return false
+      if (hasIncludeKeys) return mealsIncludeFieldKeys.has(f.field_key)
+      return true
+    })
     .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
 
@@ -239,8 +281,13 @@ dashboard.get('/summary/:year/:month', async (c) => {
       })
     } catch(e) {}
   })
+  // 전월도 meals_include_keys 기준 적용
   const prevMealCustomTotal = (customFieldsList.results || [])
-    .filter((f: any) => f.unit_type !== 'ea')
+    .filter((f: any) => {
+      if (f.unit_type === 'ea') return false
+      if (hasIncludeKeys) return mealsIncludeFieldKeys.has(f.field_key)
+      return true
+    })
     .reduce((s: number, f: any) => s + (prevCustomFieldTotals[f.field_key] || 0), 0)
 
   // ── 카테고리별 식단가 계산 ──────────────────────────────────
@@ -346,12 +393,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
     FROM daily_meals WHERE hospital_id = ? AND meal_date = ?
   `).bind(hospitalId, today).first<any>()
 
-  // 오늘 전체 식수: 직원+보호자+환자군 커스텀
+  // 오늘 전체 식수: 직원+보호자+환자군 커스텀 (meals_include_keys 기준 적용)
   let todayCustomMeals = 0
   if (todayMealRow?.custom_data) {
     try {
       const todayCustomData = JSON.parse(todayMealRow.custom_data || '{}')
-      ;(customFieldsList.results || []).filter((f:any) => f.unit_type !== 'ea').forEach((f:any) => {
+      ;(customFieldsList.results || []).filter((f:any) => {
+        if (f.unit_type === 'ea') return false
+        if (hasIncludeKeys) return mealsIncludeFieldKeys.has(f.field_key)
+        return true
+      }).forEach((f:any) => {
         const fv = todayCustomData[f.field_key] || {}
         todayCustomMeals += (fv.bf||0) + (fv.l||0) + (fv.d||0)
       })
@@ -376,14 +427,24 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // buildMealsFromKeys: 특정 키 목록에 해당하는 식수 합계 반환
   //   mealStatsRow: { total_staff, total_guardian }
   //   customTotalsMap: { cat_cancer: N, cat_nursing: N, diet_key_xxx: N, ... }  (month 또는 today용)
-  // st_key_{diet_key}: 직원식 개별항목 - 하나라도 체크되면 total_staff 전체 합계 사용 (데이터 미분리)
+  // st_key_{diet_key}: 직원식 개별항목 - 커스텀 필드에 직원식 데이터가 있으면 그 값 사용
+  //   커스텀 필드로 입력한 경우(ms.total_staff=0): customTotalsMap에서 직원식 키로 조회
+  //   레거시 방식(breakfast_staff 등 컬럼): total_staff로 폴백
   const buildMealsFromKeys = (mealsKeys: string[], mealStatsRow: {total_staff?:number,total_guardian?:number}|null, customTotalsMap: Record<string,number>): number => {
     if (!mealsKeys || mealsKeys.length === 0) return 0
     let total = 0
     // 구버전 호환: 'staff' 단일 키
     if (mealsKeys.includes('staff')) total += (mealStatsRow?.total_staff || 0)
-    // 신버전: st_key_{diet_key} - 직원식 개별항목 (하나라도 있으면 total_staff 포함, 중복 방지)
-    else if (mealsKeys.some(k => k.startsWith('st_key_'))) total += (mealStatsRow?.total_staff || 0)
+    // 신버전: st_key_{diet_key} - 커스텀 필드 우선, 없으면 legacy total_staff 사용
+    if (mealsKeys.some(k => k.startsWith('st_key_'))) {
+      let staffFromCustom = 0
+      mealsKeys.filter(k => k.startsWith('st_key_')).forEach(k => {
+        const dietKey = k.replace('st_key_', '')  // e.g. 'preset_staff_general_2'
+        staffFromCustom += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
+      })
+      // 커스텀 필드에 직원식 데이터가 있으면 사용, 없으면 legacy total_staff 사용
+      total += staffFromCustom > 0 ? staffFromCustom : (mealStatsRow?.total_staff || 0)
+    }
     if (mealsKeys.includes('guardian')) total += (mealStatsRow?.total_guardian || 0)
     mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { total += (customTotalsMap[k] || 0) })
     // 비급여식 식수: nc_key_{diet_key} 형식
