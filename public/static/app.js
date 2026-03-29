@@ -10457,10 +10457,16 @@ async function renderAdminDashboard() {
               const cats = h.catDietPrices || []
               const isSingle = cats.length === 1
               let wPriceSum = 0, wBudgetSum = 0, wTargetSum = 0, wTargetBudget = 0
+              // 목표 식단가 기준: monthly_settings.meal_price (영양사 페이지와 동일 기준)
+              // cat.targetPrice(=category_order_settings.target_meal_price)는 예산역산값이므로 목표로 사용 안 함
+              const adminCardTargetP = h.targetMealPrice || 0
               const catRows2 = cats.map(cat => {
                 const color = getCategoryColorHex(cat.category_key)
-                const targetP = cat.targetPrice || 0
-                const catMonthMeals = (h.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
+                const targetP = adminCardTargetP  // 일원화: monthly_settings.meal_price 기준
+                const catRefPrice = cat.targetPrice || 0  // 예산역산 참고값 (표시용)
+                // cat.monthMeals: 백엔드(admin.ts)에서 meals_include_keys 기반으로 정확히 계산한 값
+                // (cat_cancer + st_key_ + nc_key_ + th_key_ 모두 포함)
+                const catMonthMeals = cat.monthMeals || (h.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0
                 const monthDietPrice = catMonthMeals > 0 ? Math.round(cat.monthAmt / catMonthMeals) : 0
                 const isOverM = targetP > 0 && monthDietPrice > targetP
                 const isWarnM = targetP > 0 && monthDietPrice >= targetP * 0.9 && !isOverM
@@ -10481,13 +10487,13 @@ async function renderAdminDashboard() {
               })
               // 카테고리 1개: 총발주÷총식수, 2개+: 가중평균
               const totalCatAmt   = cats.reduce((s,c) => s+(c.monthAmt||0), 0)
-              const totalCatMeals = cats.reduce((s,c) => s+((h.mealCustomTotals||{})[`cat_${c.category_key}`]||0), 0)
+              // cat.monthMeals: 백엔드에서 meals_include_keys 기반으로 계산된 정확한 카테고리 식수
+              const totalCatMeals = cats.reduce((s,c) => s+(c.monthMeals || (h.mealCustomTotals||{})[`cat_${c.category_key}`]||0), 0)
               const wCurrentPrice = isSingle
                 ? (totalCatMeals > 0 ? Math.round(totalCatAmt / totalCatMeals) : 0)
                 : (wBudgetSum > 0 ? Math.round(wPriceSum / wBudgetSum) : 0)
-              const wTargetPrice  = isSingle
-                ? (cats[0]?.targetPrice || 0)
-                : (wTargetBudget > 0 ? Math.round(wTargetSum / wTargetBudget) : 0)
+              // 목표 식단가: monthly_settings.meal_price 일원화 (영양사 페이지와 동일)
+              const wTargetPrice = adminCardTargetP
               const wDiff = wCurrentPrice > 0 && wTargetPrice > 0 ? wCurrentPrice - wTargetPrice : null
               const wOver = wDiff !== null && wDiff > 0
               const wWarn = wDiff !== null && !wOver && wCurrentPrice >= wTargetPrice * 0.9
