@@ -1295,4 +1295,123 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
   return c.json({ hospitals: results, year, month })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 영양사 대시보드: 인력 & 인건비 요약 API
+// GET /api/dashboard/staff-labor/:year/:month
+// ════════════════════════════════════════════════════════════════
+dashboard.get('/staff-labor/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = user.hospitalId || c.req.query('hospitalId')
+  if (!hospitalId) return c.json({ error: 'Hospital not found' }, 400)
+
+  const y = parseInt(year)
+  const m = parseInt(month)
+
+  // 1. 직원 수 (재직 중)
+  const empCountRow = await c.env.DB.prepare(
+    `SELECT
+       COUNT(*) as total,
+       SUM(CASE WHEN employment_type='full' THEN 1 ELSE 0 END) as full_time,
+       SUM(CASE WHEN employment_type='part' THEN 1 ELSE 0 END) as part_time,
+       SUM(CASE WHEN employment_type='contract' THEN 1 ELSE 0 END) as contract
+     FROM employees WHERE hospital_id = ? AND is_active = 1`
+  ).bind(hospitalId).first<any>()
+
+  // 2. 이번 달 OT / 출근 집계
+  const schedStats = await c.env.DB.prepare(
+    `SELECT
+       COUNT(DISTINCT employee_id) as active_emp,
+       SUM(CASE WHEN is_overtime=1 THEN 1 ELSE 0 END) as ot_count,
+       SUM(COALESCE(overtime_hours, 0)) as ot_hours,
+       SUM(CASE WHEN shift_code NOT IN ('연차','반차','병가','경조','공가','휴','무급') THEN 1 ELSE 0 END) as work_days
+     FROM daily_schedules
+     WHERE hospital_id = ?
+       AND strftime('%Y', work_date) = ?
+       AND strftime('%m', work_date) = printf('%02d', ?)`
+  ).bind(hospitalId, String(y), m).first<any>()
+
+  // 3. 외부인력 현황
+  const extStats = await c.env.DB.prepare(
+    `SELECT ew.worker_type,
+            COUNT(*) as day_count,
+            COUNT(DISTINCT es.worker_id) as worker_count
+     FROM external_schedules es
+     JOIN external_workers ew ON ew.id = es.worker_id
+     WHERE es.hospital_id = ?
+       AND strftime('%Y', es.work_date) = ?
+       AND strftime('%m', es.work_date) = printf('%02d', ?)
+     GROUP BY ew.worker_type`
+  ).bind(hospitalId, String(y), m).all<any>()
+  const extMap: Record<string, { day_count: number; worker_count: number }> = {}
+  ;(extStats.results || []).forEach((r: any) => { extMap[r.worker_type] = r })
+
+  // 4. 인건비 단가
+  const costRows = await c.env.DB.prepare(
+    `SELECT cost_type, unit_price FROM labor_cost_settings WHERE hospital_id = ?`
+  ).bind(hospitalId).all<any>()
+  const costMap: Record<string, number> = {}
+  ;(costRows.results || []).forEach((r: any) => { costMap[r.cost_type] = r.unit_price || 0 })
+
+  // 5. 파출/알바 인건비
+  const extCostRows = await c.env.DB.prepare(
+    `SELECT es.shift_type, es.unit_price, ew.worker_type
+     FROM external_schedules es
+     JOIN external_workers ew ON ew.id = es.worker_id
+     WHERE es.hospital_id = ?
+       AND strftime('%Y', es.work_date) = ?
+       AND strftime('%m', es.work_date) = printf('%02d', ?)`
+  ).bind(hospitalId, String(y), m).all<any>()
+
+  const dispatchShiftMap: Record<string, string> = { morning:'dispatch_morning', afternoon:'dispatch_afternoon', '9h':'dispatch_9h', '12h':'dispatch_12h' }
+  const partShiftMap:     Record<string, string> = { morning:'parttime_morning',  afternoon:'parttime_afternoon',  '9h':'parttime_9h',  '12h':'parttime_12h' }
+
+  let dispatchCost = 0, parttimeCost = 0
+  ;(extCostRows.results || []).forEach((e: any) => {
+    const price = e.unit_price > 0
+      ? e.unit_price
+      : e.worker_type === 'dispatch'
+        ? (costMap[dispatchShiftMap[e.shift_type] || ''] || 0)
+        : (costMap[partShiftMap[e.shift_type]     || ''] || 0)
+    if (e.worker_type === 'dispatch') dispatchCost += price
+    else parttimeCost += price
+  })
+
+  // 6. 기본급 합계
+  const salaryRow = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(base_salary),0) as total FROM employees WHERE hospital_id=? AND is_active=1`
+  ).bind(hospitalId).first<any>()
+
+  const baseSalary = salaryRow?.total || 0
+  const totalLaborCost = baseSalary + dispatchCost + parttimeCost
+
+  return c.json({
+    period: { year: y, month: m },
+    staffSummary: {
+      total:      empCountRow?.total    || 0,
+      fullTime:   empCountRow?.full_time || 0,
+      partTime:   empCountRow?.part_time || 0,
+      contract:   empCountRow?.contract  || 0,
+      activeThisMonth: schedStats?.active_emp || 0,
+    },
+    workSummary: {
+      workDays: schedStats?.work_days || 0,
+      otCount:  schedStats?.ot_count  || 0,
+      otHours:  schedStats?.ot_hours  || 0,
+    },
+    externalSummary: {
+      dispatchDays:        extMap['dispatch']?.day_count    || 0,
+      dispatchWorkerCount: extMap['dispatch']?.worker_count || 0,
+      parttimeDays:        extMap['parttime']?.day_count    || 0,
+      parttimeWorkerCount: extMap['parttime']?.worker_count || 0,
+    },
+    laborCost: {
+      baseSalary,
+      dispatchCost,
+      parttimeCost,
+      total: totalLaborCost,
+    },
+  })
+})
+
 export default dashboard

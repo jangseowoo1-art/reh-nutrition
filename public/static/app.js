@@ -692,6 +692,13 @@ async function renderDashboard() {
     api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}${hqParam}`),
     api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParam}`)
   ])
+
+  // 인력/인건비 요약 (병원 계정만, admin 제외)
+  let dashStaffLaborData = null
+  if (App.role === 'hospital') {
+    try { dashStaffLaborData = await api('GET', `/api/dashboard/staff-labor/${App.currentYear}/${App.currentMonth}${hqParam}`) } catch(e) {}
+  }
+
   if (!data || data.error) {
     content.innerHTML = `<div class="text-red-500 p-6">데이터 로드 실패: ${data?.error || '알 수 없는 오류'}</div>`
     return
@@ -1942,6 +1949,12 @@ async function renderDashboard() {
         <div style="font-size:9px;color:#9ca3af">${noOrder.map(v=>v.name).join(' · ')}</div>
       </div>` : ''}
     `
+
+  // 인력 & 인건비 요약 섹션 (병원 계정 전용)
+  if (App.role === 'hospital' && dashStaffLaborData) {
+    const slHtml = renderDashStaffLabor(dashStaffLaborData)
+    content.insertAdjacentHTML('beforeend', slHtml)
+  }
   }
 
   // switchVendorPieView는 더 이상 차트/상세를 전환하지 않음 (동시 표시로 변경됨)
@@ -25221,6 +25234,12 @@ async function renderCeoDashboard() {
       api('GET', `/api/ceo-dashboard/alerts/${f.year}/${f.month}`).catch(() => null),
       api('GET', `/api/ceo-dashboard/expenses/${f.year}/${f.month}${qsStr}`).catch(() => [])
     ])
+
+    // 인력/인건비 API (executive 전용)
+    let staffLaborData = null
+    if (App.role === 'executive') {
+      try { staffLaborData = await api('GET', `/api/executive/staff-labor/${f.year}/${f.month}`) } catch(e) {}
+    }
     console.log('[CEO] 5. API 완료 kpi:', !!kpiData, 'hospitals:', Array.isArray(hospitalsData)?hospitalsData.length:'err', 'graphs:', !!graphsData, 'alerts:', !!alertsData, 'expenses:', Array.isArray(expensesData)?expensesData.length:'err')
 
     const safeHospitals = Array.isArray(hospitalsData) ? hospitalsData : []
@@ -25239,6 +25258,8 @@ async function renderCeoDashboard() {
     console.log('[CEO] 6d. GraphSection OK')
     const alertsHtml = renderCeoAlerts(alertsData)
     console.log('[CEO] 6e. Alerts OK')
+    const staffLaborHtml = App.role === 'executive' ? renderExecStaffLabor(staffLaborData) : ''
+    console.log('[CEO] 6f. StaffLabor OK')
     const expensesHtml = renderCeoExpenses(safeExpenses, f)
     console.log('[CEO] 6f. Expenses OK')
 
@@ -25267,6 +25288,9 @@ async function renderCeoDashboard() {
       <div id="ceoAlertsSection" class="mb-5">
         ${alertsHtml}
       </div>
+
+      <!-- 인력 & 인건비 현황 (운영진 전용) -->
+      ${staffLaborHtml ? `<div id="execStaffLaborSection" class="mb-5">${staffLaborHtml}</div>` : ''}
 
       <!-- 식수 카테고리별 집계 -->
       <div id="ceoMealCatSection" class="mb-5">
@@ -25961,6 +25985,290 @@ function renderCeoAlerts(data) {
 }
 
 // ── 지출 사용내역 조회 ──────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+// 운영진 전용: 인력 & 인건비 현황 렌더러
+// ════════════════════════════════════════════════════════════════
+function renderExecStaffLabor(d) {
+  const fmt = v => (v || 0).toLocaleString()
+  const fmtW = v => {
+    v = v || 0
+    if (v >= 100000000) return `${(v/100000000).toFixed(1)}억`
+    if (v >= 10000)     return `${Math.round(v/10000)}만`
+    return v.toLocaleString()
+  }
+
+  if (!d) return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <div class="flex items-center gap-2 mb-4">
+        <i class="fas fa-users text-indigo-500 text-lg"></i>
+        <h3 class="font-bold text-gray-800 text-base">인력 & 인건비 현황</h3>
+      </div>
+      <div class="text-center text-gray-400 py-8 text-sm">데이터를 불러오는 중...</div>
+    </div>`
+
+  const { staffSummary: ss, workSummary: ws, externalSummary: es, laborCost: lc, warnings } = d
+
+  // 인건비 비율 계산
+  const totalLC = lc.total || 1
+  const baseRatio     = Math.round((lc.baseSalary  / totalLC) * 100)
+  const otRatio       = Math.round((lc.otCost       / totalLC) * 100)
+  const dispatchRatio = Math.round((lc.dispatchCost / totalLC) * 100)
+  const parttimeRatio = Math.round((lc.parttimeCost / totalLC) * 100)
+
+  // 파출/알바 전월 대비
+  const dispatchDiff = es.dispatchDays - (es.prevDispatchDays || 0)
+  const parttimeDiff = es.parttimeDays - (es.prevParttimeDays || 0)
+  const dispatchDiffHtml = dispatchDiff === 0
+    ? `<span class="text-gray-400 text-xs">전월 동일</span>`
+    : dispatchDiff > 0
+      ? `<span class="text-red-500 text-xs"><i class="fas fa-arrow-up mr-0.5"></i>${dispatchDiff}회 증가</span>`
+      : `<span class="text-green-500 text-xs"><i class="fas fa-arrow-down mr-0.5"></i>${Math.abs(dispatchDiff)}회 감소</span>`
+  const parttimeDiffHtml = parttimeDiff === 0
+    ? `<span class="text-gray-400 text-xs">전월 동일</span>`
+    : parttimeDiff > 0
+      ? `<span class="text-red-500 text-xs"><i class="fas fa-arrow-up mr-0.5"></i>${parttimeDiff}회 증가</span>`
+      : `<span class="text-green-500 text-xs"><i class="fas fa-arrow-down mr-0.5"></i>${Math.abs(parttimeDiff)}회 감소</span>`
+
+  // 경고 배지
+  const warnHtml = (warnings && warnings.length > 0) ? `
+    <div class="mt-4 space-y-2">
+      ${warnings.map(w => `
+        <div class="flex items-start gap-2 px-3 py-2 rounded-lg ${w.level === 'danger' ? 'bg-red-50 border border-red-200' : 'bg-amber-50 border border-amber-200'}">
+          <i class="fas fa-exclamation-triangle mt-0.5 text-sm ${w.level === 'danger' ? 'text-red-500' : 'text-amber-500'}"></i>
+          <span class="text-xs ${w.level === 'danger' ? 'text-red-700' : 'text-amber-700'}">${w.message}</span>
+        </div>`).join('')}
+    </div>` : `
+    <div class="mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-green-50 border border-green-200">
+      <i class="fas fa-check-circle text-green-500 text-sm"></i>
+      <span class="text-xs text-green-700">인력 운영이 정상 범위입니다</span>
+    </div>`
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <!-- 헤더 -->
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-gray-800"><i class="fas fa-users text-indigo-500 mr-2"></i>인력 & 인건비 현황</h3>
+        <p class="text-xs text-gray-400 mt-0.5">이번 달 인력 운영 및 인건비 내역</p>
+      </div>
+    </div>
+
+    <div class="p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+
+      <!-- 왼쪽: 인력 현황 -->
+      <div>
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">👥 인력 현황</p>
+
+        <!-- 직원 구성 카드 -->
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div class="bg-indigo-50 rounded-xl p-3">
+            <p class="text-xs text-indigo-500 mb-1">전체 재직 인원</p>
+            <p class="text-2xl font-bold text-indigo-700">${fmt(ss.total)}<span class="text-sm font-normal ml-1">명</span></p>
+            <p class="text-xs text-indigo-400 mt-1">이번 달 출근 ${fmt(ss.activeThisMonth)}명</p>
+          </div>
+          <div class="bg-blue-50 rounded-xl p-3">
+            <p class="text-xs text-blue-500 mb-1">고용 형태</p>
+            <div class="space-y-0.5 mt-1">
+              <div class="flex justify-between text-xs">
+                <span class="text-gray-600">정규직</span>
+                <span class="font-semibold text-blue-700">${fmt(ss.fullTime)}명</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span class="text-gray-600">계약직</span>
+                <span class="font-semibold text-blue-700">${fmt(ss.contract)}명</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span class="text-gray-600">시간제</span>
+                <span class="font-semibold text-blue-700">${fmt(ss.partTime)}명</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 근무 현황 -->
+        <div class="bg-gray-50 rounded-xl p-3 mb-4">
+          <p class="text-xs font-semibold text-gray-600 mb-2">📋 이번 달 근무 현황</p>
+          <div class="grid grid-cols-3 gap-2">
+            <div class="text-center">
+              <p class="text-lg font-bold text-gray-800">${fmt(ws.totalWorkDays)}</p>
+              <p class="text-xs text-gray-500">총 출근 일수</p>
+            </div>
+            <div class="text-center">
+              <p class="text-lg font-bold text-amber-600">${fmt(ws.totalOtDays)}</p>
+              <p class="text-xs text-gray-500">OT 발생</p>
+            </div>
+            <div class="text-center">
+              <p class="text-lg font-bold text-amber-600">${fmt(ws.totalOtHours)}<span class="text-xs">h</span></p>
+              <p class="text-xs text-gray-500">OT 시간</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 외부인력 -->
+        <div class="bg-orange-50 rounded-xl p-3">
+          <p class="text-xs font-semibold text-orange-700 mb-2">🔄 외부인력 투입 현황</p>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-2 h-2 rounded-full bg-orange-400"></span>
+                <span class="text-xs text-gray-700">파출 <span class="text-gray-400">(${fmt(es.dispatchWorkerCount)}명)</span></span>
+              </div>
+              <div class="text-right">
+                <span class="text-sm font-bold text-orange-700">${fmt(es.dispatchDays)}회</span>
+                <span class="ml-2">${dispatchDiffHtml}</span>
+              </div>
+            </div>
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-2 h-2 rounded-full bg-yellow-400"></span>
+                <span class="text-xs text-gray-700">알바 <span class="text-gray-400">(${fmt(es.parttimeWorkerCount)}명)</span></span>
+              </div>
+              <div class="text-right">
+                <span class="text-sm font-bold text-yellow-700">${fmt(es.parttimeDays)}회</span>
+                <span class="ml-2">${parttimeDiffHtml}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 오른쪽: 인건비 내역 -->
+      <div>
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">💰 인건비 내역</p>
+
+        <!-- 총 인건비 -->
+        <div class="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl p-4 text-white mb-4">
+          <p class="text-xs text-indigo-200 mb-1">이번 달 총 인건비</p>
+          <p class="text-3xl font-bold">${fmtW(lc.total)}<span class="text-sm font-normal ml-1">원</span></p>
+          <p class="text-xs text-indigo-200 mt-1">기본급 + OT + 파출 + 알바 합산</p>
+        </div>
+
+        <!-- 항목별 내역 -->
+        <div class="space-y-2 mb-4">
+          <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-indigo-400 flex-shrink-0"></span>
+              <span class="text-xs text-gray-700">기본급</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-24 bg-gray-200 rounded-full h-1.5">
+                <div class="bg-indigo-400 h-1.5 rounded-full" style="width:${baseRatio}%"></div>
+              </div>
+              <span class="text-xs font-semibold text-gray-800 w-16 text-right">${fmtW(lc.baseSalary)}원</span>
+            </div>
+          </div>
+          <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-amber-400 flex-shrink-0"></span>
+              <span class="text-xs text-gray-700">초과근무(OT)</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-24 bg-gray-200 rounded-full h-1.5">
+                <div class="bg-amber-400 h-1.5 rounded-full" style="width:${otRatio}%"></div>
+              </div>
+              <span class="text-xs font-semibold text-gray-800 w-16 text-right">${fmtW(lc.otCost)}원</span>
+            </div>
+          </div>
+          <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-orange-400 flex-shrink-0"></span>
+              <span class="text-xs text-gray-700">파출비</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-24 bg-gray-200 rounded-full h-1.5">
+                <div class="bg-orange-400 h-1.5 rounded-full" style="width:${dispatchRatio}%"></div>
+              </div>
+              <span class="text-xs font-semibold text-gray-800 w-16 text-right">${fmtW(lc.dispatchCost)}원</span>
+            </div>
+          </div>
+          <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-yellow-400 flex-shrink-0"></span>
+              <span class="text-xs text-gray-700">알바비</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-24 bg-gray-200 rounded-full h-1.5">
+                <div class="bg-yellow-400 h-1.5 rounded-full" style="width:${parttimeRatio}%"></div>
+              </div>
+              <span class="text-xs font-semibold text-gray-800 w-16 text-right">${fmtW(lc.parttimeCost)}원</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 외부인력 비율 요약 -->
+        <div class="bg-gray-50 rounded-xl p-3">
+          <div class="flex justify-between items-center mb-1">
+            <p class="text-xs text-gray-600">외부인력 비용 비중</p>
+            <p class="text-sm font-bold ${(dispatchRatio + parttimeRatio) > 30 ? 'text-red-600' : 'text-green-600'}">
+              ${dispatchRatio + parttimeRatio}%
+            </p>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2">
+            <div class="h-2 rounded-full ${(dispatchRatio + parttimeRatio) > 30 ? 'bg-red-400' : 'bg-green-400'}"
+              style="width:${Math.min(100, dispatchRatio + parttimeRatio)}%"></div>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">권장 기준: 30% 이하</p>
+        </div>
+
+        <!-- 경고 메시지 -->
+        ${warnHtml}
+      </div>
+    </div>
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 영양사 대시보드: 인력 & 인건비 요약 카드 렌더러
+// ════════════════════════════════════════════════════════════════
+function renderDashStaffLabor(d) {
+  if (!d) return ''
+  const fmt  = v => (v || 0).toLocaleString()
+  const fmtW = v => {
+    v = v || 0
+    if (v >= 100000000) return `${(v/100000000).toFixed(1)}억`
+    if (v >= 10000)     return `${Math.round(v/10000)}만`
+    return v.toLocaleString()
+  }
+  const { staffSummary: ss, workSummary: ws, externalSummary: es, laborCost: lc } = d
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-5">
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+      <i class="fas fa-users text-indigo-500"></i>
+      <div>
+        <h3 class="font-bold text-gray-800 text-sm">인력 & 인건비 현황</h3>
+        <p class="text-xs text-gray-400">이번 달 인력 운영 요약</p>
+      </div>
+    </div>
+    <div class="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <!-- 총 인원 -->
+      <div class="bg-indigo-50 rounded-xl p-3 text-center">
+        <p class="text-xs text-indigo-500 mb-1">재직 인원</p>
+        <p class="text-xl font-bold text-indigo-700">${fmt(ss.total)}<span class="text-xs font-normal ml-0.5">명</span></p>
+        <p class="text-xs text-indigo-400">정규 ${fmt(ss.fullTime)} · 계약 ${fmt(ss.contract)}</p>
+      </div>
+      <!-- OT -->
+      <div class="bg-amber-50 rounded-xl p-3 text-center">
+        <p class="text-xs text-amber-500 mb-1">초과근무</p>
+        <p class="text-xl font-bold text-amber-700">${fmt(ws.otHours)}<span class="text-xs font-normal ml-0.5">h</span></p>
+        <p class="text-xs text-amber-400">OT ${fmt(ws.otCount)}건</p>
+      </div>
+      <!-- 파출/알바 -->
+      <div class="bg-orange-50 rounded-xl p-3 text-center">
+        <p class="text-xs text-orange-500 mb-1">외부인력 투입</p>
+        <p class="text-xl font-bold text-orange-700">${fmt(es.dispatchDays + es.parttimeDays)}<span class="text-xs font-normal ml-0.5">회</span></p>
+        <p class="text-xs text-orange-400">파출 ${fmt(es.dispatchDays)} · 알바 ${fmt(es.parttimeDays)}</p>
+      </div>
+      <!-- 인건비 -->
+      <div class="bg-purple-50 rounded-xl p-3 text-center">
+        <p class="text-xs text-purple-500 mb-1">이번 달 인건비</p>
+        <p class="text-xl font-bold text-purple-700">${fmtW(lc.total)}<span class="text-xs font-normal ml-0.5">원</span></p>
+        <p class="text-xs text-purple-400">파출 ${fmtW(lc.dispatchCost)} · 알바 ${fmtW(lc.parttimeCost)}</p>
+      </div>
+    </div>
+  </div>`
+}
+
 function renderCeoExpenses(expenses, f) {
   const EXPENSE_TYPES = ['법인카드','현장구매','추가발주','소모품','기타']
   const fmtKo = v => (v||0).toLocaleString()

@@ -375,4 +375,228 @@ executive.get('/annual/:year', async (c) => {
   })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 운영진 대시보드: 인력 & 인건비 현황 API
+// GET /api/executive/staff-labor/:year/:month
+// ════════════════════════════════════════════════════════════════
+executive.get('/staff-labor/:year/:month', async (c) => {
+  const user = c.get('user')
+  const { year, month } = c.req.param()
+  const hospitalId = user.role === 'admin'
+    ? (c.req.query('hospitalId') || user.hospitalId)
+    : user.hospitalId
+
+  if (!hospitalId) return c.json({ error: 'Hospital not found' }, 400)
+
+  const y = parseInt(year)
+  const m = parseInt(month)
+
+  // ── 1. 정규/계약 직원 현황 ────────────────────────────────────
+  const employees = await c.env.DB.prepare(
+    `SELECT id, name, employment_type, section, base_salary, ot_enabled
+     FROM employees
+     WHERE hospital_id = ? AND is_active = 1`
+  ).bind(hospitalId).all<any>()
+  const empList = employees.results || []
+
+  const totalEmp     = empList.length
+  const fullTimeEmp  = empList.filter((e: any) => e.employment_type === 'full').length
+  const partEmp      = empList.filter((e: any) => e.employment_type === 'part').length
+  const contractEmp  = empList.filter((e: any) => e.employment_type === 'contract').length
+
+  // ── 2. 이번 달 출근 일수 / OT / 휴가 집계 ────────────────────
+  const schedRows = await c.env.DB.prepare(
+    `SELECT ds.employee_id,
+            COUNT(*) as total_days,
+            SUM(CASE WHEN ds.is_overtime = 1 THEN 1 ELSE 0 END) as ot_days,
+            SUM(COALESCE(ds.overtime_hours, 0)) as ot_hours,
+            SUM(CASE WHEN ds.shift_code IN ('연차','반차','병가','경조','공가') THEN 1 ELSE 0 END) as leave_days,
+            SUM(CASE WHEN ds.shift_code NOT IN ('연차','반차','병가','경조','공가','휴','무급') THEN 1 ELSE 0 END) as work_days
+     FROM daily_schedules ds
+     WHERE ds.hospital_id = ?
+       AND strftime('%Y', ds.work_date) = ?
+       AND strftime('%m', ds.work_date) = printf('%02d', ?)
+     GROUP BY ds.employee_id`
+  ).bind(hospitalId, String(y), m).all<any>()
+  const schedMap: Record<number, any> = {}
+  ;(schedRows.results || []).forEach((r: any) => { schedMap[r.employee_id] = r })
+
+  const totalWorkDays  = (schedRows.results || []).reduce((s: number, r: any) => s + (r.work_days || 0), 0)
+  const totalOtDays    = (schedRows.results || []).reduce((s: number, r: any) => s + (r.ot_days   || 0), 0)
+  const totalOtHours   = (schedRows.results || []).reduce((s: number, r: any) => s + (r.ot_hours  || 0), 0)
+  const totalLeaveDays = (schedRows.results || []).reduce((s: number, r: any) => s + (r.leave_days|| 0), 0)
+
+  // 출근한 직원 수 (이번 달 1회 이상 출근)
+  const activeEmpCount = (schedRows.results || []).filter((r: any) => (r.work_days || 0) > 0).length
+
+  // ── 3. 외부인력 (파출/알바) 현황 ─────────────────────────────
+  const extSchedules = await c.env.DB.prepare(
+    `SELECT es.worker_id, es.shift_type, es.unit_price,
+            ew.name as worker_name, ew.worker_type
+     FROM external_schedules es
+     JOIN external_workers ew ON ew.id = es.worker_id
+     WHERE es.hospital_id = ?
+       AND strftime('%Y', es.work_date) = ?
+       AND strftime('%m', es.work_date) = printf('%02d', ?)`
+  ).bind(hospitalId, String(y), m).all<any>()
+  const extList = extSchedules.results || []
+
+  const dispatchList  = extList.filter((e: any) => e.worker_type === 'dispatch')
+  const parttimeList  = extList.filter((e: any) => e.worker_type === 'parttime')
+  const dispatchDays  = dispatchList.length
+  const parttimeDays  = parttimeList.length
+
+  // 파출/알바 고유 인원수
+  const dispatchWorkerIds = new Set(dispatchList.map((e: any) => e.worker_id))
+  const parttimeWorkerIds = new Set(parttimeList.map((e: any) => e.worker_id))
+
+  // ── 4. 인건비 단가 설정 로드 ──────────────────────────────────
+  const laborCostRows = await c.env.DB.prepare(
+    `SELECT cost_type, unit_price FROM labor_cost_settings WHERE hospital_id = ?`
+  ).bind(hospitalId).all<any>()
+  const costMap: Record<string, number> = {}
+  ;(laborCostRows.results || []).forEach((r: any) => { costMap[r.cost_type] = r.unit_price || 0 })
+
+  // shift_type → cost_type 매핑
+  const shiftToCostType: Record<string, string> = {
+    morning:   'dispatch_morning',
+    afternoon: 'dispatch_afternoon',
+    '9h':      'dispatch_9h',
+    '12h':     'dispatch_12h',
+  }
+  const partTimeToCostType: Record<string, string> = {
+    morning:   'parttime_morning',
+    afternoon: 'parttime_afternoon',
+    '9h':      'parttime_9h',
+    '12h':     'parttime_12h',
+  }
+
+  // ── 5. 파출/알바 인건비 계산 ─────────────────────────────────
+  let dispatchCost = 0
+  dispatchList.forEach((e: any) => {
+    const price = e.unit_price > 0
+      ? e.unit_price
+      : (costMap[shiftToCostType[e.shift_type] || ''] || 0)
+    dispatchCost += price
+  })
+
+  let parttimeCost = 0
+  parttimeList.forEach((e: any) => {
+    const price = e.unit_price > 0
+      ? e.unit_price
+      : (costMap[partTimeToCostType[e.shift_type] || ''] || 0)
+    parttimeCost += price
+  })
+
+  // ── 6. 정규 인건비 (기본급 합계) ──────────────────────────────
+  const baseSalaryTotal = empList.reduce((s: number, e: any) => s + (e.base_salary || 0), 0)
+
+  // OT 비용: employee_ot_settings 에서 hourly_wage × ot_rate 로 계산
+  const otSettingsRows = await c.env.DB.prepare(
+    `SELECT employee_id, hourly_wage, ot_rate FROM employee_ot_settings WHERE hospital_id = ?`
+  ).bind(hospitalId).all<any>()
+  const otRateMap: Record<number, number> = {}
+  ;(otSettingsRows.results || []).forEach((r: any) => {
+    // OT 시간당 금액 = hourly_wage × ot_rate (기본 1.5배)
+    otRateMap[r.employee_id] = (r.hourly_wage || 0) * (r.ot_rate || 1.5)
+  })
+
+  let otCost = 0
+  ;(schedRows.results || []).forEach((r: any) => {
+    const rate = otRateMap[r.employee_id] || 0
+    otCost += (r.ot_hours || 0) * rate
+  })
+
+  const totalLaborCost = baseSalaryTotal + otCost + dispatchCost + parttimeCost
+
+  // ── 7. 전월 비교 ──────────────────────────────────────────────
+  const prevM = m === 1 ? 12 : m - 1
+  const prevY = m === 1 ? y - 1 : y
+
+  const prevExtSchedules = await c.env.DB.prepare(
+    `SELECT es.shift_type, es.unit_price, ew.worker_type
+     FROM external_schedules es
+     JOIN external_workers ew ON ew.id = es.worker_id
+     WHERE es.hospital_id = ?
+       AND strftime('%Y', es.work_date) = ?
+       AND strftime('%m', es.work_date) = printf('%02d', ?)`
+  ).bind(hospitalId, String(prevY), prevM).all<any>()
+  const prevExtList = prevExtSchedules.results || []
+  const prevDispatchDays = prevExtList.filter((e: any) => e.worker_type === 'dispatch').length
+  const prevParttimeDays = prevExtList.filter((e: any) => e.worker_type === 'parttime').length
+
+  // ── 8. 팀별 최소인력 대비 현황 ───────────────────────────────
+  const minStaffRows = await c.env.DB.prepare(
+    `SELECT team, min_count FROM schedule_min_staff WHERE hospital_id = ?`
+  ).bind(hospitalId).all<any>()
+  const minStaffMap: Record<string, number> = {}
+  ;(minStaffRows.results || []).forEach((r: any) => { minStaffMap[r.team] = r.min_count || 0 })
+
+  // 팀별 실제 재직 인원
+  const teamCountMap: Record<string, number> = {}
+  empList.forEach((e: any) => {
+    const team = e.team || 'cook'
+    teamCountMap[team] = (teamCountMap[team] || 0) + 1
+  })
+
+  // ── 9. 경고 생성 ──────────────────────────────────────────────
+  const warnings: Array<{ type: string; level: string; message: string }> = []
+
+  // 파출 과다 투입 경고 (월 15회 초과)
+  if (dispatchDays > 15) {
+    warnings.push({ type: 'dispatch_overuse', level: 'warning', message: `파출 투입이 ${dispatchDays}회로 과다합니다 (권장: 15회 이하)` })
+  }
+  // 알바 과다 투입 경고 (월 20회 초과)
+  if (parttimeDays > 20) {
+    warnings.push({ type: 'parttime_overuse', level: 'warning', message: `알바 투입이 ${parttimeDays}회로 과다합니다 (권장: 20회 이하)` })
+  }
+  // OT 과다 경고 (월 40시간 초과)
+  if (totalOtHours > 40) {
+    warnings.push({ type: 'ot_overuse', level: 'danger', message: `초과근무가 ${totalOtHours}시간으로 법정 한도를 초과할 수 있습니다` })
+  }
+  // 외부인력 비용이 전체 인건비의 30% 초과
+  const extCostRatio = totalLaborCost > 0 ? ((dispatchCost + parttimeCost) / totalLaborCost * 100) : 0
+  if (extCostRatio > 30) {
+    warnings.push({ type: 'ext_cost_high', level: 'warning', message: `외부인력 비용 비중이 ${extCostRatio.toFixed(1)}%로 높습니다 (권장: 30% 이하)` })
+  }
+
+  return c.json({
+    period: { year: y, month: m },
+    // 인력 현황
+    staffSummary: {
+      total: totalEmp,
+      fullTime: fullTimeEmp,
+      partTime: partEmp,
+      contract: contractEmp,
+      activeThisMonth: activeEmpCount,
+    },
+    // 근무 현황
+    workSummary: {
+      totalWorkDays,
+      totalOtDays,
+      totalOtHours,
+      totalLeaveDays,
+    },
+    // 외부인력 현황
+    externalSummary: {
+      dispatchDays,
+      parttimeDays,
+      dispatchWorkerCount: dispatchWorkerIds.size,
+      parttimeWorkerCount: parttimeWorkerIds.size,
+      prevDispatchDays,
+      prevParttimeDays,
+    },
+    // 인건비 내역
+    laborCost: {
+      baseSalary: baseSalaryTotal,
+      otCost,
+      dispatchCost,
+      parttimeCost,
+      total: totalLaborCost,
+    },
+    // 경고
+    warnings,
+  })
+})
+
 export default executive
