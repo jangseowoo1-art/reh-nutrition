@@ -12447,7 +12447,7 @@ function renderMonthlyScheduleTab() {
                   out += '<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:' + typeColor + '22;color:' + typeColor + ';font-weight:700">' + typeLbl + '</span>'
                   out += '<span style="font-size:11px;font-weight:600;color:#374151">' + worker.name + '</span>'
                   if (canEdit) {
-                    out += '<button class="ext-del-btn" data-wid="' + worker.id + '"'
+                    out += '<button class="ext-del-btn" data-wid="' + worker.id + '" data-wname="' + worker.name + '"'
                     out += ' style="margin-left:auto;background:none;border:none;cursor:pointer;color:#ef4444;font-size:10px;padding:0 2px" title="삭제">'
                     out += '<i class="fas fa-times"></i></button>'
                   }
@@ -15294,7 +15294,8 @@ function initExtWorkerEvents() {
       e.preventDefault()
       e.stopPropagation()
       const wid = parseInt(delBtn.dataset.wid)
-      if (wid) deleteExternalWorker(wid)
+      const wname = delBtn.dataset.wname || ''
+      if (wid) deleteExternalWorker(wid, wname)
       return
     }
 

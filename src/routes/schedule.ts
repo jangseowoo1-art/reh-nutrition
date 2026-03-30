@@ -891,6 +891,34 @@ schedule.post('/save-batch', async (c) => {
   return c.json({ success: true, count })
 })
 
+
+// external-workers/:id DELETE (/:employeeId/:workDate 라우트 충돌 방지용 선등록)
+schedule.delete('/external-workers/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const id = c.req.param('id')
+
+  const row = await c.env.DB.prepare(
+    `SELECT hospital_id FROM external_workers WHERE id=?`
+  ).bind(id).first<any>()
+  if (!row) return c.json({ error: '외부인력을 찾을 수 없습니다' }, 404)
+  if (!isAdmin(user) && row.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const hasSchedule = await c.env.DB.prepare(
+    `SELECT id FROM external_schedules WHERE worker_id=? LIMIT 1`
+  ).bind(id).first<any>()
+
+  if (hasSchedule) {
+    await c.env.DB.prepare(
+      `UPDATE external_workers SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(id).run()
+    return c.json({ success: true, deactivated: true })
+  } else {
+    await c.env.DB.prepare(`DELETE FROM external_workers WHERE id=?`).bind(id).run()
+    return c.json({ success: true, deleted: true })
+  }
+})
+
 // 스케줄 삭제
 schedule.delete('/:employeeId/:workDate', async (c) => {
   const user = c.get('user')
