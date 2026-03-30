@@ -214,7 +214,8 @@ schedule.post('/employees', async (c) => {
   const {
     name, team, positionId, position, empNumber, birthDate, hireDate,
     employmentType, workParts, phone, email, address, emergencyContact, note,
-    healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder
+    healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder,
+    salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled
   } = body
 
   if (!name) return c.json({ error: '이름은 필수입니다' }, 400)
@@ -233,15 +234,18 @@ schedule.post('/employees', async (c) => {
        hospital_id, name, team, position_id, position, emp_number, birth_date, hire_date,
        employment_type, work_parts, section, phone, email, address, emergency_contact,
        note, health_cert_expire, health_exam_date, health_exam_status,
-       annual_leave_total, sort_order, is_active
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+       annual_leave_total, sort_order, is_active,
+       salary_type, base_salary, ot_enabled, night_allowance_enabled, holiday_allowance_enabled
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
   ).bind(
     hid, name, team || 'cook', positionId || null, position || '',
     empNumber || '', birthDate || '', hireDate || '',
     employmentType || 'full', JSON.stringify(workParts || []),
     team || 'cook', phone || '', email || '', address || '', emergencyContact || '',
     note || '', healthCertExpire || '', healthExamDate || '',
-    healthExamStatus || 'pending', annualLeaveTotal || 15, finalSortOrder
+    healthExamStatus || 'pending', annualLeaveTotal || 15, finalSortOrder,
+    salaryType || 'monthly', baseSalary || 0,
+    otEnabled ? 1 : 0, nightEnabled ? 1 : 0, holidayEnabled ? 1 : 0
   ).run()
   return c.json({ success: true })
 })
@@ -259,7 +263,8 @@ schedule.put('/employees/:id', async (c) => {
   const {
     name, team, positionId, position, empNumber, birthDate, hireDate, resignDate,
     employmentType, workParts, phone, email, address, emergencyContact, note,
-    healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder, isActive
+    healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder, isActive,
+    salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled
   } = body
 
   await c.env.DB.prepare(
@@ -270,6 +275,8 @@ schedule.put('/employees/:id', async (c) => {
        phone = ?, email = ?, address = ?, emergency_contact = ?, note = ?,
        health_cert_expire = ?, health_exam_date = ?, health_exam_status = ?,
        annual_leave_total = ?, sort_order = ?, is_active = ?,
+       salary_type = ?, base_salary = ?, ot_enabled = ?,
+       night_allowance_enabled = ?, holiday_allowance_enabled = ?,
        updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
@@ -295,6 +302,11 @@ schedule.put('/employees/:id', async (c) => {
     annualLeaveTotal ?? existing.annual_leave_total,
     sortOrder ?? existing.sort_order,
     isActive !== undefined ? isActive : existing.is_active,
+    salaryType ?? existing.salary_type ?? 'monthly',
+    baseSalary !== undefined ? baseSalary : (existing.base_salary ?? 0),
+    otEnabled !== undefined ? (otEnabled ? 1 : 0) : (existing.ot_enabled ?? 0),
+    nightEnabled !== undefined ? (nightEnabled ? 1 : 0) : (existing.night_allowance_enabled ?? 0),
+    holidayEnabled !== undefined ? (holidayEnabled ? 1 : 0) : (existing.holiday_allowance_enabled ?? 0),
     c.req.param('id')
   ).run()
   return c.json({ success: true })
@@ -1469,6 +1481,116 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
     costSettings: costMap,
     otSettings: otMap
   })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 병원별 근무 설정 (법적 경고 기준 + 모듈 ON/OFF)
+// ════════════════════════════════════════════════════════════════
+const DEFAULT_WORK_SETTINGS: Record<string, string> = {
+  daily_max_hours:          '8',
+  weekly_max_hours:         '52',
+  consecutive_max_days:     '6',
+  leave_cluster_threshold:  '3',
+  legal_warning_enabled:    '1',
+  ot_cost_enabled:          '1',
+  dispatch_enabled:         '1',
+}
+
+schedule.get('/work-settings', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const rows = await c.env.DB.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(hospitalId).all<any>()
+  const map: Record<string, string> = { ...DEFAULT_WORK_SETTINGS }
+  for (const r of (rows.results || [])) map[r.setting_key] = r.setting_value
+  return c.json(map)
+})
+
+schedule.post('/work-settings', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
+  const hospitalId = getHospitalId(user, undefined)
+  const body = await c.req.json()
+  for (const [key, value] of Object.entries(body)) {
+    await c.env.DB.prepare(
+      `INSERT INTO hospital_work_settings (hospital_id, setting_key, setting_value)
+       VALUES (?,?,?)
+       ON CONFLICT(hospital_id, setting_key) DO UPDATE SET
+         setting_value=excluded.setting_value, updated_at=datetime('now')`
+    ).bind(hospitalId, key, String(value)).run()
+  }
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 연차 이력 (반차/경조사 등 세부 구분)
+// ════════════════════════════════════════════════════════════════
+schedule.get('/employees/:id/leave-history', async (c) => {
+  const user = c.get('user')
+  const empId = c.req.param('id')
+  const year  = c.req.query('year') || new Date().getFullYear()
+  const emp   = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM employee_leave_history
+     WHERE hospital_id=? AND employee_id=? AND year=?
+     ORDER BY leave_date`
+  ).bind(emp.hospital_id, empId, year).all<any>()
+  return c.json(rows.results || [])
+})
+
+schedule.post('/employees/:id/leave-history', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
+  const empId = c.req.param('id')
+  const emp   = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+  const { leaveDate, leaveSubtype, note } = await c.req.json()
+  const d = new Date(leaveDate)
+  await c.env.DB.prepare(
+    `INSERT INTO employee_leave_history
+       (hospital_id, employee_id, year, month, leave_date, leave_subtype, note)
+     VALUES (?,?,?,?,?,?,?)`
+  ).bind(emp.hospital_id, empId, d.getFullYear(), d.getMonth()+1, leaveDate, leaveSubtype||'annual', note||'').run()
+  return c.json({ success: true })
+})
+
+// 전체 직원 연차 이력 집계 (연차관리 탭용)
+schedule.get('/leaves/history-summary', async (c) => {
+  const user = c.get('user')
+  const year = c.req.query('year') || new Date().getFullYear()
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const rows = await c.env.DB.prepare(
+    `SELECT employee_id, leave_subtype, COUNT(*) as cnt
+     FROM employee_leave_history
+     WHERE hospital_id=? AND year=?
+     GROUP BY employee_id, leave_subtype`
+  ).bind(hospitalId, year).all<any>()
+  // empId → { annual, half_am, half_pm, event, sick } 형태로 변환
+  const summary: Record<number, Record<string, number>> = {}
+  for (const r of (rows.results || [])) {
+    if (!summary[r.employee_id]) summary[r.employee_id] = {}
+    summary[r.employee_id][r.leave_subtype] = r.cnt
+  }
+  return c.json(summary)
+})
+
+// ════════════════════════════════════════════════════════════════
+// 직원 급여형태 업데이트
+// ════════════════════════════════════════════════════════════════
+schedule.put('/employees/:id/salary', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
+  const empId = c.req.param('id')
+  const { salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled } = await c.req.json()
+  await c.env.DB.prepare(
+    `UPDATE employees SET
+       salary_type=?, base_salary=?, ot_enabled=?, night_allowance_enabled=?, holiday_allowance_enabled=?
+     WHERE id=?`
+  ).bind(salaryType||'monthly', baseSalary||0, otEnabled?1:0, nightEnabled?1:0, holidayEnabled?1:0, empId).run()
+  return c.json({ success: true })
 })
 
 export default schedule
