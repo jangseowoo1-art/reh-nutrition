@@ -2071,10 +2071,13 @@ async function renderOrders() {
     if (isThisWeek2) catWeekTotals[catId]  = (catWeekTotals[catId]||0)  + amt
   })
 
-  // 금액 계산 (카테고리 모드일 때는 catDailyData 합산, 아닐 때는 orderData 사용)
+  // 금액 계산 - 항상 전체 발주 기준 (orderList) 사용 (카테고리 미지정 발주 누락 방지)
+  // catDailyData는 카테고리 지정 발주만 포함 → 단일 카테고리 병원에서 일부 누락 가능
   const catMonthTotal = catDailyData.reduce((s, r) => s + (r.total || 0), 0)
   const normalMonthTotal = (orderList||[]).reduce((s,o) => s+(o.total_amount||0), 0)
-  const monthTotal = hasCatsData ? catMonthTotal : normalMonthTotal
+  // 전체 발주(normalMonthTotal)가 catMonthTotal보다 크면 미분류 발주가 있는 것 → 전체 기준 사용
+  const hasNullOrders = normalMonthTotal > catMonthTotal
+  const monthTotal = hasCatsData ? (hasNullOrders ? normalMonthTotal : catMonthTotal) : normalMonthTotal
 
   let catTodayTotal = 0, catWeekTotal = 0
   catDailyData.forEach(r => {
@@ -2087,8 +2090,9 @@ async function renderOrders() {
     if (o.order_date === todayStr) normalTodayTotal += o.total_amount||0
     if (o.order_date >= weekStartStr2 && o.order_date <= weekEndStr2) normalWeekTotal += o.total_amount||0
   })
-  const todayTotal = hasCatsData ? catTodayTotal : normalTodayTotal
-  const weekTotal  = hasCatsData ? catWeekTotal  : normalWeekTotal
+  // 오늘/주간도 미분류 발주가 있으면 전체 기준 사용
+  const todayTotal = hasCatsData ? (normalTodayTotal > catTodayTotal ? normalTodayTotal : catTodayTotal) : normalTodayTotal
+  const weekTotal  = hasCatsData ? (normalWeekTotal  > catWeekTotal  ? normalWeekTotal  : catWeekTotal)  : normalWeekTotal
 
   // ── 이번 달 주차별 계산 (1주~6주) ──
   // 날짜 문자열에서 로컬 Date 생성 헬퍼 (UTC 파싱 버그 방지)
@@ -2119,12 +2123,15 @@ async function renderOrders() {
     }
     // 주차별 목표: 해당 월 내 실제 일수 × 일 예산 (1주차 1일이면 1일치, 6주차 2일이면 2일치)
     const wBudget = dailyBudget > 0 ? dailyBudget * wDays : 0
-    // 카테고리 모드이면 catDailyData에서 주합계 계산, 아니면 orderData 사용
+    // 항상 전체 발주(orderList) 기준으로 주합계 계산 (카테고리 미분류 발주 누락 방지)
+    const wTotalFromOrders = (orderList||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
     let wTotal = 0
-    if (hasCatsData) {
+    if (hasCatsData && !hasNullOrders) {
+      // 미분류 발주가 없으면 catDailyData 사용 (카테고리별 세부 정확도 유지)
       wTotal = catDailyData.filter(r => r.order_date >= wk && r.order_date <= wkEnd).reduce((s,r) => s+(r.total||0), 0)
     } else {
-      wTotal = (orderList||[]).filter(o=>o.order_date>=wk&&o.order_date<=wkEnd).reduce((s,o)=>s+(o.total_amount||0),0)
+      // 미분류 발주가 있거나 카테고리 미사용 → 전체 발주 기준
+      wTotal = wTotalFromOrders
     }
     const wPct = wBudget>0?Math.round(wTotal/wBudget*100):0
     // 이번 주 여부
@@ -10805,6 +10812,14 @@ async function renderAdminDashboard() {
               </div>`).join('')}
             </div>
           </div>` : ''}
+
+          <!-- 계산 상세 보기 버튼 -->
+          <div class="mt-2 pt-2 border-t border-gray-100">
+            <button onclick="showCalcDetail(${h.hospital.id}, '${h.hospital.name}')"
+              class="w-full flex items-center justify-center gap-1.5 text-xs text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-1.5 px-3 rounded-lg transition-colors font-medium">
+              <i class="fas fa-calculator text-xs"></i>계산 상세 보기
+            </button>
+          </div>
         </div>`
       }).join('')}
     </div>
@@ -11205,6 +11220,237 @@ window.toggleHospIssues = (id) => {
     iconEl.className = isHidden
       ? 'fas fa-chevron-down mr-1 transition-transform'
       : 'fas fa-chevron-right mr-1 transition-transform'
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 관리자 계산 상세 보기 모달
+// ════════════════════════════════════════════════════════════════
+window.showCalcDetail = async function(hospitalId, hospitalName) {
+  // 모달 생성 또는 재활용
+  let modal = document.getElementById('calcDetailModal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'calcDetailModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px'
+    modal.onclick = (e) => { if(e.target===modal) modal.style.display='none' }
+    document.body.appendChild(modal)
+  }
+  modal.style.display = 'flex'
+  modal.innerHTML = `
+    <div style="background:white;border-radius:16px;width:100%;max-width:680px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="padding:20px 24px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:white;z-index:1;border-radius:16px 16px 0 0">
+        <div>
+          <h2 style="font-size:16px;font-weight:700;color:#1f2937;display:flex;align-items:center;gap:8px">
+            <i class="fas fa-calculator" style="color:#6366f1"></i>계산 상세 보기
+          </h2>
+          <p style="font-size:12px;color:#9ca3af;margin-top:2px">${hospitalName} · ${App.currentYear}년 ${App.currentMonth}월</p>
+        </div>
+        <button onclick="document.getElementById('calcDetailModal').style.display='none'"
+          style="width:32px;height:32px;border-radius:50%;border:1px solid #e5e7eb;background:white;cursor:pointer;font-size:14px;color:#6b7280">✕</button>
+      </div>
+      <div id="calcDetailBody" style="padding:20px 24px">
+        <div style="text-align:center;padding:40px"><div class="loading-spinner" style="margin:auto"></div></div>
+      </div>
+    </div>`
+
+  const body = document.getElementById('calcDetailBody')
+  try {
+    const token = App.token || localStorage.getItem('token')
+    const y = App.currentYear, m = App.currentMonth
+
+    // 데이터 병렬 로드
+    const [summary, catMonthly, mealStats] = await Promise.all([
+      api('GET', `/api/admin/dashboard/${y}/${m}`).catch(() => null),
+      api('GET', `/api/orders/category-monthly/${y}/${m}?hospitalId=${hospitalId}`).catch(() => null),
+      api('GET', `/api/schedule/meal-stats/${y}/${m}?hospitalId=${hospitalId}`).catch(() => null)
+    ])
+
+    // 해당 병원 데이터 추출
+    const hosp = (summary?.hospitals||[]).find(h => h.hospital?.id === hospitalId) || {}
+    const settings = hosp.settings || {}
+    const vendors = hosp.vendors || []
+    const catDietPrices = hosp.catDietPrices || []
+    const ms = hosp.mealStats || {}
+
+    const fmt = v => (v||0).toLocaleString()
+    const fmtW = v => {
+      v = v||0
+      if(v>=100000000) return `${(v/100000000).toFixed(1)}억원`
+      if(v>=10000) return `${Math.round(v/10000)}만원`
+      return `${v.toLocaleString()}원`
+    }
+
+    // 발주 합계 계산
+    // hosp.totalUsed: daily_orders 전체 집계(NULL 카테고리 포함) - 정확한 총발주금액
+    const totalUsedExact = hosp.totalUsed || vendors.reduce((s,v) => s+(v.total_used||0), 0)
+    const vendorTotal = vendors.reduce((s,v) => s+(v.total_used||0), 0)
+    const nullCatAmt = (catMonthly?.monthly||[]).find(r=>r.patient_category_id===null)?.total || 0
+    const catAmt = (catMonthly?.monthly||[]).find(r=>r.patient_category_id!==null)?.total || 0
+    // vendor 합계와 totalUsed 차이 (이중집계/누락 감지)
+    const totalDiscrepancy = totalUsedExact - vendorTotal
+
+    // 식수 합산 - catDietPrices에 계산된 값 우선 사용
+    const catMealsTotal = catDietPrices.reduce((s,c) => s+(c.monthMeals||0), 0)
+    const totalMeals = (ms.total_staff||0) + (ms.total_guardian||0) + catMealsTotal
+
+    // 식단가 계산
+    const targetMealPrice = settings.meal_price || 0
+    // catDietPrices가 있으면 첫번째 카테고리의 monthMeals 사용 (meals_include_keys 기반 정확한 식수)
+    const allMeals = catDietPrices.length>0 ? (catDietPrices[0]?.monthMeals || 0) : totalMeals
+    // 실제 식단가: totalUsedExact(전체 발주) ÷ allMeals
+    const actualMealPrice = allMeals>0 ? Math.round(totalUsedExact/allMeals) : 0
+
+    body.innerHTML = `
+      <!-- 섹션 1: 발주 합산 -->
+      <div style="margin-bottom:20px">
+        <h3 style="font-size:13px;font-weight:700;color:#374151;margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid #f3f4f6;display:flex;align-items:center;gap:6px">
+          <i class="fas fa-receipt" style="color:#6366f1"></i>① 발주금액 합산
+        </h3>
+        <div style="background:#f8fafc;border-radius:10px;overflow:hidden;border:1px solid #e5e7eb">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead>
+              <tr style="background:#f1f5f9">
+                <th style="padding:8px 12px;text-align:left;color:#6b7280;font-weight:600">업체명</th>
+                <th style="padding:8px 12px;text-align:right;color:#6b7280;font-weight:600">발주금액</th>
+                <th style="padding:8px 12px;text-align:right;color:#6b7280;font-weight:600">예산</th>
+                <th style="padding:8px 12px;text-align:right;color:#6b7280;font-weight:600">진행률</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${vendors.map((v,i) => {
+                const pct = v.monthly_budget>0 ? Math.round((v.total_used||0)/v.monthly_budget*100) : null
+                const over = pct!==null && pct>=100
+                return `<tr style="border-top:1px solid #f1f5f9;background:${i%2===0?'white':'#fafafa'}">
+                  <td style="padding:7px 12px;color:#374151">${v.name}</td>
+                  <td style="padding:7px 12px;text-align:right;font-weight:600;color:${over?'#dc2626':'#1f2937'}">${fmt(v.total_used||0)}원</td>
+                  <td style="padding:7px 12px;text-align:right;color:#9ca3af">${v.monthly_budget>0?fmt(v.monthly_budget)+'원':'미설정'}</td>
+                  <td style="padding:7px 12px;text-align:right;color:${over?'#dc2626':pct>=80?'#d97706':'#16a34a'};font-weight:600">${pct!==null?pct+'%':'-'}</td>
+                </tr>`
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr style="border-top:2px solid #e5e7eb;background:#eff6ff">
+                <td style="padding:9px 12px;font-weight:700;color:#1e40af">업체별 합계</td>
+                <td style="padding:9px 12px;text-align:right;font-weight:800;color:#1e40af;font-size:13px">${fmt(vendorTotal)}원</td>
+                <td style="padding:9px 12px;text-align:right;font-weight:700;color:#6b7280">${settings.total_budget>0?fmt(settings.total_budget)+'원':'-'}</td>
+                <td style="padding:9px 12px;text-align:right;font-weight:700;color:${settings.total_budget>0&&vendorTotal>settings.total_budget?'#dc2626':'#16a34a'}">${settings.total_budget>0?Math.round(vendorTotal/settings.total_budget*100)+'%':'-'}</td>
+              </tr>
+              <tr style="border-top:2px solid #dbeafe;background:#dbeafe">
+                <td style="padding:9px 12px;font-weight:700;color:#1e3a8a">실제 총 발주 (전체)</td>
+                <td style="padding:9px 12px;text-align:right;font-weight:800;color:#1e3a8a;font-size:14px">${fmt(totalUsedExact)}원</td>
+                <td colspan="2" style="padding:9px 12px;text-align:right;font-size:11px;color:#6b7280">
+                  ${totalDiscrepancy !== 0 ? `업체합계와 차이: <span style="color:${totalDiscrepancy>0?'#d97706':'#dc2626'};font-weight:700">${totalDiscrepancy>0?'+':''}${fmt(totalDiscrepancy)}원</span>` : '업체합계와 일치'}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        ${nullCatAmt>0 ? `
+        <div style="margin-top:8px;padding:8px 12px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:11px;color:#92400e">
+          <i class="fas fa-info-circle mr-1"></i>
+          <strong>카테고리 미지정 발주:</strong> ${fmt(nullCatAmt)}원 (전체 발주에 포함됨)
+          &nbsp;|&nbsp;<strong>카테고리 지정 발주:</strong> ${fmt(catAmt)}원
+        </div>` : ''}
+      </div>
+
+      <!-- 섹션 2: 식수 합산 -->
+      <div style="margin-bottom:20px">
+        <h3 style="font-size:13px;font-weight:700;color:#374151;margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid #f3f4f6;display:flex;align-items:center;gap:6px">
+          <i class="fas fa-utensils" style="color:#10b981"></i>② 식수 합산
+        </h3>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+          ${[
+            ['직원식', ms.total_staff||0, '#6366f1'],
+            ['보호자식', ms.total_guardian||0, '#8b5cf6'],
+            ...catDietPrices.map(c => [c.category_name+'(카테고리)', c.monthMeals||0, '#10b981'])
+          ].map(([label,val,color]) => `
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:12px;color:#6b7280">${label}</span>
+            <span style="font-size:14px;font-weight:700;color:${color}">${fmt(val)}식</span>
+          </div>`).join('')}
+          <div style="background:#eff6ff;border:2px solid #bfdbfe;border-radius:8px;padding:10px;display:flex;justify-content:space-between;align-items:center;grid-column:1/-1">
+            <span style="font-size:12px;font-weight:700;color:#1e40af">합계 식수 (계산에 사용된 값)</span>
+            <span style="font-size:16px;font-weight:800;color:#1e40af">${fmt(allMeals)}식</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 섹션 3: 식단가 계산식 -->
+      <div style="margin-bottom:20px">
+        <h3 style="font-size:13px;font-weight:700;color:#374151;margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid #f3f4f6;display:flex;align-items:center;gap:6px">
+          <i class="fas fa-divide" style="color:#f59e0b"></i>③ 식단가 계산식
+        </h3>
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:16px">
+          <div style="font-size:12px;color:#78350f;margin-bottom:12px;font-weight:600">
+            <i class="fas fa-info-circle mr-1"></i>식단가 = 월 발주총액 ÷ 월 총 식수
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <div style="background:white;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;text-align:center">
+              <div style="font-size:10px;color:#9ca3af;margin-bottom:2px">월 발주총액</div>
+              <div style="font-size:18px;font-weight:800;color:#1f2937">${fmtW(totalUsedExact)}</div>
+              <div style="font-size:9px;color:#9ca3af">전체 발주(미분류 포함)</div>
+            </div>
+            <div style="font-size:24px;color:#d97706;font-weight:700">÷</div>
+            <div style="background:white;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;text-align:center">
+              <div style="font-size:10px;color:#9ca3af;margin-bottom:2px">월 총 식수</div>
+              <div style="font-size:18px;font-weight:800;color:#1f2937">${fmt(allMeals)}식</div>
+              <div style="font-size:9px;color:#9ca3af">직원+보호자+환자군</div>
+            </div>
+            <div style="font-size:24px;color:#d97706;font-weight:700">=</div>
+            <div style="background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:8px;padding:10px 14px;text-align:center">
+              <div style="font-size:10px;color:#fef3c7;margin-bottom:2px">현재 식단가</div>
+              <div style="font-size:20px;font-weight:800;color:white">${allMeals>0?actualMealPrice.toLocaleString():'-'}원/식</div>
+            </div>
+          </div>
+          ${targetMealPrice>0 ? `
+          <div style="margin-top:12px;padding:8px 12px;background:white;border:1px solid #e5e7eb;border-radius:8px;display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:12px;color:#6b7280"><i class="fas fa-bullseye mr-1 text-purple-500"></i>목표 식단가 (관리자 설정)</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:16px;font-weight:800;color:#7c3aed">${fmt(targetMealPrice)}원/식</span>
+              ${allMeals>0 ? (() => {
+                const diff = actualMealPrice - targetMealPrice
+                return `<span style="font-size:12px;font-weight:700;color:${diff>0?'#dc2626':'#16a34a'}">${diff>0?'▲ +':' ▼ '}${Math.abs(diff).toLocaleString()}원 ${diff>0?'초과':'여유'}</span>`
+              })() : ''}
+            </div>
+          </div>` : ''}
+        </div>
+      </div>
+
+      <!-- 섹션 4: 사용 데이터 원본 -->
+      <div>
+        <h3 style="font-size:13px;font-weight:700;color:#374151;margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid #f3f4f6;display:flex;align-items:center;gap:6px">
+          <i class="fas fa-database" style="color:#6b7280"></i>④ 사용 데이터 원본
+        </h3>
+        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px;font-size:11px;color:#374151">
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+            ${[
+              ['예산 설정 기준월', `${settings.year||'-'}년 ${settings.month||'-'}월`],
+              ['월 총 예산', fmtW(settings.total_budget||0)],
+              ['목표 식단가 (설정값)', targetMealPrice>0?fmt(targetMealPrice)+'원/식':'미설정'],
+              ['이벤트 예산', fmtW(settings.event_budget||0)],
+              ['업체 수', vendors.length+'개'],
+              ['실제 총 발주금액 (전체)', fmtW(totalUsedExact)],
+              ['업체별 합산 발주금액', fmtW(vendorTotal)],
+              ['카테고리 지정 발주', fmtW(catAmt)],
+              ['카테고리 미지정 발주', fmtW(nullCatAmt)],
+              ['직원식수', fmt(ms.total_staff||0)+'식'],
+              ['보호자식수', fmt(ms.total_guardian||0)+'식'],
+              ['카테고리 식수 (meals_include_keys 기반)', fmt(catDietPrices.reduce((s,c)=>s+(c.monthMeals||0),0))+'식'],
+              ['계산에 사용된 총 식수', fmt(allMeals)+'식'],
+              ['현재 식단가 (전체발주÷식수)', fmt(actualMealPrice)+'원/식'],
+              ['목표 식단가 (관리자 설정)', targetMealPrice>0?fmt(targetMealPrice)+'원/식':'미설정'],
+            ].map(([k,v]) => `
+            <div style="display:flex;justify-content:space-between;padding:5px 8px;background:white;border-radius:6px;border:1px solid #f1f5f9">
+              <span style="color:#9ca3af">${k}</span>
+              <span style="font-weight:600;color:#1f2937">${v}</span>
+            </div>`).join('')}
+          </div>
+        </div>
+      </div>
+    `
+  } catch(e) {
+    body.innerHTML = `<div style="text-align:center;padding:40px;color:#ef4444"><i class="fas fa-exclamation-triangle" style="font-size:24px;display:block;margin-bottom:8px"></i>데이터 로드 실패: ${e.message}</div>`
   }
 }
 

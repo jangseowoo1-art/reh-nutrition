@@ -854,7 +854,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         const monthAmt = catMonthMap[cat.id] || 0
         const todayAmt = catTodayMap[cat.id] || 0
         const settings2 = catSetMap2[cat.id] || {}
-        const targetPrice = settings2.target_meal_price || 0
+        // targetPrice: ref_meal_price(관리자 설정 기준값) 우선, 없으면 monthly_settings.meal_price, 최후에 target_meal_price(예산역산)
+        const targetPrice = settings2.ref_meal_price || settings?.meal_price || settings2.target_meal_price || 0
         const monthBudget = settings2.monthly_budget || 0
         const workDays = settings2.working_days || workingDays
 

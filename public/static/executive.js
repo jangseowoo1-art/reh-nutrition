@@ -1,5 +1,5 @@
 // ── executive.js ── 운영진 전용 대시보드
-// 버전: 20260321
+// 버전: 20260330c
 
 ;(function() {
 'use strict'

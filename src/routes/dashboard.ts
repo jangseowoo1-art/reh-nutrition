@@ -4,6 +4,7 @@ const dashboard = new Hono<{ Bindings: { DB: D1Database } }>()
 
 // 월별 대시보드 요약
 dashboard.get('/summary/:year/:month', async (c) => {
+  try {
   const user = c.get('user')
   const rawId = user.role === 'admin' ? c.req.query('hospitalId') : user.hospitalId
   const hospitalId = rawId ? Number(rawId) : null
@@ -307,6 +308,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
     GROUP BY patient_category_id
   `).bind(hospitalId, year, month).all<any>()
 
+  // NULL 카테고리 발주(미분류 발주) - 단일 카테고리 병원에서는 해당 카테고리에 포함시킴
+  const nullCatMonthlyOrder = await c.env.DB.prepare(`
+    SELECT COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND patient_category_id IS NULL
+      AND strftime('%Y', order_date) = ?
+      AND strftime('%m', order_date) = printf('%02d', ?)
+  `).bind(hospitalId, year, month).first<any>()
+
   const catTodayOrders = await c.env.DB.prepare(`
     SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
     FROM daily_orders
@@ -315,6 +326,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
       AND order_date = ?
     GROUP BY patient_category_id
   `).bind(hospitalId, today).all<any>()
+
+  // NULL 카테고리 오늘 발주
+  const nullCatTodayOrder = await c.env.DB.prepare(`
+    SELECT COALESCE(SUM(total_amount), 0) as total
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND patient_category_id IS NULL
+      AND order_date = ?
+  `).bind(hospitalId, today).first<any>()
 
   // 카테고리 설정 조회: 기준월(2026.3) 이전 → 3월 값, 이후 → 직전 설정 상속
   let catSettingsDash = await c.env.DB.prepare(`
@@ -413,6 +433,27 @@ dashboard.get('/summary/:year/:month', async (c) => {
   ;(catMonthlyOrders.results||[]).forEach((r:any) => { catMonthMap2[r.patient_category_id] = r.total })
   const catTodayMap2: Record<number, number> = {}
   ;(catTodayOrders.results||[]).forEach((r:any) => { catTodayMap2[r.patient_category_id] = r.total })
+
+  // NULL 발주 분배: 카테고리가 1개인 병원은 미분류 발주를 해당 카테고리에 포함
+  // 카테고리가 2개 이상인 병원은 NULL 발주를 별도 처리 (catDietPrices 합산에서 제외되므로)
+  const nullMonthAmt = nullCatMonthlyOrder?.total || 0
+  const nullTodayAmt = nullCatTodayOrder?.total || 0
+  if (nullMonthAmt > 0 || nullTodayAmt > 0) {
+    const catCount = (patientCatsDash.results||[]).length
+    if (catCount === 1) {
+      // 단일 카테고리: NULL 발주를 해당 카테고리에 합산
+      const singleCatId = (patientCatsDash.results||[])[0]?.id
+      if (singleCatId) {
+        if (nullMonthAmt > 0) catMonthMap2[singleCatId] = (catMonthMap2[singleCatId]||0) + nullMonthAmt
+        if (nullTodayAmt > 0) catTodayMap2[singleCatId] = (catTodayMap2[singleCatId]||0) + nullTodayAmt
+      }
+    }
+    // 카테고리가 2개 이상인 경우: NULL 발주는 catMonthMap2에 -1 키로 저장 (전체 합산 시 포함용)
+    if (catCount > 1) {
+      catMonthMap2[-1] = nullMonthAmt
+      catTodayMap2[-1] = nullTodayAmt
+    }
+  }
   const catSetMap3: Record<number, any> = {}
   ;(catSettingsDash.results||[]).forEach((s3:any) => { catSetMap3[s3.patient_category_id] = s3 })
   const prevCatSetMap3: Record<number, any> = {}
@@ -489,7 +530,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   const catDietPrices = (patientCatsDash.results||[]).map((cat:any) => {
     const s3 = catSetMap3[cat.id] || {}
-    const targetPrice = s3.target_meal_price || 0
+    // targetPrice: ref_meal_price(관리자 설정 기준값) 우선, 없으면 monthly_settings.meal_price, 최후에 target_meal_price(예산역산)
+    const targetPrice = s3.ref_meal_price || settings?.meal_price || s3.target_meal_price || 0
     const monthBudget = s3.monthly_budget || 0
     const workDays = s3.working_days || workingDays
     const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
@@ -559,7 +601,9 @@ dashboard.get('/summary/:year/:month', async (c) => {
       mealPrice: monthDietPrice,  // 보고서 PAGE3 호환 필드 (monthDietPrice와 동일)
       todayCatMeals, todayDietPrice, catRatio,
       prevTargetPrice, prevMonthBudget,
-      budgetKeys, mealsKeys
+      budgetKeys, mealsKeys,
+      refMealPrice: s3.ref_meal_price || 0,  // 관리자 설정 기준 식단가
+      settingsMealPrice: settings?.meal_price || 0  // monthly_settings 기준 식단가
     }
   })
 
@@ -872,6 +916,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
   }
 
   return c.json({
+    totalUsed,
     settings,
     vendors: vendors.results,
     dailyOrders: dailyOrders.results,
@@ -956,6 +1001,10 @@ dashboard.get('/summary/:year/:month', async (c) => {
       weekProgress: weeklyBudget > 0 ? ((weekOrders?.week_total || 0) / weeklyBudget * 100).toFixed(1) : '0.0'
     }
   })
+  } catch(err: any) {
+    console.error('[dashboard/summary] ERROR:', err?.message || err, err?.stack)
+    return c.json({ error: 'dashboard summary error: ' + (err?.message || String(err)) }, 500)
+  }
 })
 
 // 연간 월별 비교

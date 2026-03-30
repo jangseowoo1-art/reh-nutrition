@@ -84,8 +84,15 @@ app.get('/executive', (c) => { c.header('Cache-Control','no-store'); return c.ht
 // ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
 app.notFound((c) => c.json({ error: 'Not Found' }, 404))
 app.onError((err, c) => {
-  console.error('API Error:', err)
-  return c.json({ error: err.message || 'Internal Server Error' }, 500)
+  console.error('API Error:', err?.message || err, err?.stack?.split('\n').slice(0,3).join(' | '))
+  try {
+    return c.json({ error: err?.message || 'Internal Server Error' }, 500)
+  } catch(e2) {
+    console.error('onError fallback:', e2)
+    return new Response(JSON.stringify({ error: err?.message || 'Internal Server Error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' }
+    })
+  }
 })
 
 export default app
