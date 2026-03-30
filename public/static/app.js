@@ -2072,12 +2072,18 @@ async function renderOrders() {
   })
 
   // 금액 계산 - 항상 전체 발주 기준 (orderList) 사용 (카테고리 미지정 발주 누락 방지)
-  // catDailyData는 카테고리 지정 발주만 포함 → 단일 카테고리 병원에서 일부 누락 가능
+  // catDailyData(dailyByVendorCat)는 patient_category_id IS NOT NULL 발주만 포함 → NULL 카테고리 누락
+  // catOrderData.monthly는 전체 집계 포함 (NULL 카테고리도 포함), 더 신뢰할 수 있음
+  const catMonthTotalFromMonthly = (catOrderData?.monthly || []).reduce((s, r) => s + (r.total || 0), 0)
   const catMonthTotal = catDailyData.reduce((s, r) => s + (r.total || 0), 0)
   const normalMonthTotal = (orderList||[]).reduce((s,o) => s+(o.total_amount||0), 0)
   // 전체 발주(normalMonthTotal)가 catMonthTotal보다 크면 미분류 발주가 있는 것 → 전체 기준 사용
   const hasNullOrders = normalMonthTotal > catMonthTotal
-  const monthTotal = hasCatsData ? (hasNullOrders ? normalMonthTotal : catMonthTotal) : normalMonthTotal
+  // 이슈2&5 수정: monthly 집계(catMonthTotalFromMonthly) 또는 전체 발주(normalMonthTotal) 중 더 큰 값 사용
+  // NULL 카테고리 발주가 포함된 값을 선택하여 53.6M → 59.5M 정확히 반영
+  const monthTotal = hasCatsData
+    ? Math.max(catMonthTotalFromMonthly, normalMonthTotal)
+    : normalMonthTotal
 
   let catTodayTotal = 0, catWeekTotal = 0
   catDailyData.forEach(r => {
@@ -2200,21 +2206,23 @@ async function renderOrders() {
       ;(catOrderData?.prevSettings || []).forEach(s => { prevSetMap[s.patient_category_id] = s })
 
       // 가중평균 목표 식단가 계산 (예산 비중 기반)
+      // 이슈1 수정: ref_meal_price(관리자 설정 기준가) 우선, 없으면 target_meal_price(예산 기반) 사용
       const isSingleCatOrd = cats.length === 1
       const totalMonthBudget = cats.reduce((s,c) => s + (catSetMap[c.id]?.monthly_budget||0), 0)
       const weightedTarget = isSingleCatOrd
-        ? (catSetMap[cats[0]?.id]?.target_meal_price || 0)
+        ? (catSetMap[cats[0]?.id]?.ref_meal_price || catSetMap[cats[0]?.id]?.target_meal_price || 0)
         : (totalMonthBudget > 0
           ? Math.round(cats.reduce((s,c) => {
               const w = (catSetMap[c.id]?.monthly_budget||0) / totalMonthBudget
-              return s + (catSetMap[c.id]?.target_meal_price||0) * w
+              return s + ((catSetMap[c.id]?.ref_meal_price || catSetMap[c.id]?.target_meal_price)||0) * w
             }, 0))
           : 0)
 
       const catRows = cats.map(cat => {
         const color = getCategoryColorHex(cat.category_key)
         const s = catSetMap[cat.id] || {}
-        const targetPrice = s.target_meal_price || 0
+        // 이슈1 수정: ref_meal_price(관리자 설정 기준가) 우선, 없으면 target_meal_price(예산 기반) 사용
+        const targetPrice = s.ref_meal_price || s.target_meal_price || 0
         // 월 발주금액: window._catDietPricesData (대시보드에서 로드한 catDietPrices)
         const dcEntry = (window._catDietPricesData||[]).find(d => d.id === cat.id)
         const initMonthAmt = dcEntry?.monthAmt || 0
@@ -5057,7 +5065,7 @@ function updateBudgetProgressPanel() {
     // 현재 화면에 보이는(편집 중인) input만 해당 날짜를 덮어씀.
     const dailyMapForPanel = window._catDailyMap || {}
 
-    // _catDailyMap 기반 집계 (전체 월)
+    // _catDailyMap 기반 집계 (카테고리 지정 발주)
     Object.entries(dailyMapForPanel).forEach(([dk, vMap]) => {
       Object.entries(vMap).forEach(([vid, cMap]) => {
         const vInt = parseInt(vid)
@@ -5080,6 +5088,27 @@ function updateBudgetProgressPanel() {
         })
       })
     })
+
+    // 이슈2&5 수정: NULL 카테고리 발주(카테고리 미지정) 누락 방지
+    // _catDailyMap은 patient_category_id IS NOT NULL 발주만 포함
+    // _ordersData(전체 발주)와 비교해 누락된 NULL 카테고리 발주를 monthTotal에 추가
+    const allOrdersData = window._ordersData || []
+    const catDailyTotal = Object.values(dailyMapForPanel).reduce((s, vMap) =>
+      s + Object.values(vMap).reduce((s2, cMap) =>
+        s2 + Object.values(cMap).reduce((s3, r) => s3 + (r.total||0), 0), 0), 0)
+    const allOrdersTotal = allOrdersData.reduce((s, o) => s + (o.total_amount||0), 0)
+    const nullCatTotal = allOrdersTotal - catDailyTotal
+    if (nullCatTotal > 0) {
+      monthTotal += nullCatTotal
+      // NULL 카테고리 오늘/주간 발주도 반영
+      allOrdersData.forEach(o => {
+        if (o.patient_category_id != null) return  // 카테고리 지정 발주는 이미 반영
+        const amt = o.total_amount || 0
+        if (amt === 0) return
+        if (o.order_date === todayStr) todayTotal += amt
+        if (o.order_date >= weekStartStr2 && o.order_date <= weekEndStr2) weekTotal += amt
+      })
+    }
 
     // ── 현재 input 이벤트로 편집 중인 쌍만 DOM 값으로 교체 (_activeEditPair) ──
     const aepPanel = window._activeEditPair
@@ -5326,7 +5355,9 @@ function updateBudgetProgressPanel() {
   savedWeeklyData.forEach((w, i) => {
     const num  = i + 1
     const wkAmt = weeklyTotals[w.wk] || 0
-    const wkPct = wBudget > 0 ? Math.round(wkAmt / wBudget * 100) : 0
+    // 이슈4 수정: 각 주차의 실제 예산(w.wBudget)을 사용 (wBudget=현재주예산(고정)을 모든 주에 적용하면 400% 초과 발생)
+    const thisWkBudget = w.wBudget > 0 ? w.wBudget : wBudget
+    const wkPct = thisWkBudget > 0 ? Math.round(wkAmt / thisWkBudget * 100) : 0
     const isCW  = (todayStr >= w.wk && todayStr <= w.wkEnd)
     updateBudgetCard(`week${num}-card`, `weekPct${num}`, `weekAmt${num}`, `weekBar${num}`, wkPct, wkAmt, isCW)
   })
@@ -5516,7 +5547,8 @@ function updateBudgetProgressPanel() {
       // 카테고리별 월 식단가 업데이트 (formula 기반: 선택 예산항목 ÷ 선택 식수항목)
       catsList.forEach(cat => {
         const s3 = catSetMap3[cat.id] || {}
-        const targetPrice3 = s3.target_meal_price || 0
+        // 이슈1 수정: ref_meal_price(관리자 설정 기준가) 우선, 없으면 target_meal_price(예산 기반) 사용
+        const targetPrice3 = s3.ref_meal_price || s3.target_meal_price || 0
 
         // formula 설정 (백엔드에서 받은 catDietPricesData 활용)
         const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
@@ -5528,27 +5560,42 @@ function updateBudgetProgressPanel() {
         const catKeyIdMap3 = {}
         catsList.forEach(c2 => { catKeyIdMap3[c2.category_key] = c2.id })
 
-        // 월 발주금액: budgetKeys 기반으로 포함된 카테고리들의 합산 (현재 입력값 실시간 반영)
+        // 월 발주금액: _catDailyMap 기반으로 집계 (DOM 직접 읽기 대신 저장된 데이터 사용)
+        // DOM 직접 읽기 문제: 숨겨진 input까지 합산하여 이중계산 발생
+        // 수정: _catDailyMap 사용 + 현재 편집 중인 쌍(_activeEditPair)만 DOM 값으로 교체
         let catMonthAmtLive = 0
+        const dailyMapForCat = window._catDailyMap || {}
+        const targetCatIds3 = new Set()
         if (hasFormula3 && budgetKeys3.length > 0) {
           budgetKeys3.forEach(bKey => {
             const bCatId = catKeyIdMap3[bKey]
-            if (bCatId !== undefined) {
-              document.querySelectorAll(`.cat-order-input[data-category="${bCatId}"]`).forEach(inp => {
-                const field = inp.dataset.field
-                const val = parseOrderVal(inp.value)
-                if (field === 'taxable') catMonthAmtLive += val + Math.round(val*0.1)
-                else catMonthAmtLive += val
-              })
-            }
+            if (bCatId !== undefined) targetCatIds3.add(String(bCatId))
           })
         } else {
-          document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
-            const field = inp.dataset.field
-            const val = parseOrderVal(inp.value)
-            if (field === 'taxable') catMonthAmtLive += val + Math.round(val*0.1)
-            else catMonthAmtLive += val
+          targetCatIds3.add(String(cat.id))
+        }
+        Object.entries(dailyMapForCat).forEach(([dk3, vMap3]) => {
+          Object.entries(vMap3).forEach(([vid3, cMap3]) => {
+            const vendorObj3 = (window._ordersVendors||[]).find(v=>v.id===parseInt(vid3))
+            if (!vendorObj3 || vendorObj3.is_card_type) return
+            Object.entries(cMap3).forEach(([cid3, r3]) => {
+              if (targetCatIds3.has(String(cid3))) {
+                catMonthAmtLive += r3.total || 0
+              }
+            })
           })
+        })
+        // 현재 편집 중인 쌍만 DOM 값으로 교체
+        const aep3 = window._activeEditPair
+        if (aep3 && targetCatIds3.has(String(aep3.catId))) {
+          const savedAmt3 = ((dailyMapForCat[aep3.date]||{})[aep3.vendorId]||{})[aep3.catId]?.total || 0
+          const tbody5 = document.getElementById('ordersTbody')
+          const sel5 = `.cat-order-input[data-vendor="${aep3.vendorId}"][data-category="${aep3.catId}"][data-date="${aep3.date}"]`
+          const tx5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="taxable"]`)?.value)
+          const ex5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="exempt"]`)?.value)
+          const tot5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="total"]`)?.value)
+          const domAmt5 = tx5 > 0 || ex5 > 0 ? tx5 + Math.round(tx5*0.1) + ex5 : tot5
+          catMonthAmtLive += domAmt5 - savedAmt3
         }
 
         // 월 실입력 식수: mealsKeys 기반으로 포함된 식수 항목 합산
