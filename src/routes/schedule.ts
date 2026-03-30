@@ -13,6 +13,109 @@ function getHospitalId(user: any, paramHospitalId?: string): number {
 }
 
 // ════════════════════════════════════════════════════════════════
+// 헬퍼: 근무시간 자동계산 (스케줄 기반)
+// ════════════════════════════════════════════════════════════════
+
+/** 시간 문자열 "HH:MM" → 분 */
+function timeToMinutes(t: string): number {
+  if (!t) return 0
+  const [h, m] = t.split(':').map(Number)
+  return h * 60 + (m || 0)
+}
+
+/** 근무시간 계산 결과 */
+interface WorkHourCalc {
+  basicHours: number      // 기본 근무시간 (휴게 제외)
+  otHours: number         // 연장근로 (기본 8h 초과분)
+  nightHours: number      // 야간근로 (22:00-06:00 구간)
+  isHolidayWork: boolean  // 휴일 근무 여부
+  holidayHours: number    // 휴일 근무시간
+}
+
+/**
+ * shift의 start_time/end_time 기반으로 근무시간 계산
+ * - 기본 근무시간: 총 근무 - 휴게(1h 이상 시)
+ * - OT: 기본 근무시간 중 8h 초과분
+ * - 야간: 22:00~06:00(익일) 구간
+ * - 휴일: 토/일/공휴일 여부
+ */
+function calcWorkHours(
+  startTime: string, endTime: string,
+  workDate: string, holidays: Set<string>
+): WorkHourCalc {
+  if (!startTime || !endTime) {
+    return { basicHours:8, otHours:0, nightHours:0, isHolidayWork:false, holidayHours:0 }
+  }
+
+  const startMin = timeToMinutes(startTime)
+  let endMin     = timeToMinutes(endTime)
+  if (endMin <= startMin) endMin += 24 * 60  // 자정 넘김 처리
+
+  const totalMin = endMin - startMin
+  const breakMin = totalMin >= 480 ? 60 : totalMin >= 240 ? 30 : 0  // 8h이상→1h, 4h이상→30min
+  const workMin  = totalMin - breakMin
+  const basicH   = workMin / 60
+  const otH      = Math.max(0, basicH - 8)
+
+  // 야간 구간 계산 (22:00=1320분, 06:00+24h=1800분)
+  const nightStart = 22 * 60        // 1320
+  const nightEnd   = (6 + 24) * 60  // 1800
+  let nightMin = 0
+  // 근무 구간과 야간 구간 교집합
+  const overlapStart = Math.max(startMin, nightStart)
+  const overlapEnd   = Math.min(endMin, nightEnd)
+  if (overlapEnd > overlapStart) nightMin += overlapEnd - overlapStart
+  // 새벽 0~6 구간도 포함 (startMin < 6*60 케이스)
+  if (startMin < 6 * 60) {
+    nightMin += Math.max(0, Math.min(endMin, 6*60) - startMin)
+  }
+  const nightH = nightMin / 60
+
+  // 휴일 여부 (토=6, 일=0)
+  const dow = new Date(workDate).getDay()
+  const isHolidayWork = dow === 0 || dow === 6 || holidays.has(workDate)
+  const holidayH = isHolidayWork ? basicH : 0
+
+  return {
+    basicHours:    Math.round(basicH   * 100) / 100,
+    otHours:       Math.round(otH      * 100) / 100,
+    nightHours:    Math.round(nightH   * 100) / 100,
+    isHolidayWork,
+    holidayHours:  Math.round(holidayH * 100) / 100
+  }
+}
+
+/**
+ * 직원의 한 달 스케줄에서 주휴수당 대상 주 계산
+ * 주 15h 이상 개근(결근 없음)한 주에 주휴수당 1일분 발생
+ */
+function calcWeeklyHolidayPay(dailyMap: Record<string, number>, year: number, month: number): number {
+  // 해당 월의 모든 주를 순회
+  const firstDay = new Date(year, month - 1, 1)
+  const lastDay  = new Date(year, month, 0)
+  let weeklyHolidayDays = 0
+  let weekStart = new Date(firstDay)
+  // 월요일 기준 주
+  const dow0 = firstDay.getDay()
+  if (dow0 !== 1) {
+    weekStart.setDate(firstDay.getDate() - ((dow0 + 6) % 7))
+  }
+
+  while (weekStart <= lastDay) {
+    let weekHours = 0
+    let weekEnd = new Date(weekStart)
+    weekEnd.setDate(weekStart.getDate() + 6) // 일요일
+    for (let d = new Date(weekStart); d <= weekEnd; d.setDate(d.getDate() + 1)) {
+      const ds = d.toISOString().slice(0, 10)
+      weekHours += dailyMap[ds] || 0
+    }
+    if (weekHours >= 15) weeklyHolidayDays++
+    weekStart.setDate(weekStart.getDate() + 7)
+  }
+  return weeklyHolidayDays
+}
+
+// ════════════════════════════════════════════════════════════════
 // 직위(포지션) 관리
 // ════════════════════════════════════════════════════════════════
 
@@ -635,38 +738,100 @@ schedule.get('/:year/:month', async (c) => {
   })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 헬퍼: 스케줄 저장 시 근무시간 자동 계산 후 DB 업서트
+// ════════════════════════════════════════════════════════════════
+async function upsertScheduleWithCalc(
+  db: D1Database,
+  hospitalId: number,
+  employeeId: number,
+  workDate: string,
+  shiftCode: string,
+  shiftId: number | null,
+  leaveType: string | null,
+  isOvertime: boolean,
+  overtimeHours: number,
+  isTempStaff: boolean,
+  isNightWork: boolean,
+  tempType: string | null,
+  tempHours: number,
+  note: string | null
+) {
+  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체'])
+
+  // shiftId가 있을 때 근무시간 자동 계산
+  let basicWorkHours = 0
+  let nightWorkHours = 0
+  let holidayWorkHours = 0
+  let weeklyHolidayPay = 0
+  let calcOtHours = overtimeHours
+  let calcIsNight = isNightWork
+
+  if (shiftId && !leaveType && !REST_CODES.has(shiftCode)) {
+    const shift = await db.prepare(
+      `SELECT start_time, end_time FROM schedule_shifts WHERE id=?`
+    ).bind(shiftId).first<any>()
+
+    if (shift?.start_time && shift?.end_time) {
+      // 공휴일 목록 로드 (해당 월)
+      const yearMonth = workDate.substring(0, 7)
+      const holidays = await db.prepare(
+        `SELECT holiday_date FROM holidays WHERE holiday_date LIKE ?`
+      ).bind(`${yearMonth}-%`).all<any>()
+      const holidaySet = new Set((holidays.results || []).map((h: any) => h.holiday_date))
+
+      const calc = calcWorkHours(shift.start_time, shift.end_time, workDate, holidaySet as Set<string>)
+      basicWorkHours    = calc.basicHours
+      calcOtHours       = overtimeHours > 0 ? overtimeHours : calc.otHours
+      nightWorkHours    = calc.nightHours
+      calcIsNight       = calc.nightHours > 0 || isNightWork
+      holidayWorkHours  = calc.holidayHours
+    }
+  }
+
+  await db.prepare(
+    `INSERT INTO daily_schedules
+       (hospital_id, employee_id, work_date, shift_code, shift_id, leave_type,
+        is_overtime, overtime_hours, is_temp_staff, is_night_work, temp_type, temp_hours, note,
+        basic_work_hours, night_work_hours, holiday_work_hours, weekly_holiday_pay)
+     VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?)
+     ON CONFLICT(hospital_id, employee_id, work_date) DO UPDATE SET
+       shift_code=excluded.shift_code, shift_id=excluded.shift_id,
+       leave_type=excluded.leave_type,
+       is_overtime=excluded.is_overtime, overtime_hours=excluded.overtime_hours,
+       is_temp_staff=excluded.is_temp_staff, is_night_work=excluded.is_night_work,
+       temp_type=excluded.temp_type, temp_hours=excluded.temp_hours,
+       note=excluded.note,
+       basic_work_hours=excluded.basic_work_hours,
+       night_work_hours=excluded.night_work_hours,
+       holiday_work_hours=excluded.holiday_work_hours,
+       weekly_holiday_pay=excluded.weekly_holiday_pay,
+       updated_at=CURRENT_TIMESTAMP`
+  ).bind(
+    hospitalId, employeeId, workDate, shiftCode || '', shiftId,
+    leaveType || null, isOvertime ? 1 : 0, calcOtHours, isTempStaff ? 1 : 0,
+    calcIsNight ? 1 : 0, tempType || null, tempHours || 0, note || null,
+    basicWorkHours, nightWorkHours, holidayWorkHours, weeklyHolidayPay
+  ).run()
+}
+
 // 스케줄 저장 (upsert)
 schedule.post('/save', async (c) => {
   const user = c.get('user')
   const { employeeId, workDate, shiftCode, shiftId, leaveType,
           isOvertime, overtimeHours, isTempStaff, isNightWork, tempType, tempHours, note } = await c.req.json()
-  const hospitalId = getHospitalId(user, undefined)
 
   // 영양사는 본인 병원만
   const emp = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id = ?`).bind(employeeId).first<any>()
   if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
   if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
 
-  await c.env.DB.prepare(
-    `INSERT INTO daily_schedules (hospital_id, employee_id, work_date, shift_code, shift_id, leave_type, is_overtime, overtime_hours, is_temp_staff, is_night_work, temp_type, temp_hours, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(hospital_id, employee_id, work_date) DO UPDATE SET
-       shift_code = excluded.shift_code,
-       shift_id = excluded.shift_id,
-       leave_type = excluded.leave_type,
-       is_overtime = excluded.is_overtime,
-       overtime_hours = excluded.overtime_hours,
-       is_temp_staff = excluded.is_temp_staff,
-       is_night_work = excluded.is_night_work,
-       temp_type = excluded.temp_type,
-       temp_hours = excluded.temp_hours,
-       note = excluded.note,
-       updated_at = CURRENT_TIMESTAMP`
-  ).bind(
-    emp.hospital_id, employeeId, workDate, shiftCode || '', shiftId || null,
-    leaveType || null, isOvertime ? 1 : 0, overtimeHours || 0, isTempStaff ? 1 : 0,
-    isNightWork ? 1 : 0, tempType || null, tempHours || 0, note || null
-  ).run()
+  await upsertScheduleWithCalc(
+    c.env.DB, emp.hospital_id, employeeId, workDate,
+    shiftCode, shiftId || null, leaveType,
+    !!isOvertime, overtimeHours || 0,
+    !!isTempStaff, !!isNightWork, tempType || null, tempHours || 0, note || null
+  )
   return c.json({ success: true })
 })
 
@@ -676,25 +841,28 @@ schedule.post('/save-batch', async (c) => {
   const { items } = await c.req.json()
   if (!Array.isArray(items) || items.length === 0) return c.json({ success: true, count: 0 })
 
+  // 병원별 직원 캐시 (반복 조회 최소화)
+  const empCache: Record<number, any> = {}
+
   let count = 0
   for (const item of items) {
-    const { employeeId, workDate, shiftCode, shiftId, leaveType, isOvertime, overtimeHours, isTempStaff, note } = item
-    const emp = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id = ?`).bind(employeeId).first<any>()
-    if (!emp) continue
+    const { employeeId, workDate, shiftCode, shiftId, leaveType,
+            isOvertime, overtimeHours, isTempStaff, isNightWork, tempType, tempHours, note } = item
+
+    if (!empCache[employeeId]) {
+      const e = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id = ?`).bind(employeeId).first<any>()
+      if (!e) continue
+      empCache[employeeId] = e
+    }
+    const emp = empCache[employeeId]
     if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) continue
 
-    await c.env.DB.prepare(
-      `INSERT INTO daily_schedules (hospital_id, employee_id, work_date, shift_code, shift_id, leave_type, is_overtime, overtime_hours, is_temp_staff, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(hospital_id, employee_id, work_date) DO UPDATE SET
-         shift_code = excluded.shift_code, shift_id = excluded.shift_id,
-         leave_type = excluded.leave_type, is_overtime = excluded.is_overtime,
-         overtime_hours = excluded.overtime_hours, is_temp_staff = excluded.is_temp_staff,
-         note = excluded.note, updated_at = CURRENT_TIMESTAMP`
-    ).bind(
-      emp.hospital_id, employeeId, workDate, shiftCode || '', shiftId || null,
-      leaveType || null, isOvertime ? 1 : 0, overtimeHours || 0, isTempStaff ? 1 : 0, note || null
-    ).run()
+    await upsertScheduleWithCalc(
+      c.env.DB, emp.hospital_id, employeeId, workDate,
+      shiftCode, shiftId || null, leaveType,
+      !!isOvertime, overtimeHours || 0,
+      !!isTempStaff, !!isNightWork, tempType || null, tempHours || 0, note || null
+    )
     count++
   }
   return c.json({ success: true, count })
@@ -1302,16 +1470,21 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
   }
 
   // 월 합계
-  const monthly = { workDays:0, otHours:0, nightDays:0, annualDays:0, holidayWork:0, totalOtCost:0, totalNightCost:0 }
-  for (const v of Object.values(dailyMap)) {
+  const monthly = {
+    workDays:0, basicHours:0, otHours:0, nightDays:0, nightHours:0,
+    holidayWork:0, holidayHours:0, annualDays:0,
+    totalOtCost:0, totalNightCost:0, totalBasicHours:0
+  }
+  for (const v of Object.values(dailyMap) as any[]) {
     const code = v.code
     if (code === '연') monthly.annualDays++
     else if (code && !REST_CODES.has(code)) {
       monthly.workDays++
-      if (v.isHoliday) monthly.holidayWork++
-      if (v.isNight) monthly.nightDays++
-      monthly.otHours     += v.otHours
-      monthly.totalOtCost += v.otCost
+      monthly.totalBasicHours += v.workHours || 8
+      if (v.isHoliday) { monthly.holidayWork++; monthly.holidayHours += v.workHours || 8 }
+      if (v.isNight) { monthly.nightDays++; monthly.nightHours += 2 } // 야간 대략 2h
+      monthly.otHours        += v.otHours
+      monthly.totalOtCost    += v.otCost
       monthly.totalNightCost += v.nightCost
     }
   }
@@ -1383,16 +1556,18 @@ schedule.post('/employees/:id/ot-settings', async (c) => {
   return c.json({ success: true })
 })
 
-// 인건비 월간 집계 (운영진용)
+// 인건비 월간 집계 (직원 + 외부인력 분리)
 schedule.get('/labor-cost-report/:year/:month', async (c) => {
   const user = c.get('user')
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const { year, month } = c.req.param()
   const paddedMonth = String(month).padStart(2,'0')
 
-  const [scheds, emps, otSettingsAll, laborCosts] = await Promise.all([
+  const [scheds, emps, otSettingsAll, laborCosts, holidayRows, dispatchRows] = await Promise.all([
     c.env.DB.prepare(
-      `SELECT s.*, e.name as emp_name, e.team, p.name as position_name
+      `SELECT s.*, e.name as emp_name, e.team, e.salary_type, e.base_salary,
+              e.ot_enabled, e.night_allowance_enabled, e.holiday_allowance_enabled,
+              p.name as position_name
        FROM daily_schedules s
        JOIN employees e ON s.employee_id=e.id
        LEFT JOIN employee_positions p ON e.position_id=p.id
@@ -1412,72 +1587,192 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
 
     c.env.DB.prepare(
       `SELECT * FROM labor_cost_settings WHERE hospital_id=?`
-    ).bind(hospitalId).all<any>()
+    ).bind(hospitalId).all<any>(),
+
+    // 공휴일 목록
+    c.env.DB.prepare(
+      `SELECT holiday_date FROM holidays WHERE holiday_date LIKE ?`
+    ).bind(`${year}-${paddedMonth}-%`).all<any>(),
+
+    // 파출/알바 외부인력 스케줄
+    c.env.DB.prepare(
+      `SELECT * FROM dispatch_schedules WHERE hospital_id=? AND work_date LIKE ?`
+    ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
   ])
 
-  const schedList  = scheds.results || []
-  const empList    = emps.results || []
+  const schedList     = scheds.results || []
+  const empList       = emps.results || []
+  const dispatchList  = dispatchRows.results || []
+  const holidaySet    = new Set((holidayRows.results || []).map((h: any) => h.holiday_date))
+
   const otMap: Record<number, any> = {}
-  ;(otSettingsAll.results||[]).forEach(o => { otMap[o.employee_id] = o })
+  ;(otSettingsAll.results||[]).forEach((o: any) => { otMap[o.employee_id] = o })
   const costMap: Record<string, number> = {}
-  ;(laborCosts.results||[]).forEach(c2 => { costMap[c2.cost_type] = c2.unit_price })
+  ;(laborCosts.results||[]).forEach((c2: any) => { costMap[c2.cost_type] = c2.unit_price })
 
-  const REST_CODES = new Set(['휴','연','경조','병가'])
+  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체'])
 
-  // 직원별 집계
-  const byEmp: Record<number, {
-    emp: any, otHours: number, nightDays: number, holidayDays: number,
-    tempDays: Record<string, number>, tempHours: number,
-    otCost: number, nightCost: number, dispatchCost: number, parttimeCost: number
-  }> = {}
-
-  for (const emp of empList) {
-    byEmp[emp.id] = { emp, otHours:0, nightDays:0, holidayDays:0, tempDays:{}, tempHours:0, otCost:0, nightCost:0, dispatchCost:0, parttimeCost:0 }
+  // ─── 직원별 집계 ────────────────────────────────────────────
+  type EmpStat = {
+    emp: any
+    workDays: number
+    basicHours: number
+    otHours: number
+    nightHours: number
+    holidayHours: number
+    weeklyHolidayDays: number
+    annualLeaveDays: number
+    // 비용
+    otCost: number
+    nightCost: number
+    holidayCost: number
+    weeklyHolidayCost: number
+    totalAddCost: number
   }
+
+  const byEmp: Record<number, EmpStat> = {}
+  for (const emp of empList) {
+    byEmp[emp.id] = {
+      emp,
+      workDays: 0, basicHours: 0, otHours: 0, nightHours: 0,
+      holidayHours: 0, weeklyHolidayDays: 0, annualLeaveDays: 0,
+      otCost: 0, nightCost: 0, holidayCost: 0, weeklyHolidayCost: 0, totalAddCost: 0
+    }
+  }
+
+  // 주휴수당 계산을 위한 일별 근무시간 맵 (empId → date → hours)
+  const dailyHoursMap: Record<number, Record<string, number>> = {}
 
   for (const s of schedList) {
     const rec = byEmp[s.employee_id]
     if (!rec) continue
-    const ot = otMap[s.employee_id]
-    const hourly = ot?.hourly_wage || 0
-    const otRate = ot?.ot_rate || 1.5
-    const nightRate = ot?.night_rate || 0.5
-    const dow = new Date(s.work_date).getDay()
-    const isHoliday = dow === 0 || dow === 6
 
-    const otHrs = s.overtime_hours || 0
-    if (otHrs > 0) {
-      rec.otHours += otHrs
-      if (hourly > 0) rec.otCost += Math.round(otHrs * hourly * otRate)
+    const code = s.shift_code || ''
+    const isLeave = !!s.leave_type
+    if (isLeave) {
+      if (s.leave_type === 'annual' || code === '연') rec.annualLeaveDays++
+      continue
     }
-    if (s.is_night_work) {
-      rec.nightDays++
-      if (hourly > 0) rec.nightCost += Math.round(8 * hourly * nightRate)
+    if (REST_CODES.has(code)) continue
+
+    const ot = otMap[s.employee_id]
+    const hourly    = ot?.hourly_wage || 0
+    const otRate    = ot?.ot_rate   || 1.5
+    const nightRate = ot?.night_rate || 0.5
+
+    const dow = new Date(s.work_date).getDay()
+    const isHoliday = dow === 0 || dow === 6 || holidaySet.has(s.work_date)
+
+    // basic_work_hours가 저장돼 있으면 활용, 없으면 기본 8h
+    const basicH   = s.basic_work_hours   > 0 ? s.basic_work_hours   : 8
+    const otH      = s.overtime_hours     > 0 ? s.overtime_hours      : 0
+    const nightH   = s.night_work_hours   > 0 ? s.night_work_hours    : (s.is_night_work ? 2 : 0)
+    const holidayH = s.holiday_work_hours > 0 ? s.holiday_work_hours  : (isHoliday ? basicH : 0)
+
+    rec.workDays++
+    rec.basicHours    += basicH
+    rec.otHours       += otH
+    rec.nightHours    += nightH
+    rec.holidayHours  += holidayH
+
+    // 비용 계산 (직원 OT/야간/휴일 수당 활성화 여부 반영)
+    if (otH > 0 && s.ot_enabled !== 0 && hourly > 0) {
+      rec.otCost += Math.round(otH * hourly * otRate)
     }
-    if (isHoliday && s.shift_code && !REST_CODES.has(s.shift_code)) {
-      rec.holidayDays++
+    if (nightH > 0 && s.night_allowance_enabled !== 0 && hourly > 0) {
+      rec.nightCost += Math.round(nightH * hourly * nightRate)
     }
-    if (s.is_temp_staff) {
-      const tt = s.temp_type || 'dispatch_9h'
-      rec.tempDays[tt] = (rec.tempDays[tt] || 0) + 1
-      const unitPrice = costMap[tt] || 0
-      rec.dispatchCost += unitPrice
-      if (tt === 'parttime') {
-        rec.tempHours += s.temp_hours || 0
-        rec.parttimeCost += Math.round((s.temp_hours||0) * (costMap['parttime_hourly']||0))
-      }
+    if (isHoliday && holidayH > 0 && s.holiday_allowance_enabled !== 0 && hourly > 0) {
+      rec.holidayCost += Math.round(holidayH * hourly * 0.5) // 휴일수당 50%
     }
+
+    // 주휴수당 계산용 일별 시간 누적
+    if (!dailyHoursMap[s.employee_id]) dailyHoursMap[s.employee_id] = {}
+    dailyHoursMap[s.employee_id][s.work_date] = basicH
   }
 
-  const totalOtCost       = Object.values(byEmp).reduce((a,v) => a + v.otCost, 0)
-  const totalNightCost    = Object.values(byEmp).reduce((a,v) => a + v.nightCost, 0)
-  const totalDispatchCost = Object.values(byEmp).reduce((a,v) => a + v.dispatchCost, 0)
-  const totalParttimeCost = Object.values(byEmp).reduce((a,v) => a + v.parttimeCost, 0)
+  // 주휴수당 계산
+  for (const empId of Object.keys(byEmp).map(Number)) {
+    const rec = byEmp[empId]
+    const dmap = dailyHoursMap[empId] || {}
+    const wdays = calcWeeklyHolidayPay(dmap, parseInt(year), parseInt(month))
+    rec.weeklyHolidayDays = wdays
+    const ot = otMap[empId]
+    const hourly = ot?.hourly_wage || 0
+    if (wdays > 0 && hourly > 0) {
+      rec.weeklyHolidayCost = Math.round(wdays * 8 * hourly)
+    }
+    rec.totalAddCost = rec.otCost + rec.nightCost + rec.holidayCost + rec.weeklyHolidayCost
+  }
+
+  // ─── 외부인력(파출/알바) 집계 ───────────────────────────────
+  type DispatchStat = {
+    dispType: string
+    label: string
+    totalCount: number
+    totalHours: number
+    totalCost: number
+    workDays: number
+    detail: any[]
+  }
+
+  const DISP_LABELS: Record<string, string> = {
+    morning:   '파출(오전)',
+    afternoon: '파출(오후)',
+    fullday:   '파출(종일)',
+    parttime:  '알바(시급)',
+  }
+
+  const dispByType: Record<string, DispatchStat> = {}
+  for (const d of dispatchList) {
+    if (!dispByType[d.disp_type]) {
+      dispByType[d.disp_type] = {
+        dispType: d.disp_type,
+        label: DISP_LABELS[d.disp_type] || d.disp_type,
+        totalCount: 0, totalHours: 0, totalCost: 0, workDays: 0,
+        detail: []
+      }
+    }
+    const stat = dispByType[d.disp_type]
+    const unitPrice = d.unit_price > 0 ? d.unit_price : (costMap[d.disp_type] || 0)
+    const dayCost = d.disp_type === 'parttime'
+      ? Math.round((d.hours || 0) * unitPrice)
+      : Math.round((d.count || 1) * unitPrice)
+
+    stat.totalCount += d.count || 1
+    stat.totalHours += d.hours || 0
+    stat.totalCost  += dayCost
+    stat.workDays++
+    stat.detail.push({ ...d, dayCost })
+  }
+
+  // ─── 합계 계산 ───────────────────────────────────────────────
+  const empStats = Object.values(byEmp)
+  const totalOtCost        = empStats.reduce((a, v) => a + v.otCost, 0)
+  const totalNightCost     = empStats.reduce((a, v) => a + v.nightCost, 0)
+  const totalHolidayCost   = empStats.reduce((a, v) => a + v.holidayCost, 0)
+  const totalWeeklyCost    = empStats.reduce((a, v) => a + v.weeklyHolidayCost, 0)
+  const totalEmpAddCost    = empStats.reduce((a, v) => a + v.totalAddCost, 0)
+  const totalDispatchCost  = Object.values(dispByType).reduce((a, v) => a + v.totalCost, 0)
+  const grandTotal         = totalEmpAddCost + totalDispatchCost
 
   return c.json({
     year, month, hospitalId,
-    byEmployee: Object.values(byEmp),
-    totals: { otCost: totalOtCost, nightCost: totalNightCost, dispatchCost: totalDispatchCost, parttimeCost: totalParttimeCost, grand: totalOtCost+totalNightCost+totalDispatchCost+totalParttimeCost },
+    // 직원 집계
+    byEmployee: empStats,
+    empTotals: {
+      otCost: totalOtCost,
+      nightCost: totalNightCost,
+      holidayCost: totalHolidayCost,
+      weeklyHolidayCost: totalWeeklyCost,
+      totalAddCost: totalEmpAddCost
+    },
+    // 외부인력 집계
+    byDispatch: Object.values(dispByType),
+    dispatchTotal: totalDispatchCost,
+    // 전체 합계
+    grandTotal,
+    // 설정값
     costSettings: costMap,
     otSettings: otMap
   })
@@ -1575,6 +1870,114 @@ schedule.get('/leaves/history-summary', async (c) => {
     summary[r.employee_id][r.leave_subtype] = r.cnt
   }
   return c.json(summary)
+})
+
+// ════════════════════════════════════════════════════════════════
+// dispatch_schedules – 파출/알바 외부인력 스케줄 관리
+// ════════════════════════════════════════════════════════════════
+// disp_type: 'morning'|'afternoon'|'fullday'|'parttime'
+// GET  /dispatch?year=&month=
+// POST /dispatch        { workDate, dispType, count, hours, unitPrice, memo }
+// PUT  /dispatch/:id    { count, hours, unitPrice, memo }
+// DELETE /dispatch/:id
+
+schedule.get('/dispatch', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year  = c.req.query('year')  || new Date().getFullYear()
+  const month = c.req.query('month') || (new Date().getMonth() + 1)
+  const paddedMonth = String(month).padStart(2, '0')
+
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM dispatch_schedules
+     WHERE hospital_id=? AND work_date LIKE ?
+     ORDER BY work_date, disp_type`
+  ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+  return c.json(rows.results || [])
+})
+
+schedule.post('/dispatch', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const { workDate, dispType, count, hours, unitPrice, memo } = await c.req.json()
+  if (!workDate || !dispType) return c.json({ error: '날짜와 유형은 필수입니다' }, 400)
+
+  // 같은 날, 같은 타입이면 upsert
+  const result = await c.env.DB.prepare(
+    `INSERT INTO dispatch_schedules (hospital_id, work_date, disp_type, count, hours, unit_price, memo)
+     VALUES (?,?,?,?,?,?,?)
+     ON CONFLICT(hospital_id, work_date, disp_type) DO UPDATE SET
+       count=excluded.count, hours=excluded.hours,
+       unit_price=excluded.unit_price, memo=excluded.memo,
+       updated_at=CURRENT_TIMESTAMP
+     RETURNING id`
+  ).bind(hospitalId, workDate, dispType, count||1, hours||0, unitPrice||0, memo||'').first<any>()
+  return c.json({ success: true, id: result?.id })
+})
+
+schedule.put('/dispatch/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const id = c.req.param('id')
+  const { count, hours, unitPrice, memo } = await c.req.json()
+
+  const row = await c.env.DB.prepare(
+    `SELECT hospital_id FROM dispatch_schedules WHERE id=?`
+  ).bind(id).first<any>()
+  if (!row) return c.json({ error: '데이터 없음' }, 404)
+  if (!isAdmin(user) && row.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  await c.env.DB.prepare(
+    `UPDATE dispatch_schedules SET
+       count=?, hours=?, unit_price=?, memo=?, updated_at=CURRENT_TIMESTAMP
+     WHERE id=?`
+  ).bind(count||1, hours||0, unitPrice||0, memo||'', id).run()
+  return c.json({ success: true })
+})
+
+schedule.delete('/dispatch/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const id = c.req.param('id')
+
+  const row = await c.env.DB.prepare(
+    `SELECT hospital_id FROM dispatch_schedules WHERE id=?`
+  ).bind(id).first<any>()
+  if (!row) return c.json({ error: '데이터 없음' }, 404)
+  if (!isAdmin(user) && row.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  await c.env.DB.prepare(`DELETE FROM dispatch_schedules WHERE id=?`).bind(id).run()
+  return c.json({ success: true })
+})
+
+// 월별 파출/알바 비용 집계
+schedule.get('/dispatch/summary/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const { year, month } = c.req.param()
+  const paddedMonth = String(month).padStart(2, '0')
+
+  const rows = await c.env.DB.prepare(
+    `SELECT disp_type,
+            SUM(count) as total_count,
+            SUM(hours) as total_hours,
+            SUM(count * unit_price) as total_cost,
+            COUNT(DISTINCT work_date) as work_days
+     FROM dispatch_schedules
+     WHERE hospital_id=? AND work_date LIKE ?
+     GROUP BY disp_type`
+  ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+
+  const detail = await c.env.DB.prepare(
+    `SELECT * FROM dispatch_schedules
+     WHERE hospital_id=? AND work_date LIKE ?
+     ORDER BY work_date, disp_type`
+  ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+
+  const summary = rows.results || []
+  const grandTotal = summary.reduce((a: number, r: any) => a + (r.total_cost || 0), 0)
+
+  return c.json({ summary, detail: detail.results || [], grandTotal, year, month })
 })
 
 // ════════════════════════════════════════════════════════════════

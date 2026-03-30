@@ -14181,25 +14181,50 @@ window.openEmpStatsModal = async (empId, empName) => {
     <!-- 월간 요약 카드 -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div class="bg-green-50 rounded-xl p-3 border border-green-100">
-        <div class="text-xs text-gray-500 mb-1">이달 근무일</div>
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-calendar-check mr-1 text-green-400"></i>이달 근무일</div>
         <div class="text-2xl font-bold text-green-700">${monthly.workDays}일</div>
+        <div class="text-xs text-gray-400 mt-0.5">기본 ${monthly.totalBasicHours ? monthly.totalBasicHours.toFixed(1) : 0}h</div>
       </div>
       <div class="bg-yellow-50 rounded-xl p-3 border border-yellow-100">
-        <div class="text-xs text-gray-500 mb-1">연차 (사용/잔여)</div>
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-umbrella-beach mr-1 text-yellow-400"></i>연차 (사용/잔여)</div>
         <div class="text-xl font-bold text-yellow-700">${monthly.annualDays}일
           ${annualRemain !== null ? `<span class="text-sm font-normal text-gray-400">/ 잔${annualRemain}일</span>` : ''}</div>
       </div>
       <div class="bg-emerald-50 rounded-xl p-3 border border-emerald-100">
-        <div class="text-xs text-gray-500 mb-1">OT 시간</div>
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-clock mr-1 text-emerald-400"></i>OT 시간</div>
         <div class="text-2xl font-bold text-emerald-700">${monthly.otHours}h</div>
         ${monthly.totalOtCost > 0 ? `<div class="text-xs text-emerald-600">${fmt(monthly.totalOtCost)}원</div>` : ''}
       </div>
       <div class="bg-blue-50 rounded-xl p-3 border border-blue-100">
-        <div class="text-xs text-gray-500 mb-1">휴일 근무 / 야간</div>
-        <div class="text-xl font-bold text-blue-700">${monthly.holidayWork}일 / ${monthly.nightDays}일</div>
+        <div class="text-xs text-gray-500 mb-1"><i class="fas fa-moon mr-1 text-blue-400"></i>야간 / 휴일</div>
+        <div class="text-xl font-bold text-blue-700">${monthly.nightDays}일 / ${monthly.holidayWork}일</div>
         ${monthly.totalNightCost > 0 ? `<div class="text-xs text-blue-600">야간수당 ${fmt(monthly.totalNightCost)}원</div>` : ''}
       </div>
     </div>
+
+    <!-- 추가수당 요약 행 -->
+    ${(monthly.totalOtCost > 0 || monthly.totalNightCost > 0) ? `
+    <div class="bg-white rounded-xl border border-gray-200 p-3">
+      <div class="text-xs font-bold text-gray-600 mb-2"><i class="fas fa-won-sign mr-1 text-gray-400"></i>이달 추가수당 예상</div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <div class="flex justify-between bg-blue-50 rounded-lg px-3 py-2">
+          <span class="text-gray-500">OT수당</span>
+          <span class="font-bold text-blue-700">${monthly.totalOtCost > 0 ? fmt(monthly.totalOtCost)+'원' : '-'}</span>
+        </div>
+        <div class="flex justify-between bg-purple-50 rounded-lg px-3 py-2">
+          <span class="text-gray-500">야간수당</span>
+          <span class="font-bold text-purple-700">${monthly.totalNightCost > 0 ? fmt(monthly.totalNightCost)+'원' : '-'}</span>
+        </div>
+        <div class="flex justify-between bg-red-50 rounded-lg px-3 py-2">
+          <span class="text-gray-500">휴일수당</span>
+          <span class="font-bold text-red-700">-</span>
+        </div>
+        <div class="flex justify-between bg-teal-50 rounded-lg px-3 py-2">
+          <span class="text-gray-500">주휴수당</span>
+          <span class="font-bold text-teal-700">-</span>
+        </div>
+      </div>
+    </div>` : ''}
 
     <!-- OT 수당 설정 (관리자) -->
     ${App.userRole === 'admin' ? `
@@ -14314,13 +14339,10 @@ window.saveEmpOtSettings = async (empId) => {
 // ════════════════════════════════════════════════════════════════
 function renderLaborCostTab() {
   const isAdm = App.userRole === 'admin'
-  const data = scheduleLaborCostData
-  const emps = scheduleEmployees
-  const fmt  = n => (n||0).toLocaleString()
+  const data  = scheduleLaborCostData
+  const fmt   = n => (n||0).toLocaleString()
 
-  // 데이터 없으면 로딩 트리거
   if (!data) {
-    // 비동기로 로드 후 재렌더
     api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).then(d => {
       scheduleLaborCostData = d
       const tc = document.getElementById('scheduleTabContent')
@@ -14329,136 +14351,105 @@ function renderLaborCostTab() {
     return `<div class="flex items-center justify-center h-40"><div class="loading-spinner mr-2"></div>인건비 데이터 로딩 중...</div>`
   }
 
-  const totals = data.totals || {}
-  const byEmp  = data.byEmployee || []
+  const empTotals  = data.empTotals    || {}
+  const dispTotal  = data.dispatchTotal || 0
+  const grandTotal = data.grandTotal    || 0
+  const byEmp      = data.byEmployee    || []
+  const byDispatch = data.byDispatch    || []
 
-  const grand = totals.grand || 0
-  const cards = [
-    { label:'OT 수당',    value: totals.otCost||0,       color:'text-emerald-700', bg:'bg-emerald-50',  icon:'fa-clock' },
-    { label:'야간 수당',  value: totals.nightCost||0,    color:'text-purple-700',  bg:'bg-purple-50',   icon:'fa-moon' },
-    { label:'파출비',     value: totals.dispatchCost||0, color:'text-orange-700',  bg:'bg-orange-50',   icon:'fa-truck' },
-    { label:'알바비',     value: totals.parttimeCost||0, color:'text-pink-700',    bg:'bg-pink-50',     icon:'fa-user-clock' },
+  // ── 상단 요약 카드 ────────────────────────────────────────────
+  const summaryCards = [
+    { label:'이달 합계',   value: grandTotal,             color:'text-white',           bg:'bg-gray-800',    icon:'fa-won-sign',    span: true },
+    { label:'직원 추가수당',value: empTotals.totalAddCost||0, color:'text-emerald-700',  bg:'bg-emerald-50',  icon:'fa-users' },
+    { label:'외부인력비',  value: dispTotal,               color:'text-orange-700',      bg:'bg-orange-50',   icon:'fa-user-plus' },
+    { label:'OT 수당',     value: empTotals.otCost||0,     color:'text-blue-700',        bg:'bg-blue-50',     icon:'fa-clock' },
+    { label:'야간 수당',   value: empTotals.nightCost||0,  color:'text-purple-700',      bg:'bg-purple-50',   icon:'fa-moon' },
+    { label:'휴일 수당',   value: empTotals.holidayCost||0,color:'text-red-700',         bg:'bg-red-50',      icon:'fa-calendar-times' },
+    { label:'주휴 수당',   value: empTotals.weeklyHolidayCost||0, color:'text-teal-700', bg:'bg-teal-50',     icon:'fa-calendar-check' },
   ]
 
   return `
   <div class="space-y-4">
-    <!-- 합계 카드 -->
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
-      <div class="bg-gray-800 text-white rounded-xl p-4 col-span-2 md:col-span-1 flex items-center gap-3">
-        <i class="fas fa-won-sign text-2xl opacity-70"></i>
-        <div>
-          <div class="text-xs opacity-60 mb-0.5">이달 인건비 합계</div>
-          <div class="text-xl font-bold">${fmt(grand)}원</div>
-        </div>
-      </div>
-      ${cards.map(c => `
-      <div class="${c.bg} rounded-xl p-4 border border-gray-100">
-        <div class="text-xs text-gray-500 mb-1"><i class="fas ${c.icon} mr-1"></i>${c.label}</div>
-        <div class="text-xl font-bold ${c.color}">${fmt(c.value)}원</div>
+    <!-- 요약 카드 -->
+    <div class="grid grid-cols-2 md:grid-cols-7 gap-2">
+      ${summaryCards.map((c,i) => `
+      <div class="${c.bg} rounded-xl p-3 border border-gray-100 ${i===0?'col-span-2 md:col-span-1':''}" >
+        <div class="text-xs opacity-60 mb-0.5"><i class="fas ${c.icon} mr-1"></i>${c.label}</div>
+        <div class="text-lg font-bold ${c.color}">${fmt(c.value)}원</div>
       </div>`).join('')}
     </div>
 
-    <!-- 단가 설정 버튼 (관리자만) -->
+    <!-- 관리자 버튼 행 -->
     ${isAdm ? `
-    <div class="flex justify-end">
+    <div class="flex flex-wrap gap-2 justify-end">
+      <button onclick="openDispatchScheduleModal()" class="px-4 py-2 rounded-lg text-sm bg-orange-600 text-white hover:bg-orange-700">
+        <i class="fas fa-plus mr-1"></i>파출/알바 입력
+      </button>
       <button onclick="openLaborCostSettings()" class="px-4 py-2 rounded-lg text-sm bg-gray-700 text-white hover:bg-gray-800">
-        <i class="fas fa-cog mr-1"></i>파출/알바 단가 설정
+        <i class="fas fa-cog mr-1"></i>단가 설정
       </button>
     </div>` : ''}
 
-    <!-- 빠른 파출/알바 입력 (운영진) -->
-    <div class="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden">
-      <div class="px-5 py-4 border-b border-orange-100 flex items-center justify-between">
-        <div>
-          <h3 class="font-bold text-orange-800"><i class="fas fa-user-plus mr-1 text-orange-500"></i>파출 / 알바 빠른 입력</h3>
-          <p class="text-xs text-gray-400 mt-0.5">날짜와 직원을 선택해 파출/알바를 직접 입력하세요 (월간 스케줄의 우클릭과 동일)</p>
-        </div>
-        <button onclick="openQuickDispatchInput()" class="px-4 py-2 rounded-lg text-sm bg-orange-600 text-white hover:bg-orange-700">
-          <i class="fas fa-plus mr-1"></i>입력하기
-        </button>
-      </div>
-      <!-- 이번 달 파출/알바 현황 -->
-      <div class="p-4 overflow-x-auto">
-        ${(() => {
-          const dispRows = byEmp.filter(r => Object.keys(r.tempDays||{}).length > 0 || r.tempHours > 0)
-          if (!dispRows.length) return `<div class="text-center py-6 text-gray-400 text-sm"><i class="fas fa-info-circle mr-1"></i>이번 달 파출/알바 입력 내역이 없습니다</div>`
-          return `<table class="w-full text-sm">
-            <thead class="bg-orange-50 border-b">
-              <tr>
-                <th class="px-3 py-2 text-left text-xs text-gray-600">직원</th>
-                <th class="px-3 py-2 text-center text-xs text-orange-700">파출오전</th>
-                <th class="px-3 py-2 text-center text-xs text-orange-700">파출오후</th>
-                <th class="px-3 py-2 text-center text-xs text-orange-700">파출9h</th>
-                <th class="px-3 py-2 text-center text-xs text-orange-700">파출12h</th>
-                <th class="px-3 py-2 text-center text-xs text-pink-700">알바(h)</th>
-                <th class="px-3 py-2 text-center text-xs text-orange-700">파출비</th>
-                <th class="px-3 py-2 text-center text-xs text-pink-700">알바비</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${dispRows.map(r => `<tr class="border-b hover:bg-orange-50">
-                <td class="px-3 py-2 font-medium text-gray-800">${r.emp?.name||''}</td>
-                <td class="px-3 py-2 text-center text-orange-700">${r.tempDays?.dispatch_morning||0}</td>
-                <td class="px-3 py-2 text-center text-orange-700">${r.tempDays?.dispatch_afternoon||0}</td>
-                <td class="px-3 py-2 text-center text-orange-700">${r.tempDays?.dispatch_9h||0}</td>
-                <td class="px-3 py-2 text-center text-orange-700">${r.tempDays?.dispatch_12h||0}</td>
-                <td class="px-3 py-2 text-center text-pink-700">${r.tempHours||0}h</td>
-                <td class="px-3 py-2 text-center text-orange-700">${r.dispatchCost > 0 ? fmt(r.dispatchCost)+'원' : '-'}</td>
-                <td class="px-3 py-2 text-center text-pink-700">${r.parttimeCost > 0 ? fmt(r.parttimeCost)+'원' : '-'}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>`
-        })()}
-      </div>
+    <!-- 탭: 직원 / 외부인력 -->
+    <div id="laborCostSubTab" class="flex gap-0 border-b border-gray-200">
+      <button onclick="switchLaborSubTab('staff')" id="lcTab_staff"
+        class="px-5 py-2 text-sm font-medium border-b-2 border-emerald-500 text-emerald-700">
+        <i class="fas fa-users mr-1"></i>직원 추가수당
+      </button>
+      <button onclick="switchLaborSubTab('dispatch')" id="lcTab_dispatch"
+        class="px-5 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-user-plus mr-1"></i>외부인력 (파출/알바)
+      </button>
     </div>
 
-    <!-- 직원별 테이블 -->
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-      <div class="px-5 py-4 border-b">
-        <h3 class="font-bold text-gray-800">직원별 인건비 상세</h3>
-        <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월 기준</p>
+    <!-- 직원 추가수당 테이블 -->
+    <div id="lcPanel_staff" class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 border-b bg-emerald-50">
+        <h3 class="font-bold text-emerald-800 text-sm"><i class="fas fa-users mr-1"></i>직원별 추가수당 명세</h3>
+        <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월 | 기본급 제외 추가수당 합계</p>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-gray-50 border-b">
             <tr>
-              <th class="px-4 py-3 text-left text-xs text-gray-600">직원</th>
-              <th class="px-3 py-3 text-center text-xs text-emerald-600">OT시간</th>
-              <th class="px-3 py-3 text-center text-xs text-emerald-600">OT수당</th>
-              <th class="px-3 py-3 text-center text-xs text-purple-600">야간일수</th>
-              <th class="px-3 py-3 text-center text-xs text-purple-600">야간수당</th>
-              <th class="px-3 py-3 text-center text-xs text-blue-600">휴일근무</th>
-              <th class="px-3 py-3 text-center text-xs text-orange-600">파출일수</th>
-              <th class="px-3 py-3 text-center text-xs text-orange-600">파출비</th>
-              <th class="px-3 py-3 text-center text-xs text-pink-600">알바시간</th>
-              <th class="px-3 py-3 text-center text-xs text-pink-600">알바비</th>
-              <th class="px-3 py-3 text-center text-xs text-gray-600">합계</th>
-              <th class="px-3 py-3 text-center text-xs text-gray-400">상세</th>
+              <th class="px-4 py-2 text-left text-xs text-gray-600">직원</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-600">근무일</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-600">기본(h)</th>
+              <th class="px-3 py-2 text-center text-xs text-blue-600">OT(h)</th>
+              <th class="px-3 py-2 text-center text-xs text-blue-600">OT수당</th>
+              <th class="px-3 py-2 text-center text-xs text-purple-600">야간(h)</th>
+              <th class="px-3 py-2 text-center text-xs text-purple-600">야간수당</th>
+              <th class="px-3 py-2 text-center text-xs text-red-600">휴일(h)</th>
+              <th class="px-3 py-2 text-center text-xs text-red-600">휴일수당</th>
+              <th class="px-3 py-2 text-center text-xs text-teal-600">주휴(일)</th>
+              <th class="px-3 py-2 text-center text-xs text-teal-600">주휴수당</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-800 font-bold">추가합계</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-400">상세</th>
             </tr>
           </thead>
           <tbody>
             ${byEmp.length === 0
-              ? `<tr><td colspan="12" class="text-center py-10 text-gray-400">데이터 없음</td></tr>`
+              ? `<tr><td colspan="13" class="text-center py-10 text-gray-400">데이터 없음</td></tr>`
               : byEmp.map(row => {
-                  const total = (row.otCost||0) + (row.nightCost||0) + (row.dispatchCost||0) + (row.parttimeCost||0)
-                  const dispatchCount = Object.values(row.tempDays||{}).reduce((a,v)=>a+(Number(v)||0),0)
+                  const addTotal = row.totalAddCost || 0
                   return `<tr class="border-b hover:bg-gray-50">
-                    <td class="px-4 py-3">
+                    <td class="px-4 py-2">
                       <div class="font-medium text-gray-800">${row.emp?.name||''}</div>
                       <div class="text-xs text-gray-400">${row.emp?.position_name||''}</div>
                     </td>
-                    <td class="px-3 py-3 text-center text-emerald-600 font-bold">${row.otHours||0}h</td>
-                    <td class="px-3 py-3 text-center text-emerald-600">${row.otCost > 0 ? fmt(row.otCost)+'원' : '-'}</td>
-                    <td class="px-3 py-3 text-center text-purple-600">${row.nightDays||0}일</td>
-                    <td class="px-3 py-3 text-center text-purple-600">${row.nightCost > 0 ? fmt(row.nightCost)+'원' : '-'}</td>
-                    <td class="px-3 py-3 text-center text-blue-600">${row.holidayDays||0}일</td>
-                    <td class="px-3 py-3 text-center text-orange-600">${dispatchCount||0}일</td>
-                    <td class="px-3 py-3 text-center text-orange-600">${row.dispatchCost > 0 ? fmt(row.dispatchCost)+'원' : '-'}</td>
-                    <td class="px-3 py-3 text-center text-pink-600">${row.tempHours||0}h</td>
-                    <td class="px-3 py-3 text-center text-pink-600">${row.parttimeCost > 0 ? fmt(row.parttimeCost)+'원' : '-'}</td>
-                    <td class="px-3 py-3 text-center font-bold ${total > 0 ? 'text-gray-800' : 'text-gray-300'}">${total > 0 ? fmt(total)+'원' : '-'}</td>
-                    <td class="px-3 py-3 text-center">
-                      <button onclick="openEmpStatsModal(${row.emp?.id},'${(row.emp?.name||'').replace(/'/g,'\\x27')}')"
+                    <td class="px-3 py-2 text-center text-gray-600">${row.workDays||0}일</td>
+                    <td class="px-3 py-2 text-center text-gray-600">${(row.basicHours||0).toFixed(1)}h</td>
+                    <td class="px-3 py-2 text-center text-blue-600 font-medium">${(row.otHours||0).toFixed(1)}h</td>
+                    <td class="px-3 py-2 text-center text-blue-600">${row.otCost > 0 ? fmt(row.otCost)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center text-purple-600">${(row.nightHours||0).toFixed(1)}h</td>
+                    <td class="px-3 py-2 text-center text-purple-600">${row.nightCost > 0 ? fmt(row.nightCost)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center text-red-600">${(row.holidayHours||0).toFixed(1)}h</td>
+                    <td class="px-3 py-2 text-center text-red-600">${row.holidayCost > 0 ? fmt(row.holidayCost)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center text-teal-600">${row.weeklyHolidayDays||0}일</td>
+                    <td class="px-3 py-2 text-center text-teal-600">${row.weeklyHolidayCost > 0 ? fmt(row.weeklyHolidayCost)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center font-bold ${addTotal > 0 ? 'text-gray-800' : 'text-gray-300'}">${addTotal > 0 ? fmt(addTotal)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center">
+                      <button onclick="openEmpStatsModal(${row.emp?.id},'${(row.emp?.name||'').replace(/'/g,"\\x27")}')"
                         class="px-2 py-1 rounded text-xs bg-blue-600 text-white hover:bg-blue-700">
                         <i class="fas fa-user-clock"></i>
                       </button>
@@ -14466,120 +14457,252 @@ function renderLaborCostTab() {
                   </tr>`
                 }).join('')}
           </tbody>
+          ${byEmp.length > 0 ? `
+          <tfoot class="bg-emerald-50 border-t-2 border-emerald-200">
+            <tr>
+              <td class="px-4 py-2 font-bold text-emerald-800" colspan="3">합계</td>
+              <td class="px-3 py-2 text-center font-bold text-blue-700">${byEmp.reduce((a,r)=>a+(r.otHours||0),0).toFixed(1)}h</td>
+              <td class="px-3 py-2 text-center font-bold text-blue-700">${fmt(empTotals.otCost||0)}원</td>
+              <td class="px-3 py-2 text-center font-bold text-purple-700">${byEmp.reduce((a,r)=>a+(r.nightHours||0),0).toFixed(1)}h</td>
+              <td class="px-3 py-2 text-center font-bold text-purple-700">${fmt(empTotals.nightCost||0)}원</td>
+              <td class="px-3 py-2 text-center font-bold text-red-700">${byEmp.reduce((a,r)=>a+(r.holidayHours||0),0).toFixed(1)}h</td>
+              <td class="px-3 py-2 text-center font-bold text-red-700">${fmt(empTotals.holidayCost||0)}원</td>
+              <td class="px-3 py-2 text-center font-bold text-teal-700">${byEmp.reduce((a,r)=>a+(r.weeklyHolidayDays||0),0)}일</td>
+              <td class="px-3 py-2 text-center font-bold text-teal-700">${fmt(empTotals.weeklyHolidayCost||0)}원</td>
+              <td class="px-3 py-2 text-center font-bold text-gray-800">${fmt(empTotals.totalAddCost||0)}원</td>
+              <td></td>
+            </tr>
+          </tfoot>` : ''}
         </table>
+      </div>
+    </div>
+
+    <!-- 외부인력 패널 (초기 숨김) -->
+    <div id="lcPanel_dispatch" class="hidden space-y-4">
+      <!-- 유형별 요약 -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${['morning','afternoon','fullday','parttime'].map(type => {
+          const stat = byDispatch.find(d => d.dispType === type)
+          const labels = { morning:'파출(오전)', afternoon:'파출(오후)', fullday:'파출(종일)', parttime:'알바(시급)' }
+          const colors = { morning:'text-orange-700 bg-orange-50', afternoon:'text-amber-700 bg-amber-50', fullday:'text-red-700 bg-red-50', parttime:'text-pink-700 bg-pink-50' }
+          return `<div class="${colors[type]} rounded-xl p-3 border border-gray-100">
+            <div class="text-xs opacity-70 mb-1">${labels[type]}</div>
+            <div class="text-lg font-bold">${stat ? fmt(stat.totalCost)+'원' : '-'}</div>
+            <div class="text-xs opacity-60">${stat ? stat.workDays+'일 / '+stat.totalCount+'명' : '입력없음'}</div>
+          </div>`
+        }).join('')}
+      </div>
+
+      <!-- 외부인력 상세 테이블 -->
+      <div class="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden">
+        <div class="px-5 py-3 border-b bg-orange-50 flex items-center justify-between">
+          <div>
+            <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-user-plus mr-1"></i>파출 / 알바 일별 현황</h3>
+            <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월</p>
+          </div>
+          ${isAdm ? `<button onclick="openDispatchScheduleModal()" class="px-3 py-1.5 rounded-lg text-xs bg-orange-600 text-white hover:bg-orange-700">
+            <i class="fas fa-plus mr-1"></i>입력
+          </button>` : ''}
+        </div>
+        <div class="overflow-x-auto">
+          ${(() => {
+            const allDetail = byDispatch.flatMap(d => d.detail || []).sort((a,b)=>a.work_date>b.work_date?1:-1)
+            const DISP_LABELS = { morning:'파출(오전)', afternoon:'파출(오후)', fullday:'파출(종일)', parttime:'알바(시급)' }
+            const DISP_COLORS = { morning:'text-orange-700', afternoon:'text-amber-700', fullday:'text-red-700', parttime:'text-pink-700' }
+            if (!allDetail.length) return `<div class="text-center py-10 text-gray-400 text-sm"><i class="fas fa-info-circle mr-1"></i>이달 파출/알바 입력 내역이 없습니다</div>`
+            return `<table class="w-full text-sm">
+              <thead class="bg-gray-50 border-b">
+                <tr>
+                  <th class="px-4 py-2 text-left text-xs text-gray-600">날짜</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">요일</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">유형</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">인원</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">시간</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">단가</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">비용</th>
+                  <th class="px-3 py-2 text-center text-xs text-gray-600">메모</th>
+                  ${isAdm ? '<th class="px-3 py-2 text-center text-xs text-gray-400">관리</th>' : ''}
+                </tr>
+              </thead>
+              <tbody>
+                ${allDetail.map(d => {
+                  const dow = ['일','월','화','수','목','금','토'][new Date(d.work_date).getDay()]
+                  const typeLabel = DISP_LABELS[d.disp_type] || d.disp_type
+                  const typeColor = DISP_COLORS[d.disp_type] || 'text-gray-600'
+                  return `<tr class="border-b hover:bg-orange-50">
+                    <td class="px-4 py-2 font-medium text-gray-800">${d.work_date}</td>
+                    <td class="px-3 py-2 text-center text-gray-500">${dow}</td>
+                    <td class="px-3 py-2 text-center font-medium ${typeColor}">${typeLabel}</td>
+                    <td class="px-3 py-2 text-center text-gray-600">${d.count||1}명</td>
+                    <td class="px-3 py-2 text-center text-gray-600">${d.hours > 0 ? d.hours+'h' : '-'}</td>
+                    <td class="px-3 py-2 text-center text-gray-600">${d.unit_price > 0 ? fmt(d.unit_price)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center font-bold ${typeColor}">${d.dayCost > 0 ? fmt(d.dayCost)+'원' : '-'}</td>
+                    <td class="px-3 py-2 text-center text-gray-400 text-xs">${d.memo||''}</td>
+                    ${isAdm ? `<td class="px-3 py-2 text-center">
+                      <button onclick="deleteDispatchEntry(${d.id})" class="px-2 py-1 rounded text-xs bg-red-100 text-red-600 hover:bg-red-200">
+                        <i class="fas fa-trash"></i>
+                      </button>
+                    </td>` : ''}
+                  </tr>`
+                }).join('')}
+              </tbody>
+              <tfoot class="bg-orange-50 border-t-2 border-orange-200">
+                <tr>
+                  <td colspan="${isAdm ? 6 : 5}" class="px-4 py-2 font-bold text-orange-800">외부인력 합계</td>
+                  <td class="px-3 py-2 text-center font-bold text-orange-700" colspan="${isAdm ? 3 : 2}">${fmt(dispTotal)}원</td>
+                </tr>
+              </tfoot>
+            </table>`
+          })()}
+        </div>
       </div>
     </div>
   </div>`
 }
 
-// 파출/알바 빠른 입력 모달
-window.openQuickDispatchInput = () => {
-  const emps = scheduleEmployees
-  const days = getDaysInMonth(App.currentYear, App.currentMonth)
-  const mm   = String(App.currentMonth).padStart(2,'0')
+// 서브탭 전환 (직원/외부인력)
+window.switchLaborSubTab = (tab) => {
+  const staffPanel = document.getElementById('lcPanel_staff')
+  const dispPanel  = document.getElementById('lcPanel_dispatch')
+  const staffBtn   = document.getElementById('lcTab_staff')
+  const dispBtn    = document.getElementById('lcTab_dispatch')
+  if (tab === 'staff') {
+    staffPanel?.classList.remove('hidden')
+    dispPanel?.classList.add('hidden')
+    staffBtn?.classList.add('border-emerald-500','text-emerald-700')
+    staffBtn?.classList.remove('border-transparent','text-gray-500')
+    dispBtn?.classList.remove('border-orange-500','text-orange-700')
+    dispBtn?.classList.add('border-transparent','text-gray-500')
+  } else {
+    staffPanel?.classList.add('hidden')
+    dispPanel?.classList.remove('hidden')
+    dispBtn?.classList.add('border-orange-500','text-orange-700')
+    dispBtn?.classList.remove('border-transparent','text-gray-500')
+    staffBtn?.classList.remove('border-emerald-500','text-emerald-700')
+    staffBtn?.classList.add('border-transparent','text-gray-500')
+  }
+}
+
+// 파출/알바 입력 모달 (외부인력 전용)
+window.openDispatchScheduleModal = () => {
+  const days  = getDaysInMonth(App.currentYear, App.currentMonth)
+  const mm    = String(App.currentMonth).padStart(2,'0')
   const dates = []
   for (let d = 1; d <= days; d++) dates.push(`${App.currentYear}-${mm}-${String(d).padStart(2,'0')}`)
 
   const overlay = document.createElement('div')
-  overlay.id = 'quickDispatchModal'
+  overlay.id = 'dispatchInputModal'
   overlay.className = 'modal-overlay'
-  overlay.style.zIndex = '1040'
+  overlay.style.zIndex = '1050'
   overlay.innerHTML = `
-  <div class="modal-box max-w-lg p-0 overflow-hidden">
+  <div class="modal-box max-w-md p-0 overflow-hidden">
     <div class="bg-orange-700 text-white px-5 py-4 flex items-center justify-between">
       <div>
-        <h3 class="font-bold text-base"><i class="fas fa-user-plus mr-2"></i>파출 / 알바 빠른 입력</h3>
-        <p class="text-xs opacity-70 mt-0.5">${App.currentYear}년 ${App.currentMonth}월</p>
+        <h3 class="font-bold text-base"><i class="fas fa-user-plus mr-2"></i>파출 / 알바 입력</h3>
+        <p class="text-xs opacity-70 mt-0.5">${App.currentYear}년 ${App.currentMonth}월 외부인력</p>
       </div>
-      <button onclick="document.getElementById('quickDispatchModal').remove()" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
+      <button onclick="document.getElementById('dispatchInputModal').remove()" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
     </div>
-    <div class="p-5 space-y-4 overflow-y-auto" style="max-height:70vh">
+    <div class="p-5 space-y-4 overflow-y-auto" style="max-height:65vh">
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="text-sm font-medium text-gray-700 block mb-1">날짜</label>
-          <select id="qd_date" class="form-input">
+          <label class="text-xs font-medium text-gray-700 block mb-1">날짜 <span class="text-red-500">*</span></label>
+          <select id="di_date" class="form-input text-sm">
             ${dates.map(d => `<option value="${d}">${d}</option>`).join('')}
           </select>
         </div>
         <div>
-          <label class="text-sm font-medium text-gray-700 block mb-1">직원 (선택안하면 외부인력)</label>
-          <select id="qd_emp" class="form-input">
-            <option value="">-- 외부인력 --</option>
-            ${emps.map(e => `<option value="${e.id}">${e.name} (${e.position_name||e.position||''})</option>`).join('')}
+          <label class="text-xs font-medium text-gray-700 block mb-1">유형 <span class="text-red-500">*</span></label>
+          <select id="di_type" class="form-input text-sm" onchange="toggleDispatchHours()">
+            <option value="morning">파출 오전반</option>
+            <option value="afternoon">파출 오후반</option>
+            <option value="fullday" selected>파출 종일</option>
+            <option value="parttime">알바 (시간제)</option>
           </select>
         </div>
       </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-medium text-gray-700 block mb-1">인원 수</label>
+          <input type="number" id="di_count" min="1" max="20" class="form-input text-sm" value="1">
+        </div>
+        <div id="di_hoursRow" class="hidden">
+          <label class="text-xs font-medium text-gray-700 block mb-1">근무시간 (h)</label>
+          <input type="number" id="di_hours" min="0" max="12" step="0.5" class="form-input text-sm" value="4">
+        </div>
+        <div id="di_priceRow">
+          <label class="text-xs font-medium text-gray-700 block mb-1">단가 (원, 0=기본단가)</label>
+          <input type="number" id="di_unitPrice" min="0" class="form-input text-sm" value="0">
+        </div>
+      </div>
       <div>
-        <label class="text-sm font-medium text-gray-700 block mb-1">종류</label>
-        <select id="qd_type" class="form-input" onchange="toggleQdParttime()">
-          <option value="dispatch_morning">파출 오전반</option>
-          <option value="dispatch_afternoon">파출 오후반</option>
-          <option value="dispatch_9h" selected>파출 9시간</option>
-          <option value="dispatch_12h">파출 12시간</option>
-          <option value="parttime">알바 (시간제)</option>
-        </select>
+        <label class="text-xs font-medium text-gray-700 block mb-1">메모</label>
+        <input type="text" id="di_memo" class="form-input text-sm" placeholder="업체명, 이름 등">
       </div>
-      <div id="qd_parttimeRow" class="hidden">
-        <label class="text-sm font-medium text-gray-700 block mb-1">알바 근무시간 (h)</label>
-        <input type="number" id="qd_hours" min="0" max="12" step="0.5" class="form-input" value="4" placeholder="4">
-      </div>
-      <div>
-        <label class="text-sm font-medium text-gray-700 block mb-1">메모 (이름 등)</label>
-        <input type="text" id="qd_note" class="form-input" placeholder="예: 홍길동 파출">
-      </div>
-      <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-700">
-        <i class="fas fa-lightbulb mr-1"></i>직원 미선택 시 스케줄에 직접 반영되지 않습니다. 직원 선택 시 해당 날짜 스케줄에 파출 표시가 됩니다.
+      <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700">
+        <i class="fas fa-info-circle mr-1"></i>파출/알바 외부인력은 직원 스케줄과 별도로 관리됩니다. 단가 미입력 시 단가 설정의 기본값이 적용됩니다.
       </div>
     </div>
     <div class="px-5 py-4 bg-gray-50 border-t flex gap-3">
-      <button onclick="saveQuickDispatch()" class="btn btn-primary flex-1">
+      <button onclick="saveDispatchEntry()" class="btn btn-primary flex-1">
         <i class="fas fa-save mr-1"></i>저장
       </button>
-      <button onclick="document.getElementById('quickDispatchModal').remove()" class="btn btn-secondary">취소</button>
+      <button onclick="document.getElementById('dispatchInputModal').remove()" class="btn btn-secondary">취소</button>
     </div>
   </div>`
   document.body.appendChild(overlay)
 }
 
-window.toggleQdParttime = () => {
-  const val = document.getElementById('qd_type')?.value
-  document.getElementById('qd_parttimeRow')?.classList.toggle('hidden', val !== 'parttime')
+window.toggleDispatchHours = () => {
+  const val = document.getElementById('di_type')?.value
+  document.getElementById('di_hoursRow')?.classList.toggle('hidden', val !== 'parttime')
 }
 
-window.saveQuickDispatch = async () => {
-  const dateStr = document.getElementById('qd_date')?.value
-  const empId   = document.getElementById('qd_emp')?.value
-  const tempType= document.getElementById('qd_type')?.value || 'dispatch_9h'
-  const tempHours = parseFloat(document.getElementById('qd_hours')?.value || '0')
-  const note    = document.getElementById('qd_note')?.value || ''
+window.saveDispatchEntry = async () => {
+  const workDate  = document.getElementById('di_date')?.value
+  const dispType  = document.getElementById('di_type')?.value || 'fullday'
+  const count     = parseInt(document.getElementById('di_count')?.value || '1')
+  const hours     = parseFloat(document.getElementById('di_hours')?.value || '0')
+  const unitPrice = parseFloat(document.getElementById('di_unitPrice')?.value || '0')
+  const memo      = document.getElementById('di_memo')?.value || ''
 
-  if (!dateStr) { showToast('날짜를 선택하세요', 'error'); return }
+  if (!workDate) { showToast('날짜를 선택하세요', 'error'); return }
 
-  if (empId) {
-    // 직원이 선택된 경우 스케줄에 반영
-    const currentCode = scheduleMonthData?.sched_map?.[`${empId}_${dateStr}`]?.shift_code || '-'
-    const res = await api('POST', '/api/schedule/save', {
-      employeeId: parseInt(empId), workDate: dateStr, shiftCode: currentCode,
-      isTempStaff: true, tempType, tempHours: tempType === 'parttime' ? tempHours : 0, note
-    }).catch(() => null)
-    if (res?.success !== false) {
-      if (!scheduleMonthData) scheduleMonthData = { sched_map: {}, leave_map: {} }
-      scheduleMonthData.sched_map[`${empId}_${dateStr}`] = {
-        ...(scheduleMonthData.sched_map[`${empId}_${dateStr}`]||{}),
-        is_temp_staff: 1, temp_type: tempType, temp_hours: tempHours, note
-      }
-      showToast('저장되었습니다', 'success')
-    } else { showToast('저장 실패', 'error'); return }
+  const res = await api('POST', '/api/schedule/dispatch', {
+    workDate, dispType, count, hours: dispType === 'parttime' ? hours : 0, unitPrice, memo
+  }).catch(() => null)
+
+  if (res?.success !== false) {
+    showToast('파출/알바 입력이 저장되었습니다', 'success')
+    document.getElementById('dispatchInputModal')?.remove()
+    // 인건비 데이터 새로고침
+    scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(()=>null)
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
+    // 외부인력 탭으로 자동 이동
+    setTimeout(() => switchLaborSubTab('dispatch'), 100)
   } else {
-    showToast('외부인력 입력은 메모로만 저장됩니다 (추후 비용 집계)', 'info')
+    showToast('저장 실패', 'error')
   }
-
-  document.getElementById('quickDispatchModal')?.remove()
-  // 인건비 데이터 새로고침
-  scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(()=>null)
-  const tc = document.getElementById('scheduleTabContent')
-  if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
 }
+
+window.deleteDispatchEntry = async (id) => {
+  if (!confirm('삭제하시겠습니까?')) return
+  const res = await api('DELETE', `/api/schedule/dispatch/${id}`).catch(() => null)
+  if (res?.success !== false) {
+    showToast('삭제되었습니다', 'success')
+    scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(()=>null)
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
+    setTimeout(() => switchLaborSubTab('dispatch'), 100)
+  } else {
+    showToast('삭제 실패', 'error')
+  }
+}
+
+// 기존 빠른 입력 함수 → 이제 새 모달로 리다이렉트
+window.openQuickDispatchInput = () => openDispatchScheduleModal()
+window.saveQuickDispatch = () => saveDispatchEntry()
 
 // ── 법정근무시간 설정 모달 열기/저장 ──────────────────────────
 window.openWorkSettingsModal = async () => {
