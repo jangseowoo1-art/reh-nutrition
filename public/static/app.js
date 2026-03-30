@@ -1190,13 +1190,27 @@ async function renderDashboard() {
       <span class="text-xs text-gray-400">${App.currentYear}년 ${App.currentMonth}월</span>
     </div>
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-      ${patientCats.map(cat => {
+      ${(() => {
+        // NULL 카테고리 발주 집계 (patient_category_id=null인 발주)
+        const nullCatMonthly = catMonthlyMap[null] || catMonthlyMap['null'] || {}
+        const nullCatTotal = nullCatMonthly.total || 0
+        const nullCatTaxable = nullCatMonthly.taxable || 0
+        const nullCatExempt = nullCatMonthly.exempt || 0
+        // 단일 환자군인 경우: NULL 카테고리 발주를 해당 환자군에 포함
+        const isSingleCatDash = patientCats.length === 1
+        return patientCats.map(cat => {
         const monthly = catMonthlyMap[cat.id] || {}
         const settings = catSettingsMap[cat.id] || {}
-        const used = monthly.total || 0
+        // 이슈2&5 수정: NULL 카테고리 발주 포함
+        // 단일 환자군: NULL 카테고리 전체 포함
+        // 복수 환자군: 이 카테고리가 catDietPricesData에서 전체 합계를 커버하면 포함
+        const catDietEntry = (catDietPricesData||[]).find(d => d.id === cat.id)
+        const includeNullCat = isSingleCatDash || (catDietEntry?.monthAmt && catDietEntry.monthAmt > (monthly.total||0))
+        const usedBase = monthly.total || 0
+        const used = includeNullCat ? usedBase + nullCatTotal : usedBase
         const budget = settings.monthly_budget || 0
-        const taxable = monthly.taxable || 0
-        const exempt = monthly.exempt || 0
+        const taxable = (monthly.taxable || 0) + (includeNullCat ? nullCatTaxable : 0)
+        const exempt = (monthly.exempt || 0) + (includeNullCat ? nullCatExempt : 0)
         const pct = budget > 0 ? Math.round(used / budget * 100) : null
         const over = pct !== null && pct >= 100
         const warn = pct !== null && pct >= 80 && !over
@@ -1225,7 +1239,8 @@ async function renderDashboard() {
             <span>면: ${fmtMan(exempt)}</span>
           </div>` : ''}
         </div>`
-      }).join('')}
+      }).join('')
+      })()}
     </div>
   </div>` : ''}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
