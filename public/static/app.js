@@ -11454,8 +11454,10 @@ async function reloadScheduleMonth() {
   scheduleAnalysisData = analysisData || null
   scheduleMealStats = mealStats || null
   if (tc) {
-    if (scheduleTab === 'schedule') tc.innerHTML = renderMonthlyScheduleTab()
-    else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
+    if (scheduleTab === 'schedule') {
+      tc.innerHTML = renderMonthlyScheduleTab()
+      setTimeout(initExtWorkerEvents, 0)
+    } else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
   }
 }
 
@@ -11549,6 +11551,8 @@ function renderScheduleTab(content) {
   ${renderSchedDetailModal()}
   ${renderWorkSettingsModal()}
   `
+  // 외부인력 이벤트 위임 초기화
+  setTimeout(initExtWorkerEvents, 0)
 }
 
 // ─── 인사카드 탭 ─────────────────────────────────────────────
@@ -12356,130 +12360,132 @@ function renderMonthlyScheduleTab() {
               return html
             }
 
-            // 외부인력 섹션 렌더링
+            // 외부인력 섹션 렌더링 (문자열 연결 방식으로 따옴표 충돌 방지)
             function renderExternalSection() {
               const extWorkers = scheduleExternalWorkers || []
               const extMap = scheduleExtSchedMap || {}
-              if (extWorkers.length === 0 && !(App.role === 'admin' || App.role === 'nutritionist')) return ''
-              
-              // 파출/알바 구분
-              const dispatchWorkers = extWorkers.filter(w => w.worker_type === 'dispatch')
-              const parttimeWorkers = extWorkers.filter(w => w.worker_type === 'parttime')
-              
-              // 외부인력 근무유형 레이블
-              const EXT_SHIFT_LABELS = {
-                morning: '오전', afternoon: '오후', full_9h: '9H', full_12h: '12H'
-              }
+              const canEdit = (App.role === 'admin' || App.role === 'hospital')
+              if (extWorkers.length === 0 && !canEdit) return ''
+
+              const EXT_SHIFT_LABELS = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
               const EXT_SHIFT_COLORS = {
-                morning: 'background:#fff7ed;color:#c2410c',
-                afternoon: 'background:#fef3c7;color:#b45309',
-                full_9h: 'background:#ffedd5;color:#ea580c',
+                morning:  'background:#fff7ed;color:#c2410c',
+                afternoon:'background:#fef3c7;color:#b45309',
+                full_9h:  'background:#ffedd5;color:#ea580c',
                 full_12h: 'background:#fee2e2;color:#dc2626'
               }
-              const EXT_SHIFT_CODES = ['morning','afternoon','full_9h','full_12h']
-              
-              let html = ''
-              
-              function renderExtWorkerRows(workers, sectionType) {
-                if (workers.length === 0) return ''
-                const sectionLabel = sectionType === 'dispatch' ? '파출' : '알바'
-                const sectionColor = sectionType === 'dispatch' ? '#ea580c' : '#db2777'
-                const sectionBg    = sectionType === 'dispatch' ? '#fff7ed' : '#fdf2f8'
-                const sectionIcon  = sectionType === 'dispatch' ? 'fa-people-carry' : 'fa-user-clock'
-                
-                let shtml = `<tr><td colspan="${days+3}" style="background:${sectionBg};padding:4px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid ${sectionColor}33">
-                  <span style="font-size:11px;font-weight:700;color:${sectionColor}">
-                    <i class="fas ${sectionIcon}" style="margin-right:4px"></i>${sectionLabel} 외부인력 (${workers.length}명)
-                  </span>
-                  ${App.role === 'admin' || App.role === 'nutritionist'
-                    ? `<button onclick="openAddExternalWorkerModal('${sectionType}')" 
-                        style="float:right;padding:2px 8px;border-radius:4px;background:${sectionColor};color:white;font-size:10px;border:none;cursor:pointer">
-                        <i class="fas fa-plus" style="margin-right:2px"></i>${sectionLabel} 추가
-                      </button>` : ''}
-                </td></tr>`
-                
-                workers.forEach((worker, widx) => {
+              const dispatchWorkers = extWorkers.filter(function(w){ return w.worker_type === 'dispatch' })
+              const parttimeWorkers = extWorkers.filter(function(w){ return w.worker_type === 'parttime' })
+
+              function buildSectionRows(workers, sType) {
+                const lbl   = sType === 'dispatch' ? '파출' : '알바'
+                const color = sType === 'dispatch' ? '#ea580c' : '#db2777'
+                const bg    = sType === 'dispatch' ? '#fff7ed' : '#fdf2f8'
+                const icon  = sType === 'dispatch' ? 'fa-people-carry' : 'fa-user-clock'
+                const colspan = days + 3
+
+                // 헤더 행 - data-stype 속성으로 따옴표 충돌 방지
+                let out = '<tr>'
+                out += '<td colspan="' + colspan + '" style="background:' + bg + ';padding:4px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid ' + color + '33">'
+                out += '<span style="font-size:11px;font-weight:700;color:' + color + '">'
+                out += '<i class="fas ' + icon + '" style="margin-right:4px"></i>' + lbl + ' 외부인력 (' + workers.length + '명)</span>'
+                if (canEdit) {
+                  out += ' <button class="ext-add-btn" data-stype="' + sType + '"'
+                  out += ' style="float:right;padding:2px 8px;border-radius:4px;background:' + color + ';color:white;font-size:10px;border:none;cursor:pointer">'
+                  out += '<i class="fas fa-plus" style="margin-right:2px"></i>' + lbl + ' 추가</button>'
+                }
+                out += '</td></tr>'
+
+                workers.forEach(function(worker, widx) {
                   const rowBg = widx % 2 === 0 ? '#fffaf5' : '#fff5ee'
-                  
-                  const cells = Array.from({length:days},(_,i)=>{
-                    const day = i+1
-                    const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-                    const isWknd = isWeekend(App.currentYear,App.currentMonth,day)
-                    const dow2 = getDayOfWeek(App.currentYear,App.currentMonth,day)
-                    const isSun2 = dow2==='일'
-                    const key = `${worker.id}_${dateStr}`
-                    const sched = extMap[key]
-                    const shiftType = sched?.shift_type || ''
-                    
-                    let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd ? 'background:#fffbeb;' : `background:${rowBg};`
-                    const borderLeft = `border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
-                    
-                    let spanStyle, spanText
-                    if (shiftType && EXT_SHIFT_LABELS[shiftType]) {
-                      spanStyle = EXT_SHIFT_COLORS[shiftType] || 'background:#f3f4f6;color:#374151'
-                      spanText = EXT_SHIFT_LABELS[shiftType]
-                    } else {
-                      spanStyle = 'background:#f9fafb;color:#d1d5db'
-                      spanText = '·'
-                    }
-                    
-                    const isEditable = App.role === 'admin' || App.role === 'nutritionist'
-                    
-                    return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}${isEditable?'cursor:pointer;':''}position:relative;"
-                      ${isEditable ? `onclick="extWorkerCellClick(event,${worker.id},'${dateStr}','${worker.worker_type}',this)"` : ''}
-                      data-extshift="${shiftType}"
-                      data-extid="${worker.id}" data-date="${dateStr}">
-                      <div style="display:inline-flex;flex-direction:column;align-items:center">
-                        <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;${spanStyle}">${spanText}</span>
-                      </div>
-                    </td>`
-                  }).join('')
-                  
-                  // 해당 월 근무일 수 계산
-                  const workDays = EXT_SHIFT_CODES.reduce((cnt, st) => {
-                    for (let d=1; d<=days; d++) {
-                      const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-                      if (extMap[`${worker.id}_${ds}`]?.shift_type === st) cnt++
-                    }
-                    return cnt
-                  }, 0)
-                  
-                  shtml += `<tr style="border-bottom:1px solid #e2e8f0">
-                    <td style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #fed7aa;min-width:100px">
-                      <div style="font-weight:600;color:#9a3412;font-size:12px">${worker.name}</div>
-                      <div style="font-size:10px;color:#fb923c">${sectionLabel}</div>
-                    </td>
-                    ${cells}
-                    <td style="padding:4px 3px;text-align:center;background:#fff7ed;border-left:3px solid #fed7aa;min-width:38px">
-                      <div style="font-size:12px;font-weight:700;color:#ea580c">${workDays}</div>
-                      <div style="font-size:9px;color:#fb923c;opacity:0.8">근무</div>
-                    </td>
-                    <td style="padding:4px 3px;text-align:center;background:#fffbeb;border-left:1px solid #fde68a;min-width:40px">
-                      <div style="font-size:10px;color:#d1d5db">-</div>
-                    </td>
-                  </tr>`
+                  let cells = ''
+
+                  for (let i = 0; i < days; i++) {
+                    const day = i + 1
+                    const mm  = String(App.currentMonth).padStart(2,'0')
+                    const dd  = String(day).padStart(2,'0')
+                    const dateStr = App.currentYear + '-' + mm + '-' + dd
+                    const isWknd = isWeekend(App.currentYear, App.currentMonth, day)
+                    const dow2   = getDayOfWeek(App.currentYear, App.currentMonth, day)
+                    const isSun2 = dow2 === '일'
+                    const sched  = extMap[worker.id + '_' + dateStr]
+                    const shiftType = (sched && sched.shift_type) ? sched.shift_type : ''
+
+                    const cellBgVal   = isSun2 ? '#fff1f2' : (isWknd ? '#fffbeb' : rowBg)
+                    const borderColor = isSun2 ? '#fecaca' : (isWknd ? '#fde68a' : '#e5e7eb')
+                    const spanStyle   = EXT_SHIFT_COLORS[shiftType] || 'background:#f9fafb;color:#d1d5db'
+                    const spanText    = EXT_SHIFT_LABELS[shiftType] || '·'
+
+                    cells += '<td class="ext-cell"'
+                    cells += ' data-extshift="' + shiftType + '"'
+                    cells += ' data-extid="' + worker.id + '"'
+                    cells += ' data-date="' + dateStr + '"'
+                    cells += ' data-wtype="' + worker.worker_type + '"'
+                    cells += ' style="padding:2px;text-align:center;background:' + cellBgVal + ';border-left:1px solid ' + borderColor + ';' + (canEdit ? 'cursor:pointer;' : '') + 'position:relative;">'
+                    cells += '<div style="display:inline-flex;flex-direction:column;align-items:center">'
+                    cells += '<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;' + spanStyle + '">' + spanText + '</span>'
+                    cells += '</div></td>'
+                  }
+
+                  // 근무일 수
+                  let wdCount = 0
+                  for (let d = 1; d <= days; d++) {
+                    const ds = App.currentYear + '-' + String(App.currentMonth).padStart(2,'0') + '-' + String(d).padStart(2,'0')
+                    if (extMap[worker.id + '_' + ds] && extMap[worker.id + '_' + ds].shift_type) wdCount++
+                  }
+
+                  const typeColor = worker.worker_type === 'dispatch' ? '#ea580c' : '#db2777'
+                  const typeLbl   = worker.worker_type === 'dispatch' ? '파출' : '알바'
+
+                  out += '<tr style="border-bottom:1px solid #e2e8f0">'
+                  out += '<td style="padding:5px 10px;position:sticky;left:0;background:' + rowBg + ';z-index:2;min-width:110px;border-right:1px solid #e2e8f0">'
+                  out += '<div style="display:flex;align-items:center;gap:4px">'
+                  out += '<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:' + typeColor + '22;color:' + typeColor + ';font-weight:700">' + typeLbl + '</span>'
+                  out += '<span style="font-size:11px;font-weight:600;color:#374151">' + worker.name + '</span>'
+                  if (canEdit) {
+                    out += '<button class="ext-del-btn" data-wid="' + worker.id + '"'
+                    out += ' style="margin-left:auto;background:none;border:none;cursor:pointer;color:#ef4444;font-size:10px;padding:0 2px" title="삭제">'
+                    out += '<i class="fas fa-times"></i></button>'
+                  }
+                  out += '</div></td>'
+                  out += '<td style="text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px">' + wdCount + '일</td>'
+                  out += '<td style="text-align:center;font-size:10px;color:#6b7280;padding:2px"></td>'
+                  out += cells
+                  out += '</tr>'
                 })
-                return shtml
+
+                return out
               }
-              
-              html += renderExtWorkerRows(dispatchWorkers, 'dispatch')
-              html += renderExtWorkerRows(parttimeWorkers, 'parttime')
-              
-              // 외부인력이 없을 때 빈 추가 행 (관리자만)
-              if (extWorkers.length === 0 && (App.role === 'admin' || App.role === 'nutritionist')) {
-                html += `<tr><td colspan="${days+3}" style="padding:8px 12px;background:#fff7ed;text-align:center;border-top:2px solid #fed7aa">
-                  <span style="font-size:11px;color:#fb923c;margin-right:8px"><i class="fas fa-info-circle mr-1"></i>외부인력(파출/알바)이 없습니다</span>
-                  <button onclick="openAddExternalWorkerModal('dispatch')" style="padding:3px 10px;border-radius:4px;background:#ea580c;color:white;font-size:11px;border:none;cursor:pointer;margin-right:4px">
-                    <i class="fas fa-plus" style="margin-right:2px"></i>파출 추가
-                  </button>
-                  <button onclick="openAddExternalWorkerModal('parttime')" style="padding:3px 10px;border-radius:4px;background:#db2777;color:white;font-size:11px;border:none;cursor:pointer">
-                    <i class="fas fa-plus" style="margin-right:2px"></i>알바 추가
-                  </button>
-                </td></tr>`
+
+              // 외부인력이 없을 때 placeholder 행
+              function buildEmptyRow() {
+                if (!canEdit) return ''
+                const colspan = days + 3
+                let html = '<tr>'
+                html += '<td colspan="' + colspan + '" style="background:#f9fafb;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid #e5e7eb22;text-align:center">'
+                html += '<span style="font-size:11px;color:#9ca3af">외부인력(파출/알바) 없음 &nbsp;</span>'
+                html += '<button class="ext-add-btn" data-stype="dispatch" style="padding:2px 8px;border-radius:4px;background:#ea580c;color:white;font-size:10px;border:none;cursor:pointer;margin-right:4px">'
+                html += '<i class="fas fa-plus" style="margin-right:2px"></i>파출 추가</button>'
+                html += '<button class="ext-add-btn" data-stype="parttime" style="padding:2px 8px;border-radius:4px;background:#db2777;color:white;font-size:10px;border:none;cursor:pointer">'
+                html += '<i class="fas fa-plus" style="margin-right:2px"></i>알바 추가</button>'
+                html += '</td></tr>'
+                return html
               }
-              
+
+              if (dispatchWorkers.length === 0 && parttimeWorkers.length === 0) {
+                return buildEmptyRow()
+              }
+
+              let html = ''
+              if (dispatchWorkers.length > 0 || canEdit) {
+                html += buildSectionRows(dispatchWorkers, 'dispatch')
+              }
+              if (parttimeWorkers.length > 0 || canEdit) {
+                html += buildSectionRows(parttimeWorkers, 'parttime')
+              }
               return html
             }
+
             
             return renderEmpRows(cookEmps, 'cook') + renderEmpRows(nutriEmps, 'nutrition') + renderExternalSection()
           })()}
@@ -14996,7 +15002,10 @@ window.saveExternalWorker = async () => {
         scheduleExtSchedMap = monthData.ext_sched_map || {}
       }
       const tc = document.getElementById('scheduleTabContent')
-      if (tc && scheduleTab === 'schedule') tc.innerHTML = renderMonthlyScheduleTab()
+      if (tc && scheduleTab === 'schedule') {
+        tc.innerHTML = renderMonthlyScheduleTab()
+        setTimeout(initExtWorkerEvents, 0)
+      }
     } else {
       showToast(res?.error || '추가 실패', 'error')
     }
@@ -15006,6 +15015,56 @@ window.saveExternalWorker = async () => {
 }
 
 // ── 외부인력 셀 클릭 (근무유형 순환) ─────────────────────────
+// ── 외부인력 이벤트 위임 초기화 ─────────────────────────────
+function initExtWorkerEvents() {
+  const tc = document.getElementById('scheduleTabContent')
+  if (!tc) return
+
+  // 이전 리스너 제거 후 재등록 (중복 방지)
+  if (tc._extEvtBound) {
+    tc.removeEventListener('click', tc._extEvtHandler)
+  }
+
+  tc._extEvtHandler = function(e) {
+    // 파출/알바 추가 버튼
+    const addBtn = e.target.closest('.ext-add-btn')
+    if (addBtn) {
+      e.preventDefault()
+      e.stopPropagation()
+      const stype = addBtn.dataset.stype || 'dispatch'
+      openAddExternalWorkerModal(stype)
+      return
+    }
+
+    // 외부인력 삭제 버튼
+    const delBtn = e.target.closest('.ext-del-btn')
+    if (delBtn) {
+      e.preventDefault()
+      e.stopPropagation()
+      const wid = parseInt(delBtn.dataset.wid)
+      if (wid) deleteExternalWorker(wid)
+      return
+    }
+
+    // 외부인력 셀 클릭
+    const cell = e.target.closest('.ext-cell')
+    if (cell) {
+      e.preventDefault()
+      e.stopPropagation()
+      const canEdit = (App.role === 'admin' || App.role === 'hospital')
+      if (!canEdit) return
+      const workerId = parseInt(cell.dataset.extid)
+      const dateStr  = cell.dataset.date
+      const workerType = cell.dataset.wtype
+      extWorkerCellClick(e, workerId, dateStr, workerType, cell)
+      return
+    }
+  }
+
+  tc.addEventListener('click', tc._extEvtHandler)
+  tc._extEvtBound = true
+}
+
 const EXT_SHIFT_SEQUENCE = ['morning', 'afternoon', 'full_9h', 'full_12h', '']
 const EXT_SHIFT_LABEL_MAP = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H', '':'·' }
 
@@ -15050,11 +15109,12 @@ window.extWorkerCellClick = async (e, workerId, dateStr, workerType, cell) => {
     const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
     if (scheduleExtSchedMap[`${workerId}_${ds}`]?.shift_type) wdCount++
   }
-  // 우측 두번째 마지막 td 업데이트
+  // 두번째 td (근무일 수 표시) 업데이트
   const tds = row?.querySelectorAll('td')
   if (tds && tds.length >= 2) {
-    const wdTd = tds[tds.length - 2]
-    wdTd.innerHTML = `<div style="font-size:12px;font-weight:700;color:#ea580c">${wdCount}</div><div style="font-size:9px;color:#fb923c;opacity:0.8">근무</div>`
+    const wdTd = tds[1]
+    wdTd.textContent = wdCount + '일'
+    wdTd.style.cssText = 'text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px'
   }
   
   // API 저장
@@ -15085,7 +15145,10 @@ window.deleteExternalWorker = async (workerId, workerName) => {
         scheduleExtSchedMap = monthData.ext_sched_map || {}
       }
       const tc = document.getElementById('scheduleTabContent')
-      if (tc && scheduleTab === 'schedule') tc.innerHTML = renderMonthlyScheduleTab()
+      if (tc && scheduleTab === 'schedule') {
+        tc.innerHTML = renderMonthlyScheduleTab()
+        setTimeout(initExtWorkerEvents, 0)
+      }
     } else {
       showToast('삭제 실패', 'error')
     }
