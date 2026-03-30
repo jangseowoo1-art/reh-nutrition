@@ -13592,7 +13592,7 @@ function renderLaborCostSettingsModal() {
   ]
   const allKeys = COST_ITEMS.flatMap(s => s.items.map(i => i.key))
 
-  return \`<div id="laborCostSettingsModal" class="hidden modal-overlay" style="z-index:1020">
+  return `<div id="laborCostSettingsModal" class="hidden modal-overlay" style="z-index:1020">
     <div class="modal-box max-w-lg p-0 overflow-hidden">
       <div class="bg-gray-800 text-white px-6 py-4 flex items-center justify-between">
         <div>
@@ -13606,24 +13606,24 @@ function renderLaborCostSettingsModal() {
           <i class="fas fa-info-circle mr-1"></i>
           각 근무유형별 1회 단가를 입력하세요. 직원별 시급은 인사카드에서 별도 설정합니다.
         </div>
-        \${COST_ITEMS.map(sec => \`
+        ${COST_ITEMS.map(sec => `
         <div>
           <h4 class="text-sm font-bold mb-3 flex items-center gap-2">
-            <span class="w-3 h-3 rounded-full inline-block" style="background:\${sec.color}"></span>
-            <span style="color:\${sec.color}">\${sec.section}</span>
+            <span class="w-3 h-3 rounded-full inline-block" style="background:${sec.color}"></span>
+            <span style="color:${sec.color}">${sec.section}</span>
           </h4>
           <div class="space-y-2 pl-1">
-            \${sec.items.map(item => \`
+            ${sec.items.map(item => `
             <div class="flex items-center gap-3">
-              <label class="text-xs font-medium text-gray-700 w-32 flex-shrink-0">\${item.label}</label>
+              <label class="text-xs font-medium text-gray-700 w-32 flex-shrink-0">${item.label}</label>
               <div class="flex-1 relative">
-                <input type="number" id="lc_\${item.key}" class="form-input pr-8 text-sm" placeholder="\${item.placeholder}" min="0" step="1000">
+                <input type="number" id="lc_${item.key}" class="form-input pr-8 text-sm" placeholder="${item.placeholder}" min="0" step="1000">
                 <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">원</span>
               </div>
-              <span class="text-xs text-gray-400 w-28 flex-shrink-0">\${item.hint}</span>
-            </div>\`).join('')}
+              <span class="text-xs text-gray-400 w-28 flex-shrink-0">${item.hint}</span>
+            </div>`).join('')}
           </div>
-        </div>\`).join('')}
+        </div>`).join('')}
         <div class="flex gap-3 pt-2 border-t">
           <button onclick="saveLaborCostSettings()" class="btn btn-primary flex-1">
             <i class="fas fa-save mr-1"></i>저장
@@ -13632,8 +13632,9 @@ function renderLaborCostSettingsModal() {
         </div>
       </div>
     </div>
-  </div>\`
+  </div>`
 }
+
 
 // ════════════════════════════════════════════════════════════════
 // 법정근무시간 설정 모달 (관리자)
