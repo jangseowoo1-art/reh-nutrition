@@ -119,9 +119,10 @@ window.loadExecData = async function() {
   try {
     const yStr = String(State.year)
     const mStr = String(State.month).padStart(2,'0')
-    const [summary, annual] = await Promise.all([
+    const [summary, annual, staffLabor] = await Promise.all([
       api('GET', `/api/executive/summary/${yStr}/${mStr}`),
-      api('GET', `/api/executive/annual/${yStr}`)
+      api('GET', `/api/executive/annual/${yStr}`),
+      api('GET', `/api/executive/staff-labor/${yStr}/${mStr}`).catch(() => null)
     ])
 
     if (icon) icon.classList.remove('loading-spin')
@@ -139,6 +140,7 @@ window.loadExecData = async function() {
 
     State.data = summary
     State.annualData = annual
+    State.staffLabor = staffLabor
 
     // 병원명 업데이트
     const hospName = summary.hospital?.name || State.hospitalName || '운영 현황'
@@ -227,6 +229,9 @@ function renderAll() {
         ${renderTabContent(State.activeTab, vendorOrders, mealStats, cardExpenses, transactions, schedules, catOrders, budget)}
       </div>
     </div>
+
+    <!-- 인력 & 인건비 현황 -->
+    ${renderExecStaffLaborSection(State.staffLabor)}
 
     <!-- 연간 추이 차트 -->
     ${renderAnnualSection()}
@@ -956,6 +961,175 @@ function initVendorChart(vendorOrders) {
       }
     }
   })
+}
+
+// ── 인력 & 인건비 현황 섹션 ──────────────────────────────────────
+function renderExecStaffLaborSection(d) {
+  if (!d) return ''
+
+  const fmtN = v => (v || 0).toLocaleString()
+  const fmtW2 = v => {
+    v = v || 0
+    if (v >= 100000000) return `${(v/100000000).toFixed(1)}억`
+    if (v >= 10000)     return `${Math.round(v/10000)}만`
+    return v.toLocaleString()
+  }
+
+  const ss = d.staffSummary  || {}
+  const ws = d.workSummary   || {}
+  const es = d.externalSummary || {}
+  const lc = d.laborCost     || {}
+  const warnings = d.warnings || []
+
+  const totalLC       = lc.total || 1
+  const baseRatio     = Math.round(((lc.baseSalary  || 0) / totalLC) * 100)
+  const otRatio       = Math.round(((lc.otCost      || 0) / totalLC) * 100)
+  const dispatchRatio = Math.round(((lc.dispatchCost|| 0) / totalLC) * 100)
+  const parttimeRatio = Math.round(((lc.parttimeCost|| 0) / totalLC) * 100)
+  const extRatio      = dispatchRatio + parttimeRatio
+
+  const dispatchDiff = (es.dispatchDays || 0) - (es.prevDispatchDays || 0)
+  const parttimeDiff = (es.parttimeDays || 0) - (es.prevParttimeDays || 0)
+  const diffBadge = diff => diff === 0
+    ? `<span style="color:#9ca3af;font-size:11px;margin-left:3px">±0</span>`
+    : diff > 0
+      ? `<span style="color:#ef4444;font-size:11px;margin-left:3px">▲${diff}</span>`
+      : `<span style="color:#22c55e;font-size:11px;margin-left:3px">▼${Math.abs(diff)}</span>`
+
+  const warnHtml = warnings.length > 0
+    ? warnings.map(w => `
+      <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-radius:8px;
+        background:${w.level==='danger'?'#fef2f2':'#fffbeb'};
+        border:1px solid ${w.level==='danger'?'#fecaca':'#fde68a'};">
+        <i class="fas fa-exclamation-triangle" style="font-size:11px;margin-top:2px;color:${w.level==='danger'?'#ef4444':'#f59e0b'}"></i>
+        <span style="font-size:12px;color:${w.level==='danger'?'#b91c1c':'#92400e'}">${w.message}</span>
+      </div>`).join('')
+    : `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:#f0fdf4;border:1px solid #bbf7d0;">
+        <i class="fas fa-check-circle" style="font-size:11px;color:#16a34a"></i>
+        <span style="font-size:12px;color:#15803d">인력 운영이 정상 범위입니다</span>
+      </div>`
+
+  const costItems = [
+    { label:'기본급',       val: lc.baseSalary   || 0, ratio: baseRatio,     color:'#818cf8' },
+    { label:'초과근무(OT)', val: lc.otCost        || 0, ratio: otRatio,       color:'#fbbf24' },
+    { label:'파출비',       val: lc.dispatchCost  || 0, ratio: dispatchRatio, color:'#fb923c' },
+    { label:'알바비',       val: lc.parttimeCost  || 0, ratio: parttimeRatio, color:'#facc15' },
+  ]
+
+  return `
+  <div class="exec-card overflow-hidden" style="margin-top:16px">
+    <div style="padding:16px 20px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <h3 style="font-weight:700;font-size:14px;color:#1f2937;display:flex;align-items:center;gap:8px">
+          <i class="fas fa-users" style="color:#6366f1"></i>인력 & 인건비 현황
+        </h3>
+        <p style="font-size:11px;color:#9ca3af;margin-top:2px">이번 달 인력 운영 및 비용 내역</p>
+      </div>
+      ${warnings.length > 0
+        ? `<span style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:#fef3c7;color:#b45309">⚠️ 주의 ${warnings.length}건</span>`
+        : `<span style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:#dcfce7;color:#16a34a">✓ 정상</span>`}
+    </div>
+
+    <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+      <!-- 왼쪽: 인력 현황 -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <!-- 직원 구성 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div style="background:#eef2ff;border-radius:12px;padding:12px">
+            <p style="font-size:11px;font-weight:600;color:#6366f1;margin-bottom:4px">전체 재직</p>
+            <p style="font-size:22px;font-weight:800;color:#4338ca">${fmtN(ss.total)}<span style="font-size:12px;font-weight:400;margin-left:2px">명</span></p>
+            <p style="font-size:11px;color:#a5b4fc;margin-top:2px">출근 ${fmtN(ss.activeThisMonth)}명</p>
+          </div>
+          <div style="background:#eff6ff;border-radius:12px;padding:12px">
+            <p style="font-size:11px;font-weight:600;color:#3b82f6;margin-bottom:4px">고용 형태</p>
+            ${[['정규직', ss.fullTime], ['계약직', ss.contract], ['시간제', ss.partTime]].map(([l,v]) => `
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-top:2px">
+                <span style="color:#6b7280">${l}</span>
+                <span style="font-weight:700;color:#1d4ed8">${fmtN(v)}명</span>
+              </div>`).join('')}
+          </div>
+        </div>
+
+        <!-- OT 현황 -->
+        <div style="background:#fffbeb;border-radius:12px;padding:12px">
+          <p style="font-size:11px;font-weight:600;color:#d97706;margin-bottom:8px">📋 초과근무(OT) 현황</p>
+          <div style="display:flex;gap:16px">
+            ${[['OT 발생', ws.totalOtDays, '건'], ['OT 시간', ws.totalOtHours, 'h'], ['휴가/연차', ws.totalLeaveDays, '일']].map(([l,v,u]) => `
+              <div style="text-align:center">
+                <p style="font-size:18px;font-weight:700;color:#b45309">${fmtN(v)}<span style="font-size:11px;font-weight:400">${u}</span></p>
+                <p style="font-size:11px;color:#9ca3af">${l}</p>
+              </div>`).join('')}
+          </div>
+        </div>
+
+        <!-- 외부인력 -->
+        <div style="background:#fff7ed;border-radius:12px;padding:12px">
+          <p style="font-size:11px;font-weight:600;color:#ea580c;margin-bottom:8px">🔄 외부인력 투입 현황</p>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:12px;color:#374151">파출 <span style="color:#9ca3af">(${fmtN(es.dispatchWorkerCount)}명)</span></span>
+              <div style="display:flex;align-items:center">
+                <span style="font-size:14px;font-weight:700;color:#c2410c">${fmtN(es.dispatchDays)}회</span>
+                ${diffBadge(dispatchDiff)}
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:12px;color:#374151">알바 <span style="color:#9ca3af">(${fmtN(es.parttimeWorkerCount)}명)</span></span>
+              <div style="display:flex;align-items:center">
+                <span style="font-size:14px;font-weight:700;color:#b45309">${fmtN(es.parttimeDays)}회</span>
+                ${diffBadge(parttimeDiff)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 경고 -->
+        <div style="display:flex;flex-direction:column;gap:6px">${warnHtml}</div>
+      </div>
+
+      <!-- 오른쪽: 인건비 -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <!-- 총 인건비 배너 -->
+        <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:16px;color:white">
+          <p style="font-size:11px;color:#c7d2fe;margin-bottom:4px">이번 달 총 인건비</p>
+          <p style="font-size:28px;font-weight:800">${fmtW2(lc.total)}<span style="font-size:14px;font-weight:400;margin-left:4px">원</span></p>
+          <p style="font-size:11px;color:#c7d2fe;margin-top:4px">기본급 + OT + 파출 + 알바 합산</p>
+        </div>
+
+        <!-- 항목별 막대 -->
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${costItems.map(item => `
+            <div style="display:flex;align-items:center;justify-content:space-between;background:#f9fafb;border-radius:8px;padding:8px 12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="width:10px;height:10px;border-radius:50%;background:${item.color};flex-shrink:0"></span>
+                <span style="font-size:12px;color:#374151">${item.label}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="width:80px;background:#e5e7eb;border-radius:99px;height:6px">
+                  <div style="width:${item.ratio}%;height:6px;border-radius:99px;background:${item.color}"></div>
+                </div>
+                <span style="font-size:12px;font-weight:700;color:#1f2937;width:60px;text-align:right">${fmtW2(item.val)}원</span>
+              </div>
+            </div>`).join('')}
+        </div>
+
+        <!-- 외부인력 비중 -->
+        <div style="background:#f9fafb;border-radius:12px;padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <p style="font-size:12px;color:#6b7280">외부인력 비용 비중</p>
+            <p style="font-size:14px;font-weight:700;color:${extRatio > 30 ? '#dc2626' : '#16a34a'}">${extRatio}%</p>
+          </div>
+          <div style="background:#e5e7eb;border-radius:99px;height:8px">
+            <div style="width:${Math.min(100, extRatio)}%;height:8px;border-radius:99px;background:${extRatio > 30 ? '#f87171' : '#4ade80'}"></div>
+          </div>
+          <p style="font-size:11px;color:#9ca3af;margin-top:4px">권장 기준: 30% 이하 / 파출 ${fmtW2(lc.dispatchCost)}원 + 알바 ${fmtW2(lc.parttimeCost)}원</p>
+        </div>
+      </div>
+    </div>
+  </div>`
 }
 
 })()

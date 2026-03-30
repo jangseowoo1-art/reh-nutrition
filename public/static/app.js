@@ -10301,9 +10301,12 @@ async function renderAdminDashboard() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  let data
+  let data, adminStaffLabor
   try {
-    data = await api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`)
+    ;[data, adminStaffLabor] = await Promise.all([
+      api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`),
+      api('GET', `/api/admin/staff-labor/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    ])
   } catch(e) {
     content.innerHTML = `<div class="text-center text-red-400 py-16"><i class="fas fa-exclamation-triangle text-2xl mb-2 block"></i>데이터 로드 실패: ${e.message}</div>`
     return
@@ -11022,7 +11025,11 @@ async function renderAdminDashboard() {
         </tbody>
       </table>
     </div>
-  </div>`
+  </div>
+
+  <!-- 전체 병원 인력 & 인건비 현황 -->
+  ${renderAdminStaffLabor(adminStaffLabor)}
+  `
   } catch(renderErr) {
     console.error('관리자 대시보드 렌더링 오류:', renderErr)
     content.innerHTML = `<div class="text-center text-red-400 py-16 px-4">
@@ -26265,6 +26272,100 @@ function renderDashStaffLabor(d) {
         <p class="text-xl font-bold text-purple-700">${fmtW(lc.total)}<span class="text-xs font-normal ml-0.5">원</span></p>
         <p class="text-xs text-purple-400">파출 ${fmtW(lc.dispatchCost)} · 알바 ${fmtW(lc.parttimeCost)}</p>
       </div>
+    </div>
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 관리자 대시보드: 전체 병원 인력 & 인건비 현황 렌더러
+// ════════════════════════════════════════════════════════════════
+function renderAdminStaffLabor(d) {
+  if (!d || !d.hospitals) return ''
+  const fmt  = v => (v || 0).toLocaleString()
+  const fmtW = v => {
+    v = v || 0
+    if (v >= 100000000) return `${(v/100000000).toFixed(1)}억`
+    if (v >= 10000)     return `${Math.round(v/10000)}만`
+    return v.toLocaleString()
+  }
+  const { hospitals: hList, totals } = d
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-4">
+    <!-- 헤더 -->
+    <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-gray-800 text-sm flex items-center gap-2">
+          <i class="fas fa-users text-indigo-500"></i>전체 병원 인력 & 인건비 현황
+        </h3>
+        <p class="text-xs text-gray-400 mt-0.5">병원별 이번 달 인력 운영 및 비용 요약</p>
+      </div>
+    </div>
+
+    <!-- 전체 합계 요약 카드 -->
+    <div class="px-5 py-3 bg-indigo-50 grid grid-cols-2 sm:grid-cols-5 gap-3 border-b border-indigo-100">
+      <div class="text-center">
+        <p class="text-xs text-indigo-500">전체 재직</p>
+        <p class="text-lg font-bold text-indigo-700">${fmt(totals.empTotal)}<span class="text-xs font-normal ml-0.5">명</span></p>
+      </div>
+      <div class="text-center">
+        <p class="text-xs text-indigo-500">출근 인원</p>
+        <p class="text-lg font-bold text-indigo-700">${fmt(totals.activeEmp)}<span class="text-xs font-normal ml-0.5">명</span></p>
+      </div>
+      <div class="text-center">
+        <p class="text-xs text-amber-600">OT 시간</p>
+        <p class="text-lg font-bold text-amber-700">${fmt(totals.otHours)}<span class="text-xs font-normal ml-0.5">h</span></p>
+      </div>
+      <div class="text-center">
+        <p class="text-xs text-orange-600">외부인력</p>
+        <p class="text-lg font-bold text-orange-700">${fmt(totals.dispatchDays + totals.parttimeDays)}<span class="text-xs font-normal ml-0.5">회</span></p>
+      </div>
+      <div class="text-center">
+        <p class="text-xs text-purple-600">총 인건비</p>
+        <p class="text-lg font-bold text-purple-700">${fmtW(totals.totalLaborCost)}<span class="text-xs font-normal ml-0.5">원</span></p>
+      </div>
+    </div>
+
+    <!-- 병원별 테이블 -->
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="bg-gray-50 text-gray-500">
+            <th class="px-4 py-2.5 text-left font-semibold">병원명</th>
+            <th class="px-3 py-2.5 text-center font-semibold">재직</th>
+            <th class="px-3 py-2.5 text-center font-semibold">출근</th>
+            <th class="px-3 py-2.5 text-center font-semibold">OT</th>
+            <th class="px-3 py-2.5 text-center font-semibold">파출</th>
+            <th class="px-3 py-2.5 text-center font-semibold">알바</th>
+            <th class="px-3 py-2.5 text-right font-semibold">인건비 합계</th>
+            <th class="px-3 py-2.5 text-right font-semibold">외부인력비</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${hList.map((h, i) => {
+            const extCost = (h.laborCost.dispatchCost || 0) + (h.laborCost.parttimeCost || 0)
+            const extRatio = h.laborCost.total > 0 ? Math.round(extCost / h.laborCost.total * 100) : 0
+            const isWarn = extRatio > 30 || h.otHours > 40
+            return `
+            <tr class="border-t border-gray-50 ${i % 2 === 0 ? '' : 'bg-gray-50/50'} ${isWarn ? 'bg-amber-50/30' : ''}">
+              <td class="px-4 py-2.5 font-medium text-gray-800">
+                ${isWarn ? '<i class="fas fa-exclamation-triangle text-amber-500 mr-1 text-xs"></i>' : ''}
+                ${h.hospitalName}
+              </td>
+              <td class="px-3 py-2.5 text-center text-gray-700">${fmt(h.empTotal)}명</td>
+              <td class="px-3 py-2.5 text-center text-gray-700">${fmt(h.activeEmp)}명</td>
+              <td class="px-3 py-2.5 text-center ${h.otHours > 40 ? 'text-red-600 font-semibold' : 'text-amber-600'}">${fmt(h.otHours)}h</td>
+              <td class="px-3 py-2.5 text-center text-orange-600">${fmt(h.dispatchDays)}회</td>
+              <td class="px-3 py-2.5 text-center text-yellow-600">${fmt(h.parttimeDays)}회</td>
+              <td class="px-3 py-2.5 text-right font-semibold text-gray-800">${fmtW(h.laborCost.total)}원</td>
+              <td class="px-3 py-2.5 text-right">
+                <span class="font-semibold ${extRatio > 30 ? 'text-red-600' : 'text-gray-600'}">${fmtW(extCost)}원</span>
+                <span class="text-gray-400 ml-1">(${extRatio}%)</span>
+              </td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
     </div>
   </div>`
 }

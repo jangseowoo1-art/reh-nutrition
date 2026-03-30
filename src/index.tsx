@@ -338,7 +338,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260330b"></script>
+<script src="/static/app.js?v=20260330c"></script>
 </body>
 </html>`
 }
@@ -427,7 +427,7 @@ function getExecutiveShell(): string {
   <div id="execContent" class="hidden space-y-6"></div>
 </main>
 
-<script src="/static/executive.js?v=20260322"></script>
+<script src="/static/executive.js?v=20260330c"></script>
 </body>
 </html>`
 }

@@ -2258,4 +2258,115 @@ adminRouter.post('/hospitals/:id/sync-invoice-vendors', async (c) => {
   return c.json({ success: true, created })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 관리자: 전체 병원 인력 & 인건비 요약
+// GET /api/admin/staff-labor/:year/:month
+// ════════════════════════════════════════════════════════════════
+adminRouter.get('/staff-labor/:year/:month', async (c) => {
+  const { year, month } = c.req.param()
+  const y = parseInt(year)
+  const m = parseInt(month)
+
+  // 활성 병원 목록
+  const hospitalsRes = await c.env.DB.prepare(
+    `SELECT id, name FROM hospitals ORDER BY name`
+  ).all<any>()
+  const hospitals = hospitalsRes.results || []
+
+  const results = await Promise.all(hospitals.map(async (h: any) => {
+    const hid = h.id
+
+    // 직원 수
+    const empRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) as total,
+              SUM(CASE WHEN employment_type='full' THEN 1 ELSE 0 END) as full_time,
+              COALESCE(SUM(base_salary),0) as base_salary_total
+       FROM employees WHERE hospital_id=? AND is_active=1`
+    ).bind(hid).first<any>()
+
+    // OT / 출근
+    const schedRow = await c.env.DB.prepare(
+      `SELECT COUNT(DISTINCT employee_id) as active_emp,
+              SUM(CASE WHEN is_overtime=1 THEN 1 ELSE 0 END) as ot_count,
+              SUM(COALESCE(overtime_hours,0)) as ot_hours
+       FROM daily_schedules
+       WHERE hospital_id=?
+         AND strftime('%Y',work_date)=? AND strftime('%m',work_date)=printf('%02d',?)`
+    ).bind(hid, String(y), m).first<any>()
+
+    // 외부인력
+    const extRow = await c.env.DB.prepare(
+      `SELECT ew.worker_type, COUNT(*) as day_count
+       FROM external_schedules es
+       JOIN external_workers ew ON ew.id=es.worker_id
+       WHERE es.hospital_id=?
+         AND strftime('%Y',es.work_date)=? AND strftime('%m',es.work_date)=printf('%02d',?)
+       GROUP BY ew.worker_type`
+    ).bind(hid, String(y), m).all<any>()
+    const extMap: Record<string, number> = {}
+    ;(extRow.results || []).forEach((r: any) => { extMap[r.worker_type] = r.day_count })
+
+    // 인건비 단가
+    const costRows = await c.env.DB.prepare(
+      `SELECT cost_type, unit_price FROM labor_cost_settings WHERE hospital_id=?`
+    ).bind(hid).all<any>()
+    const costMap: Record<string, number> = {}
+    ;(costRows.results || []).forEach((r: any) => { costMap[r.cost_type] = r.unit_price || 0 })
+
+    // 파출/알바 비용
+    const extCostRows = await c.env.DB.prepare(
+      `SELECT es.shift_type, es.unit_price, ew.worker_type
+       FROM external_schedules es
+       JOIN external_workers ew ON ew.id=es.worker_id
+       WHERE es.hospital_id=?
+         AND strftime('%Y',es.work_date)=? AND strftime('%m',es.work_date)=printf('%02d',?)`
+    ).bind(hid, String(y), m).all<any>()
+
+    const dMap: Record<string, string> = { morning:'dispatch_morning', afternoon:'dispatch_afternoon', '9h':'dispatch_9h', '12h':'dispatch_12h' }
+    const pMap: Record<string, string> = { morning:'parttime_morning',  afternoon:'parttime_afternoon',  '9h':'parttime_9h',  '12h':'parttime_12h' }
+
+    let dispatchCost = 0, parttimeCost = 0
+    ;(extCostRows.results || []).forEach((e: any) => {
+      const price = e.unit_price > 0 ? e.unit_price
+        : e.worker_type === 'dispatch' ? (costMap[dMap[e.shift_type]||'']||0)
+        : (costMap[pMap[e.shift_type]||'']||0)
+      if (e.worker_type === 'dispatch') dispatchCost += price
+      else parttimeCost += price
+    })
+
+    const baseSalary = empRow?.base_salary_total || 0
+    const totalLaborCost = baseSalary + dispatchCost + parttimeCost
+
+    return {
+      hospitalId:   hid,
+      hospitalName: h.name,
+      empTotal:     empRow?.total     || 0,
+      empFullTime:  empRow?.full_time  || 0,
+      activeEmp:    schedRow?.active_emp || 0,
+      otCount:      schedRow?.ot_count   || 0,
+      otHours:      schedRow?.ot_hours   || 0,
+      dispatchDays: extMap['dispatch']  || 0,
+      parttimeDays: extMap['parttime']  || 0,
+      laborCost: {
+        baseSalary,
+        dispatchCost,
+        parttimeCost,
+        total: totalLaborCost,
+      }
+    }
+  }))
+
+  // 전체 합계
+  const totals = results.reduce((acc: any, r: any) => ({
+    empTotal:     acc.empTotal     + r.empTotal,
+    activeEmp:    acc.activeEmp    + r.activeEmp,
+    otHours:      acc.otHours      + r.otHours,
+    dispatchDays: acc.dispatchDays + r.dispatchDays,
+    parttimeDays: acc.parttimeDays + r.parttimeDays,
+    totalLaborCost: acc.totalLaborCost + r.laborCost.total,
+  }), { empTotal:0, activeEmp:0, otHours:0, dispatchDays:0, parttimeDays:0, totalLaborCost:0 })
+
+  return c.json({ hospitals: results, totals, period: { year: y, month: m } })
+})
+
 export default adminRouter
