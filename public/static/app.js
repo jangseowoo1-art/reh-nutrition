@@ -11664,7 +11664,7 @@ function renderAdminCompareChart(hospitals) {
 // ══════════════════════════════════════════════════════════════
 
 // 현재 스케줄 탭 상태
-let scheduleTab = 'employees' // 'employees' | 'schedule' | 'shifts' | 'leaves' | 'analysis'
+let scheduleTab = 'schedule' // 'employees' | 'schedule' | 'shifts' | 'leaves' | 'analysis'
 let scheduleEmployees = []
 let scheduleShifts = []
 let schedulePositions = []
@@ -11729,6 +11729,9 @@ let scheduleMonthData = null   // { employees, sched_map, shifts, holidays, leav
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
   content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+
+  // 스케줄 관리 메뉴 진입 시 항상 월간 스케줄 탭을 첫 화면으로 표시
+  scheduleTab = 'schedule'
 
   // 모든 데이터 병렬 로드
   const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData] = await Promise.all([
@@ -11795,11 +11798,12 @@ function renderScheduleTab(content) {
 
   const tabs = [
     { id: 'employees', label: '인사카드',   icon: 'fa-id-card' },
-    { id: 'schedule',  label: '월간 스케줄', icon: 'fa-calendar-alt' },
     { id: 'leaves',    label: '연차 관리',  icon: 'fa-umbrella-beach' },
     { id: 'analysis',  label: '운영 분석',  icon: 'fa-chart-bar' },
     { id: 'laborCost', label: '인건비',     icon: 'fa-won-sign' },
-    { id: 'shifts',    label: '근무조 설정', icon: 'fa-clock' }
+    { id: 'shifts',    label: '근무조 설정', icon: 'fa-clock' },
+    { id: 'laborCostSettings', label: '단가 설정', icon: 'fa-cog' },
+    { id: 'schedule',  label: '월간 스케줄', icon: 'fa-calendar-alt' }
   ]
 
   content.innerHTML = `
@@ -11832,14 +11836,24 @@ function renderScheduleTab(content) {
           </div>
         </div>
         <div class="flex gap-1 flex-wrap">
-          ${tabs.map(t => `
+          ${tabs.map(t => {
+            // 단가설정 탭은 병원/관리자 계정만 표시, 클릭 시 모달 열기
+            if (t.id === 'laborCostSettings') {
+              if (!isAdm && App.role !== 'hospital') return ''
+              return `
+            <button onclick="openLaborCostSettings()"
+              class="px-3 py-2 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
+              <i class="fas ${t.icon} mr-1"></i>${t.label}
+            </button>`
+            }
+            return `
             <button onclick="switchScheduleTab('${t.id}')"
               class="px-3 py-2 rounded-lg text-xs font-medium transition-all ${tab === t.id
                 ? 'bg-blue-600 text-white shadow'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">
               <i class="fas ${t.icon} mr-1"></i>${t.label}
-            </button>
-          `).join('')}
+            </button>`
+          }).join('')}
           ${tab === 'schedule' ? `
           <button onclick="openBatchInputModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 ml-2">
             <i class="fas fa-th mr-1"></i>일괄입력
@@ -11852,10 +11866,6 @@ function renderScheduleTab(content) {
           </button>
           <button onclick="exportScheduleExcel()" class="px-3 py-2 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800 ml-1">
             <i class="fas fa-file-excel mr-1"></i>엑셀
-          </button>` : ''}
-          ${(isAdm || App.role === 'hospital') ? `
-          <button onclick="openLaborCostSettings()" class="px-3 py-2 rounded-lg text-xs font-medium bg-orange-500 text-white hover:bg-orange-600 ml-1" title="파출/알바 단가 설정">
-            <i class="fas fa-cog mr-1"></i>단가설정
           </button>` : ''}
           ${isAdm ? `<button onclick="openWorkSettingsModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-orange-700 text-white hover:bg-orange-800 ml-1" title="법정근무시간 설정">
             <i class="fas fa-shield-alt mr-1"></i>근무시간 설정
