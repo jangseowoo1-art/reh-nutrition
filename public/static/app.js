@@ -11525,7 +11525,11 @@ function renderScheduleTab(content) {
           <button onclick="exportScheduleExcel()" class="px-3 py-2 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800 ml-1">
             <i class="fas fa-file-excel mr-1"></i>엑셀
           </button>` : ''}
-          ${isAdm ? `<button onclick="openWorkSettingsModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-orange-600 text-white hover:bg-orange-700 ml-1" title="법정근무시간 설정">
+          ${(isAdm || App.role === 'hospital') ? `
+          <button onclick="openLaborCostSettings()" class="px-3 py-2 rounded-lg text-xs font-medium bg-orange-500 text-white hover:bg-orange-600 ml-1" title="파출/알바 단가 설정">
+            <i class="fas fa-cog mr-1"></i>단가설정
+          </button>` : ''}
+          ${isAdm ? `<button onclick="openWorkSettingsModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-orange-700 text-white hover:bg-orange-800 ml-1" title="법정근무시간 설정">
             <i class="fas fa-shield-alt mr-1"></i>근무시간 설정
           </button>` : ''}
         </div>
@@ -13571,37 +13575,64 @@ function renderEmpStatsModal() {
 }
 
 function renderLaborCostSettingsModal() {
-  return `<div id="laborCostSettingsModal" class="hidden modal-overlay" style="z-index:1020">
+  const COST_ITEMS = [
+    { section: '파출 단가', color: '#ea580c', items: [
+      { key:'dispatch_morning',   label:'파출 오전 단가',   placeholder:'120000', hint:'오전근무 1회' },
+      { key:'dispatch_afternoon', label:'파출 오후 단가',   placeholder:'100000', hint:'오후근무 1회' },
+      { key:'dispatch_9h',        label:'파출 9시간 단가',  placeholder:'180000', hint:'풀타임 9H 1회' },
+      { key:'dispatch_12h',       label:'파출 12시간 단가', placeholder:'220000', hint:'풀타임 12H 1회' },
+    ]},
+    { section: '알바 단가', color: '#db2777', items: [
+      { key:'parttime_morning',   label:'알바 오전 단가',   placeholder:'80000',  hint:'오전근무 1회' },
+      { key:'parttime_afternoon', label:'알바 오후 단가',   placeholder:'70000',  hint:'오후근무 1회' },
+      { key:'parttime_9h',        label:'알바 9시간 단가',  placeholder:'120000', hint:'풀타임 9H 1회' },
+      { key:'parttime_12h',       label:'알바 12시간 단가', placeholder:'150000', hint:'풀타임 12H 1회' },
+      { key:'parttime_hourly',    label:'알바 시간당 단가', placeholder:'9860',   hint:'시급 기준 (미사용시 위 단가 적용)' },
+    ]},
+  ]
+  const allKeys = COST_ITEMS.flatMap(s => s.items.map(i => i.key))
+
+  return \`<div id="laborCostSettingsModal" class="hidden modal-overlay" style="z-index:1020">
     <div class="modal-box max-w-lg p-0 overflow-hidden">
       <div class="bg-gray-800 text-white px-6 py-4 flex items-center justify-between">
-        <h3 class="font-bold text-lg"><i class="fas fa-cog mr-2"></i>인건비 단가 설정</h3>
+        <div>
+          <h3 class="font-bold text-lg"><i class="fas fa-cog mr-2"></i>파출/알바 단가 설정</h3>
+          <p class="text-xs opacity-60 mt-0.5">병원별 외부인력 단가 · 인건비 자동 계산에 사용됩니다</p>
+        </div>
         <button onclick="document.getElementById('laborCostSettingsModal').classList.add('hidden')" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
       </div>
-      <div class="p-6 space-y-4 overflow-y-auto" style="max-height:70vh">
-        <p class="text-xs text-gray-400 bg-blue-50 border border-blue-100 rounded-lg p-3"><i class="fas fa-info-circle mr-1 text-blue-500"></i>파출/알바 단가와 OT 기본 수당 배율을 설정합니다. 직원별 시급은 인사카드에서 설정하세요.</p>
-        <div class="space-y-3">
-          ${[
-            { key:'dispatch_morning',   label:'파출 오전반 단가',  placeholder:'120000' },
-            { key:'dispatch_afternoon', label:'파출 오후반 단가',  placeholder:'100000' },
-            { key:'dispatch_9h',        label:'파출 9시간 단가',   placeholder:'180000' },
-            { key:'dispatch_12h',       label:'파출 12시간 단가',  placeholder:'220000' },
-            { key:'parttime_hourly',    label:'알바 시간당 단가',  placeholder:'9860' },
-          ].map(item => `
+      <div class="p-5 space-y-5 overflow-y-auto" style="max-height:72vh">
+        <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700">
+          <i class="fas fa-info-circle mr-1"></i>
+          각 근무유형별 1회 단가를 입력하세요. 직원별 시급은 인사카드에서 별도 설정합니다.
+        </div>
+        \${COST_ITEMS.map(sec => \`
+        <div>
+          <h4 class="text-sm font-bold mb-3 flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full inline-block" style="background:\${sec.color}"></span>
+            <span style="color:\${sec.color}">\${sec.section}</span>
+          </h4>
+          <div class="space-y-2 pl-1">
+            \${sec.items.map(item => \`
             <div class="flex items-center gap-3">
-              <label class="text-sm font-medium text-gray-700 w-36 flex-shrink-0">${item.label}</label>
+              <label class="text-xs font-medium text-gray-700 w-32 flex-shrink-0">\${item.label}</label>
               <div class="flex-1 relative">
-                <input type="number" id="lc_${item.key}" class="form-input pr-8" placeholder="${item.placeholder}">
+                <input type="number" id="lc_\${item.key}" class="form-input pr-8 text-sm" placeholder="\${item.placeholder}" min="0" step="1000">
                 <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">원</span>
               </div>
-            </div>`).join('')}
-        </div>
-        <div class="flex gap-3 pt-2">
-          <button onclick="saveLaborCostSettings()" class="btn btn-primary flex-1">저장</button>
+              <span class="text-xs text-gray-400 w-28 flex-shrink-0">\${item.hint}</span>
+            </div>\`).join('')}
+          </div>
+        </div>\`).join('')}
+        <div class="flex gap-3 pt-2 border-t">
+          <button onclick="saveLaborCostSettings()" class="btn btn-primary flex-1">
+            <i class="fas fa-save mr-1"></i>저장
+          </button>
           <button onclick="document.getElementById('laborCostSettingsModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
         </div>
       </div>
     </div>
-  </div>`
+  </div>\`
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -13946,6 +13977,7 @@ window.clearSchedDetail = async () => {
 // 일괄 입력 모달 (행별 코드 한번에 입력)
 window.openBatchInputModal = () => {
   const emps   = scheduleEmployees
+  const extWorkers = scheduleExternalWorkers || []
   const days   = getDaysInMonth(App.currentYear, App.currentMonth)
   const shifts = scheduleShifts
   const og     = scheduleOffGrants
@@ -13954,10 +13986,51 @@ window.openBatchInputModal = () => {
   const allOffSet  = new Set([...grantedSet,...subSet])
   const md         = scheduleMonthData
   const schedMap   = md?.sched_map || {}
+  const extMap     = scheduleExtSchedMap || {}
 
   const defaultCodes = ['연','휴','오전','오후','경조','OT','-']
   const shiftCodes   = shifts.map(s=>s.shift_code)
   const ALL_CODES    = [...shiftCodes,...defaultCodes]
+  const EXT_CODES    = ['오전','오후','9H','12H']
+  const EXT_SHIFT_MAP = { '오전':'morning', '오후':'afternoon', '9H':'full_9h', '12H':'full_12h', '':''}
+  const EXT_SHIFT_RMAP = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
+
+  // 외부인력 행 생성
+  const extRows = extWorkers.map((w, i) => {
+    const existing = []
+    for (let d = 1; d <= days; d++) {
+      const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const st = extMap[`${w.id}_${ds}`]?.shift_type || ''
+      existing.push(EXT_SHIFT_RMAP[st] || '')
+    }
+    const existingStr = existing.join(',')
+    const typeColor = w.worker_type === 'dispatch' ? '#ea580c' : '#db2777'
+    const typeLbl   = w.worker_type === 'dispatch' ? '파출' : '알바'
+    return `<tr class="border-b hover:bg-orange-50" data-extid="${w.id}">
+      <td class="px-3 py-2 sticky left-0 bg-white font-medium text-gray-800">
+        <div class="flex items-center gap-1">
+          <span class="text-xs px-1.5 py-0.5 rounded font-bold" style="background:${typeColor}22;color:${typeColor}">${typeLbl}</span>
+          <span>${w.name}</span>
+        </div>
+      </td>
+      <td class="px-2 py-2">
+        <input type="text" id="ext_batch_${w.id}"
+          class="w-full border border-orange-200 rounded px-2 py-1 text-xs focus:border-orange-400 focus:outline-none"
+          placeholder="예: 오전,오전,,오후,오전 (빈값=없음, 반복: 오전*5,,*2)"
+          value="${existingStr}"
+          oninput="updateExtBatchPreview(${w.id}, ${days})">
+      </td>
+      <td class="px-2 py-2 text-center" id="extBatchPreview_${w.id}">
+        <span class="text-gray-400 text-xs">입력 후 미리보기</span>
+      </td>
+      <td class="px-2 py-2 text-center">
+        <button onclick="copyExtBatchRow(${i}, ${extWorkers.length}, ${days})"
+          class="px-2 py-1 rounded text-xs bg-orange-100 text-orange-700 hover:bg-orange-200">
+          <i class="fas fa-arrow-down"></i> 복사
+        </button>
+      </td>
+    </tr>`
+  }).join('')
 
   // 모달 HTML
   const overlay = document.createElement('div')
@@ -13969,103 +14042,281 @@ window.openBatchInputModal = () => {
     <div class="bg-indigo-800 text-white px-6 py-4 flex items-center justify-between">
       <div>
         <h3 class="font-bold text-lg"><i class="fas fa-th mr-2"></i>일괄 스케줄 입력</h3>
-        <p class="text-xs opacity-70 mt-0.5">직원별로 패턴 코드를 입력하거나, 이전 행을 복사하세요</p>
+        <p class="text-xs opacity-70 mt-0.5">직원·외부인력 모두 한 번에 입력</p>
       </div>
       <button onclick="document.getElementById('batchInputModal').remove()" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
     </div>
-    <div class="p-3 bg-indigo-50 border-b flex items-center gap-3 flex-wrap">
-      <span class="text-xs font-bold text-indigo-700">코드:</span>
-      ${ALL_CODES.filter(c=>c!=='-').map(c => {
-        const sf = shifts.find(s=>s.shift_code===c)
-        const color = sf ? sf.color : {연:'#92400e',휴:'#b91c1c',오전:'#6d28d9',오후:'#1d4ed8',경조:'#9d174d',OT:'#065f46'}[c] || '#374151'
-        return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold cursor-pointer border-2 border-transparent hover:border-current"
-          style="background:${color}22;color:${color}"
-          onclick="batchInsertCode('${c}')">${c}</span>`
-      }).join('')}
-      <span class="text-xs text-gray-400 ml-2">← 클릭 시 선택된 셀에 삽입</span>
+
+    <!-- 탭 전환 -->
+    <div class="flex border-b bg-white">
+      <button id="batchTab_emp" onclick="switchBatchTab('emp')"
+        class="px-5 py-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">
+        <i class="fas fa-users mr-1"></i>직원 (${emps.length}명)
+      </button>
+      <button id="batchTab_ext" onclick="switchBatchTab('ext')"
+        class="px-5 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+        <i class="fas fa-user-clock mr-1"></i>외부인력 (${extWorkers.length}명)
+      </button>
     </div>
-    <!-- ▼ 요일 패턴 프리셋 -->
-    <div class="px-4 py-2 bg-yellow-50 border-b flex items-center gap-2 flex-wrap">
-      <i class="fas fa-magic text-yellow-600 text-xs"></i>
-      <span class="text-xs font-bold text-yellow-700">요일 패턴 적용:</span>
-      ${(() => {
-        const firstCode = shiftCodes[0] || 'A'
-        const presets = [
-          { label:'월~금 근무/주말 휴', fn: `buildWeekdayPattern('${firstCode}','휴',${days},'${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}')` },
-          { label:'주 6일 근무', fn: `buildWeekdayPattern('${firstCode}','휴',${days},'${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}',6)` },
-          { label:'격주 토요일 근무', fn: `buildBiweeklyPattern('${firstCode}',${days},'${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}')` },
-          { label:'전체 휴무', fn: `buildAllPattern('휴',${days})` },
-          { label:'전체 지우기', fn: `buildAllPattern('',${days})` },
-        ]
-        return presets.map(p => `
-          <button onclick="applyPatternToFocused(${p.fn})"
-            class="px-2 py-1 rounded text-xs font-medium bg-white border border-yellow-300 text-yellow-700 hover:bg-yellow-100 whitespace-nowrap">
-            ${p.label}
-          </button>`).join('')
-      })()}
-      <span class="text-xs text-gray-400 ml-1">← 포커스된 직원 행에 적용</span>
-    </div>
-    <div class="p-4 overflow-x-auto overflow-y-auto" style="max-height:55vh">
-      <table class="w-full border-collapse text-xs">
-        <thead>
-          <tr class="bg-gray-800 text-white sticky top-0">
-            <th class="px-3 py-2 text-left min-w-[100px] sticky left-0 bg-gray-800 z-10">직원</th>
-            <th class="px-2 py-2 text-center min-w-[200px]">패턴 입력 <span class="font-normal opacity-60">(쉼표 구분 또는 연속 코드)</span></th>
-            <th class="px-2 py-2 text-center">미리보기</th>
-            <th class="px-2 py-2 text-center min-w-[60px]">복사</th>
-          </tr>
-        </thead>
-        <tbody id="batchTableBody">
-          ${emps.map((emp,i) => {
-            // 기존 스케줄 패턴 미리 넣기
-            const existing = []
-            for(let d=1;d<=days;d++){
-              const ds=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-              existing.push(schedMap[`${emp.id}_${ds}`]?.shift_code||'')
-            }
-            const existingStr = existing.map(c=>c||'').join(',')
-            return `<tr class="border-b hover:bg-indigo-50" data-empid="${emp.id}">
-              <td class="px-3 py-2 sticky left-0 bg-white font-medium text-gray-800">
-                ${emp.name}<br><span class="text-gray-400">${emp.position_name||''}</span>
-              </td>
-              <td class="px-2 py-2">
-                <input type="text" id="batch_${emp.id}"
-                  class="w-full border border-gray-200 rounded px-2 py-1 text-xs focus:border-indigo-400 focus:outline-none"
-                  placeholder="예: A,A,휴,A,A,휴,휴 (반복패턴: A*5,휴*2)"
-                  value="${existingStr}"
-                  oninput="updateBatchPreview(${emp.id}, ${days})">
-              </td>
-              <td class="px-2 py-2 text-center" id="batchPreview_${emp.id}">
-                <span class="text-gray-400 text-xs">입력 후 미리보기</span>
-              </td>
-              <td class="px-2 py-2 text-center">
-                <button onclick="copyBatchRow(${i}, ${emps.length}, ${days})"
-                  class="px-2 py-1 rounded text-xs bg-teal-100 text-teal-700 hover:bg-teal-200">
-                  <i class="fas fa-arrow-down"></i> 복사
-                </button>
-              </td>
-            </tr>`
-          }).join('')}
-        </tbody>
-      </table>
-    </div>
-    <div class="px-6 py-4 bg-gray-50 border-t flex items-center justify-between gap-3">
-      <div class="text-xs text-gray-500">
-        <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>
-        패턴 예시: <code class="bg-gray-200 px-1 rounded">A,A,휴,A,A,휴,휴</code> 또는 반복: <code class="bg-gray-200 px-1 rounded">A*5,휴*2</code>
+
+    <!-- 직원 탭 -->
+    <div id="batchPanel_emp">
+      <div class="p-3 bg-indigo-50 border-b flex items-center gap-3 flex-wrap">
+        <span class="text-xs font-bold text-indigo-700">코드:</span>
+        ${ALL_CODES.filter(c=>c!=='-').map(c => {
+          const sf = shifts.find(s=>s.shift_code===c)
+          const color = sf ? sf.color : {연:'#92400e',휴:'#b91c1c',오전:'#6d28d9',오후:'#1d4ed8',경조:'#9d174d',OT:'#065f46'}[c] || '#374151'
+          return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold cursor-pointer border-2 border-transparent hover:border-current"
+            style="background:${color}22;color:${color}"
+            onclick="batchInsertCode('${c}')">${c}</span>`
+        }).join('')}
+        <span class="text-xs text-gray-400 ml-2">← 클릭 시 선택된 셀에 삽입</span>
       </div>
-      <div class="flex gap-2">
-        <button onclick="applyBatchInput(${days})" class="btn btn-primary">
-          <i class="fas fa-check mr-1"></i>전체 적용
-        </button>
-        <button onclick="document.getElementById('batchInputModal').remove()" class="btn btn-secondary">취소</button>
+      <div class="px-4 py-2 bg-yellow-50 border-b flex items-center gap-2 flex-wrap">
+        <i class="fas fa-magic text-yellow-600 text-xs"></i>
+        <span class="text-xs font-bold text-yellow-700">요일 패턴 적용:</span>
+        ${(() => {
+          const firstCode = shiftCodes[0] || 'A'
+          const presets = [
+            { label:'월~금 근무/주말 휴', fn: `buildWeekdayPattern('${firstCode}','휴',${days},'${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}')` },
+            { label:'주 6일 근무', fn: `buildWeekdayPattern('${firstCode}','휴',${days},'${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}',6)` },
+            { label:'격주 토요일 근무', fn: `buildBiweeklyPattern('${firstCode}',${days},'${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}')` },
+            { label:'전체 휴무', fn: `buildAllPattern('휴',${days})` },
+            { label:'전체 지우기', fn: `buildAllPattern('',${days})` },
+          ]
+          return presets.map(p => `
+            <button onclick="applyPatternToFocused(${p.fn})"
+              class="px-2 py-1 rounded text-xs font-medium bg-white border border-yellow-300 text-yellow-700 hover:bg-yellow-100 whitespace-nowrap">
+              ${p.label}
+            </button>`).join('')
+        })()}
+        <span class="text-xs text-gray-400 ml-1">← 포커스된 직원 행에 적용</span>
+      </div>
+      <div class="p-4 overflow-x-auto overflow-y-auto" style="max-height:50vh">
+        <table class="w-full border-collapse text-xs">
+          <thead>
+            <tr class="bg-gray-800 text-white sticky top-0">
+              <th class="px-3 py-2 text-left min-w-[100px] sticky left-0 bg-gray-800 z-10">직원</th>
+              <th class="px-2 py-2 text-center min-w-[200px]">패턴 입력 <span class="font-normal opacity-60">(쉼표 구분 또는 연속 코드)</span></th>
+              <th class="px-2 py-2 text-center">미리보기</th>
+              <th class="px-2 py-2 text-center min-w-[60px]">복사</th>
+            </tr>
+          </thead>
+          <tbody id="batchTableBody">
+            ${emps.map((emp,i) => {
+              const existing = []
+              for(let d=1;d<=days;d++){
+                const ds=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+                existing.push(schedMap[`${emp.id}_${ds}`]?.shift_code||'')
+              }
+              const existingStr = existing.map(c=>c||'').join(',')
+              return `<tr class="border-b hover:bg-indigo-50" data-empid="${emp.id}">
+                <td class="px-3 py-2 sticky left-0 bg-white font-medium text-gray-800">
+                  ${emp.name}<br><span class="text-gray-400">${emp.position_name||''}</span>
+                </td>
+                <td class="px-2 py-2">
+                  <input type="text" id="batch_${emp.id}"
+                    class="w-full border border-gray-200 rounded px-2 py-1 text-xs focus:border-indigo-400 focus:outline-none"
+                    placeholder="예: A,A,휴,A,A,휴,휴 (반복패턴: A*5,휴*2)"
+                    value="${existingStr}"
+                    oninput="updateBatchPreview(${emp.id}, ${days})">
+                </td>
+                <td class="px-2 py-2 text-center" id="batchPreview_${emp.id}">
+                  <span class="text-gray-400 text-xs">입력 후 미리보기</span>
+                </td>
+                <td class="px-2 py-2 text-center">
+                  <button onclick="copyBatchRow(${i}, ${emps.length}, ${days})"
+                    class="px-2 py-1 rounded text-xs bg-teal-100 text-teal-700 hover:bg-teal-200">
+                    <i class="fas fa-arrow-down"></i> 복사
+                  </button>
+                </td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="px-6 py-3 bg-gray-50 border-t flex items-center justify-between gap-3">
+        <div class="text-xs text-gray-500">
+          <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>
+          패턴 예시: <code class="bg-gray-200 px-1 rounded">A,A,휴,A,A,휴,휴</code> 또는 반복: <code class="bg-gray-200 px-1 rounded">A*5,휴*2</code>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="applyBatchInput(${days})" class="btn btn-primary">
+            <i class="fas fa-check mr-1"></i>직원 전체 적용
+          </button>
+          <button onclick="document.getElementById('batchInputModal').remove()" class="btn btn-secondary">취소</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 외부인력 탭 -->
+    <div id="batchPanel_ext" class="hidden">
+      <div class="p-3 bg-orange-50 border-b flex items-center gap-3 flex-wrap">
+        <span class="text-xs font-bold text-orange-700">근무유형:</span>
+        ${EXT_CODES.map(c => {
+          const colors = { '오전':'#c2410c','오후':'#b45309','9H':'#ea580c','12H':'#dc2626' }
+          const col = colors[c] || '#374151'
+          return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold cursor-pointer border-2 border-transparent hover:border-current"
+            style="background:${col}22;color:${col}"
+            onclick="extBatchInsertCode('${c}')">${c}</span>`
+        }).join('')}
+        <span class="text-xs text-gray-400 ml-2">← 포커스된 입력란에 삽입</span>
+      </div>
+      <div class="p-4 overflow-x-auto overflow-y-auto" style="max-height:50vh">
+        ${extWorkers.length === 0 ? `
+        <div class="text-center py-12 text-gray-400">
+          <i class="fas fa-user-slash text-3xl mb-3 block"></i>
+          <p class="text-sm">등록된 외부인력이 없습니다</p>
+          <p class="text-xs mt-1">월간 스케줄 탭에서 파출/알바 추가 버튼을 눌러 먼저 등록하세요</p>
+        </div>` : `
+        <table class="w-full border-collapse text-xs">
+          <thead>
+            <tr class="bg-orange-800 text-white sticky top-0">
+              <th class="px-3 py-2 text-left min-w-[110px] sticky left-0 bg-orange-800 z-10">외부인력</th>
+              <th class="px-2 py-2 text-center min-w-[200px]">근무유형 패턴 <span class="font-normal opacity-70">(오전/오후/9H/12H, 반복: 오전*5,,*2)</span></th>
+              <th class="px-2 py-2 text-center">미리보기</th>
+              <th class="px-2 py-2 text-center min-w-[60px]">복사</th>
+            </tr>
+          </thead>
+          <tbody id="extBatchTableBody">
+            ${extRows}
+          </tbody>
+        </table>`}
+      </div>
+      <div class="px-6 py-3 bg-orange-50 border-t flex items-center justify-between gap-3">
+        <div class="text-xs text-gray-500">
+          <i class="fas fa-lightbulb text-orange-500 mr-1"></i>
+          빈 값은 해당 날짜 근무 없음 · 예: <code class="bg-orange-100 px-1 rounded">오전,오전,,오후,오전,,</code> 또는 반복: <code class="bg-orange-100 px-1 rounded">오전*5,,*2</code>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="applyExtBatchInput(${days})" class="btn btn-primary" style="background:#ea580c;border-color:#ea580c">
+            <i class="fas fa-check mr-1"></i>외부인력 전체 적용
+          </button>
+          <button onclick="document.getElementById('batchInputModal').remove()" class="btn btn-secondary">취소</button>
+        </div>
       </div>
     </div>
   </div>`
   document.body.appendChild(overlay)
   // 기존 데이터 미리보기 초기화
   scheduleEmployees.forEach(emp => updateBatchPreview(emp.id, days))
+  extWorkers.forEach(w => updateExtBatchPreview(w.id, days))
 }
+
+// 배치 탭 전환
+window.switchBatchTab = (tab) => {
+  document.getElementById('batchPanel_emp').classList.toggle('hidden', tab !== 'emp')
+  document.getElementById('batchPanel_ext').classList.toggle('hidden', tab !== 'ext')
+  document.getElementById('batchTab_emp').className = `px-5 py-3 text-sm font-medium border-b-2 ${tab==='emp' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`
+  document.getElementById('batchTab_ext').className = `px-5 py-3 text-sm font-medium border-b-2 ${tab==='ext' ? 'border-orange-500 text-orange-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`
+}
+
+// 외부인력 코드 삽입
+window.extBatchInsertCode = (code) => {
+  const active = document.activeElement
+  if (active && active.id && active.id.startsWith('ext_batch_')) {
+    const start = active.selectionStart
+    const end   = active.selectionEnd
+    const v     = active.value
+    active.value = v.substring(0, start) + code + v.substring(end)
+    active.selectionStart = active.selectionEnd = start + code.length
+    const wid = parseInt(active.id.replace('ext_batch_', ''))
+    const days = getDaysInMonth(App.currentYear, App.currentMonth)
+    updateExtBatchPreview(wid, days)
+  }
+}
+
+// 외부인력 패턴 미리보기
+window.updateExtBatchPreview = (wid, days) => {
+  const input = document.getElementById(`ext_batch_${wid}`)
+  const preview = document.getElementById(`extBatchPreview_${wid}`)
+  if (!input || !preview) return
+  const EXT_COLORS = { '오전':'#c2410c','오후':'#b45309','9H':'#ea580c','12H':'#dc2626' }
+  const codes = parseExtBatchPattern(input.value, days)
+  preview.innerHTML = '<div class="flex flex-wrap gap-0.5 justify-center">' +
+    codes.map(c => {
+      if (!c) return '<span style="display:inline-block;width:14px;height:14px;border-radius:2px;background:#f3f4f6;font-size:8px;text-align:center;line-height:14px;color:#d1d5db">·</span>'
+      const col = EXT_COLORS[c] || '#374151'
+      return `<span style="display:inline-block;min-width:14px;padding:0 2px;height:14px;border-radius:2px;background:${col}22;color:${col};font-size:7px;text-align:center;line-height:14px;font-weight:700">${c}</span>`
+    }).join('') + '</div>'
+}
+
+// 외부인력 패턴 파싱 (오전/오후/9H/12H + 빈값 허용)
+window.parseExtBatchPattern = (val, days) => {
+  if (!val || !val.trim()) return Array(days).fill('')
+  const parts = val.split(',')
+  const expanded = []
+  for (const p of parts) {
+    const m = p.trim().match(/^(.+?)\*(\d+)$/)
+    if (m) {
+      const cnt = parseInt(m[2])
+      const code = m[1].trim()
+      for (let i = 0; i < cnt; i++) expanded.push(code)
+    } else {
+      expanded.push(p.trim())
+    }
+  }
+  // days 길이로 맞추기
+  while (expanded.length < days) expanded.push('')
+  return expanded.slice(0, days)
+}
+
+// 외부인력 행 복사
+window.copyExtBatchRow = (fromIdx, totalRows, days) => {
+  const workers = scheduleExternalWorkers || []
+  if (fromIdx < 0 || fromIdx >= workers.length) return
+  const fromId = workers[fromIdx].id
+  const fromInput = document.getElementById(`ext_batch_${fromId}`)
+  if (!fromInput) return
+  // 다음 행에 복사
+  const toIdx = fromIdx + 1
+  if (toIdx >= workers.length) { showToast('마지막 행입니다', 'info'); return }
+  const toId = workers[toIdx].id
+  const toInput = document.getElementById(`ext_batch_${toId}`)
+  if (toInput) {
+    toInput.value = fromInput.value
+    updateExtBatchPreview(toId, days)
+  }
+}
+
+// 외부인력 일괄 적용
+window.applyExtBatchInput = async (days) => {
+  const workers = scheduleExternalWorkers || []
+  if (workers.length === 0) { showToast('외부인력이 없습니다', 'error'); return }
+  const EXT_SHIFT_MAP = { '오전':'morning', '오후':'afternoon', '9H':'full_9h', '12H':'full_12h' }
+  const items = []
+  for (const w of workers) {
+    const input = document.getElementById(`ext_batch_${w.id}`)
+    if (!input) continue
+    const codes = parseExtBatchPattern(input.value, days)
+    for (let d = 0; d < days; d++) {
+      const code = codes[d]
+      const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d+1).padStart(2,'0')}`
+      items.push({ workerId: w.id, workDate: ds, shiftType: EXT_SHIFT_MAP[code] || '' })
+    }
+  }
+  showToast('저장 중...', 'info')
+  const res = await api('POST', '/api/schedule/external-schedules/save-batch', { items }).catch(() => null)
+  if (res?.success) {
+    showToast(`외부인력 ${res.count}건 저장 완료`, 'success')
+    document.getElementById('batchInputModal')?.remove()
+    // 데이터 새로고침
+    const monthData = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    if (monthData) {
+      scheduleMonthData = monthData
+      scheduleExternalWorkers = monthData.external_workers || []
+      scheduleExtSchedMap = monthData.ext_sched_map || {}
+    }
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc) {
+      tc.innerHTML = renderMonthlyScheduleTab()
+      setTimeout(initExtWorkerEvents, 0)
+    }
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
 
 window.batchInsertCode = (code) => {
   const active = document.activeElement
@@ -14197,9 +14448,10 @@ window.applyBatchInput = async (days) => {
     showToast(`${res.count}건 저장 완료`, 'success')
     document.getElementById('batchInputModal')?.remove()
     // 데이터 새로고침
-    scheduleMonthData = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    const md2 = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    if (md2) { scheduleMonthData = md2; scheduleExternalWorkers = md2.external_workers||[]; scheduleExtSchedMap = md2.ext_sched_map||{} }
     const tc = document.getElementById('scheduleTabContent')
-    if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+    if (tc) { tc.innerHTML = renderMonthlyScheduleTab(); setTimeout(initExtWorkerEvents, 0) }
   } else {
     showToast('저장 실패', 'error')
   }
@@ -14475,7 +14727,8 @@ window.saveEmpOtSettings = async (empId) => {
 // 인건비 탭 렌더링
 // ════════════════════════════════════════════════════════════════
 function renderLaborCostTab() {
-  const isAdm = App.role === 'admin'
+  const isAdm   = App.role === 'admin'
+  const canEdit = (App.role === 'admin' || App.role === 'hospital')
   const data  = scheduleLaborCostData
   const fmt   = n => (n||0).toLocaleString()
 
@@ -14523,13 +14776,11 @@ function renderLaborCostTab() {
     </div>
 
     <!-- 관리자 버튼 행 -->
-    ${isAdm ? `
-    <div class="flex flex-wrap gap-2 justify-end">
-      <button onclick="openDispatchScheduleModal()" class="px-4 py-2 rounded-lg text-sm bg-orange-600 text-white hover:bg-orange-700">
-        <i class="fas fa-plus mr-1"></i>파출/알바 입력
-      </button>
-      <button onclick="openLaborCostSettings()" class="px-4 py-2 rounded-lg text-sm bg-gray-700 text-white hover:bg-gray-800">
-        <i class="fas fa-cog mr-1"></i>단가 설정
+    ${(isAdm || canEdit) ? `
+    <div class="flex flex-wrap gap-2 justify-end items-center">
+      <span class="text-xs text-gray-400 mr-1"><i class="fas fa-info-circle mr-1"></i>파출/알바 단가를 설정해야 비용이 계산됩니다</span>
+      <button onclick="openLaborCostSettings()" class="px-4 py-2 rounded-lg text-sm font-semibold bg-orange-600 text-white hover:bg-orange-700 shadow-sm">
+        <i class="fas fa-cog mr-1"></i>단가 설정 (파출/알바)
       </button>
     </div>` : ''}
 
@@ -15210,15 +15461,18 @@ window.openLaborCostSettings = async () => {
   const data = await api('GET', '/api/schedule/labor-costs').catch(() => [])
   const costMap = {}
   ;(data||[]).forEach((d) => { costMap[d.cost_type] = d.unit_price })
-  ;['dispatch_morning','dispatch_afternoon','dispatch_9h','dispatch_12h','parttime_hourly'].forEach(k => {
+  const ALL_KEYS = ['dispatch_morning','dispatch_afternoon','dispatch_9h','dispatch_12h',
+                    'parttime_morning','parttime_afternoon','parttime_9h','parttime_12h','parttime_hourly']
+  ALL_KEYS.forEach(k => {
     const el = document.getElementById(`lc_${k}`)
-    if (el) el.value = String(costMap[k] || 0)
+    if (el) el.value = costMap[k] != null ? String(costMap[k]) : ''
   })
 }
 
 window.saveLaborCostSettings = async () => {
-  const types = ['dispatch_morning','dispatch_afternoon','dispatch_9h','dispatch_12h','parttime_hourly']
-  for (const t of types) {
+  const ALL_KEYS = ['dispatch_morning','dispatch_afternoon','dispatch_9h','dispatch_12h',
+                    'parttime_morning','parttime_afternoon','parttime_9h','parttime_12h','parttime_hourly']
+  for (const t of ALL_KEYS) {
     const el = document.getElementById(`lc_${t}`)
     if (!el) continue
     const price = parseFloat(el.value || '0')

@@ -1536,7 +1536,7 @@ schedule.get('/labor-costs', async (c) => {
 
 schedule.post('/labor-costs', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
+  if (!isAdmin(user) && user.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
   const hospitalId = getHospitalId(user, undefined)
   const { cost_type, unit_price, description } = await c.req.json()
   await c.env.DB.prepare(
@@ -1739,11 +1739,22 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
 
   function getExtUnitPrice(workerType: string, shiftType: string, override: number): number {
     if (override > 0) return override
-    const key = `${workerType}_${shiftType}`
-    const compatKey = shiftType === 'full_9h'  ? `${workerType === 'dispatch' ? 'dispatch' : 'parttime'}_9h`
-                    : shiftType === 'full_12h' ? `${workerType === 'dispatch' ? 'dispatch' : 'parttime'}_12h`
-                    : null
-    return costMap[key] || (compatKey ? costMap[compatKey] : 0) || 0
+    const wt = workerType === 'dispatch' ? 'dispatch' : 'parttime'
+    // shiftType → costMap key 매핑
+    const shiftKeyMap: Record<string, string> = {
+      morning:   `${wt}_morning`,
+      afternoon: `${wt}_afternoon`,
+      full_9h:   `${wt}_9h`,
+      full_12h:  `${wt}_12h`,
+    }
+    const key = shiftKeyMap[shiftType]
+    if (key && costMap[key]) return costMap[key]
+    // 알바는 시간당 단가 fallback
+    if (wt === 'parttime' && costMap['parttime_hourly']) {
+      const hours: Record<string, number> = { morning: 4, afternoon: 4, full_9h: 9, full_12h: 12 }
+      return (costMap['parttime_hourly'] || 0) * (hours[shiftType] || 4)
+    }
+    return 0
   }
 
   type ExtWorkerStat = {
@@ -2200,6 +2211,49 @@ schedule.delete('/external-schedules/:workerId/:workDate', async (c) => {
   ).bind(worker.hospital_id, workerId, workDate).run()
   return c.json({ success: true })
 })
+
+// 외부인력 스케줄 일괄 저장
+schedule.post('/external-schedules/save-batch', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const { items } = await c.req.json()
+  if (!Array.isArray(items) || items.length === 0) return c.json({ success: true, count: 0 })
+
+  const workerCache: Record<number, any> = {}
+  let count = 0
+
+  for (const item of items) {
+    const { workerId, workDate, shiftType } = item
+    if (!workerId || !workDate) continue
+
+    if (!workerCache[workerId]) {
+      const w = await c.env.DB.prepare(
+        `SELECT hospital_id FROM external_workers WHERE id=? AND is_active=1`
+      ).bind(workerId).first<any>()
+      if (!w) continue
+      workerCache[workerId] = w
+    }
+    const worker = workerCache[workerId]
+    if (!isAdmin(user) && worker.hospital_id !== hospitalId) continue
+
+    if (!shiftType) {
+      // 빈 값이면 해당 날짜 스케줄 삭제
+      await c.env.DB.prepare(
+        `DELETE FROM external_schedules WHERE hospital_id=? AND worker_id=? AND work_date=?`
+      ).bind(worker.hospital_id, workerId, workDate).run()
+    } else {
+      await c.env.DB.prepare(
+        `INSERT INTO external_schedules (hospital_id, worker_id, work_date, shift_type, unit_price, note)
+         VALUES (?,?,?,?,0,'')
+         ON CONFLICT(hospital_id, worker_id, work_date) DO UPDATE SET
+           shift_type=excluded.shift_type, updated_at=CURRENT_TIMESTAMP`
+      ).bind(worker.hospital_id, workerId, workDate, shiftType).run()
+    }
+    count++
+  }
+  return c.json({ success: true, count })
+})
+
 
 // ════════════════════════════════════════════════════════════════
 // 외부인력 인건비 집계 (이름별)
