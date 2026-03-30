@@ -11349,6 +11349,8 @@ let scheduleLaborCostData = null // 인건비 집계 데이터
 let scheduleLaborCostSettings = null // 인건비 단가 설정
 let scheduleLeaveHistorySummary = null // 연차이력 요약 (반차/경조사 등)
 let scheduleWorkSettings = null // 병원별 법정근무 설정
+let scheduleExternalWorkers = [] // 외부인력 마스터 목록
+let scheduleExtSchedMap = {}     // 외부인력 스케줄 맵 { "workerId_date": {...} }
 
 // 고용유형 레이블
 const EMPLOYMENT_LABELS = {
@@ -11420,6 +11422,8 @@ async function renderSchedule() {
   scheduleLeaveAlerts = leaveAlerts || []
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
+  scheduleExternalWorkers = (monthData?.external_workers) || []
+  scheduleExtSchedMap = (monthData?.ext_sched_map) || {}
   scheduleLeavesData = leavesData || []
   scheduleAnalysisData = analysisData || null
   scheduleMealStats = mealStats || null
@@ -11444,6 +11448,8 @@ async function reloadScheduleMonth() {
   ])
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
+  scheduleExternalWorkers = (monthData?.external_workers) || []
+  scheduleExtSchedMap = (monthData?.ext_sched_map) || {}
   scheduleLeaveAlerts = leaveAlerts || []
   scheduleAnalysisData = analysisData || null
   scheduleMealStats = mealStats || null
@@ -11454,7 +11460,7 @@ async function reloadScheduleMonth() {
 }
 
 function renderScheduleTab(content) {
-  const isAdm = App.userRole === 'admin'
+  const isAdm = App.role === 'admin'
   const tab = scheduleTab
 
   const tabs = [
@@ -11547,7 +11553,7 @@ function renderScheduleTab(content) {
 
 // ─── 인사카드 탭 ─────────────────────────────────────────────
 function renderEmployeeTab() {
-  const isAdm = App.userRole === 'admin'
+  const isAdm = App.role === 'admin'
   const emps = scheduleEmployees
 
   // 팀별 그룹핑
@@ -11857,7 +11863,7 @@ function renderShiftsTab() {
 // ─── 월별 부여휴무 패널 렌더 ─────────────────────────────────
 function renderOffGrantsPanel() {
   const og = scheduleOffGrants
-  const isAdm = App.userRole === 'admin'
+  const isAdm = App.role === 'admin'
   const sm = og?.summary || {}
   const gd = og?.granted_days || []
   const sd = og?.substitute_days || []
@@ -11986,7 +11992,7 @@ function renderOffGrantsPanel() {
           <label class="block text-xs font-semibold text-gray-700 mb-1">적용 범위</label>
           <select id="subOffHospital" class="form-input w-full text-sm">
             <option value="">전체 공통</option>
-            ${(scheduleEmployees.length > 0 && App.userRole === 'admin') ? '' : ''}
+            ${(scheduleEmployees.length > 0 && App.role === 'admin') ? '' : ''}
           </select>
           <div class="text-xs text-gray-400 mt-1">전체 공통 선택 시 모든 병원에 적용됩니다</div>
         </div>
@@ -12003,7 +12009,7 @@ function renderOffGrantsPanel() {
 function openSubstituteOffModal() {
   // 병원 목록 select 채우기 (관리자)
   const sel = document.getElementById('subOffHospital')
-  if (sel && App.userRole === 'admin') {
+  if (sel && App.role === 'admin') {
     // adminStaffHospitals가 있으면 활용
     const hosps = typeof adminStaffHospitals !== 'undefined' ? adminStaffHospitals : []
     sel.innerHTML = `<option value="">전체 공통</option>` +
@@ -12350,7 +12356,132 @@ function renderMonthlyScheduleTab() {
               return html
             }
 
-            return renderEmpRows(cookEmps, 'cook') + renderEmpRows(nutriEmps, 'nutrition')
+            // 외부인력 섹션 렌더링
+            function renderExternalSection() {
+              const extWorkers = scheduleExternalWorkers || []
+              const extMap = scheduleExtSchedMap || {}
+              if (extWorkers.length === 0 && !(App.role === 'admin' || App.role === 'nutritionist')) return ''
+              
+              // 파출/알바 구분
+              const dispatchWorkers = extWorkers.filter(w => w.worker_type === 'dispatch')
+              const parttimeWorkers = extWorkers.filter(w => w.worker_type === 'parttime')
+              
+              // 외부인력 근무유형 레이블
+              const EXT_SHIFT_LABELS = {
+                morning: '오전', afternoon: '오후', full_9h: '9H', full_12h: '12H'
+              }
+              const EXT_SHIFT_COLORS = {
+                morning: 'background:#fff7ed;color:#c2410c',
+                afternoon: 'background:#fef3c7;color:#b45309',
+                full_9h: 'background:#ffedd5;color:#ea580c',
+                full_12h: 'background:#fee2e2;color:#dc2626'
+              }
+              const EXT_SHIFT_CODES = ['morning','afternoon','full_9h','full_12h']
+              
+              let html = ''
+              
+              function renderExtWorkerRows(workers, sectionType) {
+                if (workers.length === 0) return ''
+                const sectionLabel = sectionType === 'dispatch' ? '파출' : '알바'
+                const sectionColor = sectionType === 'dispatch' ? '#ea580c' : '#db2777'
+                const sectionBg    = sectionType === 'dispatch' ? '#fff7ed' : '#fdf2f8'
+                const sectionIcon  = sectionType === 'dispatch' ? 'fa-people-carry' : 'fa-user-clock'
+                
+                let shtml = `<tr><td colspan="${days+3}" style="background:${sectionBg};padding:4px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid ${sectionColor}33">
+                  <span style="font-size:11px;font-weight:700;color:${sectionColor}">
+                    <i class="fas ${sectionIcon}" style="margin-right:4px"></i>${sectionLabel} 외부인력 (${workers.length}명)
+                  </span>
+                  ${App.role === 'admin' || App.role === 'nutritionist'
+                    ? `<button onclick="openAddExternalWorkerModal('${sectionType}')" 
+                        style="float:right;padding:2px 8px;border-radius:4px;background:${sectionColor};color:white;font-size:10px;border:none;cursor:pointer">
+                        <i class="fas fa-plus" style="margin-right:2px"></i>${sectionLabel} 추가
+                      </button>` : ''}
+                </td></tr>`
+                
+                workers.forEach((worker, widx) => {
+                  const rowBg = widx % 2 === 0 ? '#fffaf5' : '#fff5ee'
+                  
+                  const cells = Array.from({length:days},(_,i)=>{
+                    const day = i+1
+                    const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                    const isWknd = isWeekend(App.currentYear,App.currentMonth,day)
+                    const dow2 = getDayOfWeek(App.currentYear,App.currentMonth,day)
+                    const isSun2 = dow2==='일'
+                    const key = `${worker.id}_${dateStr}`
+                    const sched = extMap[key]
+                    const shiftType = sched?.shift_type || ''
+                    
+                    let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd ? 'background:#fffbeb;' : `background:${rowBg};`
+                    const borderLeft = `border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
+                    
+                    let spanStyle, spanText
+                    if (shiftType && EXT_SHIFT_LABELS[shiftType]) {
+                      spanStyle = EXT_SHIFT_COLORS[shiftType] || 'background:#f3f4f6;color:#374151'
+                      spanText = EXT_SHIFT_LABELS[shiftType]
+                    } else {
+                      spanStyle = 'background:#f9fafb;color:#d1d5db'
+                      spanText = '·'
+                    }
+                    
+                    const isEditable = App.role === 'admin' || App.role === 'nutritionist'
+                    
+                    return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}${isEditable?'cursor:pointer;':''}position:relative;"
+                      ${isEditable ? `onclick="extWorkerCellClick(event,${worker.id},'${dateStr}','${worker.worker_type}',this)"` : ''}
+                      data-extshift="${shiftType}"
+                      data-extid="${worker.id}" data-date="${dateStr}">
+                      <div style="display:inline-flex;flex-direction:column;align-items:center">
+                        <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;${spanStyle}">${spanText}</span>
+                      </div>
+                    </td>`
+                  }).join('')
+                  
+                  // 해당 월 근무일 수 계산
+                  const workDays = EXT_SHIFT_CODES.reduce((cnt, st) => {
+                    for (let d=1; d<=days; d++) {
+                      const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+                      if (extMap[`${worker.id}_${ds}`]?.shift_type === st) cnt++
+                    }
+                    return cnt
+                  }, 0)
+                  
+                  shtml += `<tr style="border-bottom:1px solid #e2e8f0">
+                    <td style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #fed7aa;min-width:100px">
+                      <div style="font-weight:600;color:#9a3412;font-size:12px">${worker.name}</div>
+                      <div style="font-size:10px;color:#fb923c">${sectionLabel}</div>
+                    </td>
+                    ${cells}
+                    <td style="padding:4px 3px;text-align:center;background:#fff7ed;border-left:3px solid #fed7aa;min-width:38px">
+                      <div style="font-size:12px;font-weight:700;color:#ea580c">${workDays}</div>
+                      <div style="font-size:9px;color:#fb923c;opacity:0.8">근무</div>
+                    </td>
+                    <td style="padding:4px 3px;text-align:center;background:#fffbeb;border-left:1px solid #fde68a;min-width:40px">
+                      <div style="font-size:10px;color:#d1d5db">-</div>
+                    </td>
+                  </tr>`
+                })
+                return shtml
+              }
+              
+              html += renderExtWorkerRows(dispatchWorkers, 'dispatch')
+              html += renderExtWorkerRows(parttimeWorkers, 'parttime')
+              
+              // 외부인력이 없을 때 빈 추가 행 (관리자만)
+              if (extWorkers.length === 0 && (App.role === 'admin' || App.role === 'nutritionist')) {
+                html += `<tr><td colspan="${days+3}" style="padding:8px 12px;background:#fff7ed;text-align:center;border-top:2px solid #fed7aa">
+                  <span style="font-size:11px;color:#fb923c;margin-right:8px"><i class="fas fa-info-circle mr-1"></i>외부인력(파출/알바)이 없습니다</span>
+                  <button onclick="openAddExternalWorkerModal('dispatch')" style="padding:3px 10px;border-radius:4px;background:#ea580c;color:white;font-size:11px;border:none;cursor:pointer;margin-right:4px">
+                    <i class="fas fa-plus" style="margin-right:2px"></i>파출 추가
+                  </button>
+                  <button onclick="openAddExternalWorkerModal('parttime')" style="padding:3px 10px;border-radius:4px;background:#db2777;color:white;font-size:11px;border:none;cursor:pointer">
+                    <i class="fas fa-plus" style="margin-right:2px"></i>알바 추가
+                  </button>
+                </td></tr>`
+              }
+              
+              return html
+            }
+            
+            return renderEmpRows(cookEmps, 'cook') + renderEmpRows(nutriEmps, 'nutrition') + renderExternalSection()
           })()}
         </tbody>
       </table>
@@ -12635,7 +12766,7 @@ function renderShiftModal() {
 // 연차 관리 탭 (4번 요청)
 // ════════════════════════════════════════════════════════════════
 function renderLeavesTab() {
-  const isAdm = App.userRole === 'admin'
+  const isAdm = App.role === 'admin'
   const year = App.currentYear
   const emps = Array.isArray(scheduleEmployees) ? scheduleEmployees : []
   const leaves = Array.isArray(scheduleLeavesData) ? scheduleLeavesData : []
@@ -14227,7 +14358,7 @@ window.openEmpStatsModal = async (empId, empName) => {
     </div>` : ''}
 
     <!-- OT 수당 설정 (관리자) -->
-    ${App.userRole === 'admin' ? `
+    ${App.role === 'admin' ? `
     <div class="bg-white rounded-xl border border-gray-200 p-4">
       <div class="flex items-center justify-between mb-3">
         <h4 class="font-bold text-gray-700 text-sm"><i class="fas fa-cog mr-1 text-gray-400"></i>수당 설정</h4>
@@ -14338,7 +14469,7 @@ window.saveEmpOtSettings = async (empId) => {
 // 인건비 탭 렌더링
 // ════════════════════════════════════════════════════════════════
 function renderLaborCostTab() {
-  const isAdm = App.userRole === 'admin'
+  const isAdm = App.role === 'admin'
   const data  = scheduleLaborCostData
   const fmt   = n => (n||0).toLocaleString()
 
@@ -14351,11 +14482,17 @@ function renderLaborCostTab() {
     return `<div class="flex items-center justify-center h-40"><div class="loading-spinner mr-2"></div>인건비 데이터 로딩 중...</div>`
   }
 
-  const empTotals  = data.empTotals    || {}
-  const dispTotal  = data.dispatchTotal || 0
-  const grandTotal = data.grandTotal    || 0
-  const byEmp      = data.byEmployee    || []
-  const byDispatch = data.byDispatch    || []
+  const empTotals        = data.empTotals         || {}
+  const dispTotal        = data.extTotal          || data.dispatchTotal || 0
+  const grandTotal       = data.grandTotal        || 0
+  const byEmp            = data.byEmployee        || []
+  const byDispatch       = data.byDispatch        || []   // 구형 dispatch_schedules 기반
+  const byExtWorker      = data.byExtWorker       || []   // external_schedules 이름별 집계
+  const extDispWorkers   = data.extDispatchWorkers|| []
+  const extPtWorkers     = data.extParttimeWorkers|| []
+  const extDispTotal     = data.extDispatchTotal  || 0
+  const extPtTotal       = data.extParttimeTotal  || 0
+  const SHIFT_LABELS     = data.shiftTypeLabels   || { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
 
   // ── 상단 요약 카드 ────────────────────────────────────────────
   const summaryCards = [
@@ -14479,83 +14616,145 @@ function renderLaborCostTab() {
 
     <!-- 외부인력 패널 (초기 숨김) -->
     <div id="lcPanel_dispatch" class="hidden space-y-4">
-      <!-- 유형별 요약 -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-        ${['morning','afternoon','fullday','parttime'].map(type => {
-          const stat = byDispatch.find(d => d.dispType === type)
-          const labels = { morning:'파출(오전)', afternoon:'파출(오후)', fullday:'파출(종일)', parttime:'알바(시급)' }
-          const colors = { morning:'text-orange-700 bg-orange-50', afternoon:'text-amber-700 bg-amber-50', fullday:'text-red-700 bg-red-50', parttime:'text-pink-700 bg-pink-50' }
-          return `<div class="${colors[type]} rounded-xl p-3 border border-gray-100">
-            <div class="text-xs opacity-70 mb-1">${labels[type]}</div>
-            <div class="text-lg font-bold">${stat ? fmt(stat.totalCost)+'원' : '-'}</div>
-            <div class="text-xs opacity-60">${stat ? stat.workDays+'일 / '+stat.totalCount+'명' : '입력없음'}</div>
-          </div>`
-        }).join('')}
+
+      <!-- 요약 카드: 파출 / 알바 합계 -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-orange-50 rounded-xl p-4 border border-orange-100">
+          <div class="text-xs text-orange-600 mb-1"><i class="fas fa-people-carry mr-1"></i>파출 합계</div>
+          <div class="text-2xl font-bold text-orange-700">${fmt(extDispTotal)}원</div>
+          <div class="text-xs text-orange-500 mt-0.5">${extDispWorkers.length}명 등록</div>
+        </div>
+        <div class="bg-pink-50 rounded-xl p-4 border border-pink-100">
+          <div class="text-xs text-pink-600 mb-1"><i class="fas fa-user-clock mr-1"></i>알바 합계</div>
+          <div class="text-2xl font-bold text-pink-700">${fmt(extPtTotal)}원</div>
+          <div class="text-xs text-pink-500 mt-0.5">${extPtWorkers.length}명 등록</div>
+        </div>
       </div>
 
-      <!-- 외부인력 상세 테이블 -->
+      <!-- 파출 이름별 현황 -->
+      ${extDispWorkers.length > 0 ? `
       <div class="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden">
         <div class="px-5 py-3 border-b bg-orange-50 flex items-center justify-between">
-          <div>
-            <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-user-plus mr-1"></i>파출 / 알바 일별 현황</h3>
-            <p class="text-xs text-gray-400 mt-0.5">${App.currentYear}년 ${App.currentMonth}월</p>
-          </div>
-          ${isAdm ? `<button onclick="openDispatchScheduleModal()" class="px-3 py-1.5 rounded-lg text-xs bg-orange-600 text-white hover:bg-orange-700">
-            <i class="fas fa-plus mr-1"></i>입력
+          <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-people-carry mr-1"></i>파출 이름별 현황</h3>
+          ${isAdm ? `<button onclick="openAddExternalWorkerModal('dispatch')" class="px-3 py-1.5 rounded-lg text-xs bg-orange-600 text-white hover:bg-orange-700">
+            <i class="fas fa-plus mr-1"></i>파출 추가
           </button>` : ''}
         </div>
         <div class="overflow-x-auto">
-          ${(() => {
-            const allDetail = byDispatch.flatMap(d => d.detail || []).sort((a,b)=>a.work_date>b.work_date?1:-1)
-            const DISP_LABELS = { morning:'파출(오전)', afternoon:'파출(오후)', fullday:'파출(종일)', parttime:'알바(시급)' }
-            const DISP_COLORS = { morning:'text-orange-700', afternoon:'text-amber-700', fullday:'text-red-700', parttime:'text-pink-700' }
-            if (!allDetail.length) return `<div class="text-center py-10 text-gray-400 text-sm"><i class="fas fa-info-circle mr-1"></i>이달 파출/알바 입력 내역이 없습니다</div>`
-            return `<table class="w-full text-sm">
-              <thead class="bg-gray-50 border-b">
-                <tr>
-                  <th class="px-4 py-2 text-left text-xs text-gray-600">날짜</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">요일</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">유형</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">인원</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">시간</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">단가</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">비용</th>
-                  <th class="px-3 py-2 text-center text-xs text-gray-600">메모</th>
-                  ${isAdm ? '<th class="px-3 py-2 text-center text-xs text-gray-400">관리</th>' : ''}
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 border-b">
+              <tr>
+                <th class="px-4 py-2 text-left text-xs text-gray-600">이름</th>
+                <th class="px-3 py-2 text-center text-xs text-orange-600">오전</th>
+                <th class="px-3 py-2 text-center text-xs text-amber-600">오후</th>
+                <th class="px-3 py-2 text-center text-xs text-red-600">9H</th>
+                <th class="px-3 py-2 text-center text-xs text-red-800">12H</th>
+                <th class="px-3 py-2 text-center text-xs text-gray-600">총근무</th>
+                <th class="px-3 py-2 text-center text-xs text-gray-700">이달합계</th>
+                ${isAdm ? '<th class="px-3 py-2 text-center text-xs text-gray-400">관리</th>' : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${extDispWorkers.map((w, idx) => `
+                <tr class="border-b hover:bg-orange-50 ${idx%2===0?'':'bg-orange-50/30'}">
+                  <td class="px-4 py-2">
+                    <div class="font-medium text-gray-800">${w.workerName}</div>
+                    <div class="text-xs text-orange-500">파출</div>
+                  </td>
+                  <td class="px-3 py-2 text-center text-orange-700">${w.byShiftType?.morning||0}일</td>
+                  <td class="px-3 py-2 text-center text-amber-700">${w.byShiftType?.afternoon||0}일</td>
+                  <td class="px-3 py-2 text-center text-red-600">${w.byShiftType?.full_9h||0}일</td>
+                  <td class="px-3 py-2 text-center text-red-800">${w.byShiftType?.full_12h||0}일</td>
+                  <td class="px-3 py-2 text-center font-medium text-gray-700">${w.totalShifts}일</td>
+                  <td class="px-3 py-2 text-center font-bold text-orange-700">${fmt(w.totalCost)}원</td>
+                  ${isAdm ? `<td class="px-3 py-2 text-center">
+                    <button onclick="deleteExternalWorker(${w.workerId},'${w.workerName.replace(/'/g,'')}')" class="px-2 py-1 rounded text-xs bg-red-100 text-red-600 hover:bg-red-200">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </td>` : ''}
                 </tr>
-              </thead>
-              <tbody>
-                ${allDetail.map(d => {
-                  const dow = ['일','월','화','수','목','금','토'][new Date(d.work_date).getDay()]
-                  const typeLabel = DISP_LABELS[d.disp_type] || d.disp_type
-                  const typeColor = DISP_COLORS[d.disp_type] || 'text-gray-600'
-                  return `<tr class="border-b hover:bg-orange-50">
-                    <td class="px-4 py-2 font-medium text-gray-800">${d.work_date}</td>
-                    <td class="px-3 py-2 text-center text-gray-500">${dow}</td>
-                    <td class="px-3 py-2 text-center font-medium ${typeColor}">${typeLabel}</td>
-                    <td class="px-3 py-2 text-center text-gray-600">${d.count||1}명</td>
-                    <td class="px-3 py-2 text-center text-gray-600">${d.hours > 0 ? d.hours+'h' : '-'}</td>
-                    <td class="px-3 py-2 text-center text-gray-600">${d.unit_price > 0 ? fmt(d.unit_price)+'원' : '-'}</td>
-                    <td class="px-3 py-2 text-center font-bold ${typeColor}">${d.dayCost > 0 ? fmt(d.dayCost)+'원' : '-'}</td>
-                    <td class="px-3 py-2 text-center text-gray-400 text-xs">${d.memo||''}</td>
-                    ${isAdm ? `<td class="px-3 py-2 text-center">
-                      <button onclick="deleteDispatchEntry(${d.id})" class="px-2 py-1 rounded text-xs bg-red-100 text-red-600 hover:bg-red-200">
-                        <i class="fas fa-trash"></i>
-                      </button>
-                    </td>` : ''}
-                  </tr>`
-                }).join('')}
-              </tbody>
-              <tfoot class="bg-orange-50 border-t-2 border-orange-200">
-                <tr>
-                  <td colspan="${isAdm ? 6 : 5}" class="px-4 py-2 font-bold text-orange-800">외부인력 합계</td>
-                  <td class="px-3 py-2 text-center font-bold text-orange-700" colspan="${isAdm ? 3 : 2}">${fmt(dispTotal)}원</td>
-                </tr>
-              </tfoot>
-            </table>`
-          })()}
+              `).join('')}
+            </tbody>
+            <tfoot class="bg-orange-100 border-t-2 border-orange-200">
+              <tr>
+                <td class="px-4 py-2 font-bold text-orange-800" colspan="${isAdm?6:5}">파출 합계</td>
+                <td class="px-3 py-2 text-center font-bold text-orange-700">${fmt(extDispTotal)}원</td>
+                ${isAdm ? '<td></td>' : ''}
+              </tr>
+            </tfoot>
+          </table>
         </div>
-      </div>
+      </div>` : `
+      <div class="bg-orange-50 rounded-xl p-6 text-center border border-orange-100">
+        <i class="fas fa-people-carry text-3xl text-orange-300 mb-2 block"></i>
+        <p class="text-orange-600 text-sm mb-2">등록된 파출 인력이 없습니다</p>
+        ${isAdm ? `<button onclick="openAddExternalWorkerModal('dispatch')" class="px-4 py-2 rounded-lg text-sm bg-orange-600 text-white hover:bg-orange-700">
+          <i class="fas fa-plus mr-1"></i>파출 추가
+        </button>` : ''}
+      </div>`}
+
+      <!-- 알바 이름별 현황 -->
+      ${extPtWorkers.length > 0 ? `
+      <div class="bg-white rounded-2xl shadow-sm border border-pink-100 overflow-hidden">
+        <div class="px-5 py-3 border-b bg-pink-50 flex items-center justify-between">
+          <h3 class="font-bold text-pink-800 text-sm"><i class="fas fa-user-clock mr-1"></i>알바 이름별 현황</h3>
+          ${isAdm ? `<button onclick="openAddExternalWorkerModal('parttime')" class="px-3 py-1.5 rounded-lg text-xs bg-pink-600 text-white hover:bg-pink-700">
+            <i class="fas fa-plus mr-1"></i>알바 추가
+          </button>` : ''}
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 border-b">
+              <tr>
+                <th class="px-4 py-2 text-left text-xs text-gray-600">이름</th>
+                <th class="px-3 py-2 text-center text-xs text-orange-600">오전</th>
+                <th class="px-3 py-2 text-center text-xs text-amber-600">오후</th>
+                <th class="px-3 py-2 text-center text-xs text-red-600">9H</th>
+                <th class="px-3 py-2 text-center text-xs text-red-800">12H</th>
+                <th class="px-3 py-2 text-center text-xs text-gray-600">총근무</th>
+                <th class="px-3 py-2 text-center text-xs text-gray-700">이달합계</th>
+                ${isAdm ? '<th class="px-3 py-2 text-center text-xs text-gray-400">관리</th>' : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${extPtWorkers.map((w, idx) => `
+                <tr class="border-b hover:bg-pink-50 ${idx%2===0?'':'bg-pink-50/30'}">
+                  <td class="px-4 py-2">
+                    <div class="font-medium text-gray-800">${w.workerName}</div>
+                    <div class="text-xs text-pink-500">알바</div>
+                  </td>
+                  <td class="px-3 py-2 text-center text-orange-700">${w.byShiftType?.morning||0}일</td>
+                  <td class="px-3 py-2 text-center text-amber-700">${w.byShiftType?.afternoon||0}일</td>
+                  <td class="px-3 py-2 text-center text-red-600">${w.byShiftType?.full_9h||0}일</td>
+                  <td class="px-3 py-2 text-center text-red-800">${w.byShiftType?.full_12h||0}일</td>
+                  <td class="px-3 py-2 text-center font-medium text-gray-700">${w.totalShifts}일</td>
+                  <td class="px-3 py-2 text-center font-bold text-pink-700">${fmt(w.totalCost)}원</td>
+                  ${isAdm ? `<td class="px-3 py-2 text-center">
+                    <button onclick="deleteExternalWorker(${w.workerId},'${w.workerName.replace(/'/g,'')}')" class="px-2 py-1 rounded text-xs bg-red-100 text-red-600 hover:bg-red-200">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </td>` : ''}
+                </tr>
+              `).join('')}
+            </tbody>
+            <tfoot class="bg-pink-100 border-t-2 border-pink-200">
+              <tr>
+                <td class="px-4 py-2 font-bold text-pink-800" colspan="${isAdm?6:5}">알바 합계</td>
+                <td class="px-3 py-2 text-center font-bold text-pink-700">${fmt(extPtTotal)}원</td>
+                ${isAdm ? '<td></td>' : ''}
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>` : `
+      <div class="bg-pink-50 rounded-xl p-6 text-center border border-pink-100">
+        <i class="fas fa-user-clock text-3xl text-pink-300 mb-2 block"></i>
+        <p class="text-pink-600 text-sm mb-2">등록된 알바 인력이 없습니다</p>
+        ${isAdm ? `<button onclick="openAddExternalWorkerModal('parttime')" class="px-4 py-2 rounded-lg text-sm bg-pink-600 text-white hover:bg-pink-700">
+          <i class="fas fa-plus mr-1"></i>알바 추가
+        </button>` : ''}
+      </div>`}
+
     </div>
   </div>`
 }
@@ -14703,6 +14902,197 @@ window.deleteDispatchEntry = async (id) => {
 // 기존 빠른 입력 함수 → 이제 새 모달로 리다이렉트
 window.openQuickDispatchInput = () => openDispatchScheduleModal()
 window.saveQuickDispatch = () => saveDispatchEntry()
+
+// ── 외부인력(파출/알바) 추가 모달 ─────────────────────────────
+window.openAddExternalWorkerModal = (defaultType = 'dispatch') => {
+  const existing = scheduleExternalWorkers || []
+  const overlay = document.createElement('div')
+  overlay.id = 'addExtWorkerModal'
+  overlay.className = 'modal-overlay'
+  overlay.style.zIndex = '1060'
+  overlay.innerHTML = `
+  <div class="modal-box max-w-md p-0 overflow-hidden">
+    <div class="text-white px-5 py-4 flex items-center justify-between" style="background:${defaultType==='dispatch'?'#ea580c':'#db2777'}">
+      <div>
+        <h3 class="font-bold text-base"><i class="fas fa-user-plus mr-2"></i>외부인력 추가</h3>
+        <p class="text-xs opacity-70 mt-0.5">파출 또는 알바 직원을 스케줄에 추가합니다</p>
+      </div>
+      <button onclick="document.getElementById('addExtWorkerModal').remove()" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-medium text-gray-700 block mb-1">구분 <span class="text-red-500">*</span></label>
+          <select id="ew_type" class="form-input text-sm">
+            <option value="dispatch" ${defaultType==='dispatch'?'selected':''}>파출</option>
+            <option value="parttime" ${defaultType==='parttime'?'selected':''}>알바</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-gray-700 block mb-1">이름 <span class="text-red-500">*</span></label>
+          <input type="text" id="ew_name" class="form-input text-sm" placeholder="예: 김○○, 이○○">
+        </div>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-gray-700 block mb-1">메모 (선택)</label>
+        <input type="text" id="ew_memo" class="form-input text-sm" placeholder="업체명, 연락처 등">
+      </div>
+      ${existing.length > 0 ? `
+      <div class="bg-gray-50 rounded-lg p-3">
+        <p class="text-xs font-medium text-gray-600 mb-2"><i class="fas fa-history mr-1"></i>기존 외부인력 (재사용 가능)</p>
+        <div class="space-y-1 max-h-32 overflow-y-auto">
+          ${existing.map(w => `
+            <button onclick="reuseExternalWorker(${w.id})" 
+              class="w-full text-left px-3 py-1.5 rounded text-xs hover:bg-orange-50 flex items-center justify-between">
+              <span><span class="font-medium">${w.name}</span> <span class="text-gray-400">(${w.worker_type==='dispatch'?'파출':'알바'})</span></span>
+              <span class="text-orange-600 text-xs">불러오기</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>` : ''}
+      <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700">
+        <i class="fas fa-info-circle mr-1"></i>추가된 외부인력은 이번 달 스케줄에 행으로 표시됩니다. 각 날짜 셀을 클릭해서 근무유형을 입력하세요.
+      </div>
+    </div>
+    <div class="px-5 py-4 bg-gray-50 border-t flex gap-3">
+      <button onclick="saveExternalWorker()" class="btn btn-primary flex-1">
+        <i class="fas fa-save mr-1"></i>추가
+      </button>
+      <button onclick="document.getElementById('addExtWorkerModal').remove()" class="btn btn-secondary">취소</button>
+    </div>
+  </div>`
+  document.body.appendChild(overlay)
+  setTimeout(() => document.getElementById('ew_name')?.focus(), 100)
+}
+
+window.reuseExternalWorker = async (workerId) => {
+  // 이미 활성 상태면 그냥 모달 닫고 스케줄 새로고침
+  document.getElementById('addExtWorkerModal')?.remove()
+  showToast('외부인력을 불러왔습니다. 셀을 클릭해서 근무일을 입력하세요.', 'info')
+}
+
+window.saveExternalWorker = async () => {
+  const workerType = document.getElementById('ew_type')?.value || 'dispatch'
+  const name = document.getElementById('ew_name')?.value?.trim() || ''
+  const memo = document.getElementById('ew_memo')?.value?.trim() || ''
+  
+  if (!name) {
+    showToast('이름을 입력해주세요', 'error')
+    document.getElementById('ew_name')?.focus()
+    return
+  }
+  
+  try {
+    const hospitalId = App.role === 'admin' ? (App.adminHospitalId || null) : null
+    const res = await api('POST', '/api/schedule/external-workers', { workerType, name, memo, ...(hospitalId ? {hospitalId} : {}) })
+    if (res?.id) {
+      showToast(`${workerType === 'dispatch' ? '파출' : '알바'} ${name} 추가 완료`, 'success')
+      document.getElementById('addExtWorkerModal')?.remove()
+      // 스케줄 데이터 새로고침
+      const monthData = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+      if (monthData) {
+        scheduleMonthData = monthData
+        scheduleExternalWorkers = monthData.external_workers || []
+        scheduleExtSchedMap = monthData.ext_sched_map || {}
+      }
+      const tc = document.getElementById('scheduleTabContent')
+      if (tc && scheduleTab === 'schedule') tc.innerHTML = renderMonthlyScheduleTab()
+    } else {
+      showToast(res?.error || '추가 실패', 'error')
+    }
+  } catch(e) {
+    showToast('오류가 발생했습니다', 'error')
+  }
+}
+
+// ── 외부인력 셀 클릭 (근무유형 순환) ─────────────────────────
+const EXT_SHIFT_SEQUENCE = ['morning', 'afternoon', 'full_9h', 'full_12h', '']
+const EXT_SHIFT_LABEL_MAP = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H', '':'·' }
+
+window.extWorkerCellClick = async (e, workerId, dateStr, workerType, cell) => {
+  e.preventDefault()
+  e.stopPropagation()
+  
+  const currentShift = cell.dataset.extshift || ''
+  const curIdx = EXT_SHIFT_SEQUENCE.indexOf(currentShift)
+  const nextShift = EXT_SHIFT_SEQUENCE[(curIdx + 1) % EXT_SHIFT_SEQUENCE.length]
+  
+  // 즉시 UI 업데이트
+  const EXT_SHIFT_COLORS = {
+    morning: 'background:#fff7ed;color:#c2410c',
+    afternoon: 'background:#fef3c7;color:#b45309',
+    full_9h: 'background:#ffedd5;color:#ea580c',
+    full_12h: 'background:#fee2e2;color:#dc2626',
+    '': 'background:#f9fafb;color:#d1d5db'
+  }
+  cell.dataset.extshift = nextShift
+  const span = cell.querySelector('span')
+  if (span) {
+    span.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;${EXT_SHIFT_COLORS[nextShift]||EXT_SHIFT_COLORS['']}`
+    span.textContent = EXT_SHIFT_LABEL_MAP[nextShift] || '·'
+  }
+  
+  // 전역 맵 업데이트
+  const key = `${workerId}_${dateStr}`
+  if (!nextShift) {
+    delete scheduleExtSchedMap[key]
+  } else {
+    scheduleExtSchedMap[key] = { ...(scheduleExtSchedMap[key]||{}), worker_id: workerId, work_date: dateStr, shift_type: nextShift }
+  }
+  
+  // 우측 근무일 수 업데이트
+  const row = cell.closest('tr')
+  const workDayCell = row?.querySelector('td:last-child, td[id^="workdays-"]')
+  // 현재 행의 workerId로 근무일 재계산
+  const days = getDaysInMonth(App.currentYear, App.currentMonth)
+  let wdCount = 0
+  for (let d = 1; d <= days; d++) {
+    const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    if (scheduleExtSchedMap[`${workerId}_${ds}`]?.shift_type) wdCount++
+  }
+  // 우측 두번째 마지막 td 업데이트
+  const tds = row?.querySelectorAll('td')
+  if (tds && tds.length >= 2) {
+    const wdTd = tds[tds.length - 2]
+    wdTd.innerHTML = `<div style="font-size:12px;font-weight:700;color:#ea580c">${wdCount}</div><div style="font-size:9px;color:#fb923c;opacity:0.8">근무</div>`
+  }
+  
+  // API 저장
+  try {
+    if (!nextShift) {
+      await api('DELETE', `/api/schedule/external-schedules/${workerId}/${dateStr}`)
+    } else {
+      await api('POST', '/api/schedule/external-schedules', {
+        workerId, workDate: dateStr, shiftType: nextShift, unitPrice: 0, note: ''
+      })
+    }
+  } catch(err) {
+    console.error('External schedule save error:', err)
+  }
+}
+
+// ── 외부인력 삭제 ─────────────────────────────────────────────
+window.deleteExternalWorker = async (workerId, workerName) => {
+  if (!confirm(`"${workerName}" 외부인력을 삭제하시겠습니까?\n이 직원의 모든 스케줄도 함께 삭제됩니다.`)) return
+  try {
+    const res = await api('DELETE', `/api/schedule/external-workers/${workerId}`)
+    if (res?.success !== false) {
+      showToast('외부인력이 삭제되었습니다', 'success')
+      const monthData = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+      if (monthData) {
+        scheduleMonthData = monthData
+        scheduleExternalWorkers = monthData.external_workers || []
+        scheduleExtSchedMap = monthData.ext_sched_map || {}
+      }
+      const tc = document.getElementById('scheduleTabContent')
+      if (tc && scheduleTab === 'schedule') tc.innerHTML = renderMonthlyScheduleTab()
+    } else {
+      showToast('삭제 실패', 'error')
+    }
+  } catch(e) {
+    showToast('오류가 발생했습니다', 'error')
+  }
+}
 
 // ── 법정근무시간 설정 모달 열기/저장 ──────────────────────────
 window.openWorkSettingsModal = async () => {

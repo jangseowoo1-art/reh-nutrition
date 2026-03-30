@@ -675,7 +675,7 @@ schedule.get('/:year/:month', async (c) => {
 
   const paddedMonth = String(month).padStart(2, '0')
 
-  const [schedRows, shiftRows, holidayRows, leaveRows, subRows] = await Promise.all([
+  const [schedRows, shiftRows, holidayRows, leaveRows, subRows, extWorkerRows, extSchedRows] = await Promise.all([
     // 해당 월 스케줄
     c.env.DB.prepare(
       `SELECT s.employee_id, s.work_date, s.shift_code, s.leave_type,
@@ -711,6 +711,21 @@ schedule.get('/:year/:month', async (c) => {
     c.env.DB.prepare(
       `SELECT off_date, off_name FROM substitute_off_days
        WHERE (hospital_id IS NULL OR hospital_id = ?) AND off_date LIKE ?`
+    ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>(),
+
+    // 외부인력 마스터 (활성만)
+    c.env.DB.prepare(
+      `SELECT * FROM external_workers WHERE hospital_id=? AND is_active=1
+       ORDER BY worker_type, name`
+    ).bind(hospitalId).all<any>(),
+
+    // 외부인력 해당 월 스케줄
+    c.env.DB.prepare(
+      `SELECT s.*, w.name as worker_name, w.worker_type
+       FROM external_schedules s
+       JOIN external_workers w ON s.worker_id=w.id
+       WHERE s.hospital_id=? AND s.work_date LIKE ?
+       ORDER BY w.worker_type, w.name, s.work_date`
     ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
   ])
 
@@ -728,13 +743,21 @@ schedule.get('/:year/:month', async (c) => {
     leaveMap[l.employee_id][l.leave_type] = { total: l.total_days, used: l.used_days }
   }
 
+  // 외부인력 스케줄 맵: { "workerId_date": schedule }
+  const extSchedMap: Record<string, any> = {}
+  for (const s of (extSchedRows.results || [])) {
+    extSchedMap[`${s.worker_id}_${s.work_date}`] = s
+  }
+
   return c.json({
-    employees:       employees.results || [],
-    sched_map:       schedMap,
-    shifts:          shiftRows.results || [],
-    holidays:        holidayRows.results || [],
-    leave_map:       leaveMap,
-    substitute_days: subRows.results || []
+    employees:        employees.results || [],
+    sched_map:        schedMap,
+    shifts:           shiftRows.results || [],
+    holidays:         holidayRows.results || [],
+    leave_map:        leaveMap,
+    substitute_days:  subRows.results || [],
+    external_workers: extWorkerRows.results || [],
+    ext_sched_map:    extSchedMap
   })
 })
 
@@ -1563,7 +1586,7 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
   const { year, month } = c.req.param()
   const paddedMonth = String(month).padStart(2,'0')
 
-  const [scheds, emps, otSettingsAll, laborCosts, holidayRows, dispatchRows] = await Promise.all([
+  const [scheds, emps, otSettingsAll, laborCosts, holidayRows, extSchedRows] = await Promise.all([
     c.env.DB.prepare(
       `SELECT s.*, e.name as emp_name, e.team, e.salary_type, e.base_salary,
               e.ot_enabled, e.night_allowance_enabled, e.holiday_allowance_enabled,
@@ -1594,15 +1617,19 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
       `SELECT holiday_date FROM holidays WHERE holiday_date LIKE ?`
     ).bind(`${year}-${paddedMonth}-%`).all<any>(),
 
-    // 파출/알바 외부인력 스케줄
+    // 외부인력(external_workers 기반) 스케줄
     c.env.DB.prepare(
-      `SELECT * FROM dispatch_schedules WHERE hospital_id=? AND work_date LIKE ?`
+      `SELECT s.*, w.name as worker_name, w.worker_type
+       FROM external_schedules s
+       JOIN external_workers w ON s.worker_id=w.id
+       WHERE s.hospital_id=? AND s.work_date LIKE ?
+       ORDER BY w.worker_type, w.name, s.work_date`
     ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
   ])
 
   const schedList     = scheds.results || []
   const empList       = emps.results || []
-  const dispatchList  = dispatchRows.results || []
+  const extSchedList  = extSchedRows.results || []
   const holidaySet    = new Set((holidayRows.results || []).map((h: any) => h.holiday_date))
 
   const otMap: Record<number, any> = {}
@@ -1705,76 +1732,80 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
     rec.totalAddCost = rec.otCost + rec.nightCost + rec.holidayCost + rec.weeklyHolidayCost
   }
 
-  // ─── 외부인력(파출/알바) 집계 ───────────────────────────────
-  type DispatchStat = {
-    dispType: string
-    label: string
-    totalCount: number
-    totalHours: number
-    totalCost: number
-    workDays: number
-    detail: any[]
+  // ─── 외부인력 이름별 집계 (external_schedules 기반) ──────────
+  const SHIFT_LABELS: Record<string, string> = {
+    morning: '오전', afternoon: '오후', full_9h: '9시간', full_12h: '12시간'
   }
 
-  const DISP_LABELS: Record<string, string> = {
-    morning:   '파출(오전)',
-    afternoon: '파출(오후)',
-    fullday:   '파출(종일)',
-    parttime:  '알바(시급)',
+  function getExtUnitPrice(workerType: string, shiftType: string, override: number): number {
+    if (override > 0) return override
+    const key = `${workerType}_${shiftType}`
+    const compatKey = shiftType === 'full_9h'  ? `${workerType === 'dispatch' ? 'dispatch' : 'parttime'}_9h`
+                    : shiftType === 'full_12h' ? `${workerType === 'dispatch' ? 'dispatch' : 'parttime'}_12h`
+                    : null
+    return costMap[key] || (compatKey ? costMap[compatKey] : 0) || 0
   }
 
-  const dispByType: Record<string, DispatchStat> = {}
-  for (const d of dispatchList) {
-    if (!dispByType[d.disp_type]) {
-      dispByType[d.disp_type] = {
-        dispType: d.disp_type,
-        label: DISP_LABELS[d.disp_type] || d.disp_type,
-        totalCount: 0, totalHours: 0, totalCost: 0, workDays: 0,
-        detail: []
+  type ExtWorkerStat = {
+    workerId: number; workerName: string; workerType: string
+    totalShifts: number; byShiftType: Record<string, number>
+    totalCost: number; workDates: string[]
+  }
+  const byWorker: Record<number, ExtWorkerStat> = {}
+
+  for (const s of extSchedList) {
+    if (!byWorker[s.worker_id]) {
+      byWorker[s.worker_id] = {
+        workerId: s.worker_id, workerName: s.worker_name, workerType: s.worker_type,
+        totalShifts: 0, byShiftType: {}, totalCost: 0, workDates: []
       }
     }
-    const stat = dispByType[d.disp_type]
-    const unitPrice = d.unit_price > 0 ? d.unit_price : (costMap[d.disp_type] || 0)
-    const dayCost = d.disp_type === 'parttime'
-      ? Math.round((d.hours || 0) * unitPrice)
-      : Math.round((d.count || 1) * unitPrice)
-
-    stat.totalCount += d.count || 1
-    stat.totalHours += d.hours || 0
-    stat.totalCost  += dayCost
-    stat.workDays++
-    stat.detail.push({ ...d, dayCost })
+    const w = byWorker[s.worker_id]
+    const price = getExtUnitPrice(s.worker_type, s.shift_type, s.unit_price || 0)
+    w.totalShifts++
+    w.byShiftType[s.shift_type] = (w.byShiftType[s.shift_type] || 0) + 1
+    w.totalCost += price
+    w.workDates.push(s.work_date)
   }
+
+  const extStats         = Object.values(byWorker)
+  const extDispatchStats = extStats.filter(w => w.workerType === 'dispatch')
+  const extParttimeStats = extStats.filter(w => w.workerType === 'parttime')
+  const extDispatchTotal = extDispatchStats.reduce((a, w) => a + w.totalCost, 0)
+  const extParttimeTotal = extParttimeStats.reduce((a, w) => a + w.totalCost, 0)
+  const extTotal         = extDispatchTotal + extParttimeTotal
 
   // ─── 합계 계산 ───────────────────────────────────────────────
   const empStats = Object.values(byEmp)
-  const totalOtCost        = empStats.reduce((a, v) => a + v.otCost, 0)
-  const totalNightCost     = empStats.reduce((a, v) => a + v.nightCost, 0)
-  const totalHolidayCost   = empStats.reduce((a, v) => a + v.holidayCost, 0)
-  const totalWeeklyCost    = empStats.reduce((a, v) => a + v.weeklyHolidayCost, 0)
-  const totalEmpAddCost    = empStats.reduce((a, v) => a + v.totalAddCost, 0)
-  const totalDispatchCost  = Object.values(dispByType).reduce((a, v) => a + v.totalCost, 0)
-  const grandTotal         = totalEmpAddCost + totalDispatchCost
+  const totalOtCost      = empStats.reduce((a, v) => a + v.otCost, 0)
+  const totalNightCost   = empStats.reduce((a, v) => a + v.nightCost, 0)
+  const totalHolidayCost = empStats.reduce((a, v) => a + v.holidayCost, 0)
+  const totalWeeklyCost  = empStats.reduce((a, v) => a + v.weeklyHolidayCost, 0)
+  const totalEmpAddCost  = empStats.reduce((a, v) => a + v.totalAddCost, 0)
+  const grandTotal       = totalEmpAddCost + extTotal
 
   return c.json({
     year, month, hospitalId,
     // 직원 집계
     byEmployee: empStats,
     empTotals: {
-      otCost: totalOtCost,
-      nightCost: totalNightCost,
-      holidayCost: totalHolidayCost,
-      weeklyHolidayCost: totalWeeklyCost,
+      otCost: totalOtCost, nightCost: totalNightCost,
+      holidayCost: totalHolidayCost, weeklyHolidayCost: totalWeeklyCost,
       totalAddCost: totalEmpAddCost
     },
-    // 외부인력 집계
-    byDispatch: Object.values(dispByType),
-    dispatchTotal: totalDispatchCost,
+    // 외부인력 이름별 집계
+    byExtWorker: extStats,
+    extDispatchWorkers: extDispatchStats,
+    extParttimeWorkers: extParttimeStats,
+    extDispatchTotal,
+    extParttimeTotal,
+    extTotal,
     // 전체 합계
     grandTotal,
     // 설정값
     costSettings: costMap,
-    otSettings: otMap
+    otSettings: otMap,
+    shiftTypeLabels: SHIFT_LABELS
   })
 })
 
@@ -1994,6 +2025,270 @@ schedule.put('/employees/:id/salary', async (c) => {
      WHERE id=?`
   ).bind(salaryType||'monthly', baseSalary||0, otEnabled?1:0, nightEnabled?1:0, holidayEnabled?1:0, empId).run()
   return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 외부인력 (파출/알바) 마스터 관리
+// external_workers: 이름+타입 저장, 재사용 가능
+// ════════════════════════════════════════════════════════════════
+
+// 외부인력 목록 조회
+schedule.get('/external-workers', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const includeInactive = c.req.query('all') === '1'
+
+  const rows = await c.env.DB.prepare(
+    `SELECT w.*,
+       (SELECT COUNT(*) FROM external_schedules s WHERE s.worker_id=w.id) as total_shifts,
+       (SELECT MAX(work_date) FROM external_schedules s WHERE s.worker_id=w.id) as last_work_date
+     FROM external_workers w
+     WHERE w.hospital_id=? ${includeInactive ? '' : 'AND w.is_active=1'}
+     ORDER BY w.worker_type, w.name`
+  ).bind(hospitalId).all<any>()
+  return c.json(rows.results || [])
+})
+
+// 외부인력 생성
+schedule.post('/external-workers', async (c) => {
+  const user = c.get('user')
+  const { name, workerType, memo, hospitalId: bodyHospId } = await c.req.json()
+  const hospitalId = getHospitalId(user, bodyHospId ? String(bodyHospId) : c.req.query('hospitalId'))
+  if (!name) return c.json({ error: '이름은 필수입니다' }, 400)
+  if (!['dispatch', 'parttime'].includes(workerType || 'dispatch'))
+    return c.json({ error: '유형은 dispatch 또는 parttime이어야 합니다' }, 400)
+
+  const result = await c.env.DB.prepare(
+    `INSERT INTO external_workers (hospital_id, name, worker_type, memo)
+     VALUES (?,?,?,?) RETURNING id`
+  ).bind(hospitalId, name.trim(), workerType || 'dispatch', memo || '').first<any>()
+  return c.json({ success: true, id: result?.id })
+})
+
+// 외부인력 수정
+schedule.put('/external-workers/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const id = c.req.param('id')
+  const { name, workerType, memo, isActive } = await c.req.json()
+
+  const row = await c.env.DB.prepare(
+    `SELECT hospital_id FROM external_workers WHERE id=?`
+  ).bind(id).first<any>()
+  if (!row) return c.json({ error: '없음' }, 404)
+  if (!isAdmin(user) && row.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  await c.env.DB.prepare(
+    `UPDATE external_workers SET
+       name=COALESCE(?,name), worker_type=COALESCE(?,worker_type),
+       memo=COALESCE(?,memo), is_active=COALESCE(?,is_active),
+       updated_at=CURRENT_TIMESTAMP
+     WHERE id=?`
+  ).bind(name || null, workerType || null, memo ?? null,
+         isActive !== undefined ? (isActive ? 1 : 0) : null, id).run()
+  return c.json({ success: true })
+})
+
+// 외부인력 삭제 (스케줄이 있으면 비활성화만)
+schedule.delete('/external-workers/:id', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const id = c.req.param('id')
+
+  const row = await c.env.DB.prepare(
+    `SELECT hospital_id FROM external_workers WHERE id=?`
+  ).bind(id).first<any>()
+  if (!row) return c.json({ error: '없음' }, 404)
+  if (!isAdmin(user) && row.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  // 스케줄이 있으면 비활성화, 없으면 완전 삭제
+  const hasSchedule = await c.env.DB.prepare(
+    `SELECT id FROM external_schedules WHERE worker_id=? LIMIT 1`
+  ).bind(id).first<any>()
+
+  if (hasSchedule) {
+    await c.env.DB.prepare(
+      `UPDATE external_workers SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(id).run()
+    return c.json({ success: true, deactivated: true })
+  } else {
+    await c.env.DB.prepare(`DELETE FROM external_workers WHERE id=?`).bind(id).run()
+    return c.json({ success: true, deleted: true })
+  }
+})
+
+// ════════════════════════════════════════════════════════════════
+// 외부인력 스케줄 (external_schedules)
+// ════════════════════════════════════════════════════════════════
+
+// 월별 외부인력 스케줄 조회 (worker 정보 join)
+schedule.get('/external-schedules', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year  = c.req.query('year')  || new Date().getFullYear()
+  const month = c.req.query('month') || (new Date().getMonth() + 1)
+  const paddedMonth = String(month).padStart(2, '0')
+
+  // 해당 월 스케줄 + 해당 월에 등록된 or 활성 인원 포함
+  const [workers, schedules] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT * FROM external_workers WHERE hospital_id=? AND is_active=1
+       ORDER BY worker_type, name`
+    ).bind(hospitalId).all<any>(),
+
+    c.env.DB.prepare(
+      `SELECT s.*, w.name as worker_name, w.worker_type
+       FROM external_schedules s
+       JOIN external_workers w ON s.worker_id=w.id
+       WHERE s.hospital_id=? AND s.work_date LIKE ?
+       ORDER BY w.worker_type, w.name, s.work_date`
+    ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>()
+  ])
+
+  // schedMap: { "workerId_date": schedule }
+  const schedMap: Record<string, any> = {}
+  for (const s of (schedules.results || [])) {
+    schedMap[`${s.worker_id}_${s.work_date}`] = s
+  }
+
+  return c.json({
+    workers: workers.results || [],
+    schedules: schedules.results || [],
+    sched_map: schedMap
+  })
+})
+
+// 외부인력 스케줄 저장 (upsert)
+schedule.post('/external-schedules', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const { workerId, workDate, shiftType, unitPrice, note } = await c.req.json()
+  if (!workerId || !workDate || !shiftType)
+    return c.json({ error: 'workerId, workDate, shiftType 필수' }, 400)
+
+  const worker = await c.env.DB.prepare(
+    `SELECT hospital_id FROM external_workers WHERE id=?`
+  ).bind(workerId).first<any>()
+  if (!worker) return c.json({ error: '외부인력 없음' }, 404)
+  if (!isAdmin(user) && worker.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  await c.env.DB.prepare(
+    `INSERT INTO external_schedules (hospital_id, worker_id, work_date, shift_type, unit_price, note)
+     VALUES (?,?,?,?,?,?)
+     ON CONFLICT(hospital_id, worker_id, work_date) DO UPDATE SET
+       shift_type=excluded.shift_type, unit_price=excluded.unit_price,
+       note=excluded.note, updated_at=CURRENT_TIMESTAMP`
+  ).bind(worker.hospital_id, workerId, workDate,
+         shiftType, unitPrice || 0, note || '').run()
+  return c.json({ success: true })
+})
+
+// 외부인력 스케줄 삭제
+schedule.delete('/external-schedules/:workerId/:workDate', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, undefined)
+  const { workerId, workDate } = c.req.param()
+
+  const worker = await c.env.DB.prepare(
+    `SELECT hospital_id FROM external_workers WHERE id=?`
+  ).bind(workerId).first<any>()
+  if (!worker) return c.json({ error: '없음' }, 404)
+  if (!isAdmin(user) && worker.hospital_id !== hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  await c.env.DB.prepare(
+    `DELETE FROM external_schedules WHERE hospital_id=? AND worker_id=? AND work_date=?`
+  ).bind(worker.hospital_id, workerId, workDate).run()
+  return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// 외부인력 인건비 집계 (이름별)
+// ════════════════════════════════════════════════════════════════
+schedule.get('/external-cost-report/:year/:month', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const { year, month } = c.req.param()
+  const paddedMonth = String(month).padStart(2, '0')
+
+  const SHIFT_TYPE_LABELS: Record<string, string> = {
+    morning:   '오전', afternoon: '오후',
+    full_9h:   '9시간', full_12h:  '12시간'
+  }
+
+  const [schedules, laborCosts] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT s.*, w.name as worker_name, w.worker_type
+       FROM external_schedules s
+       JOIN external_workers w ON s.worker_id=w.id
+       WHERE s.hospital_id=? AND s.work_date LIKE ?
+       ORDER BY w.worker_type, w.name, s.work_date`
+    ).bind(hospitalId, `${year}-${paddedMonth}-%`).all<any>(),
+
+    c.env.DB.prepare(
+      `SELECT * FROM labor_cost_settings WHERE hospital_id=?`
+    ).bind(hospitalId).all<any>()
+  ])
+
+  const costMap: Record<string, number> = {}
+  ;(laborCosts.results || []).forEach((r: any) => { costMap[r.cost_type] = r.unit_price })
+
+  // 단가 결정 함수
+  function getUnitPrice(workerType: string, shiftType: string, overridePrice: number): number {
+    if (overridePrice > 0) return overridePrice
+    const key = `${workerType}_${shiftType}`  // e.g. dispatch_morning, parttime_full_9h
+    // 호환 키: dispatch_9h → dispatch_full_9h
+    const compatKey = shiftType === 'full_9h' ? `${workerType === 'dispatch' ? 'dispatch' : 'parttime'}_9h`
+                    : shiftType === 'full_12h' ? `${workerType === 'dispatch' ? 'dispatch' : 'parttime'}_12h`
+                    : null
+    return costMap[key] || (compatKey ? costMap[compatKey] : 0) || 0
+  }
+
+  // 이름별 집계
+  type WorkerStat = {
+    workerId: number
+    workerName: string
+    workerType: string
+    totalShifts: number
+    byShiftType: Record<string, number>  // shiftType → count
+    totalCost: number
+    workDates: string[]
+  }
+
+  const byWorker: Record<number, WorkerStat> = {}
+
+  for (const s of (schedules.results || [])) {
+    if (!byWorker[s.worker_id]) {
+      byWorker[s.worker_id] = {
+        workerId: s.worker_id, workerName: s.worker_name,
+        workerType: s.worker_type, totalShifts: 0,
+        byShiftType: {}, totalCost: 0, workDates: []
+      }
+    }
+    const stat = byWorker[s.worker_id]
+    const unitPrice = getUnitPrice(s.worker_type, s.shift_type, s.unit_price || 0)
+    stat.totalShifts++
+    stat.byShiftType[s.shift_type] = (stat.byShiftType[s.shift_type] || 0) + 1
+    stat.totalCost += unitPrice
+    stat.workDates.push(s.work_date)
+  }
+
+  const workerStats = Object.values(byWorker)
+  const dispatchStats  = workerStats.filter(w => w.workerType === 'dispatch')
+  const parttimeStats  = workerStats.filter(w => w.workerType === 'parttime')
+  const dispatchTotal  = dispatchStats.reduce((a, w) => a + w.totalCost, 0)
+  const parttimeTotal  = parttimeStats.reduce((a, w) => a + w.totalCost, 0)
+
+  return c.json({
+    year, month,
+    byWorker: workerStats,
+    dispatchWorkers: dispatchStats,
+    parttimeWorkers: parttimeStats,
+    dispatchTotal,
+    parttimeTotal,
+    grandTotal: dispatchTotal + parttimeTotal,
+    costSettings: costMap,
+    shiftTypeLabels: SHIFT_TYPE_LABELS
+  })
 })
 
 export default schedule
