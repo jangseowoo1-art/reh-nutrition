@@ -2055,6 +2055,17 @@ async function renderDashboard() {
     const slHtml = renderDashStaffLabor(dashStaffLaborData)
     content.insertAdjacentHTML('beforeend', slHtml)
   }
+
+  // ── 연차 미사용 알림 섹션 (병원 계정 전용) ────────────────────
+  if (App.role === 'hospital') {
+    try {
+      const leaveAlerts = await api('GET', '/api/schedule/alerts/leave') || []
+      if (leaveAlerts.length > 0) {
+        const alertHtml = renderDashLeaveAlertBanner(leaveAlerts)
+        content.insertAdjacentHTML('beforeend', alertHtml)
+      }
+    } catch(e) { /* 연차 알림 로드 실패 시 무시 */ }
+  }
   }
 
   // switchVendorPieView는 더 이상 차트/상세를 전환하지 않음 (동시 표시로 변경됨)
@@ -12211,6 +12222,69 @@ function renderHealthAlertBanner() {
   </div>`
 }
 
+// ─── 대시보드용 연차 미사용 알림 배너 (영양사 페이지) ────────
+function renderDashLeaveAlertBanner(alerts) {
+  if (!alerts || alerts.length === 0) return ''
+
+  const LEVELS = {
+    critical:     { bg: 'bg-red-50',    border: 'border-red-200',    color: 'text-red-700',    icon: '🚨', label: '연차 소멸 위험' },
+    urgent:       { bg: 'bg-orange-50', border: 'border-orange-200', color: 'text-orange-700', icon: '⚠️', label: '연차 촉진 대상' },
+    not_assigned: { bg: 'bg-purple-50', border: 'border-purple-200', color: 'text-purple-700', icon: '📋', label: '연차 미부여' },
+    encourage:    { bg: 'bg-yellow-50', border: 'border-yellow-200', color: 'text-yellow-700', icon: '💡', label: '연차 사용 권장' },
+    none_used:    { bg: 'bg-blue-50',   border: 'border-blue-200',   color: 'text-blue-700',   icon: '📅', label: '연차 미사용' }
+  }
+  const order = ['critical','urgent','not_assigned','encourage','none_used']
+
+  const groups = {}
+  alerts.forEach(a => {
+    const lvl = a.alert_level || 'none_used'
+    if (!groups[lvl]) groups[lvl] = []
+    groups[lvl].push(a)
+  })
+
+  const topLevel = order.find(l => groups[l]) || 'none_used'
+  const cfg = LEVELS[topLevel] || LEVELS['none_used']
+
+  const rows = alerts.map(a => {
+    const lv = LEVELS[a.alert_level] || LEVELS['none_used']
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:8px;background:white;border:1px solid #e5e7eb;margin-bottom:4px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:14px">${lv.icon}</span>
+        <div>
+          <span style="font-weight:600;font-size:13px;color:#1f2937">${a.name}</span>
+          <span style="font-size:11px;color:#6b7280;margin-left:6px">${a.position || ''} · ${a.team === 'cook' ? '조리팀' : '영양팀'}</span>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <span style="font-size:11px;color:#374151">잔여 <strong>${a.remaining_days ?? '-'}일</strong> / 부여 ${a.total_days ?? '-'}일</span>
+        <div style="font-size:10px;color:#9ca3af">${a.alert_msg || ''}</div>
+      </div>
+    </div>`
+  }).join('')
+
+  return `
+  <div style="background:white;border-radius:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);border:1px solid #f1f5f9;overflow:hidden;margin-top:16px">
+    <div style="padding:14px 18px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:18px">${cfg.icon}</span>
+        <div>
+          <span style="font-weight:700;font-size:14px;color:#1f2937">연차 미사용 알림</span>
+          <span style="font-size:12px;color:#6b7280;margin-left:8px">${App.currentYear}년 기준 · ${alerts.length}명</span>
+        </div>
+      </div>
+      <button onclick="this.closest('[style*=border-radius]').remove()"
+        style="font-size:12px;color:#9ca3af;border:none;background:none;cursor:pointer;padding:4px 8px;border-radius:6px"
+        onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">닫기 ✕</button>
+    </div>
+    <div style="padding:12px 16px">
+      ${rows}
+      <div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border-radius:8px;font-size:11px;color:#6b7280">
+        💡 연차 사용 현황은 <strong>스케줄 관리 → 연차 관리</strong> 탭에서 확인하세요.
+      </div>
+    </div>
+  </div>`
+}
+
 // ─── 연차 촉진 알림 배너 ────────────────────────────────────
 function renderLeaveAlertBanner() {
   const alerts = scheduleLeaveAlerts
@@ -12812,10 +12886,13 @@ function renderMonthlyScheduleTab() {
                 // ── 우측 집계: 연차 잔여 ─────────────────────────
                 const empLeave  = leaveMap[emp.id] || {}
                 const annualTot = empLeave.annual?.total ?? null
-                const annualRemain = annualTot !== null ? (annualTot - (empLeave.annual?.used ?? 0)) : null
+                // 이월연차 합산 (수당지급 완료 시 0)
+                const annualCarried = empLeave.annual?.allowance_paid ? 0 : (empLeave.annual?.carried_over_days ?? 0)
+                const annualEffective = annualTot !== null ? annualTot + annualCarried : null
+                const annualRemain = annualEffective !== null ? (annualEffective - (empLeave.annual?.used ?? 0)) : null
                 // 이번 달 연차 사용일 표시 (used는 연간 누적, 이달 사용은 annualUsed)
-                const annualCell = annualTot !== null
-                  ? `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일</div>`
+                const annualCell = annualEffective !== null
+                  ? `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일${annualCarried > 0 ? `<span style="color:#d97706;font-size:7px">(+${annualCarried})</span>` : ''}</div>`
                   : `<div style="font-size:10px;color:#d1d5db">-</div>`
 
                 html += `<tr style="border-bottom:1px solid #e2e8f0"
