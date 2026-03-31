@@ -5619,20 +5619,29 @@ function updateBudgetProgressPanel() {
         const guardianMeals3 = window._ordersMealStats?.totalGuardian || 0
         let catMonthMeals = 0
         if (hasFormula3 && mealsKeys3.length > 0) {
-          // 구버전 'staff' 단일키 + 신버전 st_key_ 개별항목 호환
-          if (mealsKeys3.includes('staff') || mealsKeys3.some(k => k.startsWith('st_key_'))) catMonthMeals += staffMeals3
-          if (mealsKeys3.includes('guardian')) catMonthMeals += guardianMeals3
-          mealsKeys3.filter(k => k.startsWith('cat_')).forEach(k => { catMonthMeals += (orderMealStats[k] || 0) })
-          // 비급여식 식수: nc_key_{diet_key} 형식
-          // diet_categories.diet_key='preset_nc_guardian_1', field_key='diet_preset_nc_guardian_1'
-          mealsKeys3.filter(k => k.startsWith('nc_key_')).forEach(k => {
-            const dietKey = k.replace('nc_key_', '')
-            catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
-          })
-          // 치료식 식수: th_key_{diet_key} 형식
-          mealsKeys3.filter(k => k.startsWith('th_key_')).forEach(k => {
-            const dietKey = k.replace('th_key_', '')
-            catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
+          mealsKeys3.forEach(k => {
+            if (k === 'staff') {
+              // 구버전 'staff' 단일키: mealStats.total_staff 사용
+              catMonthMeals += staffMeals3
+            } else if (k.startsWith('st_key_')) {
+              // 신버전 st_key_{diet_key}: mealCustomTotals['diet_{diet_key}'] 우선, 없으면 totalStaff
+              // 예: st_key_preset_staff_general_2 → diet_preset_staff_general_2: 3906
+              const dietKey = k.replace('st_key_', '')
+              const v = orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0
+              catMonthMeals += v > 0 ? v : staffMeals3
+            } else if (k === 'guardian') {
+              catMonthMeals += guardianMeals3
+            } else if (k.startsWith('cat_')) {
+              catMonthMeals += (orderMealStats[k] || 0)
+            } else if (k.startsWith('nc_key_')) {
+              // 비급여식: nc_key_{diet_key} → diet_{diet_key}
+              const dietKey = k.replace('nc_key_', '')
+              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
+            } else if (k.startsWith('th_key_')) {
+              // 치료식: th_key_{diet_key} → diet_{diet_key}
+              const dietKey = k.replace('th_key_', '')
+              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
+            }
           })
         } else {
           catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0)
