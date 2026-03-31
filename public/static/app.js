@@ -5600,6 +5600,21 @@ function updateBudgetProgressPanel() {
             })
           })
         })
+        // NULL 카테고리(patient_category_id=null) 발주금액도 포함
+        // (단일 환자군이거나 budgetKeys가 있는 경우에만 → 해당 카테고리에 귀속)
+        // _ordersData에서 patient_category_id가 null인 발주의 total 합산
+        if (hasFormula3 && budgetKeys3.length > 0) {
+          // budgetKeys가 있는 카테고리: 전체 ordersData에서 null 카테고리 발주 포함
+          const nullCatAmtLive = (window._ordersData || []).reduce((s, o) => {
+            if (o.patient_category_id == null || o.patient_category_id === undefined) {
+              // 법인카드 업체 제외
+              const vObj = (window._ordersVendors||[]).find(v=>v.id===o.vendor_id)
+              if (!vObj || !vObj.is_card_type) s += (o.total_amount || 0)
+            }
+            return s
+          }, 0)
+          catMonthAmtLive += nullCatAmtLive
+        }
         // 현재 편집 중인 쌍만 DOM 값으로 교체
         const aep3 = window._activeEditPair
         if (aep3 && targetCatIds3.has(String(aep3.catId))) {
@@ -5836,7 +5851,8 @@ function updateInsightPanel() {
     const catRows = patientCats.map(cat => {
       const catColor = getCategoryColorHex(cat.category_key)
       const s = catSettingsMap[cat.id] || {}
-      const targetPrice = s.target_meal_price || 0  // ← 버그 수정: target_diet_price → target_meal_price
+      // 수정: ref_meal_price(관리자 설정 기준가) 우선, 없으면 target_meal_price(예산역산값) 폴백
+      const targetPrice = s.ref_meal_price || s.target_meal_price || 0
       const monthlyBudget = s.monthly_budget || 0
       const workingDays = s.working_days || 0
 
@@ -5868,6 +5884,15 @@ function updateInsightPanel() {
             })
           }
         })
+        // NULL 카테고리 발주금액도 포함 (_ordersData 기반)
+        const nullCatAmt2 = (window._ordersData || []).reduce((s, o) => {
+          if (o.patient_category_id == null || o.patient_category_id === undefined) {
+            const vObj = (window._ordersVendors||[]).find(v=>v.id===o.vendor_id)
+            if (!vObj || !vObj.is_card_type) s += (o.total_amount || 0)
+          }
+          return s
+        }, 0)
+        catTotal += nullCatAmt2
       } else {
         document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
           const field = inp.dataset.field
@@ -5880,8 +5905,14 @@ function updateInsightPanel() {
       // 식수: mealsKeys 기반 (formula 있을 때), 없으면 카테고리 key로 직접 조회
       let catMealCount = 0
       if (hasFormula2 && mealsKeys2.length > 0) {
-        // 구버전 'staff' 단일키 + 신버전 st_key_ 개별항목 호환
-        if (mealsKeys2.includes('staff') || mealsKeys2.some(k => k.startsWith('st_key_'))) catMealCount += staffMeals2
+        // 구버전 'staff' 단일키 처리
+        if (mealsKeys2.includes('staff')) catMealCount += staffMeals2
+        // 신버전 st_key_{diet_key}: mealCustomTotals['diet_{diet_key}'] 우선, 없으면 totalStaff 폴백
+        mealsKeys2.filter(k => k.startsWith('st_key_')).forEach(k => {
+          const dietKey2 = k.replace('st_key_', '')
+          const v2 = orderMealStats2['diet_' + dietKey2] || orderMealStats2[dietKey2] || 0
+          catMealCount += v2 > 0 ? v2 : staffMeals2
+        })
         if (mealsKeys2.includes('guardian')) catMealCount += guardianMeals2
         mealsKeys2.filter(k => k.startsWith('cat_')).forEach(k => { catMealCount += (orderMealStats2[k] || 0) })
         // 비급여식 식수: nc_key_{diet_key} 형식
