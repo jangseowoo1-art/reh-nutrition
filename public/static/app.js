@@ -845,23 +845,6 @@ async function renderDashboard() {
   <!-- 인력 & 인건비 요약 (영양사 전용) -->
   ${App.role === 'hospital' && dashStaffLaborData ? renderDashStaffLabor(dashStaffLaborData) : ''}
 
-  <!-- 예산 초과 알림 -->
-  ${overBudget.length > 0 ? `
-  <div class="mb-4 bg-red-50 border border-red-200 rounded-xl p-4">
-    <div class="flex items-center gap-2 mb-2">
-      <i class="fas fa-exclamation-triangle text-red-500"></i>
-      <span class="font-bold text-red-700">예산 초과 알림 (${overBudget.length}개 업체)</span>
-    </div>
-    <div class="flex flex-wrap gap-2">
-      ${overBudget.map(v => `
-        <div class="bg-red-100 text-red-700 px-3 py-1 rounded-lg text-sm font-medium">
-          ${v.name}: ${fmt(v.total_used)}원 / ${fmt(v.monthly_budget)}원 
-          (+${fmt(v.total_used - v.monthly_budget)}원 초과)
-        </div>
-      `).join('')}
-    </div>
-  </div>` : ''}
-
   <!-- 검수 미완료 알림 배너 -->
   ${inspectionSummary && inspectionSummary.pendingCount > 0 ? `
   <div class="mb-4 bg-orange-50 border border-orange-300 rounded-xl p-3">
@@ -992,6 +975,23 @@ async function renderDashboard() {
     </div>
   </div>`
   })() : ''}
+
+  <!-- 예산 초과 알림 -->
+  ${overBudget.length > 0 ? `
+  <div class="mb-4 bg-red-50 border border-red-200 rounded-xl p-4">
+    <div class="flex items-center gap-2 mb-2">
+      <i class="fas fa-exclamation-triangle text-red-500"></i>
+      <span class="font-bold text-red-700">예산 초과 알림 (${overBudget.length}개 업체)</span>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      ${overBudget.map(v => `
+        <div class="bg-red-100 text-red-700 px-3 py-1 rounded-lg text-sm font-medium">
+          ${v.name}: ${fmt(v.total_used)}원 / ${fmt(v.monthly_budget)}원 
+          (+${fmt(v.total_used - v.monthly_budget)}원 초과)
+        </div>
+      `).join('')}
+    </div>
+  </div>` : ''}
 
   <!-- ────────────────────────────────────────────────────────
        2.2 월말 예상 식단가 / 2.3 예산 소진 예상일 / 2.4 적정성 / 2.5 이상탐지
