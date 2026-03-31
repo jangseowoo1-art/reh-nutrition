@@ -720,7 +720,7 @@ schedule.get('/:year/:month', async (c) => {
 
     // 연차·휴가 정보 (해당 연도)
     c.env.DB.prepare(
-      `SELECT employee_id, leave_type, total_days, used_days
+      `SELECT employee_id, leave_type, total_days, used_days, carried_over_days, allowance_paid, allowance_paid_at
        FROM employee_leaves
        WHERE hospital_id = ? AND year = ?`
     ).bind(hospitalId, year).all<any>(),
@@ -754,11 +754,17 @@ schedule.get('/:year/:month', async (c) => {
     schedMap[key] = s
   }
 
-  // leaveMap: { empId: { annual: {total, used}, ... } }
-  const leaveMap: Record<number, Record<string, { total: number; used: number }>> = {}
+  // leaveMap: { empId: { annual: {total, used, carried_over_days, allowance_paid}, ... } }
+  const leaveMap: Record<number, Record<string, any>> = {}
   for (const l of (leaveRows.results || [])) {
     if (!leaveMap[l.employee_id]) leaveMap[l.employee_id] = {}
-    leaveMap[l.employee_id][l.leave_type] = { total: l.total_days, used: l.used_days }
+    leaveMap[l.employee_id][l.leave_type] = {
+      total: l.total_days,
+      used: l.used_days,
+      carried_over_days: l.carried_over_days ?? 0,
+      allowance_paid: l.allowance_paid ?? 0,
+      allowance_paid_at: l.allowance_paid_at ?? null
+    }
   }
 
   // 외부인력 스케줄 맵: { "workerId_date": schedule }

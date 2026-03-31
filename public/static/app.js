@@ -13777,14 +13777,19 @@ window.printSchedule = () => {
       </td>`
     }
     const lv = leaveMap[emp.id]
-    const total = lv?.annual?.total ?? '-'
+    const total = lv?.annual?.total ?? null
     const used  = lv?.annual?.used  ?? 0
-    const remain = total !== '-' ? total - used : '-'
+    // 이월연차 합산 (수당지급 완료 시 0)
+    const carriedOver = lv?.annual?.allowance_paid ? 0 : (lv?.annual?.carried_over_days ?? 0)
+    const effectiveTotal = total !== null ? total + carriedOver : null
+    const remain = effectiveTotal !== null ? effectiveTotal - used : '-'
+    const remainDisplay = remain === '-' ? '-' : remain
+    const remainColor = remain !== '-' && remain <= 3 ? 'color:#dc2626' : remain !== '-' && remain <= 7 ? 'color:#d97706' : 'color:#166534'
     tableRows += `<tr>
       <td style="padding:4px 8px;font-weight:600;font-size:11px;border:1px solid #e5e7eb;position:sticky;left:0;background:white;min-width:90px">${emp.name}<br><span style="font-size:9px;color:#94a3b8">${emp.position_name||''}</span></td>
       ${cells}
       <td style="padding:4px;text-align:center;font-weight:700;font-size:11px;border:1px solid #e5e7eb;background:#f0fdf4">${workCount}</td>
-      <td style="padding:4px;text-align:center;font-size:10px;border:1px solid #e5e7eb;background:#fef9c3">${annualCount}일<br><span style="font-size:8px">잔${remain}</span></td>
+      <td style="padding:4px;text-align:center;font-size:10px;border:1px solid #e5e7eb;background:#fef9c3">${annualCount}일<br><span style="font-size:8px;${remainColor}">잔${remainDisplay}${carriedOver > 0 ? `<span style="color:#d97706;font-size:7px">(+${carriedOver})</span>` : ''}</span></td>
     </tr>`
   }
 
@@ -13900,7 +13905,9 @@ window.exportScheduleExcel = async () => {
     const lv = leaveMap[emp.id]
     const annualTot  = lv?.annual?.total ?? null
     const annualUsed = lv?.annual?.used  ?? 0
-    const annualRemain = annualTot !== null ? annualTot - annualUsed : '-'
+    const annualCarried = lv?.annual?.allowance_paid ? 0 : (lv?.annual?.carried_over_days ?? 0)
+    const annualEffective = annualTot !== null ? annualTot + annualCarried : null
+    const annualRemain = annualEffective !== null ? annualEffective - annualUsed : '-'
     row.push(workCount, annualCount, annualRemain)
     schedData.push(row)
   }
@@ -13935,8 +13942,10 @@ window.exportScheduleExcel = async () => {
     const lv    = leaveMap[emp.id] || {}
     const total  = lv?.annual?.total ?? null
     const used   = lv?.annual?.used  ?? 0
-    const remain = total !== null ? total - used : '-'
-    const pct    = total ? Math.round(used / total * 100) : 0
+    const carried = lv?.annual?.allowance_paid ? 0 : (lv?.annual?.carried_over_days ?? 0)
+    const effective = total !== null ? total + carried : null
+    const remain = effective !== null ? effective - used : '-'
+    const pct    = effective ? Math.round(used / effective * 100) : 0
     leaveData.push([
       emp.name,
       emp.team === 'nutrition' ? '영양팀' : '조리팀',
@@ -14051,6 +14060,16 @@ window.saveLeaveEdit = async () => {
   if (res?.success) {
     showToast(allowancePaid ? '연차수당 지급 처리 완료' : '연차가 저장되었습니다', 'success')
     document.getElementById('leaveEditModal').classList.add('hidden')
+
+    // 관리자 직원관리 페이지에서 열었을 경우 → 직원관리 리로드
+    if (window._adminLeaveEditMode) {
+      window._adminLeaveEditMode = false
+      adminStaffAllData = await api('GET', '/api/schedule/employees').catch(() => [])
+      renderAdminStaffContent(document.getElementById('pageContent'))
+      return
+    }
+
+    // 스케줄 관리 탭에서 열었을 경우 → 스케줄 탭 리로드
     scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
     scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
     const content = document.getElementById('pageContent')
@@ -16839,8 +16858,12 @@ function renderAdminStaffContent(content) {
                 <td class="px-4 py-2.5">
                   <div class="flex items-center justify-center gap-1">
                     <button onclick="openAdminEmpEditModal(${emp.id})"
-                      class="p-1.5 rounded hover:bg-blue-100 hover:text-blue-600 text-gray-400 transition-colors" title="수정">
+                      class="p-1.5 rounded hover:bg-blue-100 hover:text-blue-600 text-gray-400 transition-colors" title="인사카드 수정">
                       <i class="fas fa-pen text-xs"></i>
+                    </button>
+                    <button onclick="openAdminLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}',${emp.hospital_id})"
+                      class="p-1.5 rounded hover:bg-amber-100 hover:text-amber-600 text-gray-400 transition-colors" title="연차 수정">
+                      <i class="fas fa-umbrella-beach text-xs"></i>
                     </button>
                     <button onclick="adminResignEmployee(${emp.id},'${emp.name}')"
                       class="p-1.5 rounded hover:bg-red-100 hover:text-red-600 text-gray-400 transition-colors" title="퇴사처리">
@@ -16855,6 +16878,9 @@ function renderAdminStaffContent(content) {
       </div>`}
     </div>
   </div>
+
+  <!-- 연차 수정 모달 (관리자 직원관리에서 재사용) -->
+  ${renderLeaveEditModal()}
 
   <!-- 관리자 직원 추가/수정 모달 -->
   <div id="adminEmpModal" class="hidden modal-overlay" style="z-index:1000">
@@ -17062,6 +17088,31 @@ window.saveAdminEmployee = async () => {
   } else {
     showToast(res?.error || '저장 실패', 'error')
   }
+}
+
+// 관리자 직원관리 페이지에서 연차 수정 모달 열기
+window.openAdminLeaveEditModal = async (empId, empName, hospitalId) => {
+  // 해당 직원의 현재 연차 데이터 조회
+  const leaves = await api('GET', `/api/schedule/employees/${empId}/leaves?year=${App.currentYear}`).catch(() => [])
+  const lv = Array.isArray(leaves) ? leaves.find(l => l.leave_type === 'annual') : null
+
+  const total      = lv?.total_days ?? null
+  const used       = lv?.used_days ?? 0
+  const carriedOver = lv?.allowance_paid ? 0 : (lv?.carried_over_days ?? 0)
+  const allowancePaid = lv?.allowance_paid ? true : false
+  const allowancePaidAt = lv?.allowance_paid_at || ''
+
+  // 기존 leaveEditModal 재활용 (스케줄 관리 탭에 있는 모달)
+  // 단, 관리자 모드에서 저장 후 직원관리 페이지 리로드
+  const modal = document.getElementById('leaveEditModal')
+  if (!modal) { showToast('연차 수정 모달을 찾을 수 없습니다. 스케줄 관리 탭을 먼저 방문해 주세요.', 'error'); return }
+
+  // 저장 후 콜백을 관리자용으로 교체
+  window._adminLeaveEditMode = true
+  window._adminLeaveEditEmpId = empId
+  window._adminLeaveEditHospitalId = hospitalId
+
+  openLeaveEditModal(empId, empName, total ?? 0, used, carriedOver, allowancePaid ? 1 : 0, allowancePaidAt)
 }
 
 window.adminResignEmployee = (empId, name) => {
