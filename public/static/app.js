@@ -2805,6 +2805,10 @@ async function renderOrders() {
       const _catSettingsMap = {}
       ;(catOrderData?.settings || []).forEach(s => { _catSettingsMap[s.patient_category_id] = s })
       window._catSettingsMap = _catSettingsMap
+      // NULL 카테고리 월 발주 합계를 전역으로 저장 (updateBudgetProgressPanel에서 참조)
+      window._nullCatMonthlyAmt = (catOrderData?.monthly || [])
+        .filter(r => r.patient_category_id == null || r.patient_category_id === undefined)
+        .reduce((s, r) => s + (r.total || 0), 0)
 
       _buildOrdersTbody({
         days, orderData: orderList||[], vendors: vendors||[],
@@ -5601,19 +5605,9 @@ function updateBudgetProgressPanel() {
           })
         })
         // NULL 카테고리(patient_category_id=null) 발주금액도 포함
-        // (단일 환자군이거나 budgetKeys가 있는 경우에만 → 해당 카테고리에 귀속)
-        // _ordersData에서 patient_category_id가 null인 발주의 total 합산
+        // (budgetKeys가 있는 카테고리에만 귀속 → category-monthly monthly에서 NULL 합산값 사용)
         if (hasFormula3 && budgetKeys3.length > 0) {
-          // budgetKeys가 있는 카테고리: 전체 ordersData에서 null 카테고리 발주 포함
-          const nullCatAmtLive = (window._ordersData || []).reduce((s, o) => {
-            if (o.patient_category_id == null || o.patient_category_id === undefined) {
-              // 법인카드 업체 제외
-              const vObj = (window._ordersVendors||[]).find(v=>v.id===o.vendor_id)
-              if (!vObj || !vObj.is_card_type) s += (o.total_amount || 0)
-            }
-            return s
-          }, 0)
-          catMonthAmtLive += nullCatAmtLive
+          catMonthAmtLive += (window._nullCatMonthlyAmt || 0)
         }
         // 현재 편집 중인 쌍만 DOM 값으로 교체
         const aep3 = window._activeEditPair
@@ -5884,15 +5878,8 @@ function updateInsightPanel() {
             })
           }
         })
-        // NULL 카테고리 발주금액도 포함 (_ordersData 기반)
-        const nullCatAmt2 = (window._ordersData || []).reduce((s, o) => {
-          if (o.patient_category_id == null || o.patient_category_id === undefined) {
-            const vObj = (window._ordersVendors||[]).find(v=>v.id===o.vendor_id)
-            if (!vObj || !vObj.is_card_type) s += (o.total_amount || 0)
-          }
-          return s
-        }, 0)
-        catTotal += nullCatAmt2
+        // NULL 카테고리 발주금액도 포함 (category-monthly monthly에서 NULL 합산값 사용)
+        catTotal += (window._nullCatMonthlyAmt || 0)
       } else {
         document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
           const field = inp.dataset.field
