@@ -695,8 +695,10 @@ async function renderDashboard() {
 
   // 인력/인건비 요약 (병원 계정만, admin 제외)
   let dashStaffLaborData = null
+  let dashEmployees = []
   if (App.role === 'hospital') {
     try { dashStaffLaborData = await api('GET', `/api/dashboard/staff-labor/${App.currentYear}/${App.currentMonth}${hqParam}`) } catch(e) {}
+    try { dashEmployees = await api('GET', '/api/schedule/employees') || [] } catch(e) {}
   }
 
   if (!data || data.error) {
@@ -793,6 +795,20 @@ async function renderDashboard() {
   const daysInMonth = getDaysInMonth(App.currentYear, App.currentMonth)
   const currentDay = isCurrentMonth ? today.getDate() : daysInMonth
   const remainingDays = daysInMonth - currentDay
+
+  // ── 보건증 만료 임박 직원 계산 ──────────────────────────────────
+  const todayStr = today.toISOString().slice(0, 10)
+  const d10 = new Date(today); d10.setDate(d10.getDate() + 10)
+  const d10Str = d10.toISOString().slice(0, 10)
+  const d3 = new Date(today);  d3.setDate(d3.getDate() + 3)
+  const d3Str = d3.toISOString().slice(0, 10)
+
+  // 퇴직자 제외 + 만료일 있는 직원 중 10일 이내 만료 또는 이미 만료
+  const certAlerts = dashEmployees.filter(e =>
+    e.health_cert_expire &&
+    !e.resign_date &&
+    e.health_cert_expire <= d10Str
+  ).sort((a, b) => a.health_cert_expire.localeCompare(b.health_cert_expire))
 
   // 잔반 데이터 비동기 로드
   let foodWasteData = []
@@ -898,6 +914,75 @@ async function renderDashboard() {
       </div>
     </div>
   </div>` : ''}
+
+  <!-- 보건증 갱신 임박 알림 배너 (10일 이내 / 만료) -->
+  ${certAlerts.length > 0 ? (() => {
+    const expiredList  = certAlerts.filter(e => e.health_cert_expire <  todayStr)
+    const urgentList   = certAlerts.filter(e => e.health_cert_expire >= todayStr && e.health_cert_expire <= d3Str)
+    const warningList  = certAlerts.filter(e => e.health_cert_expire >  d3Str)
+    // 심각도에 따른 색상 결정
+    const hasExpired   = expiredList.length > 0
+    const hasUrgent    = urgentList.length > 0
+    const bgColor      = hasExpired ? 'bg-red-50 border-red-300' : hasUrgent ? 'bg-orange-50 border-orange-300' : 'bg-amber-50 border-amber-300'
+    const iconColor    = hasExpired ? 'text-red-500' : hasUrgent ? 'text-orange-500' : 'text-amber-500'
+    const iconBg       = hasExpired ? 'bg-red-100' : hasUrgent ? 'bg-orange-100' : 'bg-amber-100'
+    const titleColor   = hasExpired ? 'text-red-700' : hasUrgent ? 'text-orange-700' : 'text-amber-700'
+    const title        = hasExpired ? `⚠️ 보건증 만료 직원 포함` : `🔔 보건증 갱신 임박`
+    return `
+  <div class="mb-4 ${bgColor} border rounded-xl p-4">
+    <div class="flex items-center justify-between gap-2 flex-wrap mb-3">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 ${iconBg} rounded-lg flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-id-card ${iconColor} text-sm"></i>
+        </div>
+        <div>
+          <div class="font-bold ${titleColor} text-sm">
+            ${title} — 총 ${certAlerts.length}명
+          </div>
+          <div class="text-xs ${titleColor} opacity-75 mt-0.5">
+            ${hasExpired ? `만료 ${expiredList.length}명 · ` : ''}${hasUrgent ? `3일 이내 ${urgentList.length}명 · ` : ''}${warningList.length}명 10일 이내 · 보건증 갱신이 필요합니다
+          </div>
+        </div>
+      </div>
+      <button onclick="navigateTo('schedule')" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-white flex-shrink-0 ${hasExpired ? 'bg-red-500 hover:bg-red-600' : hasUrgent ? 'bg-orange-500 hover:bg-orange-600' : 'bg-amber-500 hover:bg-amber-600'}">
+        <i class="fas fa-arrow-right mr-1"></i>직원 관리로 이동
+      </button>
+    </div>
+    <!-- 직원 목록 -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+      ${certAlerts.map(e => {
+        const isExpired  = e.health_cert_expire < todayStr
+        const isUrgent   = !isExpired && e.health_cert_expire <= d3Str
+        // 만료까지 남은 일수 계산
+        const expDate    = new Date(e.health_cert_expire)
+        const diffMs     = expDate - today
+        const diffDays   = Math.ceil(diffMs / 86400000)
+        const dLabel     = isExpired
+          ? `<span class="font-bold text-red-600">만료 ${Math.abs(diffDays)}일 경과</span>`
+          : diffDays === 0
+          ? `<span class="font-bold text-red-600">오늘 만료</span>`
+          : `<span class="font-bold ${isUrgent ? 'text-orange-600' : 'text-amber-600'}">D-${diffDays}</span>`
+        const rowBg      = isExpired ? 'bg-red-50 border-red-200' : isUrgent ? 'bg-orange-50 border-orange-200' : 'bg-white border-amber-200'
+        const dotColor   = isExpired ? 'bg-red-500' : isUrgent ? 'bg-orange-500' : 'bg-amber-400'
+        const posLabel   = e.position_name || e.department || ''
+        return `
+        <div class="flex items-center gap-3 ${rowBg} border rounded-lg px-3 py-2">
+          <div class="w-2 h-2 rounded-full ${dotColor} flex-shrink-0"></div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-sm font-semibold text-gray-800">${e.name}</span>
+              ${posLabel ? `<span class="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">${posLabel}</span>` : ''}
+            </div>
+            <div class="text-xs text-gray-500 mt-0.5">
+              만료일: <span class="font-medium text-gray-700">${e.health_cert_expire}</span>
+              &nbsp;·&nbsp;${dLabel}
+            </div>
+          </div>
+        </div>`
+      }).join('')}
+    </div>
+  </div>`
+  })() : ''}
 
   <!-- ────────────────────────────────────────────────────────
        2.2 월말 예상 식단가 / 2.3 예산 소진 예상일 / 2.4 적정성 / 2.5 이상탐지
