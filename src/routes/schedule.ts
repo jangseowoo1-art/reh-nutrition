@@ -659,6 +659,24 @@ schedule.post('/employees/:id/leaves', async (c) => {
 // 스케줄 (기존 + 확장)
 // ════════════════════════════════════════════════════════════════
 
+// 연차 전체 목록 조회 (/:year/:month 보다 반드시 먼저 등록)
+schedule.get('/leaves/all', async (c) => {
+  const user = c.get('user')
+  const year = c.req.query('year') || new Date().getFullYear()
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+
+  const rows = await c.env.DB.prepare(
+    `SELECT l.*, e.name as emp_name, e.team, p.name as position_name, e.hire_date
+     FROM employee_leaves l
+     JOIN employees e ON l.employee_id = e.id
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE l.hospital_id = ? AND l.year = ?
+     ORDER BY e.team, p.sort_order, e.hire_date, e.name`
+  ).bind(hospitalId, year).all<any>()
+
+  return c.json(rows.results || [])
+})
+
 // 월별 스케줄 조회 (직위 포함, 정렬: 팀→직위순→입사일→이름)
 schedule.get('/:year/:month', async (c) => {
   const user = c.get('user')
@@ -1232,23 +1250,6 @@ schedule.get('/analysis/:year/:month', async (c) => {
 })
 
 // 직원별 연차 목록 (연도별)
-schedule.get('/leaves/all', async (c) => {
-  const user = c.get('user')
-  const year = c.req.query('year') || new Date().getFullYear()
-  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
-
-  const rows = await c.env.DB.prepare(
-    `SELECT l.*, e.name as emp_name, e.team, p.name as position_name, e.hire_date
-     FROM employee_leaves l
-     JOIN employees e ON l.employee_id = e.id
-     LEFT JOIN employee_positions p ON e.position_id = p.id
-     WHERE l.hospital_id = ? AND l.year = ?
-     ORDER BY e.team, p.sort_order, e.hire_date, e.name`
-  ).bind(hospitalId, year).all<any>()
-
-  return c.json(rows.results || [])
-})
-
 // 식수 카테고리별 집계 (Admin & Operation용)
 schedule.get('/meal-stats/:year/:month', async (c) => {
   const user = c.get('user')
