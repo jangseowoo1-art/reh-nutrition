@@ -11837,7 +11837,8 @@ function renderScheduleTab(content) {
   <div class="space-y-4">
     <!-- 탭 헤더 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+      <!-- 1줄: 타이틀 + 월이동 + 탭 전환 버튼 -->
+      <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
         <div class="flex items-center gap-3">
           <div>
             <h2 class="font-bold text-gray-800 text-lg">스케줄 관리</h2>
@@ -11862,43 +11863,50 @@ function renderScheduleTab(content) {
             </button>
           </div>
         </div>
-        <div class="flex gap-1 flex-wrap">
+        <!-- 탭 전환 버튼 그룹 -->
+        <div class="flex gap-1 flex-wrap items-center">
           ${tabs.map(t => {
-            // 단가설정 탭은 병원/관리자 계정만 표시, 클릭 시 모달 열기
             if (t.id === 'laborCostSettings') {
               if (!isAdm && App.role !== 'hospital') return ''
               return `
             <button onclick="openLaborCostSettings()"
-              class="px-3 py-2 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
+              class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
               <i class="fas ${t.icon} mr-1"></i>${t.label}
             </button>`
             }
             return `
             <button onclick="switchScheduleTab('${t.id}')"
-              class="px-3 py-2 rounded-lg text-xs font-medium transition-all ${tab === t.id
+              class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === t.id
                 ? 'bg-blue-600 text-white shadow'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">
               <i class="fas ${t.icon} mr-1"></i>${t.label}
             </button>`
           }).join('')}
-          ${tab === 'schedule' ? `
-          <button onclick="openBatchInputModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 ml-2">
-            <i class="fas fa-th mr-1"></i>일괄입력
-          </button>
-          <button onclick="openCopyWeekModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-teal-600 text-white hover:bg-teal-700 ml-1">
-            <i class="fas fa-copy mr-1"></i>주 복사
-          </button>
-          <button onclick="printSchedule()" class="px-3 py-2 rounded-lg text-xs font-medium bg-gray-700 text-white hover:bg-gray-800 ml-1">
-            <i class="fas fa-print mr-1"></i>인쇄/PDF
-          </button>
-          <button onclick="exportScheduleExcel()" class="px-3 py-2 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800 ml-1">
-            <i class="fas fa-file-excel mr-1"></i>엑셀
-          </button>` : ''}
-          ${isAdm ? `<button onclick="openWorkSettingsModal()" class="px-3 py-2 rounded-lg text-xs font-medium bg-orange-700 text-white hover:bg-orange-800 ml-1" title="법정근무시간 설정">
-            <i class="fas fa-shield-alt mr-1"></i>근무시간 설정
+          ${isAdm ? `
+          <span class="w-px h-5 bg-gray-200 mx-1"></span>
+          <button onclick="openWorkSettingsModal()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-500 text-white hover:bg-gray-600" title="법정근무시간 설정">
+            <i class="fas fa-shield-alt mr-1"></i>근무시간
           </button>` : ''}
         </div>
       </div>
+      <!-- 2줄: 월간 스케줄 탭 전용 기능 버튼 (일괄입력 / 주복사 / 인쇄 / 엑셀) -->
+      ${tab === 'schedule' ? `
+      <div class="px-5 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+        <span class="text-xs text-gray-400 font-medium mr-1">스케줄 도구</span>
+        <button onclick="openBatchInputModal()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700">
+          <i class="fas fa-th mr-1"></i>일괄입력
+        </button>
+        <button onclick="openCopyWeekModal()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-teal-600 text-white hover:bg-teal-700">
+          <i class="fas fa-copy mr-1"></i>주 복사
+        </button>
+        <span class="w-px h-4 bg-gray-300"></span>
+        <button onclick="printSchedule()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-600 text-white hover:bg-gray-700">
+          <i class="fas fa-print mr-1"></i>인쇄/PDF
+        </button>
+        <button onclick="exportScheduleExcel()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800">
+          <i class="fas fa-file-excel mr-1"></i>엑셀
+        </button>
+      </div>` : ''}
     </div>
 
     <!-- 탭 콘텐츠 -->
