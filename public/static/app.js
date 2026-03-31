@@ -11863,30 +11863,60 @@ function renderScheduleTab(content) {
             </button>
           </div>
         </div>
-        <!-- 탭 전환 버튼 그룹 -->
-        <div class="flex gap-1 flex-wrap items-center">
-          ${tabs.map(t => {
-            if (t.id === 'laborCostSettings') {
-              if (!isAdm && App.role !== 'hospital') return ''
-              return `
+        <!-- 탭 전환 버튼 그룹 (기능별 묶음) -->
+        <div class="flex items-center gap-2 flex-wrap">
+
+          <!-- 그룹 1: 인사관리 -->
+          <div class="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
+            <span class="text-[10px] text-gray-400 font-semibold mr-1 whitespace-nowrap">👥 인사</span>
+            <button onclick="switchScheduleTab('employees')"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'employees' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
+              <i class="fas fa-id-card mr-1"></i>인사카드
+            </button>
+            <button onclick="switchScheduleTab('leaves')"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'leaves' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
+              <i class="fas fa-umbrella-beach mr-1"></i>연차관리
+            </button>
+          </div>
+
+          <!-- 그룹 2: 현황분석 -->
+          <div class="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
+            <span class="text-[10px] text-gray-400 font-semibold mr-1 whitespace-nowrap">📊 분석</span>
+            <button onclick="switchScheduleTab('analysis')"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'analysis' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
+              <i class="fas fa-chart-bar mr-1"></i>운영분석
+            </button>
+            <button onclick="switchScheduleTab('laborCost')"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'laborCost' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
+              <i class="fas fa-won-sign mr-1"></i>인건비
+            </button>
+          </div>
+
+          <!-- 그룹 3: 설정 -->
+          <div class="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
+            <span class="text-[10px] text-gray-400 font-semibold mr-1 whitespace-nowrap">⚙️ 설정</span>
+            <button onclick="switchScheduleTab('shifts')"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'shifts' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
+              <i class="fas fa-clock mr-1"></i>근무조
+            </button>
+            ${(isAdm || App.role === 'hospital') ? `
             <button onclick="openLaborCostSettings()"
-              class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
-              <i class="fas ${t.icon} mr-1"></i>${t.label}
-            </button>`
-            }
-            return `
-            <button onclick="switchScheduleTab('${t.id}')"
-              class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${tab === t.id
-                ? 'bg-blue-600 text-white shadow'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">
-              <i class="fas ${t.icon} mr-1"></i>${t.label}
-            </button>`
-          }).join('')}
-          ${isAdm ? `
-          <span class="w-px h-5 bg-gray-200 mx-1"></span>
-          <button onclick="openWorkSettingsModal()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-500 text-white hover:bg-gray-600" title="법정근무시간 설정">
-            <i class="fas fa-shield-alt mr-1"></i>근무시간
-          </button>` : ''}
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
+              <i class="fas fa-cog mr-1"></i>단가
+            </button>` : ''}
+            ${isAdm ? `
+            <button onclick="openWorkSettingsModal()"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-gray-500 text-white hover:bg-gray-600" title="법정근무시간 설정">
+              <i class="fas fa-shield-alt mr-1"></i>근무시간
+            </button>` : ''}
+          </div>
+
+          <!-- 그룹 4: 월간 스케줄 (강조) -->
+          <button onclick="switchScheduleTab('schedule')"
+            class="px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm ${tab === 'schedule' ? 'bg-blue-600 text-white shadow-blue-200' : 'bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100'}">
+            <i class="fas fa-calendar-alt mr-1"></i>월간 스케줄
+          </button>
+
         </div>
       </div>
       <!-- 2줄: 월간 스케줄 탭 전용 기능 버튼 (일괄입력 / 주복사 / 인쇄 / 엑셀) -->
