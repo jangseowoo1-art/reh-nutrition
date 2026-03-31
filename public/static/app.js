@@ -696,9 +696,11 @@ async function renderDashboard() {
   // 인력/인건비 요약 (병원 계정만, admin 제외)
   let dashStaffLaborData = null
   let dashEmployees = []
+  let dashLeaveAlerts = []
   if (App.role === 'hospital') {
     try { dashStaffLaborData = await api('GET', `/api/dashboard/staff-labor/${App.currentYear}/${App.currentMonth}${hqParam}`) } catch(e) {}
     try { dashEmployees = await api('GET', '/api/schedule/employees') || [] } catch(e) {}
+    try { dashLeaveAlerts = await api('GET', '/api/schedule/alerts/leave') || [] } catch(e) {}
   }
 
   if (!data || data.error) {
@@ -836,6 +838,13 @@ async function renderDashboard() {
 
   content.innerHTML = `
   ${adminHospitalBar}
+
+  <!-- 연차 미사용 알림 (영양사 전용) -->
+  ${App.role === 'hospital' && dashLeaveAlerts.length > 0 ? renderDashLeaveAlertBanner(dashLeaveAlerts) : ''}
+
+  <!-- 인력 & 인건비 요약 (영양사 전용) -->
+  ${App.role === 'hospital' && dashStaffLaborData ? renderDashStaffLabor(dashStaffLaborData) : ''}
+
   <!-- 예산 초과 알림 -->
   ${overBudget.length > 0 ? `
   <div class="mb-4 bg-red-50 border border-red-200 rounded-xl p-4">
@@ -2050,22 +2059,7 @@ async function renderDashboard() {
       </div>` : ''}
     `
 
-  // 인력 & 인건비 요약 섹션 (병원 계정 전용)
-  if (App.role === 'hospital' && dashStaffLaborData) {
-    const slHtml = renderDashStaffLabor(dashStaffLaborData)
-    content.insertAdjacentHTML('beforeend', slHtml)
-  }
-
-  // ── 연차 미사용 알림 섹션 (병원 계정 전용) ────────────────────
-  if (App.role === 'hospital') {
-    try {
-      const leaveAlerts = await api('GET', '/api/schedule/alerts/leave') || []
-      if (leaveAlerts.length > 0) {
-        const alertHtml = renderDashLeaveAlertBanner(leaveAlerts)
-        content.insertAdjacentHTML('beforeend', alertHtml)
-      }
-    } catch(e) { /* 연차 알림 로드 실패 시 무시 */ }
-  }
+  // 인력 & 인건비, 연차 알림은 content.innerHTML 상단에 직접 포함됨 (위 참조)
   }
 
   // switchVendorPieView는 더 이상 차트/상세를 전환하지 않음 (동시 표시로 변경됨)
