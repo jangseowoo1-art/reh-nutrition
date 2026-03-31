@@ -839,73 +839,11 @@ async function renderDashboard() {
   content.innerHTML = `
   ${adminHospitalBar}
 
-  <!-- 연차 미사용 알림 (영양사 전용) -->
-  ${App.role === 'hospital' && dashLeaveAlerts.length > 0 ? renderDashLeaveAlertBanner(dashLeaveAlerts) : ''}
-
   <!-- 인력 & 인건비 요약 (영양사 전용) -->
   ${App.role === 'hospital' && dashStaffLaborData ? renderDashStaffLabor(dashStaffLaborData) : ''}
 
-  <!-- 검수 미완료 알림 배너 -->
-  ${inspectionSummary && inspectionSummary.pendingCount > 0 ? `
-  <div class="mb-4 bg-orange-50 border border-orange-300 rounded-xl p-3">
-    <div class="flex items-center justify-between gap-2 flex-wrap">
-      <div class="flex items-center gap-2">
-        <div class="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center flex-shrink-0">
-          <i class="fas fa-clipboard-check text-orange-500 text-sm"></i>
-        </div>
-        <div>
-          <div class="font-bold text-orange-700 text-sm">
-            <i class="fas fa-exclamation-circle mr-1"></i>검수 미완료 ${inspectionSummary.pendingCount}건
-          </div>
-          <div class="text-xs text-orange-600">
-            미검수 금액: ${fmtMan(inspectionSummary.pendingAmount)}원 · 전체 ${inspectionSummary.total}건 중 ${inspectionSummary.completedCount}건 완료
-          </div>
-        </div>
-      </div>
-      <button onclick="openInspectionModal()" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-white flex-shrink-0" style="background:#ea580c">
-        <i class="fas fa-clipboard-check mr-1"></i>검수 현황 보기
-      </button>
-    </div>
-    <!-- 검수 현황 미니 테이블 (날짜별) -->
-    <div id="inspStatusTable" class="mt-2">
-      <div class="overflow-x-auto">
-        <table style="width:100%;border-collapse:collapse;font-size:11px;background:white;border-radius:8px;overflow:hidden">
-          <thead>
-            <tr style="background:#fed7aa;color:#7c2d12">
-              <th style="padding:5px 8px;text-align:left;font-weight:700">날짜</th>
-              <th style="padding:5px 8px;text-align:left;font-weight:700">업체</th>
-              <th style="padding:5px 8px;text-align:right;font-weight:700">발주금액</th>
-              <th style="padding:5px 8px;text-align:center;font-weight:700">상태</th>
-              <th style="padding:5px 8px;text-align:center;font-weight:700">처리</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${(inspectionSummary.pendingList || []).slice(0, 5).map((r, idx) => {
-              const isUnregistered = !r.vendor_name || r.category == null
-              const vendorDisplay = isUnregistered
-                ? `<span style="color:#dc2626;font-weight:700">⚠️ ${r.vendor_name||'미등록 업체'}</span><br><span style="font-size:9px;color:#ef4444">업체 미등록 발주</span>`
-                : r.vendor_name
-              return `
-            <tr style="border-bottom:1px solid #fed7aa;background:${idx%2===0?'#fff7ed':'white'}">
-              <td style="padding:5px 8px;color:#6b7280">${r.order_date||''}</td>
-              <td style="padding:5px 8px;font-weight:600;color:#374151">${vendorDisplay}</td>
-              <td style="padding:5px 8px;text-align:right;color:#1d4ed8;font-weight:600">${fmt(r.total_amount||0)}원</td>
-              <td style="padding:5px 8px;text-align:center">
-                <span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:600;font-size:10px">⏳ 미검수</span>
-              </td>
-              <td style="padding:5px 8px;text-align:center">
-                <button onclick="quickInspect(${r.id})" style="background:#059669;color:white;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">
-                  <i class="fas fa-check"></i> 완료
-                </button>
-              </td>
-            </tr>`}).join('')}
-            ${(inspectionSummary.pendingList||[]).length > 5 ? `
-            <tr><td colspan="5" style="padding:5px 8px;text-align:center;color:#9ca3af;font-style:italic">+${(inspectionSummary.pendingList||[]).length - 5}건 더... (전체보기 클릭)</td></tr>` : ''}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>` : ''}
+  <!-- 연차 미사용 알림 (영양사 전용) -->
+  ${App.role === 'hospital' && dashLeaveAlerts.length > 0 ? renderDashLeaveAlertBanner(dashLeaveAlerts) : ''}
 
   <!-- 보건증 갱신 임박 알림 배너 (10일 이내 / 만료) -->
   ${certAlerts.length > 0 ? (() => {
@@ -975,6 +913,68 @@ async function renderDashboard() {
     </div>
   </div>`
   })() : ''}
+
+  <!-- 검수 미완료 알림 배너 -->
+  ${inspectionSummary && inspectionSummary.pendingCount > 0 ? `
+  <div class="mb-4 bg-orange-50 border border-orange-300 rounded-xl p-3">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-clipboard-check text-orange-500 text-sm"></i>
+        </div>
+        <div>
+          <div class="font-bold text-orange-700 text-sm">
+            <i class="fas fa-exclamation-circle mr-1"></i>검수 미완료 ${inspectionSummary.pendingCount}건
+          </div>
+          <div class="text-xs text-orange-600">
+            미검수 금액: ${fmtMan(inspectionSummary.pendingAmount)}원 · 전체 ${inspectionSummary.total}건 중 ${inspectionSummary.completedCount}건 완료
+          </div>
+        </div>
+      </div>
+      <button onclick="openInspectionModal()" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-white flex-shrink-0" style="background:#ea580c">
+        <i class="fas fa-clipboard-check mr-1"></i>검수 현황 보기
+      </button>
+    </div>
+    <!-- 검수 현황 미니 테이블 (날짜별) -->
+    <div id="inspStatusTable" class="mt-2">
+      <div class="overflow-x-auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;background:white;border-radius:8px;overflow:hidden">
+          <thead>
+            <tr style="background:#fed7aa;color:#7c2d12">
+              <th style="padding:5px 8px;text-align:left;font-weight:700">날짜</th>
+              <th style="padding:5px 8px;text-align:left;font-weight:700">업체</th>
+              <th style="padding:5px 8px;text-align:right;font-weight:700">발주금액</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:700">상태</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:700">처리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(inspectionSummary.pendingList || []).slice(0, 5).map((r, idx) => {
+              const isUnregistered = !r.vendor_name || r.category == null
+              const vendorDisplay = isUnregistered
+                ? `<span style="color:#dc2626;font-weight:700">⚠️ ${r.vendor_name||'미등록 업체'}</span><br><span style="font-size:9px;color:#ef4444">업체 미등록 발주</span>`
+                : r.vendor_name
+              return `
+            <tr style="border-bottom:1px solid #fed7aa;background:${idx%2===0?'#fff7ed':'white'}">
+              <td style="padding:5px 8px;color:#6b7280">${r.order_date||''}</td>
+              <td style="padding:5px 8px;font-weight:600;color:#374151">${vendorDisplay}</td>
+              <td style="padding:5px 8px;text-align:right;color:#1d4ed8;font-weight:600">${fmt(r.total_amount||0)}원</td>
+              <td style="padding:5px 8px;text-align:center">
+                <span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:600;font-size:10px">⏳ 미검수</span>
+              </td>
+              <td style="padding:5px 8px;text-align:center">
+                <button onclick="quickInspect(${r.id})" style="background:#059669;color:white;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">
+                  <i class="fas fa-check"></i> 완료
+                </button>
+              </td>
+            </tr>`}).join('')}
+            ${(inspectionSummary.pendingList||[]).length > 5 ? `
+            <tr><td colspan="5" style="padding:5px 8px;text-align:center;color:#9ca3af;font-style:italic">+${(inspectionSummary.pendingList||[]).length - 5}건 더... (전체보기 클릭)</td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>` : ''}
 
   <!-- 예산 초과 알림 -->
   ${overBudget.length > 0 ? `
