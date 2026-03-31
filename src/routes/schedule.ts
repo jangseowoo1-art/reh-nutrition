@@ -1325,14 +1325,25 @@ schedule.put('/employees/:id/leaves', async (c) => {
   const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
   if (!emp) return c.json({ error: '직원 없음' }, 404)
 
-  const { year, totalDays, usedDays, note } = await c.req.json()
+  const { year, totalDays, usedDays, note, carriedOverDays, allowancePaid, allowancePaidAt } = await c.req.json()
+
+  // 수당 지급 처리: allowancePaid=true이면 이월연차를 0으로 리셋
+  const finalCarriedOver = allowancePaid ? 0 : (carriedOverDays ?? 0)
+  const paidAt = allowancePaid
+    ? (allowancePaidAt || new Date().toISOString().slice(0, 10))
+    : null
+
   await c.env.DB.prepare(
-    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
-     VALUES (?, ?, ?, 'annual', ?, ?, ?)
+    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note, carried_over_days, allowance_paid, allowance_paid_at)
+     VALUES (?, ?, ?, 'annual', ?, ?, ?, ?, ?, ?)
      ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
        total_days = excluded.total_days, used_days = excluded.used_days,
-       note = excluded.note, updated_at = datetime('now')`
-  ).bind(emp.hospital_id, emp.id, year, totalDays, usedDays || 0, note || '').run()
+       note = excluded.note,
+       carried_over_days = excluded.carried_over_days,
+       allowance_paid = excluded.allowance_paid,
+       allowance_paid_at = excluded.allowance_paid_at,
+       updated_at = datetime('now')`
+  ).bind(emp.hospital_id, emp.id, year, totalDays, usedDays || 0, note || '', finalCarriedOver, allowancePaid ? 1 : 0, paidAt).run()
 
   return c.json({ success: true })
 })

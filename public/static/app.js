@@ -13298,7 +13298,7 @@ function renderLeavesTab() {
     if (!teamEmps.length) return ''
     const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
     let html = `<tr class="bg-gray-50">
-      <td colspan="11" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase border-b">
+      <td colspan="13" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase border-b">
         <i class="fas ${tl.icon} mr-1"></i>${tl.label} (${teamEmps.length}명)
       </td></tr>`
     for (const emp of teamEmps) {
@@ -13306,20 +13306,25 @@ function renderLeavesTab() {
       const lv    = leaveByEmp[emp.id]
       const total = lv?.total_days ?? null
       const used  = lv?.used_days  ?? 0
-      const remain= total !== null ? total - used : null
-      const pct   = total ? Math.round(used / total * 100) : 0
+      // 이월연차: carried_over_days (수당지급 전이면 표시, 지급 완료면 0)
+      const carriedOver = lv?.allowance_paid ? 0 : (lv?.carried_over_days ?? 0)
+      // 실제 유효 연차 = 이월연차 + 부여연차
+      const effectiveTotal = total !== null ? total + carriedOver : null
+      const remain = effectiveTotal !== null ? effectiveTotal - used : null
+      const pct   = effectiveTotal ? Math.round(used / effectiveTotal * 100) : 0
       const pctColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
+      // 연차수당 지급 여부
+      const allowancePaid = lv?.allowance_paid ? true : false
+      const allowancePaidAt = lv?.allowance_paid_at || ''
       // 연차 이력 (반차/경조사)
       const hist = histSummary[emp.id] || {}
       const halfAM = hist['half_am'] || 0
       const halfPM = hist['half_pm'] || 0
       const eventCnt = hist['event'] || 0
-      // D-day: 입사 1년 후 연차 만료 계산 (입사 1년차는 다음해 3/31, 그 이후는 매년)
+      // D-day: 올해 12월 31일 기준
       let dday = ''
       if (emp.hire_date) {
-        const hired = new Date(emp.hire_date)
         const today = new Date()
-        // 올해 12월 31일을 연차 만료일로 사용
         const expiry = new Date(year, 11, 31)
         const diffDays = Math.ceil((expiry - today) / (1000*60*60*24))
         if (diffDays >= 0) dday = `D-${diffDays}`
@@ -13335,8 +13340,24 @@ function renderLeavesTab() {
           <span class="inline-block px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700 font-bold">${legal}일</span>
         </td>
         <td class="px-3 py-3 text-center">
+          ${carriedOver > 0
+            ? `<div class="flex flex-col items-center gap-0.5">
+                <span class="text-xs font-bold text-amber-600">+${carriedOver}일</span>
+                <span class="text-xs text-gray-400">이월</span>
+               </div>`
+            : allowancePaid
+              ? `<div class="flex flex-col items-center gap-0.5">
+                  <span class="text-xs text-gray-400">-</span>
+                  <span class="inline-block px-1 py-0.5 rounded text-xs bg-green-100 text-green-700 font-bold">수당지급</span>
+                 </div>`
+              : `<span class="text-xs text-gray-300">-</span>`}
+        </td>
+        <td class="px-3 py-3 text-center">
           ${total !== null
-            ? `<span class="text-sm font-bold text-gray-800">${total}일</span>`
+            ? `<div class="flex flex-col items-center">
+                <span class="text-sm font-bold text-gray-800">${total}일</span>
+                ${carriedOver > 0 ? `<span class="text-xs text-amber-600 font-bold">합계 ${effectiveTotal}일</span>` : ''}
+               </div>`
             : `<span class="text-xs text-orange-600 font-bold">미부여</span>`}
         </td>
         <td class="px-3 py-3 text-center">
@@ -13361,7 +13382,7 @@ function renderLeavesTab() {
           ${dday ? `<span class="px-1.5 py-0.5 rounded-full text-xs font-bold ${dday.startsWith('D-') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${dday}</span>` : '-'}
         </td>
         <td class="px-3 py-3">
-          ${total !== null ? `
+          ${effectiveTotal !== null ? `
           <div class="flex items-center gap-2">
             <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:50px">
               <div class="${pctColor} h-2 rounded-full transition-all" style="width:${Math.min(pct,100)}%"></div>
@@ -13370,7 +13391,12 @@ function renderLeavesTab() {
           </div>` : ''}
         </td>
         <td class="px-3 py-3 text-center">
-          ${isAdm ? `<button onclick="openLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}',${total??legal},${used})"
+          ${allowancePaid && allowancePaidAt
+            ? `<span class="text-xs text-green-700 font-bold"><i class="fas fa-check-circle mr-1"></i>지급완료<br><span class="text-gray-400 font-normal">${allowancePaidAt}</span></span>`
+            : `<span class="text-xs text-gray-300">-</span>`}
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${isAdm ? `<button onclick="openLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}',${total??legal},${used},${carriedOver},${allowancePaid?1:0},'${allowancePaidAt}')"
             class="px-2 py-1 rounded text-xs bg-blue-600 text-white hover:bg-blue-700">수정</button>
           ${total === null ? `<button onclick="autoGrantLeave(${emp.id},${legal})"
             class="ml-1 px-2 py-1 rounded text-xs bg-green-600 text-white hover:bg-green-700">자동부여</button>` : ''}` : '-'}
@@ -13427,6 +13453,7 @@ function renderLeavesTab() {
               <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600">직원</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">입사월</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-blue-600">법정일수</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-amber-600">이월연차</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">부여일수</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">사용</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-purple-600">반차</th>
@@ -13434,12 +13461,13 @@ function renderLeavesTab() {
               <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">잔여</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-green-600">D-day</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">사용률</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-green-600">수당지급</th>
               <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">관리</th>
             </tr>
           </thead>
           <tbody>
             ${emps.length === 0
-              ? `<tr><td colspan="8" class="text-center py-12 text-gray-400">직원이 없습니다</td></tr>`
+              ? `<tr><td colspan="13" class="text-center py-12 text-gray-400">직원이 없습니다</td></tr>`
               : renderRows(cookEmps, 'cook') + renderRows(nutriEmps, 'nutrition')}
           </tbody>
         </table>
@@ -13461,8 +13489,19 @@ function renderLeaveEditModal() {
       </h3>
       <input type="hidden" id="leaveEditEmpId">
       <div class="space-y-4">
+        <!-- 이월 잔여연차 -->
         <div>
-          <label class="text-sm font-medium text-gray-700">부여 연차 (총 일수)</label>
+          <label class="text-sm font-medium text-amber-700 flex items-center gap-1">
+            <i class="fas fa-history text-amber-500"></i>
+            이월 잔여연차 (전년도 미사용)
+          </label>
+          <input type="number" id="leaveEditCarriedOver" min="0" max="25" step="0.5"
+            class="form-input mt-1 border-amber-300 focus:border-amber-500" placeholder="0">
+          <p class="text-xs text-gray-400 mt-1">이 프로그램 도입 전 남아있던 연차를 입력하세요. 부여연차에 자동 합산됩니다.</p>
+        </div>
+        <!-- 부여 연차 -->
+        <div>
+          <label class="text-sm font-medium text-gray-700">부여 연차 (해당연도 신규 부여일수)</label>
           <input type="number" id="leaveEditTotal" min="0" max="30" step="0.5" class="form-input mt-1" placeholder="15">
         </div>
         <div>
@@ -13472,6 +13511,22 @@ function renderLeaveEditModal() {
         <div>
           <label class="text-sm font-medium text-gray-700">메모</label>
           <input type="text" id="leaveEditNote" class="form-input mt-1" placeholder="비고 (선택)">
+        </div>
+        <!-- 연차수당 지급 -->
+        <div class="bg-green-50 border border-green-200 rounded-lg p-3">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="leaveEditAllowancePaid" class="w-4 h-4 text-green-600 rounded"
+              onchange="toggleAllowancePaidDate()">
+            <span class="text-sm font-medium text-green-800">
+              <i class="fas fa-hand-holding-usd mr-1 text-green-600"></i>
+              연차수당 지급 완료
+            </span>
+          </label>
+          <div id="leaveEditAllowanceDateRow" class="hidden mt-2">
+            <label class="text-xs text-gray-600">지급일</label>
+            <input type="date" id="leaveEditAllowancePaidAt" class="form-input mt-1 text-sm">
+          </div>
+          <p class="text-xs text-gray-500 mt-1">체크 시 이월연차가 0으로 초기화되고, 지급 완료 표시됩니다.</p>
         </div>
       </div>
       <div class="flex gap-3 mt-6">
@@ -13940,13 +13995,40 @@ window.switchScheduleTab = async (tab) => {
 }
 
 // 연차 수정 모달 열기
-window.openLeaveEditModal = (empId, empName, totalDays, usedDays) => {
+window.openLeaveEditModal = (empId, empName, totalDays, usedDays, carriedOver = 0, allowancePaid = 0, allowancePaidAt = '') => {
   document.getElementById('leaveEditEmpId').value = empId
   document.getElementById('leaveEditEmpName').textContent = empName
   document.getElementById('leaveEditTotal').value = totalDays || ''
   document.getElementById('leaveEditUsed').value  = usedDays  || 0
+  document.getElementById('leaveEditCarriedOver').value = carriedOver || 0
   document.getElementById('leaveEditNote').value  = ''
+  // 수당지급 체크박스 초기화
+  const chk = document.getElementById('leaveEditAllowancePaid')
+  chk.checked = allowancePaid ? true : false
+  const dateRow = document.getElementById('leaveEditAllowanceDateRow')
+  const dateInput = document.getElementById('leaveEditAllowancePaidAt')
+  if (chk.checked) {
+    dateRow.classList.remove('hidden')
+    dateInput.value = allowancePaidAt || ''
+  } else {
+    dateRow.classList.add('hidden')
+    dateInput.value = ''
+  }
   document.getElementById('leaveEditModal').classList.remove('hidden')
+}
+
+window.toggleAllowancePaidDate = () => {
+  const chk = document.getElementById('leaveEditAllowancePaid')
+  const dateRow = document.getElementById('leaveEditAllowanceDateRow')
+  const dateInput = document.getElementById('leaveEditAllowancePaidAt')
+  if (chk.checked) {
+    dateRow.classList.remove('hidden')
+    // 오늘 날짜로 기본값 설정
+    const today = new Date().toISOString().slice(0, 10)
+    if (!dateInput.value) dateInput.value = today
+  } else {
+    dateRow.classList.add('hidden')
+  }
 }
 
 window.saveLeaveEdit = async () => {
@@ -13954,13 +14036,20 @@ window.saveLeaveEdit = async () => {
   const totalDays= parseFloat(document.getElementById('leaveEditTotal').value)
   const usedDays = parseFloat(document.getElementById('leaveEditUsed').value  || 0)
   const note     = document.getElementById('leaveEditNote').value
+  const carriedOverDays = parseFloat(document.getElementById('leaveEditCarriedOver').value || 0)
+  const allowancePaid = document.getElementById('leaveEditAllowancePaid').checked
+  const allowancePaidAt = allowancePaid ? document.getElementById('leaveEditAllowancePaidAt').value : null
   if (isNaN(totalDays) || totalDays < 0) { showToast('부여 일수를 입력하세요', 'error'); return }
+  if (allowancePaid && !allowancePaidAt) { showToast('수당 지급일을 입력하세요', 'error'); return }
 
   const res = await api('PUT', `/api/schedule/employees/${empId}/leaves`, {
-    year: App.currentYear, totalDays, usedDays, note
+    year: App.currentYear, totalDays, usedDays, note,
+    carriedOverDays: allowancePaid ? 0 : carriedOverDays,
+    allowancePaid,
+    allowancePaidAt
   })
   if (res?.success) {
-    showToast('연차가 저장되었습니다', 'success')
+    showToast(allowancePaid ? '연차수당 지급 처리 완료' : '연차가 저장되었습니다', 'success')
     document.getElementById('leaveEditModal').classList.add('hidden')
     scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
     scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
