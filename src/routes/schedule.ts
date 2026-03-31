@@ -1321,9 +1321,11 @@ schedule.get('/meal-stats/:year/:month', async (c) => {
 // 직원별 연차 일괄 수정
 schedule.put('/employees/:id/leaves', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '권한이 없습니다' }, 403)
   const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
   if (!emp) return c.json({ error: '직원 없음' }, 404)
+  // 영양사(hospital role)는 자기 병원 직원만 수정 가능
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
 
   const { year, totalDays, usedDays, note, carriedOverDays, allowancePaid, allowancePaidAt } = await c.req.json()
 

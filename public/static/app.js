@@ -13264,7 +13264,7 @@ function renderShiftModal() {
 // 연차 관리 탭 (4번 요청)
 // ════════════════════════════════════════════════════════════════
 function renderLeavesTab() {
-  const isAdm = App.role === 'admin'
+  const isAdm = App.role === 'admin' || App.role === 'hospital'
   const year = App.currentYear
   const emps = Array.isArray(scheduleEmployees) ? scheduleEmployees : []
   const leaves = Array.isArray(scheduleLeavesData) ? scheduleLeavesData : []
@@ -13442,7 +13442,7 @@ function renderLeavesTab() {
           <h3 class="font-bold text-gray-800">${year}년 연차 현황</h3>
           <p class="text-xs text-gray-400 mt-0.5">법정 연차 = 입사 1년 미만:월1개, 1년 이상:15일+근속증가(최대25일)</p>
         </div>
-        ${isAdm ? `<button onclick="autoGrantAllLeaves()" class="px-3 py-1.5 rounded-lg text-xs bg-green-600 text-white hover:bg-green-700">
+        ${App.role === 'admin' ? `<button onclick="autoGrantAllLeaves()" class="px-3 py-1.5 rounded-lg text-xs bg-green-600 text-white hover:bg-green-700">
           <i class="fas fa-magic mr-1"></i>미부여 전체 자동부여
         </button>` : ''}
       </div>
