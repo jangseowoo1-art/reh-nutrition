@@ -613,12 +613,13 @@ function isWeekend(year, month, day) {
 }
 function getCategoryColor(cat) {
   const map = { major:'bg-blue-400', meat:'bg-red-400', seafood:'bg-cyan-400', fruit:'bg-yellow-400',
-    organic:'bg-green-400', delivery:'bg-purple-400', market:'bg-orange-400', event:'bg-pink-400', card:'bg-gray-400' }
+    organic:'bg-green-400', delivery:'bg-purple-400', market:'bg-orange-400', event:'bg-pink-400',
+    card:'bg-gray-400', supply:'bg-teal-400' }
   return map[cat] || 'bg-gray-300'
 }
 function getCategoryLabel(cat) {
   const map = { major:'대기업급식', meat:'육류', seafood:'해산물', fruit:'청과', organic:'유기농',
-    delivery:'인터넷배송', market:'시장', event:'이벤트', card:'법인카드', general:'기타' }
+    delivery:'인터넷배송', market:'시장', event:'이벤트', card:'법인카드', supply:'소모품', general:'기타' }
   return map[cat] || '기타'
 }
 function getTaxTypeLabel(t) {
@@ -17659,14 +17660,14 @@ async function openHospitalDetail(hospitalId) {
             <input type="checkbox" id="sup-excl-card" class="text-orange-500" ${chkCard ? 'checked' : ''}>
             <div>
               <div class="text-xs font-semibold text-gray-700">법인카드 금액</div>
-              <div class="text-xs text-gray-500">card_expenses 합계</div>
+              <div class="text-xs text-gray-500">법인카드 지출 합계</div>
             </div>
           </label>
           <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
             <input type="checkbox" id="sup-excl-supply" class="text-orange-500" ${chkSupply ? 'checked' : ''}>
             <div>
               <div class="text-xs font-semibold text-gray-700">업체발주 소모품</div>
-              <div class="text-xs text-gray-500">소모품 업체 발주액</div>
+              <div class="text-xs text-gray-500">카테고리 = 소모품★ 업체</div>
             </div>
           </label>
           <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
@@ -17686,7 +17687,7 @@ async function openHospitalDetail(hospitalId) {
         </div>
         <div class="text-xs text-orange-700 bg-orange-100 rounded p-2">
           <i class="fas fa-info-circle mr-1"></i>
-          아무것도 선택하지 않으면 총금액 기준으로만 계산됩니다. 병원마다 소모품 처리 방식(법인카드 사용 여부, 업체 발주 방식)이 다를 수 있으므로 해당 병원에 맞게 설정하세요.
+          <b>업체발주 소모품</b>은 <b>업체관리 탭에서 카테고리를 "소모품 ★"으로 지정한 업체</b>의 발주금액을 자동 합산해 제외합니다. 소모품 업체 카테고리 미지정 시 체크해도 제외되는 금액이 없습니다.
         </div>
         <div class="mt-3 flex justify-end">
           <button onclick="saveSupplyExcludeConfig(${hosp.id})" class="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
@@ -17979,6 +17980,7 @@ async function openHospitalDetail(hospitalId) {
               <option value="organic">유기농/한살림</option>
               <option value="market">시장/유통</option>
               <option value="delivery">인터넷배송</option>
+              <option value="supply">소모품 ★</option>
               <option value="card">법인카드</option>
               <option value="event">이벤트</option>
               <option value="general">기타</option>
