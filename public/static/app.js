@@ -17486,6 +17486,9 @@ async function openHospitalDetail(hospitalId) {
         <button id="tabSaveBtn-budget" onclick="saveHospitalBudget(${hospitalId})" class="btn btn-primary btn-sm hidden">
           <i class="fas fa-save mr-1"></i>예산 저장
         </button>
+        <button id="tabSaveBtn-mealpricing" onclick="saveMealPricingSettings(${hospitalId})" class="btn btn-primary btn-sm hidden" style="background:#f97316;border-color:#f97316">
+          <i class="fas fa-save mr-1"></i>식단가 저장
+        </button>
         <button id="tabSaveBtn-accounts" class="btn btn-success btn-sm hidden" onclick="showAdminAddAccountModal()">
           <i class="fas fa-plus mr-1"></i>계정 추가
         </button>
@@ -17507,6 +17510,9 @@ async function openHospitalDetail(hospitalId) {
         </button>
         <button class="tab-btn flex-shrink-0" id="tab-budget" onclick="switchHospTab('budget')">
           <i class="fas fa-won-sign mr-1"></i>예산설정
+        </button>
+        <button class="tab-btn flex-shrink-0" id="tab-mealpricing" onclick="switchHospTab('mealpricing')">
+          <i class="fas fa-utensils mr-1"></i>식단가설정
         </button>
         <button class="tab-btn flex-shrink-0" id="tab-accounts" onclick="switchHospTab('accounts')">
           <i class="fas fa-user-circle mr-1"></i>계정관리
@@ -17763,8 +17769,27 @@ async function openHospitalDetail(hospitalId) {
             <p class="text-xs text-gray-400 mt-1">* 잔반량(L) × 단가로 비용 자동계산. 0이면 직접 입력.</p>
           </div>
         </div>
+      </div>
 
-        <!-- ═══ 소모품/카드 제외 식단가 계산 기준 설정 ═══ -->
+      <!-- 식단가설정 탭 -->
+      <div id="hospTab-mealpricing" class="hidden">
+
+        <!-- ① 카테고리별 목표 설정 (환자군별 기준단가 + 배분예산 자동계산) -->
+        <div class="mb-5">
+          <h3 class="font-semibold text-gray-700 text-sm mb-2">
+            <i class="fas fa-bullseye text-green-600 mr-1.5"></i>카테고리별 목표 설정
+            <span class="text-xs font-normal text-gray-400 ml-1">(환자식만 · 기준단가 · 월 목표금액)</span>
+          </h3>
+          <div class="mb-2 px-2 py-1.5 bg-blue-50 rounded-lg text-xs text-blue-600 border border-blue-100">
+            <i class="fas fa-info-circle mr-1"></i>
+            <strong>환자군(환자식)만</strong> 목표 설정 가능 · 치료식·비급여식·직원식은 목표 설정 제외
+          </div>
+          <div id="categoryBudgetList" class="space-y-2">
+            <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
+          </div>
+        </div>
+
+        <!-- ② 소모품/카드 제외 식단가 계산 기준 -->
         ${(() => {
           const savedKeys = (supplyExcludeCfg?.supply_exclude_keys) || []
           const isDefault = savedKeys.length === 0
@@ -17773,7 +17798,7 @@ async function openHospitalDetail(hospitalId) {
           const chkEvent   = savedKeys.includes('event')
           const chkOther   = savedKeys.includes('other')
           return `
-        <div class="mt-4 p-4 bg-orange-50 border border-orange-200 rounded-xl">
+        <div class="p-4 bg-orange-50 border border-orange-200 rounded-xl">
           <div class="flex items-center justify-between mb-3">
             <div>
               <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>소모품/카드 제외 식단가 계산 기준</h3>
@@ -17816,11 +17841,6 @@ async function openHospitalDetail(hospitalId) {
           <div class="text-xs text-orange-700 bg-orange-100 rounded p-2">
             <i class="fas fa-info-circle mr-1"></i>
             <b>업체발주 소모품</b>은 <b>업체관리 탭에서 카테고리를 "소모품 ★"으로 지정한 업체</b>의 발주금액을 자동 합산해 제외합니다. 소모품 업체 카테고리 미지정 시 체크해도 제외되는 금액이 없습니다.
-          </div>
-          <div class="mt-3 flex justify-end">
-            <button onclick="saveSupplyExcludeConfig(${hosp.id})" class="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
-              <i class="fas fa-save mr-1"></i>제외 기준 저장
-            </button>
           </div>
         </div>`
         })()}
@@ -17935,26 +17955,6 @@ async function openHospitalDetail(hospitalId) {
         <!-- 식이 목록 (대분류별) -->
         <div id="dietCategoryList" class="space-y-2">
           <div class="text-xs text-gray-400 text-center py-4">로딩 중...</div>
-        </div>
-
-        <!-- 목표 설정 (기존 유지) -->
-        <div class="mt-5 border-t border-gray-100 pt-4">
-          <h4 class="font-semibold text-gray-700 text-sm mb-3">
-            <i class="fas fa-bullseye text-green-600 mr-1"></i>
-            카테고리별 목표 설정
-            <span class="text-xs font-normal text-gray-400 ml-1">(환자식만 · 식단가 · 월 목표금액)</span>
-          </h4>
-          <div class="mb-2 px-2 py-1.5 bg-blue-50 rounded-lg text-xs text-blue-600 border border-blue-100">
-            <i class="fas fa-info-circle mr-1"></i>
-            <strong>환자군(환자식)만</strong> 목표 설정 가능 · 치료식·비급여식·직원식은 목표 설정 제외
-          </div>
-          <div id="categoryBudgetList" class="space-y-2">
-            <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
-          </div>
-        </div>
-
-        <div class="mt-4 flex gap-2 justify-end">
-          <!-- 상단 우측 버튼으로 통합 (환자군 저장 = saveDietAndBudgets) -->
         </div>
       </div>
 
@@ -18621,19 +18621,24 @@ function getDefaultWorkingDays(year, month) {
 }
 
 function switchHospTab(tab) {
-  ['info','categories','budget','vendors','accounts'].forEach(t => {
+  ['info','categories','budget','mealpricing','vendors','accounts'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
     document.getElementById(`tabSaveBtn-${t}`)?.classList.toggle('hidden', t !== tab)
   })
   // 현재 탭 안내 라벨 업데이트
-  const tabNames = { info:'기본정보', categories:'환자군 설정', vendors:'업체 관리', budget:'예산 설정', accounts:'계정 관리' }
+  const tabNames = { info:'기본정보', categories:'환자군 설정', vendors:'업체 관리', budget:'예산 설정', mealpricing:'식단가 설정', accounts:'계정 관리' }
   const lbl = document.getElementById('currentTabLabel')
   if (lbl) lbl.innerHTML = `<i class="fas fa-circle-dot mr-1"></i>현재: <strong class="text-gray-600">${tabNames[tab]||tab}</strong> 탭${ tab==='vendors'||tab==='accounts' ? ' — 우측 버튼으로 추가' : ' — 우측 상단 버튼으로 저장' }`
   // 환자군 탭으로 전환 시 데이터 로드
   if (tab === 'categories' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
     // 예산설정 탭에서 설정된 총 목표금액을 자동배분 패널에 연동
+    setTimeout(() => { if (typeof fetchBudgetTotalForAlloc === 'function') fetchBudgetTotalForAlloc() }, 400)
+  }
+  // 식단가설정 탭으로 전환 시 카테고리 목표 데이터 로드
+  if (tab === 'mealpricing' && window._adminHospitalId) {
+    loadPatientCategories(window._adminHospitalId)
     setTimeout(() => { if (typeof fetchBudgetTotalForAlloc === 'function') fetchBudgetTotalForAlloc() }, 400)
   }
   // 예산 탭으로 전환 시 업체별 합계 자동 계산 + 식재료 기본예산 재계산
@@ -18733,7 +18738,7 @@ async function saveHospitalInfo(hospitalId) {
 }
 
 // ── 소모품/카드 제외 식단가 기준 저장 ────────────────────────────
-async function saveSupplyExcludeConfig(hospitalId) {
+async function saveSupplyExcludeConfig(hospitalId, silent = false) {
   const keys = []
   if (document.getElementById('sup-excl-card')?.checked)   keys.push('card')
   if (document.getElementById('sup-excl-supply')?.checked) keys.push('supply')
@@ -18742,18 +18747,35 @@ async function saveSupplyExcludeConfig(hospitalId) {
 
   const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/supply-exclude-config`, { supply_exclude_keys: keys })
   if (res?.success) {
-    showToast('소모품 제외 기준이 저장되었습니다', 'success')
+    if (!silent) showToast('소모품 제외 기준이 저장되었습니다', 'success')
     // 맞춤 설정 배지 업데이트
-    const badge = document.querySelector('[id^="sup-excl-card"]')?.closest('.mt-4')?.querySelector('span')
+    const badge = document.querySelector('[id^="sup-excl-card"]')?.closest('.p-4')?.querySelector('span.rounded-full')
     if (badge) {
       badge.className = 'text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300'
       badge.innerHTML = '<i class="fas fa-check mr-1"></i>병원 맞춤 설정'
     }
   } else {
-    showToast('저장 실패', 'error')
+    if (!silent) showToast('저장 실패', 'error')
   }
 }
 window.saveSupplyExcludeConfig = saveSupplyExcludeConfig
+
+// ── 식단가설정 탭 통합 저장 (카테고리 목표 + 소모품/카드 제외 기준) ────
+async function saveMealPricingSettings(hospitalId) {
+  const saveBtn = document.getElementById('tabSaveBtn-mealpricing')
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
+  try {
+    await saveCategoryBudgets(hospitalId)
+    await saveSupplyExcludeConfig(hospitalId, true) // silent=true: 토스트 생략
+    showToast('식단가 설정이 저장되었습니다', 'success')
+  } catch(e) {
+    showToast('저장 중 오류 발생', 'error')
+    console.error('[saveMealPricingSettings]', e)
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save mr-1"></i>식단가 저장' }
+  }
+}
+window.saveMealPricingSettings = saveMealPricingSettings
 
 // 카카오 주소검색
 window.openKakaoAddressSearch = function() {
