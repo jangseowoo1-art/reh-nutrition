@@ -155,34 +155,6 @@ dashboard.get('/summary/:year/:month', async (c) => {
     })
     .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
-  // 직원식 커스텀 필드 식수 별도 계산 (직원식 제외 식단가 분모 계산용)
-  // st_key_ 매핑에 해당하는 field_key를 찾아 직원식 커스텀 식수 합산
-  const staffFieldKeySet = new Set<string>()
-  if (allMealsIncludeKeys.size > 0) {
-    // st_key_ 접두사를 가진 키만 추출
-    allMealsIncludeKeys.forEach((k: string) => {
-      if (k.startsWith('st_key_')) {
-        const dietKey = k.replace('st_key_', '')
-        ;(customFieldsList.results || []).forEach((f: any) => {
-          if (f.field_key === 'diet_' + dietKey || f.field_key === dietKey) {
-            staffFieldKeySet.add(f.field_key)
-          }
-        })
-      }
-    })
-  }
-  // 직원식 커스텀 필드 식수 합계
-  const mealCustomStaffTotal = (customFieldsList.results || [])
-    .filter((f: any) => f.unit_type !== 'ea' && staffFieldKeySet.has(f.field_key))
-    .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
-  // 레거시 방식(total_staff 컬럼)을 사용하는지 확인
-  // → allMealsIncludeKeys에 st_key_가 없으면 total_staff 컬럼 사용
-  const hasStCustomKeys = [...allMealsIncludeKeys].some((k: string) => k.startsWith('st_key_'))
-  const staffMealsForCalc = hasStCustomKeys
-    ? (mealCustomStaffTotal > 0 ? mealCustomStaffTotal : (ms.total_staff||0))
-    : (ms.total_staff||0)
-
-
   const today = new Date().toISOString().split('T')[0]
   const todayOrders = await c.env.DB.prepare(
     `SELECT COALESCE(SUM(total_amount), 0) as today_total
@@ -249,6 +221,31 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 식단가 3종 계산
   const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
+
+  // 직원식 커스텀 필드 식수 별도 계산 (직원식 제외 식단가 분모 계산용)
+  // st_key_ 매핑에 해당하는 field_key를 찾아 직원식 커스텀 식수 합산
+  const staffFieldKeySet = new Set<string>()
+  if (allMealsIncludeKeys.size > 0) {
+    allMealsIncludeKeys.forEach((k: string) => {
+      if (k.startsWith('st_key_')) {
+        const dietKey = k.replace('st_key_', '')
+        ;(customFieldsList.results || []).forEach((f: any) => {
+          if (f.field_key === 'diet_' + dietKey || f.field_key === dietKey) {
+            staffFieldKeySet.add(f.field_key)
+          }
+        })
+      }
+    })
+  }
+  // 직원식 커스텀 필드 식수 합계
+  const mealCustomStaffTotal = (customFieldsList.results || [])
+    .filter((f: any) => f.unit_type !== 'ea' && staffFieldKeySet.has(f.field_key))
+    .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
+  // 레거시 방식(total_staff 컬럼)을 사용하는지 확인
+  const hasStCustomKeys = [...allMealsIncludeKeys].some((k: string) => k.startsWith('st_key_'))
+  const staffMealsForCalc = hasStCustomKeys
+    ? (mealCustomStaffTotal > 0 ? mealCustomStaffTotal : (ms.total_staff||0))
+    : (ms.total_staff||0)
   // 화면 표시용 전체 식수: 비급여 제외, 환자(patient) 제외(환자군 커스텀 필드로 대체) - 직원+보호자+커스텀
   const totalMeals = (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
   // 식단가 계산용 식수: 비급여 제외, 환자 제외 → 직원+보호자+환자군(커스텀, ea 제외)
