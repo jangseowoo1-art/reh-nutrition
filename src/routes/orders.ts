@@ -324,7 +324,7 @@ orders.get('/patient-categories', async (c) => {
   if (!hospitalId) return c.json([])
 
   const cats = await c.env.DB.prepare(`
-    SELECT * FROM hospital_patient_categories
+    SELECT *, category_name as name FROM hospital_patient_categories
     WHERE hospital_id = ? AND is_active = 1
     ORDER BY sort_order, id
   `).bind(hospitalId).all<any>()
@@ -342,7 +342,7 @@ orders.get('/category-monthly/:year/:month', async (c) => {
   const mm = month.padStart(2, '0')
 
   const cats = await c.env.DB.prepare(`
-    SELECT * FROM hospital_patient_categories
+    SELECT *, category_name as name FROM hospital_patient_categories
     WHERE hospital_id = ? AND is_active = 1
     ORDER BY sort_order, id
   `).bind(hospitalId).all<any>()

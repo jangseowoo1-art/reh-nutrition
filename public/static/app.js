@@ -4161,9 +4161,14 @@ window.showMonthAllOrdersModal = function() {
         if (o) rowTotal += o.total_amount || 0
       })
     }
-    // 법인카드 합산
+    // 법인카드 합산 (card_expenses + daily_orders의 card 업체 모두 포함)
     cardVendors.forEach(v => {
+      // card_expenses 데이터
       rowTotal += (cardDailyMap[v.id] && cardDailyMap[v.id][dateStr]) || 0
+      // daily_orders에 있는 법인카드 업체 발주도 추가 (card_expenses와 별도 존재하는 경우)
+      const cardOrderKey = `${dateStr}__${v.id}`
+      const cardOrder = normalOrderMap[cardOrderKey]
+      if (cardOrder) rowTotal += cardOrder.total_amount || 0
     })
     grandTotal += rowTotal
 

@@ -1338,14 +1338,49 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
       ).bind(h.id, year, month).first<any>()
 
       const mealStats = await c.env.DB.prepare(
-        `SELECT COALESCE(SUM(
-           breakfast_patient + lunch_patient + dinner_patient +
-           breakfast_staff + lunch_staff + dinner_staff +
-           breakfast_noncovered + lunch_noncovered + dinner_noncovered +
-           breakfast_guardian + lunch_guardian + dinner_guardian), 0) as total_meals
+        `SELECT
+           COALESCE(SUM(breakfast_patient + lunch_patient + dinner_patient), 0) as total_patient,
+           COALESCE(SUM(breakfast_staff + lunch_staff + dinner_staff), 0) as total_staff,
+           COALESCE(SUM(breakfast_noncovered + lunch_noncovered + dinner_noncovered), 0) as total_noncovered,
+           COALESCE(SUM(breakfast_guardian + lunch_guardian + dinner_guardian), 0) as total_guardian
          FROM daily_meals
          WHERE hospital_id = ? AND strftime('%Y', meal_date) = ? AND strftime('%m', meal_date) = printf('%02d', ?)`
       ).bind(h.id, year, month).first<any>()
+
+      // 커스텀 식수 합계 (ea 제외)
+      const customFieldsList = await c.env.DB.prepare(
+        `SELECT field_key FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 AND unit_type != 'ea'`
+      ).bind(h.id).all<any>()
+      const mealCustomData = await c.env.DB.prepare(
+        `SELECT custom_data FROM daily_meals WHERE hospital_id = ? AND strftime('%Y', meal_date) = ? AND strftime('%m', meal_date) = printf('%02d', ?) AND custom_data IS NOT NULL AND custom_data != '{}'`
+      ).bind(h.id, year, month).all<any>()
+      const customFieldTotals: Record<string, number> = {}
+      ;(customFieldsList.results || []).forEach((f: any) => { customFieldTotals[f.field_key] = 0 })
+      ;(mealCustomData.results || []).forEach((row: any) => {
+        try {
+          const cd = JSON.parse(row.custom_data || '{}')
+          ;(customFieldsList.results || []).forEach((f: any) => {
+            const fv = cd[f.field_key] || {}
+            customFieldTotals[f.field_key] = (customFieldTotals[f.field_key] || 0) + (fv.bf || 0) + (fv.l || 0) + (fv.d || 0)
+          })
+        } catch(e) {}
+      })
+      const mealCustomTotal = Object.values(customFieldTotals).reduce((s: number, v: number) => s + v, 0)
+
+      // 소모품 업체 발주 합계
+      const supplyUsedRow = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(d.total_amount), 0) as supply_used
+         FROM daily_orders d JOIN vendors v ON d.vendor_id = v.id
+         WHERE d.hospital_id = ? AND strftime('%Y', d.order_date) = ? AND strftime('%m', d.order_date) = printf('%02d', ?)
+           AND v.category = 'supply'`
+      ).bind(h.id, year, month).first<any>()
+      const supplyUsed = supplyUsedRow?.supply_used || 0
+
+      // 법인카드 합계
+      const cardRow = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM card_expenses WHERE hospital_id = ? AND strftime('%Y', expense_date) = ? AND strftime('%m', expense_date) = printf('%02d', ?)`
+      ).bind(h.id, year, month).first<any>()
+      const cardUsed = cardRow?.total || 0
 
       // 오늘 발주
       const todayUsed = await c.env.DB.prepare(
@@ -1372,6 +1407,18 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
       const used = totalUsed?.total || 0
       const progress = totalBudget > 0 ? ((used / totalBudget) * 100).toFixed(1) : '0.0'
 
+      // 식수 계산 (커스텀 필드 기반)
+      const ms = mealStats || { total_patient: 0, total_staff: 0, total_noncovered: 0, total_guardian: 0 }
+      const totalMealsForPrice = (ms.total_staff || 0) + (ms.total_guardian || 0) + mealCustomTotal
+      const totalMealsAll = totalMealsForPrice  // 관리자 overview용
+
+      // 식단가 3종 계산
+      const mealPriceTotal = totalMealsAll > 0 ? Math.round(used / totalMealsAll) : 0
+      const mealsNoStaff = totalMealsAll - (ms.total_staff || 0)
+      const mealPriceNoStaff = mealsNoStaff > 0 ? Math.round(used / mealsNoStaff) : 0
+      const supplyCardUsed = supplyUsed + cardUsed
+      const mealPriceNoSupply = totalMealsAll > 0 ? Math.round((used - supplyCardUsed) / totalMealsAll) : 0
+
       return {
         hospital: h,
         totalBudget,
@@ -1379,7 +1426,10 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
         progress,
         remaining: totalBudget - used,
         mealPrice: settings?.meal_price || 0,
-        totalMeals: mealStats?.total_meals || 0,
+        totalMeals: totalMealsAll,
+        mealPriceTotal,
+        mealPriceNoStaff,
+        mealPriceNoSupply,
         todayUsed: todayUsed?.today_total || 0,
         weekUsed: weekUsed?.week_total || 0,
         dailyBudget,
