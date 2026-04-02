@@ -5675,12 +5675,11 @@ function updateBudgetProgressPanel() {
     const staffCustomMealSum = customFields4price
       .filter(f => f.field_key.startsWith('st_key_') || f.field_key.startsWith('diet_preset_staff_'))
       .reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
-    // 전체 식수: 직원+보호자+환자군(커스텀) — 비급여 제외, 환자(patient) 제외
-    const totalStaffAll = (ms.totalStaff||0) + staffCustomMealSum
-    const totalMeals = totalStaffAll + (ms.totalGuardian||0) + customMealSum  // 표시용
-    const totalMealsForPrice = totalStaffAll + (ms.totalGuardian||0) + customMealSum
-    // ② 직원식 제외 분모: 보호자 + 환자군 (직원식 커스텀 포함 전체 제외)
-    const mealsNoStaff = (ms.totalGuardian||0) + (customMealSum - staffCustomMealSum)
+    // 전체 식수: 커스텀 합계(직원+보호자+환자군 모두 포함) + legacy total_staff/guardian (중복 방지: 커스텀에 없을 때만)
+    // customMealSum 안에 직원식/보호자식이 이미 포함되어 있으므로 ms.totalStaff/totalGuardian은 중복 방지 위해 0 처리
+    const totalMealsForPrice = customMealSum  // 커스텀 필드에 모든 식종 포함
+    // ② 직원식 제외 분모: 커스텀 합계에서 직원식 커스텀만 제거
+    const mealsNoStaff = customMealSum - staffCustomMealSum
 
     // API에서 받은 정확한 식단가 값 우선 사용 (발주 금액 변경 시 비율로 조정)
     const apiBase = ms.apiTotalUsed || 0
@@ -5690,19 +5689,11 @@ function updateBudgetProgressPanel() {
 
     let mp1, mp2, mp3
     if (apiBase > 0 && apiMp1 > 0 && monthTotal > 0) {
-      // 발주 금액 변동 비율로 API 값 조정
+      // 발주 금액 변동 비율로 API 값 조정 (3종 모두 동일 비율 적용)
       const ratio = monthTotal / apiBase
       mp1 = Math.round(apiMp1 * ratio)
       mp2 = Math.round(apiMp2 * ratio)
-      // 소모품 제외: (monthTotal - supplyTotal) 기준으로 재계산
-      const apiNoSupplyBase = apiBase - (apiBase - Math.round(apiMp3 * (totalMealsForPrice||1)))
-      mp3 = totalMealsForPrice > 0 ? Math.round((monthTotal - supplyTotal) / (totalMealsForPrice > 0 ? totalMealsForPrice : (apiBase / (apiMp1||1)))) : 0
-      // mp3는 소모품 제외이므로 식수 기반으로 계산 (식수 있을 때)
-      if (totalMealsForPrice > 0) {
-        mp3 = Math.round((monthTotal - supplyTotal) / totalMealsForPrice)
-      } else {
-        mp3 = Math.round(apiMp3 * ratio)
-      }
+      mp3 = Math.round(apiMp3 * ratio)
     } else if (totalMealsForPrice > 0) {
       // API 값 없을 때 식수 기반 계산
       mp1 = Math.round(monthTotal / totalMealsForPrice)
