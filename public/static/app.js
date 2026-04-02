@@ -19363,10 +19363,6 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           class="py-1.5 px-3 text-xs font-semibold bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200">
           <i class="fas fa-unlock mr-1"></i>비중 수동수정
         </button>` : ''}
-        <button type="button" onclick="applyAutoAlloc()"
-          class="flex-1 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-          <i class="fas fa-magic mr-1"></i>아래 입력란에 적용
-        </button>
       </div>
     </div>
   </div>`
@@ -19984,10 +19980,28 @@ async function saveCategoryBudgets(hospitalId) {
   const settings = cats.map(cat => {
     // 기준 단가: 상단 테이블 allocRefPrice- 입력값 (UI에서 직접 입력하는 유일한 단가 값)
     const refPrice = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
-    // 배분예산: applyAutoAlloc 시 catBudget- hidden에 저장된 값
-    const monthlyBudget = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value)
-    // 영업일수: catWorkDays- hidden 값
-    const workingDays = parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0
+
+    // 배분예산: catBudget- hidden에 값이 없으면 recalcAutoAlloc 결과에서 직접 계산
+    let monthlyBudget = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value)
+    if (!monthlyBudget) {
+      // hidden에 값이 없을 경우 현재 배분 계산 결과에서 가져오기
+      const totalBudget = parseCommaNum(document.getElementById('autoAlloc-totalBudget')?.value)
+      const ratioEl = document.getElementById(`allocRatio-${cat.id}`)
+      const ratio = parseFloat(ratioEl?.value || 0) / 100
+      if (totalBudget > 0 && ratio > 0) {
+        monthlyBudget = Math.round(totalBudget * ratio)
+        // hidden input에도 반영
+        const hiddenBudget = document.getElementById(`catBudget-${cat.id}`)
+        if (hiddenBudget) hiddenBudget.value = monthlyBudget
+      }
+    }
+
+    // 영업일수: catWorkDays- hidden 값, 없으면 autoAlloc-workdays 값 사용
+    let workingDays = parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0
+    if (!workingDays) {
+      workingDays = parseInt(document.getElementById('autoAlloc-workdays')?.value || 0) || 0
+    }
+
     return {
       patient_category_id: cat.id,
       monthly_budget: monthlyBudget,
