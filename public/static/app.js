@@ -18763,6 +18763,27 @@ async function loadPatientCategories(hospitalId) {
   // 실제 식단가 3종 저장 (catMealPrice 자동채움용)
   window._adminHospSummary = summaryResp || {}
   window._adminCatDietPrices = summaryResp?.catDietPrices || []
+  // meal-cat-totals의 month_diet_price도 _adminCatDietPrices에 병합
+  const mealTotalsArr = mealTotalsResp?.catMeals || []
+  if (mealTotalsArr.length > 0) {
+    const mergedPrices = mealTotalsArr.map(m => ({
+      id: m.id,
+      category_key: m.category_key,
+      monthDietPrice: m.month_diet_price || 0,
+      monthMeals: m.total_meals || 0,
+      monthAmt: m.month_amt || 0,
+    }))
+    // _adminCatDietPrices가 없으면 meal-cat-totals 기반으로 채움
+    if (!window._adminCatDietPrices || window._adminCatDietPrices.length === 0) {
+      window._adminCatDietPrices = mergedPrices
+    } else {
+      // 있으면 month_diet_price 업데이트
+      window._adminCatDietPrices = window._adminCatDietPrices.map(d => {
+        const mt = mergedPrices.find(m => m.id === d.id)
+        return mt ? { ...d, monthDietPrice: mt.monthDietPrice || d.monthDietPrice } : d
+      })
+    }
+  }
   window._patientCategories = cats || []
   window._adminCatList = cats || []
   window._dietCategories = dietCats || []
@@ -19663,15 +19684,22 @@ function recalcAutoAlloc() {
     const budgetEl = document.getElementById(`allocBudget-${cat.id}`)
     const mealPriceEl = document.getElementById(`allocMealPrice-${cat.id}`)
 
+    // 실시간 현재 식단가 (발주 기반)
+    const livePrice = mealInfo.month_diet_price || 0
+
     if (budgetEl) {
       budgetEl.textContent = allocated > 0 ? `${allocated.toLocaleString()}원` : '-'
     }
     if (mealPriceEl) {
       if (mealPrice > 0) {
-        mealPriceEl.textContent = `→ ${mealPrice.toLocaleString()}원/식`
+        const liveTag = livePrice > 0 ? ` <span style="color:#2563eb;font-size:9px">(실: ${livePrice.toLocaleString()})</span>` : ''
+        mealPriceEl.innerHTML = `→ ${mealPrice.toLocaleString()}원/식${liveTag}`
       } else if (avgMeals === 0 && allocated > 0) {
-        mealPriceEl.textContent = '식수없음'
+        const liveTag = livePrice > 0 ? `<div style="color:#2563eb;font-size:9px">실시간: ${livePrice.toLocaleString()}원</div>` : ''
+        mealPriceEl.innerHTML = `식수없음${liveTag}`
         mealPriceEl.style.color = '#d97706'
+      } else if (livePrice > 0) {
+        mealPriceEl.innerHTML = `<span style="color:#2563eb">실시간: ${livePrice.toLocaleString()}원/식</span>`
       } else {
         mealPriceEl.textContent = '-'
       }
