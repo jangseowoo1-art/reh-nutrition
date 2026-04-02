@@ -155,6 +155,33 @@ dashboard.get('/summary/:year/:month', async (c) => {
     })
     .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
+  // 직원식 커스텀 필드 식수 별도 계산 (직원식 제외 식단가 분모 계산용)
+  // st_key_ 매핑에 해당하는 field_key를 찾아 직원식 커스텀 식수 합산
+  const staffFieldKeySet = new Set<string>()
+  if (allMealsIncludeKeys.size > 0) {
+    // st_key_ 접두사를 가진 키만 추출
+    allMealsIncludeKeys.forEach((k: string) => {
+      if (k.startsWith('st_key_')) {
+        const dietKey = k.replace('st_key_', '')
+        ;(customFieldsList.results || []).forEach((f: any) => {
+          if (f.field_key === 'diet_' + dietKey || f.field_key === dietKey) {
+            staffFieldKeySet.add(f.field_key)
+          }
+        })
+      }
+    })
+  }
+  // 직원식 커스텀 필드 식수 합계
+  const mealCustomStaffTotal = (customFieldsList.results || [])
+    .filter((f: any) => f.unit_type !== 'ea' && staffFieldKeySet.has(f.field_key))
+    .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
+  // 레거시 방식(total_staff 컬럼)을 사용하는지 확인
+  // → allMealsIncludeKeys에 st_key_가 없으면 total_staff 컬럼 사용
+  const hasStCustomKeys = [...allMealsIncludeKeys].some((k: string) => k.startsWith('st_key_'))
+  const staffMealsForCalc = hasStCustomKeys
+    ? (mealCustomStaffTotal > 0 ? mealCustomStaffTotal : (ms.total_staff||0))
+    : (ms.total_staff||0)
+
 
   const today = new Date().toISOString().split('T')[0]
   const todayOrders = await c.env.DB.prepare(
@@ -210,28 +237,38 @@ dashboard.get('/summary/:year/:month', async (c) => {
     v.monthly_budget > 0 && v.total_used > v.monthly_budget
   )
 
+  // 법인카드 월 합계 (card_expenses 테이블) - 소모품 제외 식단가 계산용
+  const cardExpensesTotal = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(amount), 0) as total
+     FROM card_expenses
+     WHERE hospital_id = ?
+       AND strftime('%Y', expense_date) = ?
+       AND strftime('%m', expense_date) = printf('%02d', ?)`
+  ).bind(hospitalId, year, month).first<any>()
+  const cardExpensesUsed = cardExpensesTotal?.total || 0
+
   // 식단가 3종 계산
   const ms = mealStats || { total_patient:0, total_staff:0, total_noncovered:0, total_guardian:0 }
   // 화면 표시용 전체 식수: 비급여 제외, 환자(patient) 제외(환자군 커스텀 필드로 대체) - 직원+보호자+커스텀
   const totalMeals = (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
   // 식단가 계산용 식수: 비급여 제외, 환자 제외 → 직원+보호자+환자군(커스텀, ea 제외)
   const totalMealsForPrice = (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
-  // 소모품/카드 제외 금액
-  const supplyCardUsed = (vendors.results || [])
-    .filter((v: any) => v.category === 'supply' || v.category === 'card')
+  // 소모품 제외 금액 (daily_orders 기준 소모품 업체 + card_expenses 법인카드)
+  const supplyUsed = (vendors.results || [])
+    .filter((v: any) => v.category === 'supply')
     .reduce((s: number, v: any) => s + v.total_used, 0)
+  // 소모품/카드 제외 = 소모품 발주 + 법인카드 실지출
+  const supplyCardUsed = supplyUsed + cardExpensesUsed
   // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
   // ② 직원식 제외 식단가:
-  //    의의: 직원식에 든 예산이 자동 수식에 포함되므로,
-  //    분모만 직원식수를 제외 → 화자 1인당 실질 식리 확인 가능
   //    분자: 월 총 발주금액 그대로
-  //    분모: 환자 + 보호자 (직원식수 제외)
-  //    예: 아미나 20,880,000원 ÷ 110명 = 189,818원/식 (전체 130,500원보다 높음)
-  const mealsNoStaff = (ms.total_guardian||0) + mealCustomTotal  // 보호자 + 환자군 (직원 제외)
+  //    분모: 전체 식수 - 직원식 식수 (커스텀 필드 st_key_ 또는 legacy total_staff)
+  //    mealCustomTotal에는 직원식도 포함될 수 있으므로 직원식 식수를 별도 차감
+  const mealsNoStaff = totalMealsForPrice - staffMealsForCalc
   const mealPriceNoStaff = mealsNoStaff > 0
     ? Math.round(totalUsed / mealsNoStaff) : 0
-  // ③ 소모품/카드 제외 식단가: (총금액 - 소모품/카드) ÷ (환자+직원+보호자) — 비급여 제외
+  // ③ 소모품/카드 제외 식단가: (총금액 - 소모품 - 법인카드) ÷ 전체 식수
   const mealPriceNoSupply = totalMealsForPrice > 0
     ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
 
@@ -255,7 +292,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
     `SELECT COALESCE(SUM(d.total_amount),0) as supply_used
      FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
      WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=? AND strftime('%m',d.order_date)=printf('%02d',?)
-       AND (v.category='supply' OR v.category='card')`
+       AND v.category='supply'`
+  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
+  const prevCardExpenses = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(amount),0) as total
+     FROM card_expenses
+     WHERE hospital_id=? AND strftime('%Y',expense_date)=? AND strftime('%m',expense_date)=printf('%02d',?)`
   ).bind(hospitalId, prevYear2, prevMonth).first<any>()
 
   const prevSettings = await c.env.DB.prepare(
@@ -615,15 +657,23 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const prevMealsForPrice = (pms.total_staff||0) + (pms.total_guardian||0) + prevMealCustomTotal
   const prevTotalUsed = prevOrders?.total_used || 0
   const prevSupplyUsed = prevSupply?.supply_used || 0
+  const prevCardExpensesUsed = prevCardExpenses?.total || 0
   // ① 전월 전체 식단가
   const prevMealPriceTotal = prevMealsForPrice > 0 ? Math.round(prevTotalUsed / prevMealsForPrice) : 0
-  // ② 전월 직원식 제외: 총금액 ÷ (보호자+환자군) — 분모에서만 직원식수 제외
-  const prevMealsNoStaff = (pms.total_guardian||0) + prevMealCustomTotal  // 보호자+환자군 (직원 제외)
+  // ② 전월 직원식 제외: 총금액 ÷ (전체식수 - 직원식수)
+  const prevMealCustomStaffTotal = (customFieldsList.results || [])
+    .filter((f: any) => f.unit_type !== 'ea' && staffFieldKeySet.has(f.field_key))
+    .reduce((s: number, f: any) => s + (prevCustomFieldTotals[f.field_key] || 0), 0)
+  const prevStaffMealsForCalc = hasStCustomKeys
+    ? (prevMealCustomStaffTotal > 0 ? prevMealCustomStaffTotal : (pms.total_staff||0))
+    : (pms.total_staff||0)
+  const prevMealsNoStaff = prevMealsForPrice - prevStaffMealsForCalc
   const prevMealPriceNoStaff = prevMealsNoStaff > 0
     ? Math.round(prevTotalUsed / prevMealsNoStaff) : 0
-  // ③ 전월 소모품 제외 (비급여 제외 분모)
+  // ③ 전월 소모품/카드 제외 (소모품 발주 + 법인카드 실지출)
+  const prevSupplyCardUsed = prevSupplyUsed + prevCardExpensesUsed
   const prevMealPriceNoSupply = prevMealsForPrice > 0
-    ? Math.round((prevTotalUsed - prevSupplyUsed) / prevMealsForPrice) : 0
+    ? Math.round((prevTotalUsed - prevSupplyCardUsed) / prevMealsForPrice) : 0
 
   // ── 현재 식단가: 전체발주 ÷ 전체식수(카테고리+직원+보호자) ────────────
   // admin.ts와 동일 기준: 영양사 페이지 기준으로 통일

@@ -3941,11 +3941,16 @@ window.refreshOrders = () => {
 
 // ── #2 월 전체 발주 확인 모달 ────────────────────────────────────
 window.showMonthAllOrdersModal = function() {
-  const vendors = window._vendorsCache || []
+  const allVendors = window._vendorsCache || []
+  // 일반 업체 (법인카드 제외) + 법인카드 업체 분리
+  const vendors = allVendors.filter(v => !v.is_card_type)
+  const cardVendors = allVendors.filter(v => v.is_card_type)
   const patientCats = window._patientCats || []
   // 실제 카테고리별 발주 데이터 (_catDailyOrders) 사용
   const catDailyOrders = window._catDailyOrders || []
   const orderData = window._ordersData || []
+  // 법인카드 일별 데이터 (_cardDailyMap: vendorId → { dateStr: total })
+  const cardDailyMap = window._cardDailyMap || {}
   const year = App.currentYear
   const month = App.currentMonth
   const daysInMonth = new Date(year, month, 0).getDate()
@@ -3977,43 +3982,54 @@ window.showMonthAllOrdersModal = function() {
   const hasCats = patientCats && patientCats.length > 0
 
   // ── 컬럼 정의 (업체별 과세/면세/부가세/합계 서브컬럼) ──
-  // 컬럼 구조: { catName, vendorId, vendorName, taxType, subType }
-  // subType: 'taxable'|'exempt'|'vat'|'total'|'mixed_total'
+  // 컬럼 구조: { catName, vendorId, vendorName, taxType, subType, isCard, cardSubtype }
+  // subType: 'taxable'|'exempt'|'vat'|'total'|'mixed_total'|'card'
   const columns = []
+  const subtypeKorean = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
 
   if (hasCats) {
     patientCats.forEach(cat => {
       vendors.forEach(v => {
+        const vName = v.name || '(이름없음)'
         if (v.tax_type === 'mixed_total') {
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'mixed_total' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'mixed_total' })
         } else if (v.tax_type === 'taxable') {
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat' })
         } else if (v.tax_type === 'exempt') {
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt' })
         } else { // mixed
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt' })
+          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat' })
         }
       })
     })
   } else {
     vendors.forEach(v => {
+      const vName = v.name || '(이름없음)'
       if (v.tax_type === 'mixed_total') {
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'mixed_total' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'mixed_total' })
       } else if (v.tax_type === 'taxable') {
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat' })
       } else if (v.tax_type === 'exempt') {
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt' })
       } else { // mixed
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'taxable' })
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'exempt' })
-        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: v.name, taxType: v.tax_type, subType: 'vat' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt' })
+        columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat' })
       }
     })
   }
+  // ── 법인카드 컬럼 추가 (일반 업체 컬럼 뒤에 배치) ──
+  cardVendors.forEach(v => {
+    const vName = v.name || '법인카드'
+    const cardSubtype = v.card_subtype || 'other'
+    columns.push({ catName: null, catId: null, vendorId: v.id, vendorName: vName,
+      taxType: 'card', subType: 'card', isCard: true, cardSubtype: cardSubtype,
+      cardSubtypeLabel: subtypeKorean[cardSubtype] || '기타' })
+  })
 
   // 셀값 추출 함수
   function getCellValue(col, dateStr) {
@@ -4043,13 +4059,18 @@ window.showMonthAllOrdersModal = function() {
     }
   }
 
+  // 법인카드 셀값 추출
+  function getCardCellValue(col, dateStr) {
+    return (cardDailyMap[col.vendorId] && cardDailyMap[col.vendorId][dateStr]) || 0
+  }
+
   // 컬럼 합계
   const colTotals = columns.map(() => 0)
 
-  // 서브타입 라벨/색
-  const subLabel = { taxable:'과세', exempt:'면세', vat:'부가세', mixed_total:'합계' }
-  const subColor = { taxable:'#16a34a', exempt:'#d97706', vat:'#6b7280', mixed_total:'#1d4ed8' }
-  const subBg    = { taxable:'#f0fdf4', exempt:'#fffbeb', vat:'#f9fafb', mixed_total:'#eff6ff' }
+  // 서브타입 라벨/색 (법인카드 포함)
+  const subLabel = { taxable:'과세', exempt:'면세', vat:'부가세', mixed_total:'합계', card:'법인카드' }
+  const subColor = { taxable:'#16a34a', exempt:'#d97706', vat:'#6b7280', mixed_total:'#1d4ed8', card:'#7c3aed' }
+  const subBg    = { taxable:'#f0fdf4', exempt:'#fffbeb', vat:'#f9fafb', mixed_total:'#eff6ff', card:'#f3e8ff' }
 
   // ── 그룹 헤더 (업체명 colspan) 빌드 ──
   // vendor별 컬럼 수 계산
@@ -4077,13 +4098,24 @@ window.showMonthAllOrdersModal = function() {
       groupHeaderHtml += `<th colspan="${span}" style="text-align:center;padding:5px 4px;font-size:11px;border-left:2px solid #e5e7eb;background:#f8fafc;white-space:nowrap;font-weight:700;color:#1f2937">${v.name}</th>`
     })
   }
+  // 법인카드 업체 헤더 추가
+  cardVendors.forEach(v => {
+    const subtypeLabel = subtypeKorean[v.card_subtype || 'other'] || '기타'
+    groupHeaderHtml += `<th colspan="1" style="text-align:center;padding:5px 4px;font-size:11px;border-left:2px solid #c4b5fd;background:#f3e8ff;white-space:nowrap;font-weight:700;color:#7c3aed">
+      <i class="fas fa-credit-card" style="font-size:9px;margin-right:2px"></i>${v.name}<br><span style="font-size:9px;color:#9333ea;font-weight:500">(${subtypeLabel})</span>
+    </th>`
+  })
 
-  // 서브헤더 (과세/면세/부가세/합계)
+  // 서브헤더 (과세/면세/부가세/합계/법인카드)
   let subHeaderHtml = ''
   columns.forEach((col, ci) => {
     const isFirst = ci === 0 || columns[ci-1].vendorId !== col.vendorId || columns[ci-1].catId !== col.catId
-    subHeaderHtml += `<th style="text-align:right;padding:4px 5px;font-size:10px;white-space:nowrap;${isFirst?'border-left:2px solid #e5e7eb':'border-left:1px solid #f0f0f0'};background:${subBg[col.subType]};color:${subColor[col.subType]};font-weight:600">
-      ${subLabel[col.subType]}
+    const borderLeft = col.isCard ? 'border-left:2px solid #c4b5fd' : (isFirst ? 'border-left:2px solid #e5e7eb' : 'border-left:1px solid #f0f0f0')
+    const label = col.isCard ? (col.cardSubtypeLabel || '법인카드') : (subLabel[col.subType] || col.subType || '-')
+    const bg = col.isCard ? '#f3e8ff' : (subBg[col.subType] || '#f9fafb')
+    const color = col.isCard ? '#7c3aed' : (subColor[col.subType] || '#6b7280')
+    subHeaderHtml += `<th style="text-align:right;padding:4px 5px;font-size:10px;white-space:nowrap;${borderLeft};background:${bg};color:${color};font-weight:600">
+      ${label}
     </th>`
   })
 
@@ -4095,19 +4127,21 @@ window.showMonthAllOrdersModal = function() {
     let rowTotal = 0
     let cells = ''
     columns.forEach((col, ci) => {
-      const v = getCellValue(col, dateStr)
+      const v = col.isCard ? getCardCellValue(col, dateStr) : getCellValue(col, dateStr)
       colTotals[ci] += v
-      rowTotal += (col.subType === 'vat' || col.subType === 'taxable' || col.subType === 'exempt' || col.subType === 'mixed_total') && col.subType !== 'vat' && col.subType !== 'taxable' ? 0 : 0
       // 일 합계에는 total/mixed_total만 포함 (과세+부가세중복 방지)
       if (col.subType === 'mixed_total') rowTotal += v
       else if (col.subType === 'exempt') rowTotal += v
       else if (col.subType === 'taxable') rowTotal += v
+      else if (col.isCard) rowTotal += v
       // vat는 taxable에 포함되므로 따로 합산 안 함 (하지만 표시는 함)
 
       const isFirst = ci === 0 || columns[ci-1].vendorId !== col.vendorId || columns[ci-1].catId !== col.catId
-      cells += `<td style="text-align:right;padding:3px 5px;font-size:11px;${isFirst?'border-left:2px solid #e5e7eb':'border-left:1px solid #f0f0f0'};${v>0?`color:${subColor[col.subType]};font-weight:600`:'color:#e5e7eb'}">${v>0?v.toLocaleString():'-'}</td>`
+      const borderLeft = col.isCard ? 'border-left:2px solid #c4b5fd' : (isFirst ? 'border-left:2px solid #e5e7eb' : 'border-left:1px solid #f0f0f0')
+      const cellColor = col.isCard ? '#7c3aed' : (subColor[col.subType] || '#374151')
+      cells += `<td style="text-align:right;padding:3px 5px;font-size:11px;${borderLeft};${v>0?`color:${cellColor};font-weight:600`:'color:#e5e7eb'}">${v>0?v.toLocaleString():'-'}</td>`
     })
-    // 실제 일 합계: 업체별 total 합산
+    // 실제 일 합계: 업체별 total + 법인카드 합산
     rowTotal = 0
     if (hasCats) {
       vendors.forEach(v => {
@@ -4127,6 +4161,10 @@ window.showMonthAllOrdersModal = function() {
         if (o) rowTotal += o.total_amount || 0
       })
     }
+    // 법인카드 합산
+    cardVendors.forEach(v => {
+      rowTotal += (cardDailyMap[v.id] && cardDailyMap[v.id][dateStr]) || 0
+    })
     grandTotal += rowTotal
 
     const rowBg = isWeekend ? '#fafafa' : 'white'
@@ -4145,8 +4183,16 @@ window.showMonthAllOrdersModal = function() {
   columns.forEach((col, ci) => {
     const t = colTotals[ci]
     const isFirst = ci === 0 || columns[ci-1].vendorId !== col.vendorId || columns[ci-1].catId !== col.catId
-    totalCells += `<td style="text-align:right;padding:5px 5px;font-size:11px;font-weight:700;color:${t>0?subColor[col.subType]:'#9ca3af'};${isFirst?'border-left:2px solid #bfdbfe':'border-left:1px solid #dbeafe'}">${t>0?t.toLocaleString():'-'}</td>`
+    const borderLeft = col.isCard ? 'border-left:2px solid #c4b5fd' : (isFirst ? 'border-left:2px solid #bfdbfe' : 'border-left:1px solid #dbeafe')
+    const totalColor = col.isCard ? '#7c3aed' : (subColor[col.subType] || '#374151')
+    totalCells += `<td style="text-align:right;padding:5px 5px;font-size:11px;font-weight:700;color:${t>0?totalColor:'#9ca3af'};${borderLeft}">${t>0?t.toLocaleString():'-'}</td>`
   })
+
+  // 법인카드 합계 계산
+  const cardGrandTotal = cardVendors.reduce((s, v) => {
+    return s + Object.values(cardDailyMap[v.id] || {}).reduce((a, b) => a + b, 0)
+  }, 0)
+  const allCardCount = cardVendors.length
 
   // ── 모달 생성 ──
   const existing = document.getElementById('monthAllOrdersModal')
@@ -4161,7 +4207,7 @@ window.showMonthAllOrdersModal = function() {
       <div style="padding:14px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:white;border-radius:16px 16px 0 0;z-index:10">
         <div>
           <h2 style="font-weight:700;color:#1f2937;font-size:16px;margin:0"><i class="fas fa-table" style="color:#ea580c;margin-right:8px"></i>${year}년 ${mm}월 전체 발주 현황</h2>
-          <p style="font-size:12px;color:#6b7280;margin:3px 0 0">월 합계: <strong style="color:#1d4ed8">${grandTotal.toLocaleString()}원</strong> · ${columns.length}개 컬럼 · ${vendors.length}개 업체</p>
+          <p style="font-size:12px;color:#6b7280;margin:3px 0 0">월 합계: <strong style="color:#1d4ed8">${grandTotal.toLocaleString()}원</strong> · ${columns.length}개 컬럼 · 일반 ${vendors.length}개 업체${allCardCount > 0 ? ` + 법인카드 ${allCardCount}개 (${cardGrandTotal.toLocaleString()}원)` : ''}</p>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <button onclick="downloadOrdersExcel()" style="background:#16a34a;color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px">
@@ -4176,6 +4222,7 @@ window.showMonthAllOrdersModal = function() {
         <span style="color:#d97706;font-weight:600">■ 면세</span>
         <span style="color:#6b7280;font-weight:600">■ 부가세</span>
         <span style="color:#1d4ed8;font-weight:600">■ 합계(합산)</span>
+        <span style="color:#7c3aed;font-weight:600">■ 법인카드</span>
         ${hasCats ? patientCats.map(c=>`<span style="color:#7c3aed;font-weight:600">● ${c.name}</span>`).join('') : ''}
       </div>
       <!-- 테이블 -->
