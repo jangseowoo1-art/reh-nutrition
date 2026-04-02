@@ -17638,65 +17638,6 @@ async function openHospitalDetail(hospitalId) {
         </div>
       </div>
 
-      <!-- ═══ 소모품/카드 제외 식단가 계산 기준 설정 ═══ -->
-      ${(() => {
-        const savedKeys = (supplyExcludeCfg?.supply_exclude_keys) || []
-        const isDefault = supplyExcludeCfg?.is_default !== false ? (savedKeys.length === 0) : false
-        const chkCard    = savedKeys.includes('card')
-        const chkSupply  = savedKeys.includes('supply')
-        const chkEvent   = savedKeys.includes('event')
-        const chkOther   = savedKeys.includes('other')
-        return `
-      <div class="mt-4 p-4 bg-orange-50 border border-orange-200 rounded-xl">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>소모품/카드 제외 식단가 계산 기준</h3>
-            <p class="text-xs text-orange-600 mt-0.5">③ 소모품·카드 제외 식단가 = (총금액 − 선택한 제외항목 합계) ÷ 전체 식수</p>
-          </div>
-          ${isDefault ? `<span class="text-xs bg-orange-100 text-orange-600 px-2 py-1 rounded-full border border-orange-300">기본값 적용중 (카드+소모품)</span>` : `<span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300"><i class="fas fa-check mr-1"></i>병원 맞춤 설정</span>`}
-        </div>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
-          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
-            <input type="checkbox" id="sup-excl-card" class="text-orange-500" ${chkCard ? 'checked' : ''}>
-            <div>
-              <div class="text-xs font-semibold text-gray-700">법인카드 금액</div>
-              <div class="text-xs text-gray-500">법인카드 지출 합계</div>
-            </div>
-          </label>
-          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
-            <input type="checkbox" id="sup-excl-supply" class="text-orange-500" ${chkSupply ? 'checked' : ''}>
-            <div>
-              <div class="text-xs font-semibold text-gray-700">업체발주 소모품</div>
-              <div class="text-xs text-gray-500">카테고리 = 소모품★ 업체</div>
-            </div>
-          </label>
-          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
-            <input type="checkbox" id="sup-excl-event" class="text-orange-500" ${chkEvent ? 'checked' : ''}>
-            <div>
-              <div class="text-xs font-semibold text-gray-700">이벤트 금액</div>
-              <div class="text-xs text-gray-500">이벤트 업체 발주액</div>
-            </div>
-          </label>
-          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
-            <input type="checkbox" id="sup-excl-other" class="text-orange-500" ${chkOther ? 'checked' : ''}>
-            <div>
-              <div class="text-xs font-semibold text-gray-700">기타 비식재료</div>
-              <div class="text-xs text-gray-500">기타(other) 업체액</div>
-            </div>
-          </label>
-        </div>
-        <div class="text-xs text-orange-700 bg-orange-100 rounded p-2">
-          <i class="fas fa-info-circle mr-1"></i>
-          <b>업체발주 소모품</b>은 <b>업체관리 탭에서 카테고리를 "소모품 ★"으로 지정한 업체</b>의 발주금액을 자동 합산해 제외합니다. 소모품 업체 카테고리 미지정 시 체크해도 제외되는 금액이 없습니다.
-        </div>
-        <div class="mt-3 flex justify-end">
-          <button onclick="saveSupplyExcludeConfig(${hosp.id})" class="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
-            <i class="fas fa-save mr-1"></i>제외 기준 저장
-          </button>
-        </div>
-      </div>`
-      })()}
-
       <!-- 예산설정 탭 -->
       <div id="hospTab-budget" class="hidden">
         <!-- 기본 설정 안내 배너 -->
@@ -17822,6 +17763,67 @@ async function openHospitalDetail(hospitalId) {
             <p class="text-xs text-gray-400 mt-1">* 잔반량(L) × 단가로 비용 자동계산. 0이면 직접 입력.</p>
           </div>
         </div>
+
+        <!-- ═══ 소모품/카드 제외 식단가 계산 기준 설정 ═══ -->
+        ${(() => {
+          const savedKeys = (supplyExcludeCfg?.supply_exclude_keys) || []
+          const isDefault = savedKeys.length === 0
+          const chkCard    = savedKeys.includes('card')
+          const chkSupply  = savedKeys.includes('supply')
+          const chkEvent   = savedKeys.includes('event')
+          const chkOther   = savedKeys.includes('other')
+          return `
+        <div class="mt-4 p-4 bg-orange-50 border border-orange-200 rounded-xl">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>소모품/카드 제외 식단가 계산 기준</h3>
+              <p class="text-xs text-orange-600 mt-0.5">③ 소모품·카드 제외 식단가 = (총금액 − 선택한 제외항목 합계) ÷ 전체 식수</p>
+            </div>
+            ${isDefault
+              ? `<span class="text-xs bg-orange-100 text-orange-600 px-2 py-1 rounded-full border border-orange-300">기본값 적용중 (카드+소모품)</span>`
+              : `<span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300"><i class="fas fa-check mr-1"></i>병원 맞춤 설정</span>`}
+          </div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+            <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+              <input type="checkbox" id="sup-excl-card" class="text-orange-500" ${chkCard ? 'checked' : ''}>
+              <div>
+                <div class="text-xs font-semibold text-gray-700">법인카드 금액</div>
+                <div class="text-xs text-gray-500">법인카드 지출 합계</div>
+              </div>
+            </label>
+            <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+              <input type="checkbox" id="sup-excl-supply" class="text-orange-500" ${chkSupply ? 'checked' : ''}>
+              <div>
+                <div class="text-xs font-semibold text-gray-700">업체발주 소모품</div>
+                <div class="text-xs text-gray-500">카테고리 = 소모품★ 업체</div>
+              </div>
+            </label>
+            <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+              <input type="checkbox" id="sup-excl-event" class="text-orange-500" ${chkEvent ? 'checked' : ''}>
+              <div>
+                <div class="text-xs font-semibold text-gray-700">이벤트 금액</div>
+                <div class="text-xs text-gray-500">이벤트 업체 발주액</div>
+              </div>
+            </label>
+            <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+              <input type="checkbox" id="sup-excl-other" class="text-orange-500" ${chkOther ? 'checked' : ''}>
+              <div>
+                <div class="text-xs font-semibold text-gray-700">기타 비식재료</div>
+                <div class="text-xs text-gray-500">기타(other) 업체액</div>
+              </div>
+            </label>
+          </div>
+          <div class="text-xs text-orange-700 bg-orange-100 rounded p-2">
+            <i class="fas fa-info-circle mr-1"></i>
+            <b>업체발주 소모품</b>은 <b>업체관리 탭에서 카테고리를 "소모품 ★"으로 지정한 업체</b>의 발주금액을 자동 합산해 제외합니다. 소모품 업체 카테고리 미지정 시 체크해도 제외되는 금액이 없습니다.
+          </div>
+          <div class="mt-3 flex justify-end">
+            <button onclick="saveSupplyExcludeConfig(${hosp.id})" class="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
+              <i class="fas fa-save mr-1"></i>제외 기준 저장
+            </button>
+          </div>
+        </div>`
+        })()}
       </div>
 
       <!-- 업체관리 탭 -->
