@@ -17441,12 +17441,13 @@ async function openHospitalDetail(hospitalId) {
   const existingModal = document.getElementById('hospDetailModal')
   if (existingModal) existingModal.remove()
 
-  const [hosp, budget, vendorList, accounts, execAccounts] = await Promise.all([
+  const [hosp, budget, vendorList, accounts, execAccounts, supplyExcludeCfg] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/budget/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/vendors`),
     api('GET', `/api/admin/hospitals/${hospitalId}/accounts`),
-    api('GET', `/api/admin/hospitals/${hospitalId}/executive-accounts`)
+    api('GET', `/api/admin/hospitals/${hospitalId}/executive-accounts`),
+    api('GET', `/api/admin/hospitals/${hospitalId}/supply-exclude-config`)
   ])
   if (!hosp) return
 
@@ -17635,6 +17636,65 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>
       </div>
+
+      <!-- ═══ 소모품/카드 제외 식단가 계산 기준 설정 ═══ -->
+      ${(() => {
+        const savedKeys = (supplyExcludeCfg?.supply_exclude_keys) || []
+        const isDefault = supplyExcludeCfg?.is_default !== false ? (savedKeys.length === 0) : false
+        const chkCard    = savedKeys.includes('card')
+        const chkSupply  = savedKeys.includes('supply')
+        const chkEvent   = savedKeys.includes('event')
+        const chkOther   = savedKeys.includes('other')
+        return `
+      <div class="mt-4 p-4 bg-orange-50 border border-orange-200 rounded-xl">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>소모품/카드 제외 식단가 계산 기준</h3>
+            <p class="text-xs text-orange-600 mt-0.5">③ 소모품·카드 제외 식단가 = (총금액 − 선택한 제외항목 합계) ÷ 전체 식수</p>
+          </div>
+          ${isDefault ? `<span class="text-xs bg-orange-100 text-orange-600 px-2 py-1 rounded-full border border-orange-300">기본값 적용중 (카드+소모품)</span>` : `<span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300"><i class="fas fa-check mr-1"></i>병원 맞춤 설정</span>`}
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+            <input type="checkbox" id="sup-excl-card" class="text-orange-500" ${chkCard ? 'checked' : ''}>
+            <div>
+              <div class="text-xs font-semibold text-gray-700">법인카드 금액</div>
+              <div class="text-xs text-gray-500">card_expenses 합계</div>
+            </div>
+          </label>
+          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+            <input type="checkbox" id="sup-excl-supply" class="text-orange-500" ${chkSupply ? 'checked' : ''}>
+            <div>
+              <div class="text-xs font-semibold text-gray-700">업체발주 소모품</div>
+              <div class="text-xs text-gray-500">소모품 업체 발주액</div>
+            </div>
+          </label>
+          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+            <input type="checkbox" id="sup-excl-event" class="text-orange-500" ${chkEvent ? 'checked' : ''}>
+            <div>
+              <div class="text-xs font-semibold text-gray-700">이벤트 금액</div>
+              <div class="text-xs text-gray-500">이벤트 업체 발주액</div>
+            </div>
+          </label>
+          <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
+            <input type="checkbox" id="sup-excl-other" class="text-orange-500" ${chkOther ? 'checked' : ''}>
+            <div>
+              <div class="text-xs font-semibold text-gray-700">기타 비식재료</div>
+              <div class="text-xs text-gray-500">기타(other) 업체액</div>
+            </div>
+          </label>
+        </div>
+        <div class="text-xs text-orange-700 bg-orange-100 rounded p-2">
+          <i class="fas fa-info-circle mr-1"></i>
+          아무것도 선택하지 않으면 총금액 기준으로만 계산됩니다. 병원마다 소모품 처리 방식(법인카드 사용 여부, 업체 발주 방식)이 다를 수 있으므로 해당 병원에 맞게 설정하세요.
+        </div>
+        <div class="mt-3 flex justify-end">
+          <button onclick="saveSupplyExcludeConfig(${hosp.id})" class="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
+            <i class="fas fa-save mr-1"></i>제외 기준 저장
+          </button>
+        </div>
+      </div>`
+      })()}
 
       <!-- 예산설정 탭 -->
       <div id="hospTab-budget" class="hidden">
@@ -18667,6 +18727,29 @@ async function saveHospitalInfo(hospitalId) {
     showToast('저장 실패', 'error')
   }
 }
+
+// ── 소모품/카드 제외 식단가 기준 저장 ────────────────────────────
+async function saveSupplyExcludeConfig(hospitalId) {
+  const keys = []
+  if (document.getElementById('sup-excl-card')?.checked)   keys.push('card')
+  if (document.getElementById('sup-excl-supply')?.checked) keys.push('supply')
+  if (document.getElementById('sup-excl-event')?.checked)  keys.push('event')
+  if (document.getElementById('sup-excl-other')?.checked)  keys.push('other')
+
+  const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/supply-exclude-config`, { supply_exclude_keys: keys })
+  if (res?.success) {
+    showToast('소모품 제외 기준이 저장되었습니다', 'success')
+    // 맞춤 설정 배지 업데이트
+    const badge = document.querySelector('[id^="sup-excl-card"]')?.closest('.mt-4')?.querySelector('span')
+    if (badge) {
+      badge.className = 'text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300'
+      badge.innerHTML = '<i class="fas fa-check mr-1"></i>병원 맞춤 설정'
+    }
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+window.saveSupplyExcludeConfig = saveSupplyExcludeConfig
 
 // 카카오 주소검색
 window.openKakaoAddressSearch = function() {

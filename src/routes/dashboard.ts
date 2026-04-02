@@ -81,7 +81,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
     nullCatTodayOrder,
     todayMealRow,
     orderDayCountRow,
-    prev3MonthsData
+    prev3MonthsData,
+    supplyExcludeConfig
   ] = await Promise.all([
     // 업체별 발주 합계 (BETWEEN으로 인덱스 활용)
     c.env.DB.prepare(
@@ -280,7 +281,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
        GROUP BY y, m
        ORDER BY y DESC, m DESC
        LIMIT 3`
-    ).bind(hospitalId, year, month).all<any>()
+    ).bind(hospitalId, year, month).all<any>(),
+
+    // 소모품/카드 제외 계산 기준 설정
+    c.env.DB.prepare(
+      `SELECT supply_exclude_keys FROM hospital_info WHERE hospital_id = ?`
+    ).bind(hospitalId).first<any>()
   ])
 
   // 커스텀 필드별 월 합계 계산
@@ -408,11 +414,37 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // 식단가 계산용 식수: 비급여 제외, 환자 제외 → 직원+보호자+환자군(커스텀, ea 제외)
   const totalMealsForPrice = (ms.total_staff||0) + (ms.total_guardian||0) + mealCustomTotal
   // 소모품 제외 금액 (daily_orders 기준 소모품 업체 + card_expenses 법인카드)
-  const supplyUsed = (vendors.results || [])
-    .filter((v: any) => v.category === 'supply')
-    .reduce((s: number, v: any) => s + v.total_used, 0)
-  // 소모품/카드 제외 = 소모품 발주 + 법인카드 실지출
-  const supplyCardUsed = supplyUsed + cardExpensesUsed
+  // supply_exclude_keys 설정에 따라 병원별로 제외 항목 다르게 적용
+  let supplyExcludeKeys: string[] = []
+  if (supplyExcludeConfig?.supply_exclude_keys) {
+    try { supplyExcludeKeys = JSON.parse(supplyExcludeConfig.supply_exclude_keys) } catch(e) {}
+  } else {
+    // 설정 없으면 기존 기본값: card + supply 모두 제외
+    supplyExcludeKeys = ['card', 'supply']
+  }
+
+  // 업체 발주 소모품 제외 금액 (category='supply')
+  const supplyUsed = supplyExcludeKeys.includes('supply')
+    ? (vendors.results || [])
+        .filter((v: any) => v.category === 'supply')
+        .reduce((s: number, v: any) => s + v.total_used, 0)
+    : 0
+  // 법인카드 제외 금액
+  const cardExcluded = supplyExcludeKeys.includes('card') ? cardExpensesUsed : 0
+  // 이벤트 제외 금액
+  const eventExcluded = supplyExcludeKeys.includes('event')
+    ? (vendors.results || [])
+        .filter((v: any) => v.category === 'event')
+        .reduce((s: number, v: any) => s + v.total_used, 0)
+    : 0
+  // 기타 비식재료 제외 금액 (category='general' 외 기타)
+  const otherExcluded = supplyExcludeKeys.includes('other')
+    ? (vendors.results || [])
+        .filter((v: any) => v.category === 'general' || v.category === 'other')
+        .reduce((s: number, v: any) => s + v.total_used, 0)
+    : 0
+
+  const supplyCardUsed = supplyUsed + cardExcluded + eventExcluded + otherExcluded
   // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
   // ② 직원식 제외 식단가:
@@ -1039,6 +1071,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealPriceRaw: mealPriceTotal,            // 기존 총발주÷총식수 방식 (참고용)
     mealPriceNoStaff,
     mealPriceNoSupply,
+    supplyExcludeKeys,  // 병원별 소모품 제외 설정 (프론트엔드 라벨 표시용)
     totalMeals,
     catDietPrices,
     todayMeals: todayPatientMeals,  // 오늘 전체 식수 (직원+보호자+환자군)

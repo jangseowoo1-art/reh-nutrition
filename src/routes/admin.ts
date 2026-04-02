@@ -82,6 +82,32 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
   return c.json({ success: true })
 })
 
+// ── 소모품/카드 제외 식단가 계산 기준 조회 ──────────────────────
+adminRouter.get('/hospitals/:id/supply-exclude-config', async (c) => {
+  const id = c.req.param('id')
+  const row = await c.env.DB.prepare(`
+    SELECT supply_exclude_keys FROM hospital_info WHERE hospital_id=?
+  `).bind(id).first<any>()
+  let keys: string[] = []
+  if (row?.supply_exclude_keys) {
+    try { keys = JSON.parse(row.supply_exclude_keys) } catch(e) {}
+  }
+  // 기본값: NULL이면 기존 동작(card + supply 모두 제외)
+  return c.json({ supply_exclude_keys: keys, is_default: !row?.supply_exclude_keys })
+})
+
+// ── 소모품/카드 제외 식단가 계산 기준 저장 ──────────────────────
+adminRouter.put('/hospitals/:id/supply-exclude-config', async (c) => {
+  const id = c.req.param('id')
+  const { supply_exclude_keys } = await c.req.json()
+  const keys = Array.isArray(supply_exclude_keys) ? supply_exclude_keys : []
+  await c.env.DB.prepare(`
+    UPDATE hospital_info SET supply_exclude_keys=?, updated_at=CURRENT_TIMESTAMP
+    WHERE hospital_id=?
+  `).bind(JSON.stringify(keys), id).run()
+  return c.json({ success: true })
+})
+
 // ── 병원별 월 예산 설정 조회 ───────────────────────────────────
 adminRouter.get('/hospitals/:id/budget/:year/:month', async (c) => {
   const { id, year, month } = c.req.param()
