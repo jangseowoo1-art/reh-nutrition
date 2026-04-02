@@ -19222,7 +19222,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
       <div class="flex items-center gap-2">
         <i class="fas fa-calculator text-white text-sm"></i>
         <span class="text-sm font-bold text-white">환자군별 예산 자동배분</span>
-        <span class="text-xs text-indigo-200 bg-indigo-700 bg-opacity-50 px-1.5 py-0.5 rounded-full">식수 × 목표식단가 가중방식</span>
+        <span class="text-xs text-indigo-200 bg-indigo-700 bg-opacity-50 px-1.5 py-0.5 rounded-full">식수 × 기준단가 가중방식</span>
       </div>
       <span class="text-xs text-indigo-200">${App.currentYear}년 ${App.currentMonth}월</span>
     </div>
@@ -19232,7 +19232,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
       <div class="mb-3 p-2.5 bg-white rounded-lg border border-indigo-100 text-xs">
         <div class="font-semibold text-indigo-800 mb-1.5"><i class="fas fa-info-circle mr-1"></i>계산 방식</div>
         <div class="space-y-0.5 text-gray-600">
-          <div>① 가중값 = <span class="font-medium text-blue-700">3개월 평균 식수</span> × <span class="font-medium text-green-700">목표 식단가</span></div>
+          <div>① 가중값 = <span class="font-medium text-blue-700">3개월 평균 식수</span> × <span class="font-medium text-green-700">기준 단가</span></div>
           <div>② 예산 비중 = 환자군 가중값 ÷ 전체 가중합</div>
           <div>③ 배분예산 = 총 목표예산 × 예산 비중</div>
           <div>④ 예상 식단가 = 배분예산 ÷ 평균 식수 <span class="text-gray-400">(참고값)</span></div>
@@ -19267,15 +19267,15 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
       ${!hasWeightData && !hasMealData ? `
       <div class="mb-3 p-2 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
         <i class="fas fa-exclamation-triangle mr-1"></i>
-        <strong>식수 데이터 없음:</strong> 아래 목표 식단가 입력 후 비중을 직접 수정하거나 균등배분을 사용하세요.
+        <strong>식수 데이터 없음:</strong> 아래 기준 단가 입력 후 비중을 직접 수정하거나 균등배분을 사용하세요.
       </div>` : !hasWeightData && hasMealData ? `
       <div class="mb-3 p-2 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-700">
         <i class="fas fa-exclamation-triangle mr-1"></i>
-        <strong>목표 식단가 미설정:</strong> 아래 각 환자군의 목표 식단가를 입력하면 가중배분이 적용됩니다. 현재는 단순 식수 비중으로 계산합니다.
+        <strong>기준 단가 미설정:</strong> 아래 각 환자군의 기준 단가를 입력하면 가중배분이 적용됩니다. 현재는 단순 식수 비중으로 계산합니다.
       </div>` : `
       <div class="mb-3 p-2 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-700">
         <i class="fas fa-check-circle mr-1"></i>
-        <strong>가중배분 활성화:</strong> 3개월 평균 식수 × 목표 식단가 기반으로 예산 비중을 자동 계산합니다.
+        <strong>가중배분 활성화:</strong> 3개월 평균 식수 × 기준 단가 기반으로 예산 비중을 자동 계산합니다.
       </div>`}
 
       <!-- 환자군별 상세 행 (테이블형) -->
@@ -19285,7 +19285,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           style="grid-template-columns: 1fr 70px 70px 80px 60px 90px 88px">
           <span>환자군</span>
           <span class="text-center">3개월<br>평균식수</span>
-          <span class="text-center">목표<br>식단가</span>
+          <span class="text-center">기준<br>단가</span>
           <span class="text-center">가중값</span>
           <span class="text-center">식수<br>비중</span>
           <span class="text-center">예산<br>비중</span>
@@ -19317,8 +19317,8 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
                 class="form-input text-xs py-0.5 text-center w-full comma-input"
                 value="${refPrice > 0 ? refPrice.toLocaleString('ko-KR') : ''}"
                 placeholder="입력"
-                oninput="recalcAutoAlloc()"
-                title="목표 식단가 (원/식) - 변경 후 아래 [재계산] 클릭">
+                oninput="recalcAutoAlloc(); updateWeightedAvgTarget()"
+                title="기준 단가 (원/식) - 환자군 간 비용 비율 기준값. 변경 후 [재계산] 클릭">
             </div>
             <div id="allocWeight-${cat.id}" class="text-center text-xs text-purple-700 font-medium">
               ${weight > 0 ? Math.round(weight/1000).toLocaleString()+'천' : '<span class="text-gray-300">-</span>'}
@@ -19356,7 +19356,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
       <div class="flex gap-2">
         <button type="button" onclick="recalcAutoAllocFromRefPrice()"
           class="flex-1 py-1.5 text-xs font-semibold bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200">
-          <i class="fas fa-redo mr-1"></i>목표식단가로 재계산
+          <i class="fas fa-redo mr-1"></i>기준단가로 재계산
         </button>
         ${hasWeightData ? `
         <button type="button" onclick="unlockAllocRatios()"
@@ -19406,6 +19406,12 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
 
     return `
     <div class="p-3 bg-white border border-gray-200 rounded-xl">
+      <!-- hidden: 저장용 필드 (UI에 표시하지 않음) -->
+      <input type="hidden" id="catBudget-${cat.id}" value="${s.monthly_budget > 0 ? s.monthly_budget : ''}">
+      <input type="hidden" id="catMealPrice-${cat.id}" value="${s.target_meal_price > 0 ? s.target_meal_price : ''}">
+      <input type="hidden" id="catWorkDays-${cat.id}" value="${(!isFallback && s.working_days > 0) ? s.working_days : getDefaultWorkingDays(App.currentYear, App.currentMonth)}">
+
+      <!-- 카드 헤더: 카테고리명 + 배분 요약 -->
       <div class="flex items-center gap-2 mb-2 flex-wrap">
         <div class="w-5 h-5 rounded flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
              style="background:${getCategoryColor(cat.category_key)}">
@@ -19417,35 +19423,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         ${hasMealData ? `<span class="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">식수 ${mealRatioPct}%</span>` : ''}
         ${hasWeightData ? `<span class="text-xs text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-full font-semibold">예산 ${budgetRatioPct}%</span>` : ''}
       </div>
-      <div class="grid grid-cols-2 gap-2 mb-2">
-        <div>
-          <label class="block text-xs text-gray-500 mb-1">월 목표금액 (원)</label>
-          <input type="text" inputmode="numeric" id="catBudget-${cat.id}" value="${s.monthly_budget > 0 ? (s.monthly_budget).toLocaleString('ko-KR') : ''}"
-            class="form-input text-sm py-1 comma-input" placeholder="0"
-            oninput="updateWeightedAvgTarget()">
-        </div>
-        <div>
-          <label class="block text-xs text-gray-500 mb-1">목표 식단가 (원/식) <span class="text-green-500 font-semibold" title="목표로 설정할 식단가 입력 → 가중평균 자동계산에 사용">★</span></label>
-          ${(() => {
-            // API에서 받은 실제 식단가 우선 표시 (저장값 없을 때)
-            const catDietEntry = (window._adminCatDietPrices || []).find(d => d.id === cat.id)
-            const actualPrice = catDietEntry?.monthDietPrice || 0
-            const savedPrice = s.target_meal_price || 0
-            const displayVal = savedPrice > 0 ? savedPrice.toLocaleString('ko-KR') : (actualPrice > 0 ? actualPrice.toLocaleString('ko-KR') : '')
-            const placeholderText = actualPrice > 0 ? `실시간: ${actualPrice.toLocaleString()}원` : '자동계산'
-            return `<input type="text" inputmode="numeric" id="catMealPrice-${cat.id}" value="${displayVal}"
-              class="form-input text-sm py-1 comma-input" placeholder="${placeholderText}"
-              oninput="updateWeightedAvgTarget()">`
-          })()}
-        </div>
-      </div>
-      <div class="mb-2">
-        <label class="block text-xs text-gray-500 mb-1">영업일수 (일)</label>
-        <input type="number" id="catWorkDays-${cat.id}" value="${(!isFallback && s.working_days > 0) ? s.working_days : getDefaultWorkingDays(App.currentYear, App.currentMonth)}"
-          class="form-input text-sm py-1" placeholder="0">
-      </div>
+
       <!-- 식단가 계산 기준 (접기/펼치기) -->
-      <div class="border-t border-gray-100 pt-2 mt-1">
+      <div>
         <button type="button" onclick="toggleFormulaSection(${cat.id})"
           class="flex items-center justify-between w-full text-xs font-semibold text-blue-600 hover:text-blue-800">
           <span><i class="fas fa-calculator mr-1"></i>현재 식단가 계산 기준 설정</span>
@@ -19566,10 +19546,10 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
   panel.className = 'mt-3 p-3 bg-purple-50 border border-purple-200 rounded-xl'
   panel.innerHTML = `
     <div class="flex items-center justify-between mb-1">
-      <span class="text-xs font-semibold text-purple-700"><i class="fas fa-balance-scale mr-1"></i>가중평균 목표 식단가 (자동계산)</span>
+      <span class="text-xs font-semibold text-purple-700"><i class="fas fa-balance-scale mr-1"></i>가중평균 기준 단가 (자동계산)</span>
       <span id="weightedAvgTargetValue" class="text-sm font-bold text-purple-800">-</span>
     </div>
-    <div class="text-xs text-gray-400">환자군 식수 × 목표 식단가 가중평균 → <span class="text-green-600 font-semibold">예산설정 탭 "목표 식단가"에 자동 반영</span></div>`
+    <div class="text-xs text-gray-400">환자군 식수 × 기준 단가 가중평균 → <span class="text-green-600 font-semibold">예산설정 탭 "목표 식단가"에 자동 반영</span></div>`
   el.parentNode.insertBefore(panel, el.nextSibling)
 
   // 초기 계산
@@ -19641,10 +19621,11 @@ function recalcAutoAllocFromRefPrice() {
   })
 
   recalcAutoAlloc()
+  updateWeightedAvgTarget()  // 기준 단가 변경 시 가중평균도 즉시 갱신
   if (totalWeight > 0) {
-    showToast('목표 식단가 기반으로 예산 비중이 재계산되었습니다.', 'success')
+    showToast('기준 단가 기반으로 예산 비중이 재계산되었습니다.', 'success')
   } else {
-    showToast('평균 식수 또는 목표 식단가를 입력하세요.', 'warning')
+    showToast('평균 식수 또는 기준 단가를 입력하세요.', 'warning')
   }
 }
 
@@ -19675,9 +19656,6 @@ function recalcAutoAlloc() {
     const budgetEl = document.getElementById(`allocBudget-${cat.id}`)
     const mealPriceEl = document.getElementById(`allocMealPrice-${cat.id}`)
 
-    // 실시간 현재 식단가 (발주 기반)
-    const livePrice = mealInfo.month_diet_price || 0
-
     if (budgetEl) {
       budgetEl.textContent = allocated > 0 ? `${allocated.toLocaleString()}원` : '-'
     }
@@ -19687,8 +19665,6 @@ function recalcAutoAlloc() {
       } else if (avgMeals === 0 && allocated > 0) {
         mealPriceEl.innerHTML = `식수없음`
         mealPriceEl.style.color = '#d97706'
-      } else if (allocated > 0) {
-        mealPriceEl.innerHTML = '-'
       } else {
         mealPriceEl.textContent = '-'
       }
@@ -19757,13 +19733,15 @@ function applyAutoAlloc() {
     }
 
     const budgetInput = document.getElementById(`catBudget-${cat.id}`)
-    if (budgetInput) { budgetInput.value = allocated > 0 ? allocated.toLocaleString('ko-KR') : ''; flash(budgetInput, '#eef2ff', '#818cf8') }
+    // hidden input이므로 콤마 없이 숫자만 저장 (parseCommaNum 호환)
+    if (budgetInput) { budgetInput.value = allocated > 0 ? allocated : '' }
 
     const mealPriceInput = document.getElementById(`catMealPrice-${cat.id}`)
-    // 자동배분 적용 시 catMealPrice에는 예상 식단가 값이 아닌 기존 목표 식단가 유지
-    // (목표 식단가는 관리자가 직접 입력하는 값이므로 자동 덮어쓰기 하지 않음)
+    // catMealPrice hidden에는 allocRefPrice 기준단가를 빈영하지 않음
+    // (기준 단가는 allocRefPrice-에서 읽음)
 
     const workDaysInput = document.getElementById(`catWorkDays-${cat.id}`)
+    // hidden에도 영업일수 저장
     if (workDaysInput && workdays > 0) { workDaysInput.value = workdays }
   })
 
@@ -19783,30 +19761,29 @@ function updateWeightedAvgTarget() {
   let weighted = 0
 
   if (totalWeight > 0) {
-    // ── 가중값(식수×목표식단가) 비중 기반 가중평균 목표 식단가 ──
+    // ── 가중값(식수×기준단가) 비중 기반 가중평균 목표 식단가 ──
     weighted = cats.reduce((s, cat) => {
       const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
       const ratio = mealInfo.budget_ratio || 0
-      const p = parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value)
+      const p = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
       return s + p * ratio
     }, 0)
   } else if (totalMeals > 0) {
-    // ── 단순 식수 비중 기반 (목표 식단가 미입력 시 fallback) ──
+    // ── 단순 식수 비중 기반 (기준 단가 미입력 시 fallback) ──
     weighted = cats.reduce((s, cat) => {
       const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
       const ratio = mealInfo.meal_ratio || 0
-      const p = parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value)
+      const p = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
       return s + p * ratio
     }, 0)
   } else {
-    // ── 예산 비중 기반 (식수 미입력 시 fallback) ──
-    const totalBudget = cats.reduce((s, cat) =>
-      s + parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value), 0)
-    if (totalBudget > 0) {
+    // ── 저장된 기준단가 기반 fallback ──
+    const totalRef = cats.reduce((s, cat) =>
+      s + parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value), 0)
+    if (totalRef > 0) {
       weighted = cats.reduce((s, cat) => {
-        const b = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value)
-        const p = parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value)
-        return s + p * (b / totalBudget)
+        const p = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
+        return s + p * (p / totalRef)
       }, 0)
     }
   }
@@ -20004,14 +19981,22 @@ async function saveCategoryBudgets(hospitalId) {
     return
   }
 
-  const settings = cats.map(cat => ({
-    patient_category_id: cat.id,
-    monthly_budget: parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value),
-    target_meal_price: parseCommaNum(document.getElementById(`catMealPrice-${cat.id}`)?.value),
-    working_days: parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0,
-    daily_meal_count: 0,
-    ref_meal_price: parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
-  }))
+  const settings = cats.map(cat => {
+    // 기준 단가: 상단 테이블 allocRefPrice- 입력값 (UI에서 직접 입력하는 유일한 단가 값)
+    const refPrice = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
+    // 배분예산: applyAutoAlloc 시 catBudget- hidden에 저장된 값
+    const monthlyBudget = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value)
+    // 영업일수: catWorkDays- hidden 값
+    const workingDays = parseInt(document.getElementById(`catWorkDays-${cat.id}`)?.value || 0) || 0
+    return {
+      patient_category_id: cat.id,
+      monthly_budget: monthlyBudget,
+      target_meal_price: refPrice,   // 기준 단가를 target_meal_price로 저장 (대시보드 참조용)
+      working_days: workingDays,
+      daily_meal_count: 0,
+      ref_meal_price: refPrice       // ref_meal_price도 동일하게 저장
+    }
+  })
 
   const res = await api('POST', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`, { settings })
   if (res?.success) {
