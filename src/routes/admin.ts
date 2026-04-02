@@ -2169,6 +2169,31 @@ adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
     }
   }
 
+  // ── 이번 달 실제 발주금액 (환자군별) ──
+  const monthStr = `${String(y)}-${String(m).padStart(2, '0')}`
+  const orderAmtRows = await c.env.DB.prepare(`
+    SELECT do2.patient_category_id, SUM(do2.total_amount) AS month_amt
+    FROM daily_orders do2
+    WHERE do2.hospital_id = ?
+      AND strftime('%Y-%m', do2.order_date) = ?
+      AND do2.patient_category_id IS NOT NULL
+    GROUP BY do2.patient_category_id
+  `).bind(id, monthStr).all<any>()
+
+  // NULL 카테고리 포함 전체 발주금액
+  const totalOrderAmtRow = await c.env.DB.prepare(`
+    SELECT SUM(total_amount) AS total_amt
+    FROM daily_orders
+    WHERE hospital_id = ?
+      AND strftime('%Y-%m', order_date) = ?
+  `).bind(id, monthStr).first<any>()
+  const totalOrderAmt = totalOrderAmtRow?.total_amt || 0
+
+  const catOrderAmtMap: Record<number, number> = {}
+  for (const row of (orderAmtRows.results || [])) {
+    catOrderAmtMap[(row as any).patient_category_id] = (row as any).month_amt || 0
+  }
+
   // ── 환자군별 기준 식단가: ref_meal_price 우선, 없으면 target_meal_price 사용 ──
   const priceRows = await c.env.DB.prepare(`
     SELECT cos.patient_category_id, hpc.category_key,
@@ -2218,6 +2243,9 @@ adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
     const avgMeals = catAvgMeals[cat.category_key] || 0
     const refPrice = catPriceMap[cat.category_key] || 0
     const weight = catWeightMap[cat.category_key] || 0
+    // 이번 달 실제 발주 기반 식단가
+    const monthAmt = catOrderAmtMap[cat.id] || 0
+    const monthDietPrice = (meals > 0 && monthAmt > 0) ? Math.round(monthAmt / meals) : 0
     return {
       id: cat.id,
       category_key: cat.category_key,
@@ -2230,10 +2258,13 @@ adminRouter.get('/hospitals/:id/meal-cat-totals/:year/:month', async (c) => {
       meal_ratio: totalMeals > 0 ? meals / totalMeals : 0,
       // 가중 예산 비중 (평균식수 × 기준식단가 기반)
       budget_ratio: totalWeight > 0 ? weight / totalWeight : 0,
+      // 이번 달 실제 발주 기반 현재 식단가
+      month_diet_price: monthDietPrice,
+      month_amt: monthAmt,
     }
   })
 
-  return c.json({ catMeals: result, totalMeals, totalWeight })
+  return c.json({ catMeals: result, totalMeals, totalWeight, totalOrderAmt })
 })
 
 // ── 발주 업체 → 명세서 업체 일괄 동기화 (초기 설정용) ──────────

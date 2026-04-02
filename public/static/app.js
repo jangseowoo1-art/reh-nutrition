@@ -2840,7 +2840,12 @@ async function renderOrders() {
     mealCustomFields: dashData?.mealCustomFields || [],
     mealCustomTotals: dashData?.mealCustomTotals || {},
     targetMealPrice,
-    vendors: vendors || []
+    vendors: vendors || [],
+    // API에서 받은 정확한 식단가 3종 (직원식/소모품 제외 기준값)
+    apiMealPriceTotal: dashData?.mealPriceTotal || 0,
+    apiMealPriceNoStaff: dashData?.mealPriceNoStaff || 0,
+    apiMealPriceNoSupply: dashData?.mealPriceNoSupply || 0,
+    apiTotalUsed: dashData?.totalUsed || 0
   }
 
   // tbody/tfoot를 requestAnimationFrame 후 비동기 렌더링
@@ -5666,19 +5671,46 @@ function updateBudgetProgressPanel() {
     // 식단가 계산용 식수: 비급여 제외, ea 단위 커스텀 필드 제외, 환자(patient) 제외(환자군으로 대체)
     const customFields4price = (ms.mealCustomFields || []).filter(f => (f.unit_type||'meal') !== 'ea')
     const customMealSum = customFields4price.reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
+    // 직원식 커스텀 키: st_key_ 또는 diet_preset_staff_ 로 시작하는 필드
+    const staffCustomMealSum = customFields4price
+      .filter(f => f.field_key.startsWith('st_key_') || f.field_key.startsWith('diet_preset_staff_'))
+      .reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
     // 전체 식수: 직원+보호자+환자군(커스텀) — 비급여 제외, 환자(patient) 제외
-    const totalMeals = (ms.totalStaff||0) + (ms.totalGuardian||0) + customMealSum  // 표시용
-    const totalMealsForPrice = (ms.totalStaff||0) + (ms.totalGuardian||0) + customMealSum
-    // ② 직원식 제외 분모: 보호자 + 환자군
-    const mealsNoStaff = (ms.totalGuardian||0) + customMealSum
+    const totalStaffAll = (ms.totalStaff||0) + staffCustomMealSum
+    const totalMeals = totalStaffAll + (ms.totalGuardian||0) + customMealSum  // 표시용
+    const totalMealsForPrice = totalStaffAll + (ms.totalGuardian||0) + customMealSum
+    // ② 직원식 제외 분모: 보호자 + 환자군 (직원식 커스텀 포함 전체 제외)
+    const mealsNoStaff = (ms.totalGuardian||0) + (customMealSum - staffCustomMealSum)
 
-    // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
-    const mp1 = totalMealsForPrice > 0 ? Math.round(monthTotal / totalMealsForPrice) : 0
-    // ② 직원식 제외: 총금액 ÷ (환자+보호자) — 분모에서만 직원식수 제외
-    //    예: 20,880,000 ÷ 110명 = 189,818원/식 (전체 130,500원보다 높음)
-    const mp2 = mealsNoStaff > 0 ? Math.round(monthTotal / mealsNoStaff) : 0
-    // ③ 소모품/카드 제외: (총금액 - 소모품) ÷ (환자+직원+보호자) — 비급여 제외
-    const mp3 = totalMealsForPrice > 0 ? Math.round((monthTotal - supplyTotal) / totalMealsForPrice) : 0
+    // API에서 받은 정확한 식단가 값 우선 사용 (발주 금액 변경 시 비율로 조정)
+    const apiBase = ms.apiTotalUsed || 0
+    const apiMp1 = ms.apiMealPriceTotal || 0
+    const apiMp2 = ms.apiMealPriceNoStaff || 0
+    const apiMp3 = ms.apiMealPriceNoSupply || 0
+
+    let mp1, mp2, mp3
+    if (apiBase > 0 && apiMp1 > 0 && monthTotal > 0) {
+      // 발주 금액 변동 비율로 API 값 조정
+      const ratio = monthTotal / apiBase
+      mp1 = Math.round(apiMp1 * ratio)
+      mp2 = Math.round(apiMp2 * ratio)
+      // 소모품 제외: (monthTotal - supplyTotal) 기준으로 재계산
+      const apiNoSupplyBase = apiBase - (apiBase - Math.round(apiMp3 * (totalMealsForPrice||1)))
+      mp3 = totalMealsForPrice > 0 ? Math.round((monthTotal - supplyTotal) / (totalMealsForPrice > 0 ? totalMealsForPrice : (apiBase / (apiMp1||1)))) : 0
+      // mp3는 소모품 제외이므로 식수 기반으로 계산 (식수 있을 때)
+      if (totalMealsForPrice > 0) {
+        mp3 = Math.round((monthTotal - supplyTotal) / totalMealsForPrice)
+      } else {
+        mp3 = Math.round(apiMp3 * ratio)
+      }
+    } else if (totalMealsForPrice > 0) {
+      // API 값 없을 때 식수 기반 계산
+      mp1 = Math.round(monthTotal / totalMealsForPrice)
+      mp2 = mealsNoStaff > 0 ? Math.round(monthTotal / mealsNoStaff) : 0
+      mp3 = Math.round((monthTotal - supplyTotal) / totalMealsForPrice)
+    } else {
+      mp1 = 0; mp2 = 0; mp3 = 0
+    }
     const tgt = ms.targetMealPrice
 
     const mp1El = document.getElementById('mpVal-total')
@@ -18720,13 +18752,17 @@ window._patientCategories = []
 
 async function loadPatientCategories(hospitalId) {
   window._currentAdminHospitalId = hospitalId
-  const [cats, catSettingsResp, dietCats, presets, mealTotalsResp] = await Promise.all([
+  const [cats, catSettingsResp, dietCats, presets, mealTotalsResp, summaryResp] = await Promise.all([
     api('GET', `/api/admin/hospitals/${hospitalId}/patient-categories`),
     api('GET', `/api/admin/hospitals/${hospitalId}/category-settings/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/admin/hospitals/${hospitalId}/diet-categories`),
     api('GET', `/api/admin/diet-category-presets`),
-    api('GET', `/api/admin/hospitals/${hospitalId}/meal-cat-totals/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/admin/hospitals/${hospitalId}/meal-cat-totals/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}?hospitalId=${hospitalId}`)
   ])
+  // 실제 식단가 3종 저장 (catMealPrice 자동채움용)
+  window._adminHospSummary = summaryResp || {}
+  window._adminCatDietPrices = summaryResp?.catDietPrices || []
   window._patientCategories = cats || []
   window._adminCatList = cats || []
   window._dietCategories = dietCats || []
@@ -19378,9 +19414,17 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
         </div>
         <div>
           <label class="block text-xs text-gray-500 mb-1">현재 식단가 (원/식) <span class="text-blue-500 font-semibold" title="실제 집행예산 ÷ 식수 계산값 (자동배분 적용 후 자동계산)">★</span></label>
-          <input type="text" inputmode="numeric" id="catMealPrice-${cat.id}" value="${s.target_meal_price > 0 ? (s.target_meal_price).toLocaleString('ko-KR') : ''}"
-            class="form-input text-sm py-1 comma-input" placeholder="자동계산"
-            oninput="updateWeightedAvgTarget()">
+          ${(() => {
+            // API에서 받은 실제 식단가 우선 표시 (저장값 없을 때)
+            const catDietEntry = (window._adminCatDietPrices || []).find(d => d.id === cat.id)
+            const actualPrice = catDietEntry?.monthDietPrice || 0
+            const savedPrice = s.target_meal_price || 0
+            const displayVal = savedPrice > 0 ? savedPrice.toLocaleString('ko-KR') : (actualPrice > 0 ? actualPrice.toLocaleString('ko-KR') : '')
+            const placeholderText = actualPrice > 0 ? `실시간: ${actualPrice.toLocaleString()}원` : '자동계산'
+            return `<input type="text" inputmode="numeric" id="catMealPrice-${cat.id}" value="${displayVal}"
+              class="form-input text-sm py-1 comma-input" placeholder="${placeholderText}"
+              oninput="updateWeightedAvgTarget()">`
+          })()}
         </div>
       </div>
       <div class="mb-2">
