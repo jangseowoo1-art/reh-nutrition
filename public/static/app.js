@@ -3965,9 +3965,11 @@ window.showMonthAllOrdersModal = function() {
     days.push({ dateStr, d, dow, isWeekend: dayOfWeek === 0 || dayOfWeek === 6 })
   }
 
-  // 발주 맵 구성
+  // 발주 맵 구성 (법인카드 업체 제외 - card_expenses로 별도 처리)
+  const cardVendorIds = new Set(cardVendors.map(v => v.id))
   const normalOrderMap = {}
   ;(orderData || []).forEach(o => {
+    if (cardVendorIds.has(o.vendor_id)) return // 법인카드 업체는 normalOrderMap에서 제외
     const k = `${o.order_date}__${o.vendor_id}`
     normalOrderMap[k] = o
   })
@@ -4161,14 +4163,9 @@ window.showMonthAllOrdersModal = function() {
         if (o) rowTotal += o.total_amount || 0
       })
     }
-    // 법인카드 합산 (card_expenses + daily_orders의 card 업체 모두 포함)
+    // 법인카드 합산 (card_expenses 기준 - daily_orders와 동일 데이터이므로 중복 방지)
     cardVendors.forEach(v => {
-      // card_expenses 데이터
       rowTotal += (cardDailyMap[v.id] && cardDailyMap[v.id][dateStr]) || 0
-      // daily_orders에 있는 법인카드 업체 발주도 추가 (card_expenses와 별도 존재하는 경우)
-      const cardOrderKey = `${dateStr}__${v.id}`
-      const cardOrder = normalOrderMap[cardOrderKey]
-      if (cardOrder) rowTotal += cardOrder.total_amount || 0
     })
     grandTotal += rowTotal
 
@@ -4274,7 +4271,10 @@ window.downloadOrdersExcel = async function() {
     return
   }
 
-  const vendors = window._vendorsCache || []
+  const allVendors = window._vendorsCache || []
+  const normalVendors = allVendors.filter(v => !v.is_card_type)  // 일반 업체
+  const cardVendors = allVendors.filter(v => v.is_card_type)     // 법인카드 업체
+  const cardDailyMap = window._cardDailyMap || {}
   const patientCats = window._patientCats || []
   // 실제 카테고리 발주 데이터 사용
   const catDailyOrders = window._catDailyOrders || []
@@ -4286,8 +4286,12 @@ window.downloadOrdersExcel = async function() {
   const DOWK = ['일','월','화','수','목','금','토']
   const hasCats = patientCats && patientCats.length > 0
 
+  const cardVendorIdsXl = new Set(cardVendors.map(v => v.id))
   const normalOrderMap = {}
-  ;(orderData || []).forEach(o => { normalOrderMap[`${o.order_date}__${o.vendor_id}`] = o })
+  ;(orderData || []).forEach(o => {
+    if (cardVendorIdsXl.has(o.vendor_id)) return // 법인카드 업체 제외
+    normalOrderMap[`${o.order_date}__${o.vendor_id}`] = o
+  })
   const catOrderMapXl = {}
   ;(catDailyOrders || []).forEach(s => { catOrderMapXl[`${s.order_date}__${s.patient_category_id}__${s.vendor_id}`] = s })
 
@@ -4313,7 +4317,13 @@ window.downloadOrdersExcel = async function() {
     }
   }
 
-  const subLabel = { taxable:'과세', exempt:'면세', vat:'부가세', mixed_total:'합계' }
+  // 법인카드 셀값 추출 (card_expenses 기준)
+  function getCardCellValXl(vendorId, dateStr) {
+    return (cardDailyMap[vendorId] && cardDailyMap[vendorId][dateStr]) || 0
+  }
+
+  const subLabel = { taxable:'과세', exempt:'면세', vat:'부가세', mixed_total:'합계', card:'법인카드' }
+  const subtypeKoreanXl = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
   const wb = XLSX.utils.book_new()
   const wsData = []
 
@@ -4322,7 +4332,7 @@ window.downloadOrdersExcel = async function() {
   // ── 헤더 행2: 과세/면세/부가세/합계
   const hdr2 = ['','']
   // ── 컬럼 정보
-  const colDefs = []
+  const colDefs = []  // { vendorId, catId, subType, taxType, isCard }
   const merges = []
   let colIdx = 2 // 0=날짜, 1=요일
 
@@ -4341,16 +4351,26 @@ window.downloadOrdersExcel = async function() {
     }
     subs.forEach(sub => {
       hdr2.push(subLabel[sub])
-      colDefs.push({ vendorId, catId, subType: sub, taxType })
+      colDefs.push({ vendorId, catId, subType: sub, taxType, isCard: false })
       colIdx++
     })
   }
 
-  if (hasCats) {
-    patientCats.forEach(cat => vendors.forEach(v => addVendorCols(v.id, v.name, cat.id, cat.name, v.tax_type)))
-  } else {
-    vendors.forEach(v => addVendorCols(v.id, v.name, null, null, v.tax_type))
+  function addCardVendorCol(v) {
+    const subtypeLabel = subtypeKoreanXl[v.card_subtype] || '기타'
+    hdr1.push(`${v.name}(${subtypeLabel})`)
+    hdr2.push('법인카드')
+    colDefs.push({ vendorId: v.id, catId: null, subType: 'card', taxType: 'card', isCard: true })
+    colIdx++
   }
+
+  if (hasCats) {
+    patientCats.forEach(cat => normalVendors.forEach(v => addVendorCols(v.id, v.name, cat.id, cat.name, v.tax_type)))
+  } else {
+    normalVendors.forEach(v => addVendorCols(v.id, v.name, null, null, v.tax_type))
+  }
+  // 법인카드 업체 컬럼 추가
+  cardVendors.forEach(v => addCardVendorCol(v))
   hdr1.push('일 합계')
   hdr2.push('')
   wsData.push(hdr1)
@@ -4367,12 +4387,20 @@ window.downloadOrdersExcel = async function() {
     let dayTotal = 0
 
     colDefs.forEach((cd, i) => {
-      const v = getCellVal(cd.vendorId, cd.catId, dateStr, cd.subType, cd.taxType)
-      const n = typeof v === 'number' ? v : (parseInt(String(v).replace(/[^\d]/g,''))||0)
+      let v, n
+      if (cd.isCard) {
+        // 법인카드: card_expenses 기준
+        n = getCardCellValXl(cd.vendorId, dateStr)
+        v = n || ''
+      } else {
+        v = getCellVal(cd.vendorId, cd.catId, dateStr, cd.subType, cd.taxType)
+        n = typeof v === 'number' ? v : (parseInt(String(v).replace(/[^\d]/g,''))||0)
+      }
       row.push(v)
       colTotals[i] += n
-      // 일 합계: total/mixed_total/exempt 만 (과세+부가세 = 공급대가이므로 중복방지)
-      if (cd.subType==='mixed_total' || cd.subType==='exempt') dayTotal += n
+      // 일 합계: 법인카드 포함, 일반업체는 total/mixed_total/exempt/taxable만 (부가세 중복방지)
+      if (cd.isCard) dayTotal += n
+      else if (cd.subType==='mixed_total' || cd.subType==='exempt') dayTotal += n
       else if (cd.subType==='taxable') dayTotal += n
     })
     row.push(dayTotal||'')
