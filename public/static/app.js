@@ -19235,7 +19235,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           <div>① 가중값 = <span class="font-medium text-blue-700">3개월 평균 식수</span> × <span class="font-medium text-green-700">목표 식단가</span></div>
           <div>② 예산 비중 = 환자군 가중값 ÷ 전체 가중합</div>
           <div>③ 배분예산 = 총 목표예산 × 예산 비중</div>
-          <div>④ 현재 식단가 = 배분예산 ÷ 평균 식수</div>
+          <div>④ 예상 식단가 = 배분예산 ÷ 평균 식수 <span class="text-gray-400">(참고값)</span></div>
         </div>
       </div>
 
@@ -19289,7 +19289,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
           <span class="text-center">가중값</span>
           <span class="text-center">식수<br>비중</span>
           <span class="text-center">예산<br>비중</span>
-          <span class="text-center">배분예산<br>/ 현재식단가</span>
+          <span class="text-center">배분예산<br>/ 예상식단가</span>
         </div>
         <!-- 행 -->
         ${cats.map(cat => {
@@ -19425,7 +19425,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             oninput="updateWeightedAvgTarget()">
         </div>
         <div>
-          <label class="block text-xs text-gray-500 mb-1">현재 식단가 (원/식) <span class="text-blue-500 font-semibold" title="실제 집행예산 ÷ 식수 계산값 (자동배분 적용 후 자동계산)">★</span></label>
+          <label class="block text-xs text-gray-500 mb-1">목표 식단가 (원/식) <span class="text-green-500 font-semibold" title="목표로 설정할 식단가 입력 → 가중평균 자동계산에 사용">★</span></label>
           ${(() => {
             // API에서 받은 실제 식단가 우선 표시 (저장값 없을 때)
             const catDietEntry = (window._adminCatDietPrices || []).find(d => d.id === cat.id)
@@ -19566,7 +19566,7 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
   panel.className = 'mt-3 p-3 bg-purple-50 border border-purple-200 rounded-xl'
   panel.innerHTML = `
     <div class="flex items-center justify-between mb-1">
-      <span class="text-xs font-semibold text-purple-700"><i class="fas fa-balance-scale mr-1"></i>가중평균 현재 식단가 (자동계산)</span>
+      <span class="text-xs font-semibold text-purple-700"><i class="fas fa-balance-scale mr-1"></i>가중평균 목표 식단가 (자동계산)</span>
       <span id="weightedAvgTargetValue" class="text-sm font-bold text-purple-800">-</span>
     </div>
     <div class="text-xs text-gray-400">환자군 식수 × 목표 식단가 가중평균 → <span class="text-green-600 font-semibold">예산설정 탭 "목표 식단가"에 자동 반영</span></div>`
@@ -19683,14 +19683,12 @@ function recalcAutoAlloc() {
     }
     if (mealPriceEl) {
       if (mealPrice > 0) {
-        const liveTag = livePrice > 0 ? ` <span style="color:#2563eb;font-size:9px">(실: ${livePrice.toLocaleString()})</span>` : ''
-        mealPriceEl.innerHTML = `→ ${mealPrice.toLocaleString()}원/식${liveTag}`
+        mealPriceEl.innerHTML = `→ ${mealPrice.toLocaleString()}원/식`
       } else if (avgMeals === 0 && allocated > 0) {
-        const liveTag = livePrice > 0 ? `<div style="color:#2563eb;font-size:9px">실시간: ${livePrice.toLocaleString()}원</div>` : ''
-        mealPriceEl.innerHTML = `식수없음${liveTag}`
+        mealPriceEl.innerHTML = `식수없음`
         mealPriceEl.style.color = '#d97706'
-      } else if (livePrice > 0) {
-        mealPriceEl.innerHTML = `<span style="color:#2563eb">실시간: ${livePrice.toLocaleString()}원/식</span>`
+      } else if (allocated > 0) {
+        mealPriceEl.innerHTML = '-'
       } else {
         mealPriceEl.textContent = '-'
       }
@@ -19762,7 +19760,8 @@ function applyAutoAlloc() {
     if (budgetInput) { budgetInput.value = allocated > 0 ? allocated.toLocaleString('ko-KR') : ''; flash(budgetInput, '#eef2ff', '#818cf8') }
 
     const mealPriceInput = document.getElementById(`catMealPrice-${cat.id}`)
-    if (mealPriceInput && mealPrice > 0) { mealPriceInput.value = mealPrice.toLocaleString('ko-KR'); flash(mealPriceInput, '#f0fdf4', '#22c55e') }
+    // 자동배분 적용 시 catMealPrice에는 예상 식단가 값이 아닌 기존 목표 식단가 유지
+    // (목표 식단가는 관리자가 직접 입력하는 값이므로 자동 덮어쓰기 하지 않음)
 
     const workDaysInput = document.getElementById(`catWorkDays-${cat.id}`)
     if (workDaysInput && workdays > 0) { workDaysInput.value = workdays }
@@ -19784,7 +19783,7 @@ function updateWeightedAvgTarget() {
   let weighted = 0
 
   if (totalWeight > 0) {
-    // ── 가중값(식수×목표식단가) 비중 기반 가중평균 현재 식단가 ──
+    // ── 가중값(식수×목표식단가) 비중 기반 가중평균 목표 식단가 ──
     weighted = cats.reduce((s, cat) => {
       const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
       const ratio = mealInfo.budget_ratio || 0
