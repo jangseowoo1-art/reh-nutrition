@@ -42,59 +42,246 @@ dashboard.get('/summary/:year/:month', async (c) => {
     }
   }
 
-  // 업체별 발주 합계
-  const vendors = await c.env.DB.prepare(
-    `SELECT v.id, v.name, v.category, v.tax_type, v.monthly_budget,
-            COALESCE(SUM(d.taxable_amount), 0) as total_taxable,
-            COALESCE(SUM(d.exempt_amount), 0) as total_exempt,
-            COALESCE(SUM(d.vat_amount), 0) as total_vat,
-            COALESCE(SUM(d.total_amount), 0) as total_used
-     FROM vendors v
-     LEFT JOIN daily_orders d ON v.id = d.vendor_id 
-       AND strftime('%Y', d.order_date) = ? 
-       AND strftime('%m', d.order_date) = printf('%02d', ?)
-     WHERE v.hospital_id = ? AND v.is_active = 1
-     GROUP BY v.id
-     ORDER BY v.sort_order`
-  ).bind(year, month, hospitalId).all<any>()
+  // ── 1단계: settings 이후 독립 쿼리 병렬 실행 ─────────────────────
+  const today = new Date().toISOString().split('T')[0]
+  const prevMonth = parseInt(month) === 1 ? 12 : parseInt(month) - 1
+  const prevYear2 = parseInt(month) === 1 ? String(parseInt(year) - 1) : year
 
-  // 일별 총 발주액
-  const dailyOrders = await c.env.DB.prepare(
-    `SELECT order_date, SUM(total_amount) as daily_total
-     FROM daily_orders
-     WHERE hospital_id = ? 
-       AND strftime('%Y', order_date) = ?
-       AND strftime('%m', order_date) = printf('%02d', ?)
-     GROUP BY order_date
-     ORDER BY order_date`
-  ).bind(hospitalId, year, month).all<any>()
+  // BETWEEN 방식으로 인덱스 활용 (strftime보다 훨씬 빠름)
+  const monthPadded = String(parseInt(month)).padStart(2, '0')
+  const dateStart = `${year}-${monthPadded}-01`
+  const lastDay = new Date(parseInt(year as string), parseInt(month as string), 0).getDate()
+  const dateEnd = `${year}-${monthPadded}-${String(lastDay).padStart(2, '0')}`
+  const prevMonthPadded = String(prevMonth).padStart(2, '0')
+  const prevDateStart = `${prevYear2}-${prevMonthPadded}-01`
+  const prevLastDay = new Date(parseInt(prevYear2), prevMonth, 0).getDate()
+  const prevDateEnd = `${prevYear2}-${prevMonthPadded}-${String(prevLastDay).padStart(2, '0')}`
 
-  // 식수 합계
-  const mealStats = await c.env.DB.prepare(
-    `SELECT 
-       COALESCE(SUM(breakfast_patient + lunch_patient + dinner_patient), 0) as total_patient,
-       COALESCE(SUM(breakfast_staff + lunch_staff + dinner_staff), 0) as total_staff,
-       COALESCE(SUM(breakfast_noncovered + lunch_noncovered + dinner_noncovered), 0) as total_noncovered,
-       COALESCE(SUM(breakfast_guardian + lunch_guardian + dinner_guardian), 0) as total_guardian,
-       COUNT(*) as days_entered
-     FROM daily_meals
-     WHERE hospital_id = ?
-       AND strftime('%Y', meal_date) = ?
-       AND strftime('%m', meal_date) = printf('%02d', ?)`
-  ).bind(hospitalId, year, month).first<any>()
+  const [
+    vendors,
+    dailyOrders,
+    mealStats,
+    customFieldsList,
+    mealCustomData,
+    patientCatsForMeals,
+    todayOrders,
+    weekOrdersRaw,
+    totalUsedRow,
+    cardExpensesTotal,
+    prevMealStats,
+    prevOrders,
+    prevSupply,
+    prevCardExpenses,
+    prevSettings,
+    prevMealCustomData,
+    patientCatsDash,
+    catMonthlyOrders,
+    nullCatMonthlyOrder,
+    catTodayOrders,
+    nullCatTodayOrder,
+    todayMealRow,
+    orderDayCountRow,
+    prev3MonthsData
+  ] = await Promise.all([
+    // 업체별 발주 합계 (BETWEEN으로 인덱스 활용)
+    c.env.DB.prepare(
+      `SELECT v.id, v.name, v.category, v.tax_type, v.monthly_budget,
+              COALESCE(SUM(d.taxable_amount), 0) as total_taxable,
+              COALESCE(SUM(d.exempt_amount), 0) as total_exempt,
+              COALESCE(SUM(d.vat_amount), 0) as total_vat,
+              COALESCE(SUM(d.total_amount), 0) as total_used
+       FROM vendors v
+       LEFT JOIN daily_orders d ON v.id = d.vendor_id 
+         AND d.order_date BETWEEN ? AND ?
+       WHERE v.hospital_id = ? AND v.is_active = 1
+       GROUP BY v.id
+       ORDER BY v.sort_order`
+    ).bind(dateStart, dateEnd, hospitalId).all<any>(),
 
-  // 커스텀 식수 필드 목록 + 월별 custom_data 합계 계산
-  const customFieldsList = await c.env.DB.prepare(
-    `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
-  ).bind(hospitalId).all<any>()
+    // 일별 총 발주액
+    c.env.DB.prepare(
+      `SELECT order_date, SUM(total_amount) as daily_total
+       FROM daily_orders
+       WHERE hospital_id = ? AND order_date BETWEEN ? AND ?
+       GROUP BY order_date
+       ORDER BY order_date`
+    ).bind(hospitalId, dateStart, dateEnd).all<any>(),
 
-  const mealCustomData = await c.env.DB.prepare(
-    `SELECT custom_data FROM daily_meals
-     WHERE hospital_id = ?
-       AND strftime('%Y', meal_date) = ?
-       AND strftime('%m', meal_date) = printf('%02d', ?)
-       AND custom_data IS NOT NULL AND custom_data != '{}'`
-  ).bind(hospitalId, year, month).all<any>()
+    // 식수 합계
+    c.env.DB.prepare(
+      `SELECT 
+         COALESCE(SUM(breakfast_patient + lunch_patient + dinner_patient), 0) as total_patient,
+         COALESCE(SUM(breakfast_staff + lunch_staff + dinner_staff), 0) as total_staff,
+         COALESCE(SUM(breakfast_noncovered + lunch_noncovered + dinner_noncovered), 0) as total_noncovered,
+         COALESCE(SUM(breakfast_guardian + lunch_guardian + dinner_guardian), 0) as total_guardian,
+         COUNT(*) as days_entered
+       FROM daily_meals
+       WHERE hospital_id = ? AND meal_date BETWEEN ? AND ?`
+    ).bind(hospitalId, dateStart, dateEnd).first<any>(),
+
+    // 커스텀 식수 필드 목록
+    c.env.DB.prepare(
+      `SELECT * FROM meal_custom_fields WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
+    ).bind(hospitalId).all<any>(),
+
+    // 월별 custom_data
+    c.env.DB.prepare(
+      `SELECT custom_data FROM daily_meals
+       WHERE hospital_id = ? AND meal_date BETWEEN ? AND ?
+         AND custom_data IS NOT NULL AND custom_data != '{}'`
+    ).bind(hospitalId, dateStart, dateEnd).all<any>(),
+
+    // meals_include_keys
+    c.env.DB.prepare(
+      `SELECT meals_include_keys FROM hospital_patient_categories WHERE hospital_id = ? AND is_active = 1`
+    ).bind(hospitalId).all<any>(),
+
+    // 오늘 발주액
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(total_amount), 0) as today_total
+       FROM daily_orders WHERE hospital_id = ? AND order_date = ?`
+    ).bind(hospitalId, today).first<any>(),
+
+    // 이번 주 발주액
+    (() => {
+      const nowDate = new Date()
+      const dayOfWeek = nowDate.getDay()
+      const weekStart = new Date(nowDate); weekStart.setDate(nowDate.getDate() - dayOfWeek)
+      const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6)
+      const weekStartStr = weekStart.toISOString().split('T')[0]
+      const weekEndStr = weekEnd.toISOString().split('T')[0]
+      return c.env.DB.prepare(
+        `SELECT COALESCE(SUM(total_amount), 0) as week_total
+         FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
+      ).bind(hospitalId, weekStartStr, weekEndStr).first<any>()
+    })(),
+
+    // totalUsed
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(total_amount),0) as total
+       FROM daily_orders
+       WHERE hospital_id = ? AND order_date BETWEEN ? AND ?`
+    ).bind(hospitalId, dateStart, dateEnd).first<any>(),
+
+    // 법인카드 월 합계
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM card_expenses
+       WHERE hospital_id = ? AND expense_date BETWEEN ? AND ?`
+    ).bind(hospitalId, dateStart, dateEnd).first<any>(),
+
+    // 전월 식수
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(breakfast_patient+lunch_patient+dinner_patient),0) as total_patient,
+              COALESCE(SUM(breakfast_staff+lunch_staff+dinner_staff),0) as total_staff,
+              COALESCE(SUM(breakfast_noncovered+lunch_noncovered+dinner_noncovered),0) as total_noncovered,
+              COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
+       FROM daily_meals WHERE hospital_id=? AND meal_date BETWEEN ? AND ?`
+    ).bind(hospitalId, prevDateStart, prevDateEnd).first<any>(),
+
+    // 전월 발주액
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(total_amount),0) as total_used FROM daily_orders
+       WHERE hospital_id=? AND order_date BETWEEN ? AND ?`
+    ).bind(hospitalId, prevDateStart, prevDateEnd).first<any>(),
+
+    // 전월 소모품
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(d.total_amount),0) as supply_used
+       FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+       WHERE d.hospital_id=? AND d.order_date BETWEEN ? AND ? AND v.category='supply'`
+    ).bind(hospitalId, prevDateStart, prevDateEnd).first<any>(),
+
+    // 전월 법인카드
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(amount),0) as total
+       FROM card_expenses
+       WHERE hospital_id=? AND expense_date BETWEEN ? AND ?`
+    ).bind(hospitalId, prevDateStart, prevDateEnd).first<any>(),
+
+    // 전월 설정
+    c.env.DB.prepare(
+      `SELECT total_budget, meal_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+    ).bind(hospitalId, prevYear2, String(prevMonth)).first<any>(),
+
+    // 전월 커스텀 식수
+    c.env.DB.prepare(
+      `SELECT custom_data FROM daily_meals
+       WHERE hospital_id = ? AND meal_date BETWEEN ? AND ?
+         AND custom_data IS NOT NULL AND custom_data != '{}'`
+    ).bind(hospitalId, prevDateStart, prevDateEnd).all<any>(),
+
+    // 카테고리 목록
+    c.env.DB.prepare(`
+      SELECT * FROM hospital_patient_categories
+      WHERE hospital_id = ? AND is_active = 1
+      ORDER BY sort_order, id
+    `).bind(hospitalId).all<any>(),
+
+    // 카테고리별 월 발주
+    c.env.DB.prepare(`
+      SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
+      FROM daily_orders
+      WHERE hospital_id = ?
+        AND patient_category_id IS NOT NULL
+        AND order_date BETWEEN ? AND ?
+      GROUP BY patient_category_id
+    `).bind(hospitalId, dateStart, dateEnd).all<any>(),
+
+    // NULL 카테고리 월 발주
+    c.env.DB.prepare(`
+      SELECT COALESCE(SUM(total_amount), 0) as total
+      FROM daily_orders
+      WHERE hospital_id = ?
+        AND patient_category_id IS NULL
+        AND order_date BETWEEN ? AND ?
+    `).bind(hospitalId, dateStart, dateEnd).first<any>(),
+
+    // 카테고리별 오늘 발주
+    c.env.DB.prepare(`
+      SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
+      FROM daily_orders
+      WHERE hospital_id = ?
+        AND patient_category_id IS NOT NULL
+        AND order_date = ?
+      GROUP BY patient_category_id
+    `).bind(hospitalId, today).all<any>(),
+
+    // NULL 카테고리 오늘 발주
+    c.env.DB.prepare(`
+      SELECT COALESCE(SUM(total_amount), 0) as total
+      FROM daily_orders
+      WHERE hospital_id = ?
+        AND patient_category_id IS NULL
+        AND order_date = ?
+    `).bind(hospitalId, today).first<any>(),
+
+    // 오늘 식수
+    c.env.DB.prepare(`
+      SELECT COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0) as staff_total,
+             COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0) as guardian_total,
+             custom_data
+      FROM daily_meals WHERE hospital_id = ? AND meal_date = ?
+    `).bind(hospitalId, today).first<any>(),
+
+    // 발주 경과일
+    c.env.DB.prepare(
+      `SELECT COUNT(DISTINCT order_date) as cnt FROM daily_orders
+       WHERE hospital_id = ? AND order_date BETWEEN ? AND ?`
+    ).bind(hospitalId, dateStart, dateEnd).first<any>(),
+
+    // 최근 3개월 평균
+    c.env.DB.prepare(
+      `SELECT strftime('%Y', order_date) as y, strftime('%m', order_date) as m,
+              SUM(total_amount) as total
+       FROM daily_orders
+       WHERE hospital_id = ?
+         AND order_date < date(? || '-' || printf('%02d', ?) || '-01')
+       GROUP BY y, m
+       ORDER BY y DESC, m DESC
+       LIMIT 3`
+    ).bind(hospitalId, year, month).all<any>()
+  ])
 
   // 커스텀 필드별 월 합계 계산
   const customFieldTotals: Record<string, number> = {}
@@ -111,9 +298,6 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 관리자 meals_include_keys 기반으로 포함할 field_key Set 구성
   // hospital_patient_categories.meals_include_keys: ["cat_cancer","nc_key_preset_nc_guardian_2","st_key_...","th_key_..."]
-  const patientCatsForMeals = await c.env.DB.prepare(
-    `SELECT meals_include_keys FROM hospital_patient_categories WHERE hospital_id = ? AND is_active = 1`
-  ).bind(hospitalId).all<any>()
   const allMealsIncludeKeys = new Set<string>()
   ;(patientCatsForMeals.results || []).forEach((cat: any) => {
     try {
@@ -155,36 +339,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
     })
     .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
 
-  const today = new Date().toISOString().split('T')[0]
-  const todayOrders = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(total_amount), 0) as today_total
-     FROM daily_orders WHERE hospital_id = ? AND order_date = ?`
-  ).bind(hospitalId, today).first<any>()
-
-  // 이번 주 발주액 (일요일 기준)
-  const nowDate = new Date()
-  const dayOfWeek = nowDate.getDay()
-  const weekStart = new Date(nowDate)
-  weekStart.setDate(nowDate.getDate() - dayOfWeek)
-  const weekEnd = new Date(weekStart)
-  weekEnd.setDate(weekStart.getDate() + 6)
-  const weekStartStr = weekStart.toISOString().split('T')[0]
-  const weekEndStr = weekEnd.toISOString().split('T')[0]
-
-  const weekOrders = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(total_amount), 0) as week_total
-     FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
-  ).bind(hospitalId, weekStartStr, weekEndStr).first<any>()
-
   // totalUsed: daily_orders 직접 집계 (vendor_id가 다른 병원 업체를 참조해도 포함)
   // vendors 집계와 별도로 계산해야 정확한 발주 합계 산출 가능
-  const totalUsedRow = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(total_amount),0) as total
-     FROM daily_orders
-     WHERE hospital_id = ?
-       AND strftime('%Y', order_date) = ?
-       AND strftime('%m', order_date) = printf('%02d', ?)`
-  ).bind(hospitalId, year, month).first<any>()
   const totalUsed = totalUsedRow?.total || 0
   const totalBudget = settings?.total_budget || 0
   const eventBudget = settings?.event_budget || 0
@@ -209,14 +365,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
     v.monthly_budget > 0 && v.total_used > v.monthly_budget
   )
 
-  // 법인카드 월 합계 (card_expenses 테이블) - 소모품 제외 식단가 계산용
-  const cardExpensesTotal = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total
-     FROM card_expenses
-     WHERE hospital_id = ?
-       AND strftime('%Y', expense_date) = ?
-       AND strftime('%m', expense_date) = printf('%02d', ?)`
-  ).bind(hospitalId, year, month).first<any>()
+  // 주간 예산 계산을 위한 날짜 변수 복원
+  const nowDate = new Date()
+  const dayOfWeek2 = nowDate.getDay()
+  const weekStart2 = new Date(nowDate); weekStart2.setDate(nowDate.getDate() - dayOfWeek2)
+  const weekEnd2 = new Date(weekStart2); weekEnd2.setDate(weekStart2.getDate() + 6)
+  const weekStartStr = weekStart2.toISOString().split('T')[0]
+  const weekEndStr = weekEnd2.toISOString().split('T')[0]
+  const weekOrders = weekOrdersRaw
+
   const cardExpensesUsed = cardExpensesTotal?.total || 0
 
   // 식단가 3종 계산
@@ -269,47 +426,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const mealPriceNoSupply = totalMealsForPrice > 0
     ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
 
-  // 전월 식단가 비교용 데이터
-  const prevMonth = parseInt(month) === 1 ? 12 : parseInt(month) - 1
-  const prevYear2 = parseInt(month) === 1 ? String(parseInt(year) - 1) : year
-  const prevMealStats = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(breakfast_patient+lunch_patient+dinner_patient),0) as total_patient,
-            COALESCE(SUM(breakfast_staff+lunch_staff+dinner_staff),0) as total_staff,
-            COALESCE(SUM(breakfast_noncovered+lunch_noncovered+dinner_noncovered),0) as total_noncovered,
-            COALESCE(SUM(breakfast_guardian+lunch_guardian+dinner_guardian),0) as total_guardian
-     FROM daily_meals WHERE hospital_id=? AND strftime('%Y',meal_date)=? AND strftime('%m',meal_date)=printf('%02d',?)`
-  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
-
-  const prevOrders = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(total_amount),0) as total_used FROM daily_orders
-     WHERE hospital_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)`
-  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
-
-  const prevSupply = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(d.total_amount),0) as supply_used
-     FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
-     WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=? AND strftime('%m',d.order_date)=printf('%02d',?)
-       AND v.category='supply'`
-  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
-  const prevCardExpenses = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(amount),0) as total
-     FROM card_expenses
-     WHERE hospital_id=? AND strftime('%Y',expense_date)=? AND strftime('%m',expense_date)=printf('%02d',?)`
-  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
-
-  const prevSettings = await c.env.DB.prepare(
-    `SELECT total_budget, meal_price FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
-  ).bind(hospitalId, prevYear2, prevMonth).first<any>()
-
-  // 전월 커스텀 필드 데이터 조회 (전월 식단가/식수 계산에 필요)
-  const prevMealCustomData = await c.env.DB.prepare(
-    `SELECT custom_data FROM daily_meals
-     WHERE hospital_id = ?
-       AND strftime('%Y', meal_date) = ?
-       AND strftime('%m', meal_date) = printf('%02d', ?)
-       AND custom_data IS NOT NULL AND custom_data != '{}'`
-  ).bind(hospitalId, prevYear2, prevMonth).all<any>()
-
+  // 전월 식단가 비교용 데이터 (Promise.all에서 이미 조회됨)
   const prevCustomFieldTotals: Record<string, number> = {}
   ;(customFieldsList.results || []).forEach((f: any) => { prevCustomFieldTotals[f.field_key] = 0 })
   ;(prevMealCustomData.results || []).forEach((row: any) => {
@@ -330,50 +447,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
     })
     .reduce((s: number, f: any) => s + (prevCustomFieldTotals[f.field_key] || 0), 0)
 
-  // ── 카테고리별 식단가 계산 ──────────────────────────────────
-  const patientCatsDash = await c.env.DB.prepare(`
-    SELECT * FROM hospital_patient_categories
-    WHERE hospital_id = ? AND is_active = 1
-    ORDER BY sort_order, id
-  `).bind(hospitalId).all<any>()
-
-  const catMonthlyOrders = await c.env.DB.prepare(`
-    SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
-    FROM daily_orders
-    WHERE hospital_id = ?
-      AND patient_category_id IS NOT NULL
-      AND strftime('%Y', order_date) = ?
-      AND strftime('%m', order_date) = printf('%02d', ?)
-    GROUP BY patient_category_id
-  `).bind(hospitalId, year, month).all<any>()
-
-  // NULL 카테고리 발주(미분류 발주) - 단일 카테고리 병원에서는 해당 카테고리에 포함시킴
-  const nullCatMonthlyOrder = await c.env.DB.prepare(`
-    SELECT COALESCE(SUM(total_amount), 0) as total
-    FROM daily_orders
-    WHERE hospital_id = ?
-      AND patient_category_id IS NULL
-      AND strftime('%Y', order_date) = ?
-      AND strftime('%m', order_date) = printf('%02d', ?)
-  `).bind(hospitalId, year, month).first<any>()
-
-  const catTodayOrders = await c.env.DB.prepare(`
-    SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
-    FROM daily_orders
-    WHERE hospital_id = ?
-      AND patient_category_id IS NOT NULL
-      AND order_date = ?
-    GROUP BY patient_category_id
-  `).bind(hospitalId, today).all<any>()
-
-  // NULL 카테고리 오늘 발주
-  const nullCatTodayOrder = await c.env.DB.prepare(`
-    SELECT COALESCE(SUM(total_amount), 0) as total
-    FROM daily_orders
-    WHERE hospital_id = ?
-      AND patient_category_id IS NULL
-      AND order_date = ?
-  `).bind(hospitalId, today).first<any>()
+  // ── 카테고리별 식단가 계산 (Promise.all에서 이미 조회됨) ──────────────────────────────────
 
   // 카테고리 설정 조회: 기준월(2026.3) 이전 → 3월 값, 이후 → 직전 설정 상속
   let catSettingsDash = await c.env.DB.prepare(`
@@ -444,15 +518,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
     `).bind(hospitalId, hospitalId, prevYear2, prevYear2, prevMonth).all<any>()
   }
 
-  // 오늘 식수: 커스텀 필드(환자군)의 식수 합산
-  const todayMealRow = await c.env.DB.prepare(`
-    SELECT COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0) as staff_total,
-           COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0) as guardian_total,
-           custom_data
-    FROM daily_meals WHERE hospital_id = ? AND meal_date = ?
-  `).bind(hospitalId, today).first<any>()
-
-  // 오늘 전체 식수: 직원+보호자+환자군 커스텀 (meals_include_keys 기준 적용)
+  // 오늘 전체 식수: 직원+보호자+환자군 커스텀 (meals_include_keys 기준 적용, Promise.all에서 조회됨)
   let todayCustomMeals = 0
   if (todayMealRow?.custom_data) {
     try {
@@ -715,11 +781,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const isCurrentMonth = (todayDate.getFullYear() === reqYearInt && todayDate.getMonth() + 1 === reqMonthInt)
   const elapsedDays = isCurrentMonth ? todayDate.getDate() : daysInMonth
 
-  // 발주 경과일 (실제 발주가 있는 날 수)
-  const orderDayCountRow = await c.env.DB.prepare(
-    `SELECT COUNT(DISTINCT order_date) as cnt FROM daily_orders
-     WHERE hospital_id = ? AND strftime('%Y', order_date) = ? AND strftime('%m', order_date) = printf('%02d', ?)`
-  ).bind(hospitalId, year, month).first<any>()
+  // 발주 경과일 (Promise.all에서 이미 조회됨)
   const orderDayCnt = orderDayCountRow?.cnt || 0
 
   // 식수 입력 일수
@@ -803,18 +865,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // 업체별 발주 비중 편중 탐지
   // 식수 감소 + 발주 증가 패턴 탐지
 
-  // 최근 3개월 평균 발주액 계산 (이번 달 제외)
-  const prev3MonthsData = await c.env.DB.prepare(
-    `SELECT strftime('%Y', order_date) as y, strftime('%m', order_date) as m,
-            SUM(total_amount) as total
-     FROM daily_orders
-     WHERE hospital_id = ?
-       AND order_date < date(? || '-' || printf('%02d', ?) || '-01')
-     GROUP BY y, m
-     ORDER BY y DESC, m DESC
-     LIMIT 3`
-  ).bind(hospitalId, year, month).all<any>()
-
+  // 최근 3개월 평균 발주액 계산 (Promise.all에서 이미 조회됨)
   const prev3Avg = prev3MonthsData.results && prev3MonthsData.results.length > 0
     ? prev3MonthsData.results.reduce((s: number, r: any) => s + r.total, 0) / prev3MonthsData.results.length
     : 0
@@ -849,14 +900,17 @@ dashboard.get('/summary/:year/:month', async (c) => {
     }
   }
 
-  // ③ 업체별 전월 대비 급증 탐지
+  // ③ 업체별 전월 대비 급증 탐지 (단일 쿼리로 최적화)
   if (vendors.results) {
+    const prevVendorTotals = await c.env.DB.prepare(
+      `SELECT vendor_id, COALESCE(SUM(total_amount),0) as total FROM daily_orders
+       WHERE hospital_id=? AND order_date BETWEEN ? AND ?
+       GROUP BY vendor_id`
+    ).bind(hospitalId, prevDateStart, prevDateEnd).all<any>()
+    const prevVendorMap: Record<number, number> = {}
+    ;(prevVendorTotals.results||[]).forEach((r:any) => { prevVendorMap[r.vendor_id] = r.total })
     for (const v of (vendors.results as any[])) {
-      const prevVendorRow = await c.env.DB.prepare(
-        `SELECT COALESCE(SUM(total_amount),0) as total FROM daily_orders
-         WHERE hospital_id=? AND vendor_id=? AND strftime('%Y',order_date)=? AND strftime('%m',order_date)=printf('%02d',?)`
-      ).bind(hospitalId, v.id, prevYear2, prevMonth).first<any>()
-      const prevUsed = prevVendorRow?.total || 0
+      const prevUsed = prevVendorMap[v.id] || 0
       if (prevUsed > 0 && v.total_used > 0) {
         const vendorIncRatio = (v.total_used - prevUsed) / prevUsed * 100
         if (vendorIncRatio >= 150) {

@@ -725,24 +725,30 @@ orders.get('/:year/:month', async (c) => {
   const hospitalId = Number(user.hospitalId)
   const { year, month } = c.req.param()
 
-  const data = await c.env.DB.prepare(
-    `SELECT d.*, v.name as vendor_name, v.category, v.tax_type
-     FROM daily_orders d
-     JOIN vendors v ON d.vendor_id = v.id
-     WHERE d.hospital_id = ?
-       AND strftime('%Y', d.order_date) = ?
-       AND strftime('%m', d.order_date) = printf('%02d', ?)
-     ORDER BY d.order_date, v.sort_order`
-  ).bind(hospitalId, year, month).all<any>()
+  // BETWEEN을 사용해 인덱스 활용 (strftime보다 빠름)
+  const monthPadded = String(parseInt(month)).padStart(2, '0')
+  const dateStart = `${year}-${monthPadded}-01`
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate()
+  const dateEnd = `${year}-${monthPadded}-${String(lastDay).padStart(2, '0')}`
 
-  // 해당 월 발주일수 설정도 함께 반환
-  const multidaySettings = await c.env.DB.prepare(
-    `SELECT order_date, day_count, multi_day_end
-     FROM order_multiday_settings
-     WHERE hospital_id = ?
-       AND strftime('%Y', order_date) = ?
-       AND strftime('%m', order_date) = printf('%02d', ?)`
-  ).bind(hospitalId, year, month).all<any>()
+  const [data, multidaySettings] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT d.*, v.name as vendor_name, v.category, v.tax_type
+       FROM daily_orders d
+       JOIN vendors v ON d.vendor_id = v.id
+       WHERE d.hospital_id = ?
+         AND d.order_date BETWEEN ? AND ?
+       ORDER BY d.order_date, v.sort_order`
+    ).bind(hospitalId, dateStart, dateEnd).all<any>(),
+
+    // 해당 월 발주일수 설정도 함께 반환
+    c.env.DB.prepare(
+      `SELECT order_date, day_count, multi_day_end
+       FROM order_multiday_settings
+       WHERE hospital_id = ?
+         AND order_date BETWEEN ? AND ?`
+    ).bind(hospitalId, dateStart, dateEnd).all<any>()
+  ])
 
   return c.json({ orders: data.results, multidaySettings: multidaySettings.results || [] })
 })
