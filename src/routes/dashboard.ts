@@ -348,6 +348,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const workingDays = settings?.working_days || new Date(parseInt(year as string), parseInt(month as string), 0).getDate()
   const progress = totalBudget > 0 ? ((totalUsed / totalBudget) * 100).toFixed(2) : '0.00'
   
+  // 주간 날짜 계산 (weekStartStr/weekEndStr을 먼저 선언해야 아래 for문에서 사용 가능)
+  const nowDate = new Date()
+  const dayOfWeek2 = nowDate.getDay()
+  const weekStart2 = new Date(nowDate); weekStart2.setDate(nowDate.getDate() - dayOfWeek2)
+  const weekEnd2 = new Date(weekStart2); weekEnd2.setDate(weekStart2.getDate() + 6)
+  const weekStartStr = weekStart2.toISOString().split('T')[0]
+  const weekEndStr = weekEnd2.toISOString().split('T')[0]
+  const weekOrders = weekOrdersRaw
+
   // 일/주/월 목표
   const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
   // 주간 예산: 이번 주에서 해당 월에 속하는 실제 일수 × 일예산 (월 경계 주차 처리)
@@ -364,15 +373,6 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const overBudgetVendors = (vendors.results || []).filter((v: any) => 
     v.monthly_budget > 0 && v.total_used > v.monthly_budget
   )
-
-  // 주간 예산 계산을 위한 날짜 변수 복원
-  const nowDate = new Date()
-  const dayOfWeek2 = nowDate.getDay()
-  const weekStart2 = new Date(nowDate); weekStart2.setDate(nowDate.getDate() - dayOfWeek2)
-  const weekEnd2 = new Date(weekStart2); weekEnd2.setDate(weekStart2.getDate() + 6)
-  const weekStartStr = weekStart2.toISOString().split('T')[0]
-  const weekEndStr = weekEnd2.toISOString().split('T')[0]
-  const weekOrders = weekOrdersRaw
 
   const cardExpensesUsed = cardExpensesTotal?.total || 0
 

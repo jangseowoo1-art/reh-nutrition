@@ -3,5 +3,12 @@
   "name": "hospital-meal-budget",
   "compatibility_date": "2024-01-01",
   "compatibility_flags": ["nodejs_compat"],
-  "pages_build_output_dir": "./dist"
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hospital-meal-production",
+      "database_id": "81c2ecc9-4e4c-4fbb-93d3-90fca05077de"
+    }
+  ]
 }
