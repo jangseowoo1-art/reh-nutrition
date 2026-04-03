@@ -13093,7 +13093,7 @@ function renderMonthlyScheduleTab() {
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h3 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h3>
-          <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">더블클릭: 직접입력</span> &nbsp;|&nbsp; <span class="font-medium text-emerald-600">드래그: 자동채우기(엑셀↔)</span> &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C → Ctrl+V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; 우클릭: 상세입력</p>
+          <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">선택 후 바로 타이핑: 직접입력</span> &nbsp;|&nbsp; <span class="font-medium text-emerald-600">드래그: 자동채우기</span> &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; <span class="font-medium text-amber-600">Ctrl+Z: 실행취소</span> &nbsp;|&nbsp; 우클릭: 상세</p>
         </div>
         <div class="flex gap-2 flex-wrap items-center">
           <!-- 근무코드 범례 -->
@@ -13520,6 +13520,13 @@ function renderMonthlyScheduleTab() {
       class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-700 hover:bg-red-600 transition-colors shrink-0 flex items-center gap-1"
       title="선택 셀 삭제 (Delete/Backspace)">
       <i class="fas fa-trash"></i><span>삭제</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">Del</kbd>
+    </button>
+
+    <!-- 실행 취소 (Ctrl+Z) -->
+    <button onclick="schedUndo()"
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-700 hover:bg-amber-600 transition-colors shrink-0 flex items-center gap-1"
+      title="실행 취소 (Ctrl+Z)">
+      <i class="fas fa-undo"></i><span>취소</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">Z</kbd>
     </button>
 
     <!-- 선택 해제 (ESC) -->
@@ -17079,41 +17086,15 @@ window.clearMultiSelection = () => {
 window.applyMultiSelect = async () => {
   if (!_multiCode) { showToast('적용할 코드를 선택하세요', 'error'); return }
   if (_selectedCells.size === 0) { showToast('선택된 셀이 없습니다', 'error'); return }
-  const items = []
+  const batchItems = []
   _selectedCells.forEach(key => {
     const parts = key.split('_')
     const empId = parts[0]
     const date  = parts.slice(1).join('_')
-    items.push({ employeeId: parseInt(empId), workDate: date, shiftCode: _multiCode })
-    // 즉시 DOM 업데이트
-    const cell = document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
-    if (cell) {
-      cell.dataset.shift = _multiCode
-      const span = cell.querySelector('span')
-      if (span) {
-        const sf = scheduleShifts.find(s=>s.shift_code===_multiCode)
-        const col = sf?.color || {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}[_multiCode] || '#374151'
-        const isEmpty = !_multiCode || _multiCode === '-'
-        span.style.cssText = isEmpty
-          ? 'display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;background:#f9fafb;color:#d1d5db'
-          : `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;background:${col}22;color:${col};font-weight:700`
-        span.textContent = isEmpty ? '·' : _multiCode
-      }
-      // 인메모리 업데이트
-      if (!scheduleMonthData) scheduleMonthData = { sched_map:{}, leave_map:{} }
-      const k = `${empId}_${date}`
-      if (!_multiCode || _multiCode === '-') delete scheduleMonthData.sched_map[k]
-      else scheduleMonthData.sched_map[k] = { ...(scheduleMonthData.sched_map[k]||{}), shift_code: _multiCode }
-    }
+    batchItems.push({ empId, date, code: _multiCode })
   })
-  // 집계 행 갱신
-  const empIds = new Set(items.map(i=>i.employeeId))
-  empIds.forEach(id => schedRecalcRow(id))
-  // 배치 저장
-  showToast(`${items.length}개 저장 중...`, 'info')
-  const res = await api('POST', '/api/schedule/save-batch', { items }).catch(()=>null)
-  if (res?.success !== false) showToast(`${items.length}개 일괄 적용 완료`, 'success')
-  else showToast('일부 저장 실패', 'error')
+  await schedApplyBatch(batchItems)
+  showToast(`${batchItems.length}개 일괄 적용 완료 (Ctrl+Z 취소 가능)`, 'success')
   clearMultiSelection()
 }
 
@@ -17165,15 +17146,13 @@ window.schedCellClick = (event, empId, date, cell) => {
 }
 
 // ────────────────────────────────────────────────────────────
-// 더블클릭 인라인 텍스트 입력
+// 인라인 입력 공통 함수 (더블클릭 & 바로 타이핑 공유)
+// initialChar: 타이핑으로 진입 시 첫 글자 (null이면 현재 코드 유지)
 // ────────────────────────────────────────────────────────────
-window.schedCellDblClick = (event, empId, date, cell) => {
-  event.preventDefault()
-  event.stopPropagation()
+function _openInlineInput(empId, date, cell, initialChar = null) {
   // 이미 입력창 열려있으면 무시
   if (cell.querySelector('input.sched-inline-input')) return
 
-  const span = cell.querySelector('span')
   const currentCode = cell.dataset.shift || ''
   const origContent = cell.innerHTML
 
@@ -17181,71 +17160,179 @@ window.schedCellDblClick = (event, empId, date, cell) => {
   const input = document.createElement('input')
   input.type = 'text'
   input.className = 'sched-inline-input'
-  input.value = currentCode === '-' || !currentCode ? '' : currentCode
+  // initialChar가 있으면 그 문자로 시작, 없으면 기존 코드 표시
+  input.value = initialChar !== null ? initialChar : (currentCode === '-' || !currentCode ? '' : currentCode)
   input.style.cssText = `
-    width:32px;height:28px;border:2px solid #3b82f6;border-radius:4px;
+    width:34px;height:28px;border:2px solid #1d6bf3;border-radius:4px;
     text-align:center;font-size:11px;font-weight:700;
-    background:white;color:#1f2937;outline:none;padding:0;
-    position:relative;z-index:10;
+    background:white;color:#1f2937;outline:none;padding:0 2px;
+    position:relative;z-index:20;box-shadow:0 0 0 3px rgba(29,107,243,0.2);
   `
   cell.innerHTML = ''
+  cell.classList.add('sched-cell-editing')
   cell.appendChild(input)
   input.focus()
-  input.select()
-
-  // 자동완성 힌트: 유효한 코드 목록
-  const allCodes = window._schedAllCodes || []
+  // 타이핑 진입이면 커서를 끝에, 더블클릭이면 전체 선택
+  if (initialChar !== null) {
+    const len = input.value.length
+    input.setSelectionRange(len, len)
+  } else {
+    input.select()
+  }
 
   const applyInput = async () => {
     let newCode = input.value.trim().toUpperCase()
-    // 빈 문자열이면 '-' (초기화)
     if (!newCode) newCode = '-'
-    // 셀 원복 후 적용
     cell.innerHTML = origContent
-    // schedCycleShift 대신 직접 적용
+    cell.classList.remove('sched-cell-editing')
     await schedApplyCodeToCell(empId, date, cell, newCode)
   }
 
   const cancelInput = () => {
     cell.innerHTML = origContent
+    cell.classList.remove('sched-cell-editing')
   }
 
+  // 자동완성: 입력 중 매칭 코드 하이라이트 (향후 확장 가능)
+  const allCodes = window._schedAllCodes || []
+
+  let _applied = false  // blur와 Enter 중복 방지
+
   input.addEventListener('keydown', async (e) => {
+    e.stopPropagation()  // 전역 keydown 핸들러로 전파 방지
+
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
+      if (_applied) return; _applied = true
       await applyInput()
-      // Tab이면 다음 날짜 셀로 이동
       if (e.key === 'Tab') {
+        // Tab: 다음 날짜로 이동
         const days = getDaysInMonth(App.currentYear, App.currentMonth)
         const mm = String(App.currentMonth).padStart(2,'0')
         const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
         const idx = allDates.indexOf(date)
         const nextDate = allDates[idx+1]
         if (nextDate) {
-          const nextCell = document.querySelector(`td[data-empid="${empId}"][data-date="${nextDate}"]`)
-          if (nextCell) setTimeout(() => window.schedCellDblClick({preventDefault:()=>{},stopPropagation:()=>{}}, empId, nextDate, nextCell), 50)
+          const nextCell = _getCellEl(empId, nextDate)
+          if (nextCell) {
+            // 다음 셀 선택
+            clearMultiSelection()
+            _selectedCells.add(`${empId}_${nextDate}`)
+            _anchorKey = `${empId}_${nextDate}`
+            applyRangeStyle()
+            updateMultiSelectBar()
+            setTimeout(() => _openInlineInput(empId, nextDate, nextCell, null), 50)
+          }
+        }
+      }
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      if (_applied) return; _applied = true
+      await applyInput()
+      // 오른쪽 화살표: 다음 날짜로 이동
+      const days2 = getDaysInMonth(App.currentYear, App.currentMonth)
+      const mm2 = String(App.currentMonth).padStart(2,'0')
+      const allDates2 = Array.from({length:days2},(_,i)=>`${App.currentYear}-${mm2}-${String(i+1).padStart(2,'0')}`)
+      const idx2 = allDates2.indexOf(date)
+      const nextD = allDates2[idx2+1]
+      if (nextD) {
+        const nc = _getCellEl(empId, nextD)
+        if (nc) {
+          clearMultiSelection()
+          _selectedCells.add(`${empId}_${nextD}`)
+          _anchorKey = `${empId}_${nextD}`
+          applyRangeStyle(); updateMultiSelectBar()
+          setTimeout(() => _openInlineInput(empId, nextD, nc, null), 50)
+        }
+      }
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      if (_applied) return; _applied = true
+      await applyInput()
+      const days3 = getDaysInMonth(App.currentYear, App.currentMonth)
+      const mm3 = String(App.currentMonth).padStart(2,'0')
+      const allDates3 = Array.from({length:days3},(_,i)=>`${App.currentYear}-${mm3}-${String(i+1).padStart(2,'0')}`)
+      const idx3 = allDates3.indexOf(date)
+      const prevD = allDates3[idx3-1]
+      if (prevD) {
+        const pc = _getCellEl(empId, prevD)
+        if (pc) {
+          clearMultiSelection()
+          _selectedCells.add(`${empId}_${prevD}`)
+          _anchorKey = `${empId}_${prevD}`
+          applyRangeStyle(); updateMultiSelectBar()
+          setTimeout(() => _openInlineInput(empId, prevD, pc, null), 50)
         }
       }
     } else if (e.key === 'Escape') {
       e.preventDefault()
       cancelInput()
+      // ESC 후 해당 셀 선택 유지
+      clearMultiSelection()
+      _selectedCells.add(`${empId}_${date}`)
+      _anchorKey = `${empId}_${date}`
+      applyRangeStyle(); updateMultiSelectBar()
     }
-    e.stopPropagation()
   })
 
   input.addEventListener('blur', async () => {
-    // 다른 곳 클릭 시 적용
-    if (cell.querySelector('input.sched-inline-input')) await applyInput()
+    if (!_applied && cell.querySelector('input.sched-inline-input')) {
+      _applied = true
+      await applyInput()
+    }
   })
 }
 
-// 코드를 셀에 직접 적용 (schedCycleShift와 다르게 순환 없이 직접 세팅)
-async function schedApplyCodeToCell(empId, date, cell, code) {
+// ── 더블클릭 핸들러 (공통 함수 호출) ───────────────────────
+window.schedCellDblClick = (event, empId, date, cell) => {
+  event.preventDefault()
+  event.stopPropagation()
+  // 클릭 시 해당 셀 선택 상태로
+  clearMultiSelection()
+  _selectedCells.add(`${empId}_${date}`)
+  _anchorKey = `${empId}_${date}`
+  _openInlineInput(empId, date, cell, null)
+}
+
+// ════════════════════════════════════════════════════════════════
+// Undo 스택 (Ctrl+Z)
+// ════════════════════════════════════════════════════════════════
+const _undoStack = []       // [ { items:[{empId,date,oldCode,newCode},...] }, ... ]
+const UNDO_LIMIT = 50       // 최대 50단계
+
+function _undoPushBatch(items) {
+  // items: [{empId, date, oldCode, newCode}, ...]
+  if (!items || items.length === 0) return
+  _undoStack.push({ items: items.map(i => ({ ...i })) })
+  if (_undoStack.length > UNDO_LIMIT) _undoStack.shift()
+}
+
+window.schedUndo = async () => {
+  if (_undoStack.length === 0) { showToast('더 이상 취소할 작업이 없습니다', 'info'); return }
+  const batch = _undoStack.pop()
+  const restoreItems = []
+  for (const { empId, date, oldCode } of batch.items) {
+    const cell = _getCellEl(empId, date)
+    if (!cell) continue
+    // Undo 스택에 다시 push하지 않도록 플래그
+    await _applyCodeNoPush(empId, date, cell, oldCode || '-')
+    restoreItems.push({ empId, date, code: oldCode })
+  }
+  showToast(`↩ ${batch.items.length}개 셀 실행취소`, 'info')
+  // 복원된 셀 재선택
+  clearMultiSelection()
+  batch.items.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
+  if (batch.items.length > 0) _anchorKey = `${batch.items[0].empId}_${batch.items[0].date}`
+  applyRangeStyle()
+  updateMultiSelectBar()
+}
+
+// ── 내부용: undo 스택에 push하지 않는 순수 적용 ──────────────
+async function _applyCodeNoPush(empId, date, cell, code) {
   const isEmpty = !code || code === '-'
   const sf = scheduleShifts.find(s => s.shift_code === code)
   const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
   const col = sf?.color || colMap[code] || '#374151'
-
   cell.dataset.shift = isEmpty ? '' : code
   const span = cell.querySelector('span')
   if (span) {
@@ -17254,15 +17341,35 @@ async function schedApplyCodeToCell(empId, date, cell, code) {
       : `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:700;background:${col}22;color:${col}`
     span.textContent = isEmpty ? '·' : code
   }
-  // 인메모리 업데이트
   if (!scheduleMonthData) scheduleMonthData = { sched_map:{}, leave_map:{} }
   const k = `${empId}_${date}`
   if (isEmpty) delete scheduleMonthData.sched_map[k]
   else scheduleMonthData.sched_map[k] = { ...(scheduleMonthData.sched_map[k]||{}), shift_code: code }
   schedRecalcRow(empId)
-  // DB 저장
   if (isEmpty) await api('DELETE', `/api/schedule/${empId}/${date}`).catch(()=>null)
   else await api('POST', '/api/schedule/save', { employeeId: parseInt(empId), workDate: date, shiftCode: code }).catch(()=>null)
+}
+
+// ── 공개용: undo 스택에 단일 항목 push 후 적용 ───────────────
+// 코드를 셀에 직접 적용 (schedCycleShift와 다르게 순환 없이 직접 세팅)
+async function schedApplyCodeToCell(empId, date, cell, code) {
+  const oldCode = cell.dataset.shift || ''
+  // undo 스택에 이전 값 기록
+  _undoPushBatch([{ empId: String(empId), date, oldCode, newCode: code }])
+  await _applyCodeNoPush(empId, date, cell, code)
+}
+
+// ── 배치용: 여러 셀을 한 번의 undo 단위로 적용 ───────────────
+async function schedApplyBatch(items) {
+  // items: [{empId, date, code}, ...]
+  const undoItems = []
+  for (const { empId, date, code } of items) {
+    const cell = _getCellEl(empId, date)
+    if (!cell) continue
+    undoItems.push({ empId: String(empId), date, oldCode: cell.dataset.shift || '', newCode: code })
+    await _applyCodeNoPush(empId, date, cell, code)
+  }
+  _undoPushBatch(undoItems)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -17320,53 +17427,39 @@ window.schedPasteCells = async () => {
 
   const { entries: srcEntries } = _copiedCellData
   const dstKeys = Array.from(_selectedCells).sort()
-  const items = []
+  const batchItems = []
 
   if (srcEntries.length === 1) {
     // 단일 셀 복사 → 선택 셀 전체에 동일 코드 적용
     const srcCode = srcEntries[0].code
     for (const dstKey of dstKeys) {
-      const parts = dstKey.split('_')
-      const empId = parts[0]
-      const date  = parts.slice(1).join('_')
-      const cell  = document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
-      if (cell) {
-        await schedApplyCodeToCell(empId, date, cell, srcCode || '-')
-        items.push(dstKey)
-      }
+      const { empId, date } = _parseKey(dstKey)
+      batchItems.push({ empId, date, code: srcCode || '-' })
     }
   } else {
-    // 다중 셀 복사 → 대상 첫 번째 셀 기준으로 오프셋 적용
-    // 복사 원본의 첫 번째 직원/날짜 기준
+    // 다중 셀 복사 → 대상 첫 번째 셀 기준으로 날짜 오프셋 적용
     const srcFirst = srcEntries[0]
-    const dstFirst_parts = dstKeys[0].split('_')
-    const dstEmpId = dstFirst_parts[0]
-    const dstFirstDate = dstFirst_parts.slice(1).join('_')
-
-    // 날짜 인덱스 맵 (해당 월)
+    const dstFirst = _parseKey(dstKeys[0])
     const days = getDaysInMonth(App.currentYear, App.currentMonth)
     const mm = String(App.currentMonth).padStart(2,'0')
     const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
-
-    const srcFirstIdx = allDates.indexOf(srcFirst.date)
-    const dstFirstIdx = allDates.indexOf(dstFirstDate)
-    const dateOffset = dstFirstIdx - srcFirstIdx
+    const dateOffset = allDates.indexOf(dstFirst.date) - allDates.indexOf(srcFirst.date)
 
     for (const srcEntry of srcEntries) {
-      const srcIdx = allDates.indexOf(srcEntry.date)
-      const dstIdx = srcIdx + dateOffset
+      const dstIdx = allDates.indexOf(srcEntry.date) + dateOffset
       if (dstIdx < 0 || dstIdx >= allDates.length) continue
-      const dstDate = allDates[dstIdx]
-      // 같은 직원에 적용 (empId는 대상 첫 셀 기준)
-      const cell = document.querySelector(`td[data-empid="${dstEmpId}"][data-date="${dstDate}"]`)
-      if (cell) {
-        await schedApplyCodeToCell(dstEmpId, dstDate, cell, srcEntry.code || '-')
-        items.push(`${dstEmpId}_${dstDate}`)
-      }
+      batchItems.push({ empId: dstFirst.empId, date: allDates[dstIdx], code: srcEntry.code || '-' })
     }
   }
 
-  showToast(`${items.length}개 셀에 붙여넣기 완료`, 'success')
+  if (batchItems.length === 0) return
+  await schedApplyBatch(batchItems)
+  showToast(`${batchItems.length}개 셀에 붙여넣기 완료 (Ctrl+Z 취소 가능)`, 'success')
+  // 붙여넣은 셀 선택 유지
+  clearMultiSelection()
+  batchItems.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
+  _anchorKey = `${batchItems[0].empId}_${batchItems[0].date}`
+  applyRangeStyle(); updateMultiSelectBar()
 }
 
 // ────────────────────────────────────────────────────────────
@@ -17374,15 +17467,12 @@ window.schedPasteCells = async () => {
 // ────────────────────────────────────────────────────────────
 window.schedDeleteCells = async () => {
   if (_selectedCells.size === 0) return
-  const dstKeys = Array.from(_selectedCells)
-  for (const dstKey of dstKeys) {
-    const parts = dstKey.split('_')
-    const empId = parts[0]
-    const date  = parts.slice(1).join('_')
-    const cell  = document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
-    if (cell) await schedApplyCodeToCell(empId, date, cell, '-')
-  }
-  showToast(`${dstKeys.length}개 셀 삭제됨`, 'info')
+  const batchItems = Array.from(_selectedCells).map(key => {
+    const { empId, date } = _parseKey(key)
+    return { empId, date, code: '-' }
+  })
+  await schedApplyBatch(batchItems)
+  showToast(`${batchItems.length}개 셀 삭제됨 (Ctrl+Z 취소 가능)`, 'info')
   clearMultiSelection()
 }
 
@@ -17465,21 +17555,21 @@ window.schedDragEnd = async (event) => {
     })
 
     // 미리보기 셀들 찾기
+    // 미리보기 셀들 → schedApplyBatch로 한 번에 처리 (undo 단위)
     const previewCells = document.querySelectorAll('td.sched-cell-fill-preview')
     if (previewCells.length > 0) {
-      const items = []
+      const fillBatch = []
       let codeIdx = 0
-      for (const pCell of previewCells) {
+      previewCells.forEach(pCell => {
         const pEmpId = pCell.dataset.empid
         const pDate  = pCell.dataset.date
-        // 소스 코드 순환 적용 (단일이면 동일 코드 반복, 다중이면 패턴 반복)
-        const fillCode = srcCodes[codeIdx % srcCodes.length] || ''
+        const fillCode = srcCodes[codeIdx % srcCodes.length] || '-'
         codeIdx++
         pCell.classList.remove('sched-cell-fill-preview')
-        await schedApplyCodeToCell(pEmpId, pDate, pCell, fillCode || '-')
-        items.push(`${pEmpId}_${pDate}`)
-      }
-      showToast(`${items.length}개 셀 자동채우기 완료`, 'success')
+        fillBatch.push({ empId: pEmpId, date: pDate, code: fillCode })
+      })
+      await schedApplyBatch(fillBatch)
+      showToast(`${fillBatch.length}개 셀 자동채우기 완료 (Ctrl+Z 취소 가능)`, 'success')
     }
 
     _fillSrcKey = null
@@ -17494,28 +17584,21 @@ window.schedDragEnd = async (event) => {
   const srcKey = _dragStartKey
   _dragStartKey = null
 
-  // 드래그 범위가 2개 이상이면 소스 셀 코드를 전체 범위에 자동 적용 (엑셀 드래그 채우기)
+  // 드래그 범위가 2개 이상이면 소스 셀 코드를 전체 범위에 자동 적용 (undo 단위)
   if (_selectedCells.size > 1 && srcKey) {
     const { empId: srcEmpId, date: srcDate } = _parseKey(srcKey)
     const srcCell = _getCellEl(srcEmpId, srcDate)
     const srcCode = srcCell?.dataset?.shift || ''
 
     if (srcCode && srcCode !== '-') {
-      // 소스 셀 제외한 나머지 셀에 소스 코드 적용
       const allKeys = Array.from(_selectedCells).sort()
       const otherKeys = allKeys.filter(k => k !== srcKey)
-      const items = []
-      for (const k of otherKeys) {
+      const fillBatch = otherKeys.map(k => {
         const { empId, date } = _parseKey(k)
-        const cell = _getCellEl(empId, date)
-        if (cell) {
-          await schedApplyCodeToCell(empId, date, cell, srcCode)
-          items.push(k)
-        }
-      }
-      if (items.length > 0) {
-        showToast(`${items.length}개 셀에 [${srcCode}] 채우기 완료`, 'success')
-      }
+        return { empId, date, code: srcCode }
+      })
+      await schedApplyBatch(fillBatch)
+      if (fillBatch.length > 0) showToast(`${fillBatch.length}개 셀에 [${srcCode}] 채우기 완료 (Ctrl+Z 취소 가능)`, 'success')
     }
   }
 
@@ -17530,13 +17613,26 @@ window.schedDragEnd = async (event) => {
 let _copiedCellData = null   // { code, rows: [ [code,...], ... ] } 복사 버퍼
 
 document.addEventListener('keydown', (e) => {
+  // input/textarea/select에서 온 이벤트는 대부분 무시 (단, ESC는 통과)
+  const inInput = e.target.matches('input,textarea,select')
+
   // ESC: 선택 해제
   if (e.key === 'Escape' && _selectedCells.size > 0) { clearMultiSelection(); return }
 
   // 스케줄 탭 외에서는 동작 안 함
   if (scheduleTab !== 'schedule') return
 
-  // 선택된 셀 없으면 단축키 무시
+  // ── input 안에 있으면 이하 스케줄 단축키 무시 ────────────
+  if (inInput) return
+
+  // Ctrl+Z / Cmd+Z : 실행 취소
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault()
+    schedUndo()
+    return
+  }
+
+  // 선택된 셀 없으면 이하 단축키 무시
   if (_selectedCells.size === 0) return
 
   // Ctrl+C / Cmd+C : 복사
@@ -17554,9 +17650,33 @@ document.addEventListener('keydown', (e) => {
   }
 
   // Delete / Backspace : 선택 셀 초기화
-  if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea,select')) {
+  if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault()
     schedDeleteCells()
+    return
+  }
+
+  // ── 바로 타이핑 입력: 영문/숫자/한글 키 입력 시 즉시 편집 모드 진입 ──
+  // Ctrl/Meta/Alt/Function 키 조합은 무시
+  if (e.ctrlKey || e.metaKey || e.altKey) return
+  // 특수키 무시 (화살표, F1~F12, Tab, Enter, Home, End 등)
+  const ignoreKeys = new Set(['Tab','Enter','ArrowLeft','ArrowRight','ArrowUp','ArrowDown',
+    'Home','End','PageUp','PageDown','CapsLock','Shift','Control','Alt','Meta',
+    'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'])
+  if (ignoreKeys.has(e.key)) return
+  // 출력 가능 문자(1글자) 또는 한글 조합 중인 경우 → 편집 모드 진입
+  if (e.key.length === 1 || e.isComposing) {
+    // 첫 번째 선택 셀(앵커)에 인라인 입력창 열기
+    const targetKey = _anchorKey || Array.from(_selectedCells)[0]
+    if (!targetKey) return
+    const { empId, date } = _parseKey(targetKey)
+    const cell = _getCellEl(empId, date)
+    if (!cell) return
+    // 이미 입력창 열려있으면 무시
+    if (cell.querySelector('input.sched-inline-input')) return
+    e.preventDefault()
+    // 입력창 열고 첫 글자를 미리 채움
+    _openInlineInput(empId, date, cell, e.key === '-' ? '' : e.key)
     return
   }
 })
