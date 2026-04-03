@@ -2310,7 +2310,23 @@ async function renderOrders() {
     </div>
     ${(() => {
       // 카테고리별 실시간 식단가 섹션
-      const cats = patientCats || []
+      const allCats = patientCats || []
+      if (allCats.length === 0) return ''
+      // 식단가 표시 대상: budget_include_keys(budgetKeys)가 있는 주요 환자군만 표시
+      // budget_include_keys=NULL인 보조 카테고리(항암 보호자, 경관식 등) 제외
+      const cats = allCats.filter(cat => {
+        const dcEntry = (dashData?.catDietPrices||[]).find(d => d.id === cat.id)
+        // budgetKeys가 1개 이상 있어야 주요 환자군
+        if (dcEntry && (dcEntry.budgetKeys||[]).length > 0) return true
+        // catDietPrices에 없는 경우, catSettings에서 ref_meal_price/monthly_budget 확인
+        const tmpSet = (catOrderData?.settings||[]).find(s => s.patient_category_id === cat.id) || {}
+        if ((tmpSet.ref_meal_price||0) > 0 || (tmpSet.monthly_budget||0) > 0) {
+          // catDietPrices에 등록되어 있고 budgetKeys=[]이면 보조 카테고리 → 제외
+          if (dcEntry) return false
+          return true
+        }
+        return false
+      })
       if (cats.length === 0) return ''
       const todayMeals2 = catOrderData?.todayMeals || { patient_total: 0 }
       const totalPatientMeals = todayMeals2.patient_total || 0
@@ -5778,7 +5794,18 @@ function updateBudgetProgressPanel() {
     }
 
     // ── 카테고리별 실시간 식단가 업데이트 ──
-    const catsList = window._patientCats || []
+    // budget_include_keys=NULL인 보조 카테고리(항암 보호자, 경관식 등) 제외
+    const catsListAll = window._patientCats || []
+    const catsList = catsListAll.filter(cat => {
+      const dcEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
+      if (dcEntry && (dcEntry.budgetKeys || []).length > 0) return true
+      const tmpS = (window._catOrderSettings || []).find(s => s.patient_category_id === cat.id) || {}
+      if ((tmpS.ref_meal_price || 0) > 0 || (tmpS.monthly_budget || 0) > 0) {
+        if (dcEntry) return false // catDietPrices에 있지만 budgetKeys=[] → 보조 카테고리
+        return true
+      }
+      return false
+    })
     if (catsList.length > 0) {
       const todayMealsData = window._catTodayMeals || { patient_total: 0 }
       const totalPatientToday = todayMealsData.patient_total || 0
