@@ -2930,6 +2930,7 @@ async function renderOrders() {
           })
         }
         if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
+        if (typeof updateInsightPanel === 'function') updateInsightPanel()
       })
     }, 0)
   })

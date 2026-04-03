@@ -607,13 +607,22 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         } catch(e) {}
       }
 
-      // 오늘/이번주 발주
+      // 조회 월이 현재 월인지 확인 (병원별 활성 월 기준)
+      const nowYearStr = String(nowDate.getFullYear())
+      const nowMonthStr = String(nowDate.getMonth() + 1)
+      const isHospCurrentMonth = (hYear === nowYearStr && hMonth === nowMonthStr)
+
+      // 오늘/이번주 발주 (현재 월인 경우에만 의미 있음)
       const todayUsed = await c.env.DB.prepare(
         `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date=?`
       ).bind(h.id, today).first<any>()
-      const weekUsed = await c.env.DB.prepare(
-        `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date>=? AND order_date<=?`
-      ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+      let weekUsedVal = 0
+      if (isHospCurrentMonth) {
+        const weekUsedRow = await c.env.DB.prepare(
+          `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date>=? AND order_date<=?`
+        ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+        weekUsedVal = weekUsedRow?.t || 0
+      }
 
       // 일별 발주 (최근 7일 이슈 분석용)
       const dailyOrders = await c.env.DB.prepare(`
@@ -649,8 +658,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       const totalBudget = settings?.total_budget || 0
       // working_days 미설정 시 해당 월의 실제 일수로 fallback (30일 고정값 대신)
       const workingDays = settings?.working_days || new Date(parseInt(hYear), parseInt(hMonth), 0).getDate()
-      const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
-      const weekBudget = dailyBudget * 5
+      const dailyBudget = isHospCurrentMonth && workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
+      const weekBudget = isHospCurrentMonth ? dailyBudget * 5 : 0
 
       // totalUsed: daily_orders 직접 집계 (vendor_id가 다른 병원 업체를 참조해도 포함)
       const totalUsedRow2 = await c.env.DB.prepare(
@@ -1000,8 +1009,8 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
         mealStats: ms,
         mealCustomFields: customFieldsList.results || [],
         mealCustomTotals: customFieldTotals,
-        todayUsed: todayUsed?.t || 0,
-        weekUsed: weekUsed?.t || 0,
+        todayUsed: isHospCurrentMonth ? (todayUsed?.t || 0) : 0,
+        weekUsed: weekUsedVal,
         dailyBudget,
         weekBudget,
         vendors: vendors.results || [],

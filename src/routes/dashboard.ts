@@ -356,24 +356,30 @@ dashboard.get('/summary/:year/:month', async (c) => {
   
   // 주간 날짜 계산 (weekStartStr/weekEndStr을 먼저 선언해야 아래 for문에서 사용 가능)
   const nowDate = new Date()
+  const nowYear = nowDate.getFullYear()
+  const nowMonth = nowDate.getMonth() + 1
+  // 요청한 월이 현재 월인지 확인 → 다른 달을 조회하면 주간 데이터는 의미없음
+  const isCurrentMonth = (dashReqYear === nowYear && dashReqMonth === nowMonth)
   const dayOfWeek2 = nowDate.getDay()
   const weekStart2 = new Date(nowDate); weekStart2.setDate(nowDate.getDate() - dayOfWeek2)
   const weekEnd2 = new Date(weekStart2); weekEnd2.setDate(weekStart2.getDate() + 6)
   const weekStartStr = weekStart2.toISOString().split('T')[0]
   const weekEndStr = weekEnd2.toISOString().split('T')[0]
-  const weekOrders = weekOrdersRaw
+  const weekOrders = isCurrentMonth ? weekOrdersRaw : null
 
   // 일/주/월 목표
   const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
-  // 주간 예산: 이번 주에서 해당 월에 속하는 실제 일수 × 일예산 (월 경계 주차 처리)
+  // 주간 예산: 현재 월인 경우에만 계산 (다른 달 조회 시 0)
   const monthStr = `${year}-${String(parseInt(month)).padStart(2,'0')}`
   let weekDaysInMonth = 0
-  for (let d = new Date(weekStartStr); d <= new Date(weekEndStr); d.setDate(d.getDate()+1)) {
-    const ds = d.toISOString().split('T')[0]
-    if (ds.startsWith(monthStr)) weekDaysInMonth++
+  if (isCurrentMonth) {
+    for (let d = new Date(weekStartStr); d <= new Date(weekEndStr); d.setDate(d.getDate()+1)) {
+      const ds = d.toISOString().split('T')[0]
+      if (ds.startsWith(monthStr)) weekDaysInMonth++
+    }
+    if (weekDaysInMonth === 0) weekDaysInMonth = 7  // fallback
   }
-  if (weekDaysInMonth === 0) weekDaysInMonth = 7  // fallback
-  const weeklyBudget = dailyBudget * weekDaysInMonth
+  const weeklyBudget = isCurrentMonth ? (dailyBudget * weekDaysInMonth) : 0
 
   // 예산 초과 업체
   const overBudgetVendors = (vendors.results || []).filter((v: any) => 
@@ -810,8 +816,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const daysInMonth = new Date(reqYearInt, reqMonthInt, 0).getDate()
   // 오늘 날짜와 비교해 현재 경과일 계산
   const todayDate = new Date()
-  const isCurrentMonth = (todayDate.getFullYear() === reqYearInt && todayDate.getMonth() + 1 === reqMonthInt)
-  const elapsedDays = isCurrentMonth ? todayDate.getDate() : daysInMonth
+  const isCurrentMonthForProj = (todayDate.getFullYear() === reqYearInt && todayDate.getMonth() + 1 === reqMonthInt)
+  const elapsedDays = isCurrentMonthForProj ? todayDate.getDate() : daysInMonth
 
   // 발주 경과일 (Promise.all에서 이미 조회됨)
   const orderDayCnt = orderDayCountRow?.cnt || 0
@@ -823,7 +829,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const dailyAvgUsed = orderDayCnt > 0 ? totalUsed / orderDayCnt : (elapsedDays > 0 ? totalUsed / elapsedDays : 0)
 
   // 월말 예상 총 발주액 (현재 추세 × 남은 일수 반영)
-  const projectedTotalUsed = isCurrentMonth && elapsedDays < daysInMonth
+  const projectedTotalUsed = isCurrentMonthForProj && elapsedDays < daysInMonth
     ? totalUsed + dailyAvgUsed * (daysInMonth - elapsedDays)
     : totalUsed
 
@@ -832,7 +838,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 월말 예상 총 식수
   // 식수 데이터 없을 때는 목표 식단가 기준으로 식수 역산 (발주액 ÷ 목표 식단가)
-  const projectedTotalMeals = isCurrentMonth && mealDayCnt > 0 && elapsedDays < daysInMonth
+  const projectedTotalMeals = isCurrentMonthForProj && mealDayCnt > 0 && elapsedDays < daysInMonth
     ? totalMeals + dailyAvgMeals * (daysInMonth - elapsedDays)
     : totalMeals
 
@@ -1096,7 +1102,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
       daysInMonth,                     // 월 총일수
       dailyAvgUsed: Math.round(dailyAvgUsed),   // 일평균 발주액
       dailyAvgMeals: Math.round(dailyAvgMeals), // 일평균 식수
-      isCurrentMonth
+      isCurrentMonth: isCurrentMonthForProj
     },
     // ── 2.3 예산 소진 예상일 ──
     budgetDepletion: {
@@ -1411,6 +1417,11 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
   const weekStartStr = weekStartDate.toISOString().split('T')[0]
   const weekEndStr = weekEndDate.toISOString().split('T')[0]
   const today = nowDate.toISOString().split('T')[0]
+
+  // 조회 월이 현재 월인지 확인 (다른 월 조회 시 주간 데이터 의미 없음)
+  const overviewNowYear = String(nowDate.getFullYear())
+  const overviewNowMonth = String(nowDate.getMonth() + 1)
+  const isOverviewCurrentMonth = (year === overviewNowYear && month === overviewNowMonth)
   
   const results = await Promise.all(
     (hospitals.results || []).map(async (h: any) => {
@@ -1474,23 +1485,30 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
         `SELECT COALESCE(SUM(total_amount), 0) as today_total FROM daily_orders WHERE hospital_id = ? AND order_date = ?`
       ).bind(h.id, today).first<any>()
 
-      // 이번주 발주
-      const weekUsed = await c.env.DB.prepare(
-        `SELECT COALESCE(SUM(total_amount), 0) as week_total FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
-      ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+      // 이번주 발주 (현재 월 조회 시에만 의미 있음)
+      let weekUsedAmount = 0
+      if (isOverviewCurrentMonth) {
+        const weekUsedRow = await c.env.DB.prepare(
+          `SELECT COALESCE(SUM(total_amount), 0) as week_total FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
+        ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+        weekUsedAmount = weekUsedRow?.week_total || 0
+      }
 
       const totalBudget = settings?.total_budget || 0
       const workingDays = settings?.working_days || new Date(parseInt(year), parseInt(month), 0).getDate()
       const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
-      // 주간 예산: 이번 주에서 해당 월에 속하는 실제 일수 × 일예산
-      const mStr2 = `${year}-${String(parseInt(month)).padStart(2,'0')}`
-      let wDaysInMonth2 = 0
-      for (let d2 = new Date(weekStartStr); d2 <= new Date(weekEndStr); d2.setDate(d2.getDate()+1)) {
-        const ds2 = d2.toISOString().split('T')[0]
-        if (ds2.startsWith(mStr2)) wDaysInMonth2++
+      // 주간 예산: 현재 월 조회 시에만 계산, 다른 월이면 0
+      let weekBudget = 0
+      if (isOverviewCurrentMonth) {
+        const mStr2 = `${year}-${String(parseInt(month)).padStart(2,'0')}`
+        let wDaysInMonth2 = 0
+        for (let d2 = new Date(weekStartStr); d2 <= new Date(weekEndStr); d2.setDate(d2.getDate()+1)) {
+          const ds2 = d2.toISOString().split('T')[0]
+          if (ds2.startsWith(mStr2)) wDaysInMonth2++
+        }
+        if (wDaysInMonth2 === 0) wDaysInMonth2 = 5
+        weekBudget = dailyBudget * wDaysInMonth2
       }
-      if (wDaysInMonth2 === 0) wDaysInMonth2 = 5
-      const weekBudget = dailyBudget * wDaysInMonth2
       const used = totalUsed?.total || 0
       const progress = totalBudget > 0 ? ((used / totalBudget) * 100).toFixed(1) : '0.0'
 
@@ -1517,9 +1535,9 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
         mealPriceTotal,
         mealPriceNoStaff,
         mealPriceNoSupply,
-        todayUsed: todayUsed?.today_total || 0,
-        weekUsed: weekUsed?.week_total || 0,
-        dailyBudget,
+        todayUsed: isOverviewCurrentMonth ? (todayUsed?.today_total || 0) : 0,
+        weekUsed: weekUsedAmount,
+        dailyBudget: isOverviewCurrentMonth ? dailyBudget : 0,
         weekBudget
       }
     })
