@@ -4369,14 +4369,16 @@ window.downloadOrdersExcel = async function() {
       const vt = s.vat != null ? s.vat : (s.vat_amount != null ? s.vat_amount : Math.round(tx*0.1))
       const tot = s.total || s.total_amount || (tx+ex+vt)
       if (subType==='taxable') return tx||''
-      if (subType==='exempt')  return ex||''
+      // 면세 업체: exempt_amount가 0이고 total_amount에만 값이 있는 경우 total_amount로 fallback
+      if (subType==='exempt')  return ex || (taxType==='exempt' ? (tot||'') : '')||''
       if (subType==='vat')     return vt||''
       return tot||''
     } else {
       const o = normalOrderMap[`${dateStr}__${vendorId}`]
       if (!o) return ''
       if (subType==='taxable') return o.taxable_amount||''
-      if (subType==='exempt')  return o.exempt_amount||''
+      // 면세 업체: exempt_amount가 0이고 total_amount에만 값이 있는 경우 total_amount로 fallback
+      if (subType==='exempt')  return o.exempt_amount || (taxType==='exempt' ? (o.total_amount||'') : '')||''
       if (subType==='vat')     return o.vat_amount||''
       return o.total_amount||''
     }
