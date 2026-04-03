@@ -653,6 +653,30 @@ function openCategorySetupGuide() {
   showToast('관리자 → 병원관리 → 환자군 탭에서 카테고리를 설정하세요', 'info')
 }
 
+// ── 주요 환자군 필터 (전역 헬퍼) ────────────────────────────────────
+// 보조 카테고리(항암 보호자, 경관식 등 - monthly_budget=0, ref_meal_price=0, budgetKeys=[]) 제외
+// catSettings: category_order_settings 배열 (patient_category_id, monthly_budget, ref_meal_price)
+// catDietPrices: catDietPricesData 배열 (id, budgetKeys)
+function filterMainPatientCats(cats, catSettings, catDietPrices) {
+  if (!cats || cats.length === 0) return cats || []
+  const settingsMap = {}
+  ;(catSettings || []).forEach(s => { settingsMap[s.patient_category_id] = s })
+  const dietMap = {}
+  ;(catDietPrices || []).forEach(d => { dietMap[d.id] = d })
+  return cats.filter(cat => {
+    const dc = dietMap[cat.id]
+    if (dc) {
+      // catDietPrices에 등록됨: budgetKeys 1개 이상이면 주요 환자군
+      if ((dc.budgetKeys || []).length > 0) return true
+      // budgetKeys=[] → 보조 카테고리 → 제외
+      return false
+    }
+    // catDietPrices에 없는 경우: catSettings에서 예산/기준가 확인
+    const s = settingsMap[cat.id] || {}
+    return (s.monthly_budget || 0) > 0 || (s.ref_meal_price || 0) > 0
+  })
+}
+
 function showToast(msg, type = 'success') {
   const t = document.createElement('div')
   t.className = `toast toast-${type}`
@@ -2137,8 +2161,8 @@ async function renderOrders() {
   // 업체 목록 캐시 (법인카드 모달에서 업체 정보 조회에 사용)
   window._vendorsCache = vendors || []
 
-  // 환자군 카테고리 전역 저장
-  window._patientCats = patientCats || []
+  // 환자군 카테고리 전역 저장 (전체: 보조 카테고리 포함)
+  window._patientCatsAll = patientCats || []
   window._catOrderSettings = (catOrderData?.settings) || []
   // 목표 식단가 일원화: monthly_settings.meal_price 전역 저장
   window._monthlyTargetMealPrice = settingsData?.meal_price || 0
@@ -2152,6 +2176,15 @@ async function renderOrders() {
   } else if (!window._catDietPricesData || window._catDietPricesData.length === 0) {
     window._catDietPricesData = []
   }
+  // 발주 입력/모달/엑셀에 사용할 주요 환자군만 필터링
+  // 보조 카테고리(항암 보호자, 경관식 등 - 예산/기준가 미설정) 제외
+  const patientCatsMain = filterMainPatientCats(
+    patientCats || [],
+    catOrderData?.settings || [],
+    window._catDietPricesData
+  )
+  // _patientCats는 항상 주요 환자군만 포함 (UI 렌더링 기준)
+  window._patientCats = patientCatsMain
 
   // API 응답 구조: { orders: [...], multidaySettings: [...] } 또는 하위호환 배열
   const orderList = Array.isArray(orderData) ? orderData : (orderData?.orders || [])
@@ -2207,7 +2240,7 @@ async function renderOrders() {
   // ── 카테고리별 금액 계산 (A안+B안용) ──
   const catSettings2 = catOrderData?.settings || []
   const catDailyData = catOrderData?.dailyByVendorCat || []  // flat 배열
-  const hasCatsData = (patientCats||[]).length > 0
+  const hasCatsData = (patientCatsMain||[]).length > 0
 
   // 카테고리별 월 합계 (monthly 집계에서)
   const catMonthTotals = {}  // { catId: amount }
@@ -2352,7 +2385,7 @@ async function renderOrders() {
     </div>
     ${(() => {
       // 카테고리별 실시간 식단가 섹션
-      const allCats = patientCats || []
+      const allCats = patientCatsMain || []
       if (allCats.length === 0) return ''
       // 식단가 표시 대상: budget_include_keys(budgetKeys)가 있는 주요 환자군만 표시
       // budget_include_keys=NULL인 보조 카테고리(항암 보호자, 경관식 등) 제외
@@ -2506,7 +2539,7 @@ async function renderOrders() {
     }
 
     // ── 카테고리 비율 섹션 생성 헬퍼 (A안 + B안) ──
-    const hasCats2 = (patientCats||[]).length > 0
+    const hasCats2 = (patientCatsMain||[]).length > 0
     // 주요 환자군 필터: budgetKeys 있거나 예산/기준가 설정된 카테고리만 표시
     // 보조 카테고리(항암 보호자, 경관식 등 - monthly_budget=0, ref_meal_price=0, budgetKeys=[]) 제외
     const catSettingsMapForFilter = {}
@@ -2526,7 +2559,7 @@ async function renderOrders() {
     function makeCatSection(catTotalsMap, catBudgetsMap, periodLabel) {
       if (!hasCats2) return ''
       // 보조 카테고리 필터링 적용
-      const cats = (patientCats || []).filter(isMainCat)
+      const cats = patientCatsMain || []  // filterMainPatientCats로 이미 필터링됨
       if (cats.length === 0) return ''
       const grandAmt = cats.reduce((s,c) => s+(catTotalsMap[c.id]||0), 0)
       const grandBudget = cats.reduce((s,c) => s+(catBudgetsMap[c.id]||0), 0)
@@ -2828,13 +2861,13 @@ async function renderOrders() {
             <th class="sticky left-0 z-30 bg-gray-800" style="width:30px;min-width:30px;padding:5px 3px;font-size:12px;font-weight:700">일</th>
             <th class="sticky z-30 bg-gray-800" style="width:24px;min-width:24px;left:30px;padding:5px 3px;font-size:12px;font-weight:700">요</th>
             <th class="sticky z-30 bg-gray-800" style="width:56px;min-width:56px;left:54px;font-size:10px;font-weight:600;padding:5px 3px" title="몇 일분 발주인지 선택합니다. 예: 2일 선택 시 일 목표금액×2 기준으로 진행률 계산">몇일분<br><span style="font-size:9px;opacity:0.85;font-weight:500">발주</span></th>
-            ${patientCats.map((cat, ci) => {
+            ${patientCatsMain.map((cat, ci) => {
               const catColor = getCategoryColorHex(cat.category_key)
               const bl = ci === 0 ? 'border-left:3px solid #334155;' : 'border-left:2px solid #475569;'
-              const thMinW = patientCats.length <= 1 ? 72 : 82
+              const thMinW = patientCatsMain.length <= 1 ? 72 : 82
               return `<th style="${bl}min-width:${thMinW}px;background:${catColor}cc;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.25);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.12);padding:1px 5px;border-radius:8px">합계</span></th>`
             }).join('')}
-            ${patientCats.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155;font-size:12px;font-weight:700">일합계</th>` : ''}
+            ${patientCatsMain.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155;font-size:12px;font-weight:700">일합계</th>` : ''}
             <th class="sticky z-30" style="min-width:84px;background:#1e3a5f;left:110px;padding:5px 4px;font-size:12px;font-weight:700;line-height:1.4">합계<br><span style="font-size:10px;opacity:0.85;font-weight:500">/ 진행률</span></th>
             <th class="sticky-right-btn" style="min-width:68px;background:#374151;font-size:11px;font-weight:600;padding:5px 3px;box-shadow:-2px 0 6px rgba(0,0,0,0.18);line-height:1.5">업체별<br><span style="font-size:9px;opacity:0.8;font-weight:500">입력</span></th>
           </tr>
@@ -3016,14 +3049,14 @@ async function renderOrders() {
 
       _buildOrdersTbody({
         days, orderData: orderList||[], vendors: vendors||[],
-        patientCats: patientCats||[], coveredDates: _coveredDates,
+        patientCats: patientCatsMain||[], coveredDates: _coveredDates,
         multiDayMap: _multiDayMap, vendorDailyBudgets: _vendorDailyBudgets,
         catDailyMap: _catDailyMap, catSettingsMap: _catSettingsMap,
         dailyBudget, weekBudget, weekStart, weekEnd, todayStr,
         totalBudget, monthPct, orderMap
       })
       _buildOrdersTfoot({
-        vendors: vendors||[], patientCats: patientCats||[], orderData: orderList||[],
+        vendors: vendors||[], patientCats: patientCatsMain||[], orderData: orderList||[],
         catOrderData, catSettingsMap: _catSettingsMap, monthPct, totalBudget
       })
       // ── 테이블/tfoot 렌더링 완료 후 모든 실시간 패널 업데이트 ──
@@ -6588,8 +6621,14 @@ function updateInsightPanel() {
   const forecastWarnEl = document.getElementById('budgetForecastWarn')
   if (forecastWarnEl && totalBudget > 0) {
     const today2 = new Date()
-    const dayOfMonth = today2.getDate()
-    const daysInMonth2 = new Date(today2.getFullYear(), today2.getMonth()+1, 0).getDate()
+    // 현재 선택된 월(App.currentYear/currentMonth) 기준으로 경과 비율 계산
+    // (과거 달 조회 시 오늘 날짜가 아닌 해당 달 전체를 경과로 처리)
+    const viewYear = App.currentYear || today2.getFullYear()
+    const viewMonth = App.currentMonth || (today2.getMonth()+1)
+    const daysInMonth2 = new Date(viewYear, viewMonth, 0).getDate()
+    const isCurrentMonth = (viewYear === today2.getFullYear() && viewMonth === today2.getMonth()+1)
+    // 현재 달이면 오늘 날짜, 과거/미래 달이면 해당 달 전체 경과(=마지막 날)로 처리
+    const dayOfMonth = isCurrentMonth ? today2.getDate() : daysInMonth2
     const elapsedRatio = dayOfMonth / daysInMonth2
     // 현재 발주 합계 (실시간)
     let liveTotal2 = 0
