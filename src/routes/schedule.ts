@@ -1034,6 +1034,17 @@ schedule.get('/off-grants', async (c) => {
   const year  = parseInt(c.req.query('year')  || new Date().getFullYear().toString())
   const month = parseInt(c.req.query('month') || (new Date().getMonth() + 1).toString())
 
+  // ─── 병원별 근무 설정 조회 ─────────────────────────────────────
+  const wsRows = await c.env.DB.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(hospitalId).all<any>()
+  const wsMap: Record<string, string> = { ...DEFAULT_WORK_SETTINGS }
+  for (const r of (wsRows.results || [])) wsMap[r.setting_key] = r.setting_value
+  const offGrantType     = wsMap.off_grant_type       || 'weekly5'
+  const cycleWorkDays    = parseInt(wsMap.off_cycle_work_days || '5')
+  const cycleRestDays    = parseInt(wsMap.off_cycle_rest_days || '2')
+  const cycleStartDate   = wsMap.off_cycle_start_date || ''
+
   // ─── 해당 월의 공휴일 조회 (전국 공통) ────────────────────────
   const monthStr = String(month).padStart(2, '0')
   const prefix   = `${year}-${monthStr}`
@@ -1052,22 +1063,72 @@ schedule.get('/off-grants', async (c) => {
   // ─── 해당 월 날짜별 자동 계산 ────────────────────────────────
   const daysInMonth = new Date(year, month, 0).getDate()
   const grantedDays: { date: string; day_of_week: string; type: string; label: string }[] = []
+  const DOW_LABEL = ['일', '월', '화', '수', '목', '금', '토']
 
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateObj = new Date(year, month - 1, d)
-    const dow = dateObj.getDay()   // 0=일, 6=토
-    const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
-    const DOW_LABEL = ['일', '월', '화', '수', '목', '금', '토']
+  if (offGrantType === 'cycle') {
+    // ── 순환 패턴 (예: 2일근무 1일휴무, 5일근무 2일휴무 등) ─────
+    const cycleLen = cycleWorkDays + cycleRestDays
+    // 기준일 결정: 직접 지정 or 해당 월 1일
+    let baseDate: Date
+    if (cycleStartDate) {
+      baseDate = new Date(cycleStartDate)
+    } else {
+      baseDate = new Date(year, month - 1, 1)
+    }
+    const baseTime = baseDate.getTime()
 
-    const isNationalHoliday = nationalHolidayDates.has(dateStr)
-    // 공휴일이 이미 일/토이면 중복 제외
-    if (dow === 0) {
-      grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일' })
-    } else if (dow === 6) {
-      grantedDays.push({ date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일' })
-    } else if (isNationalHoliday) {
-      const h = (holidayRows.results || []).find((r: any) => r.holiday_date === dateStr)
-      grantedDays.push({ date: dateStr, day_of_week: DOW_LABEL[dow], type: 'holiday', label: h?.holiday_name || '공휴일' })
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateObj = new Date(year, month - 1, d)
+      const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
+      const dow = dateObj.getDay()
+      const dowLabel = DOW_LABEL[dow]
+
+      // 기준일로부터 경과일 수
+      const diffMs   = dateObj.getTime() - baseTime
+      const diffDays = Math.floor(diffMs / 86400000)
+      // 음수면 모듈러가 음수가 될 수 있으므로 보정
+      const posIdx   = ((diffDays % cycleLen) + cycleLen) % cycleLen
+      // cycleWorkDays번 이후가 휴무
+      const isRestDay = posIdx >= cycleWorkDays
+
+      if (isRestDay) {
+        // 공휴일 여부 확인
+        const isHoliday = nationalHolidayDates.has(dateStr)
+        const typeLabel = dow === 0 ? 'sunday'
+          : dow === 6 ? 'saturday'
+          : isHoliday  ? 'holiday'
+          : 'cycle_rest'
+        const label = dow === 0 ? '일요일'
+          : dow === 6 ? '토요일'
+          : isHoliday  ? ((holidayRows.results||[]).find((r:any)=>r.holiday_date===dateStr)?.holiday_name||'공휴일')
+          : `순환휴무 (${cycleWorkDays}일근무/${cycleRestDays}일휴무)`
+        grantedDays.push({ date: dateStr, day_of_week: dowLabel, type: typeLabel, label })
+      } else {
+        // 근무일이지만 공휴일이면 추가
+        const isHoliday = nationalHolidayDates.has(dateStr)
+        if (isHoliday && dow !== 0 && dow !== 6) {
+          const h = (holidayRows.results||[]).find((r:any)=>r.holiday_date===dateStr)
+          grantedDays.push({ date: dateStr, day_of_week: dowLabel, type: 'holiday', label: h?.holiday_name||'공휴일' })
+        }
+      }
+    }
+  } else {
+    // ── 주5일제 (기본: 토·일·공휴일) ─────────────────────────────
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateObj = new Date(year, month - 1, d)
+      const dow = dateObj.getDay()   // 0=일, 6=토
+      const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
+
+      const isNationalHoliday = nationalHolidayDates.has(dateStr)
+      // 공휴일이 이미 일/토이면 중복 제외
+      if (dow === 0) {
+        grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일' })
+      } else if (dow === 6) {
+        grantedDays.push({ date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일' })
+      } else if (isNationalHoliday) {
+        const h = (holidayRows.results || []).find((r: any) => r.holiday_date === dateStr)
+        grantedDays.push({ date: dateStr, day_of_week: DOW_LABEL[dow], type: 'holiday', label: h?.holiday_name || '공휴일' })
+      }
     }
   }
 
@@ -1090,12 +1151,16 @@ schedule.get('/off-grants', async (c) => {
 
   // ─── 요약 집계 ────────────────────────────────────────────────
   const summary = {
-    total_granted:    grantedDays.length,
-    sundays:          grantedDays.filter(d => d.type === 'sunday').length,
-    saturdays:        grantedDays.filter(d => d.type === 'saturday').length,
+    total_granted:     grantedDays.length,
+    sundays:           grantedDays.filter(d => d.type === 'sunday').length,
+    saturdays:         grantedDays.filter(d => d.type === 'saturday').length,
     national_holidays: grantedDays.filter(d => d.type === 'holiday').length,
-    substitute_count: substituteDays.length,
-    grand_total:      grantedDays.length + substituteDays.length
+    cycle_rest_days:   grantedDays.filter(d => d.type === 'cycle_rest').length,
+    substitute_count:  substituteDays.length,
+    grand_total:       grantedDays.length + substituteDays.length,
+    off_grant_type:    offGrantType,
+    cycle_work_days:   cycleWorkDays,
+    cycle_rest_days_setting: cycleRestDays,
   }
 
   return c.json({
@@ -1879,6 +1944,12 @@ const DEFAULT_WORK_SETTINGS: Record<string, string> = {
   legal_warning_enabled:    '1',
   ot_cost_enabled:          '1',
   dispatch_enabled:         '1',
+  // 휴무 부여 방식: 'weekly5' (주5일제, 기본) | 'cycle' (순환근무) | 'custom' (수동)
+  off_grant_type:           'weekly5',
+  // 순환근무 패턴 (off_grant_type='cycle' 일 때 사용)
+  off_cycle_work_days:      '5',   // 연속 근무일수
+  off_cycle_rest_days:      '2',   // 연속 휴무일수
+  off_cycle_start_date:     '',    // 순환 시작 기준일 (YYYY-MM-DD, 비어있으면 해당 월 1일)
 }
 
 schedule.get('/work-settings', async (c) => {
@@ -1894,10 +1965,15 @@ schedule.get('/work-settings', async (c) => {
 
 schedule.post('/work-settings', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 가능합니다' }, 403)
-  const hospitalId = getHospitalId(user, undefined)
+  if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
   const body = await c.req.json()
+  // admin이 hospitalId를 body에 포함해서 보낼 수 있음
+  const hospitalId = isAdmin(user)
+    ? (body.hospitalId ? parseInt(body.hospitalId) : getHospitalId(user, c.req.query('hospitalId')))
+    : user.hospitalId
+  if (!hospitalId) return c.json({ error: 'hospitalId가 필요합니다' }, 400)
   for (const [key, value] of Object.entries(body)) {
+    if (key === 'hospitalId') continue  // 내부 키 제외
     await c.env.DB.prepare(
       `INSERT INTO hospital_work_settings (hospital_id, setting_key, setting_value)
        VALUES (?,?,?)

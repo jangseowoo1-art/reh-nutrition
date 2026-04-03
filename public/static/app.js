@@ -12841,10 +12841,13 @@ function renderOffGrantsPanel() {
 
   // 날짜별 맵 (스케줄 그리드에서 하이라이트용)
   const DOW_COLORS = {
-    sunday:   { bg: '#fee2e2', color: '#b91c1c', label: '일' },
-    saturday: { bg: '#fffbeb', color: '#b45309', label: '토' },
-    holiday:  { bg: '#fef3c7', color: '#92400e', label: '공휴' }
+    sunday:      { bg: '#fee2e2', color: '#b91c1c', label: '일' },
+    saturday:    { bg: '#fffbeb', color: '#b45309', label: '토' },
+    holiday:     { bg: '#fef3c7', color: '#92400e', label: '공휴' },
+    cycle_rest:  { bg: '#ede9fe', color: '#6d28d9', label: '순환' }
   }
+  const isWeekly5 = !sm.off_grant_type || sm.off_grant_type === 'weekly5'
+  const isCycle = sm.off_grant_type === 'cycle'
 
   return `
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
@@ -12853,7 +12856,12 @@ function renderOffGrantsPanel() {
         <i class="fas fa-calendar-check text-blue-500"></i>
         <div>
           <span class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 부여휴무</span>
-          <span class="text-xs text-gray-400 ml-2">토·일·공휴일 자동 집계 + 대체휴무 수동 등록</span>
+          <span class="text-xs ml-2 ${isCycle ? 'text-purple-500 font-medium' : 'text-gray-400'}">
+            ${isCycle
+              ? `<i class="fas fa-sync-alt mr-1"></i>순환근무제 (${sm.cycle_work_days||5}일근무/${sm.cycle_rest_days_setting||2}일휴무)`
+              : '토·일·공휴일 자동 집계 + 대체휴무 수동 등록'
+            }
+          </span>
         </div>
       </div>
       ${isAdm ? `
@@ -12874,10 +12882,15 @@ function renderOffGrantsPanel() {
           <div class="text-2xl font-bold text-red-600">${sm.sundays || 0}</div>
           <div class="text-xs text-red-400 mt-0.5">일요일</div>
         </div>
+        ${isCycle ? `
+        <div class="bg-purple-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-purple-600">${sm.cycle_rest_days || 0}</div>
+          <div class="text-xs text-purple-500 mt-0.5">순환휴무</div>
+        </div>` : `
         <div class="bg-yellow-50 rounded-xl p-3 text-center">
           <div class="text-2xl font-bold text-yellow-600">${sm.saturdays || 0}</div>
           <div class="text-xs text-yellow-500 mt-0.5">토요일</div>
-        </div>
+        </div>`}
         <div class="bg-amber-50 rounded-xl p-3 text-center">
           <div class="text-2xl font-bold text-amber-700">${sm.national_holidays || 0}</div>
           <div class="text-xs text-amber-500 mt-0.5">공휴일</div>
@@ -12895,7 +12908,7 @@ function renderOffGrantsPanel() {
       <!-- 부여휴무 날짜 목록 -->
       ${gd.length > 0 ? `
       <div class="mb-3">
-        <div class="text-xs font-bold text-gray-500 mb-2">📅 부여휴무 일정 (토·일·공휴일)</div>
+        <div class="text-xs font-bold text-gray-500 mb-2">📅 부여휴무 일정 ${isCycle ? '(순환근무제)' : '(토·일·공휴일)'}</div>
         <div class="flex flex-wrap gap-1.5">
           ${gd.map(d => {
             const cfg = DOW_COLORS[d.type] || { bg: '#f3f4f6', color: '#374151', label: d.type }
@@ -12903,7 +12916,7 @@ function renderOffGrantsPanel() {
               style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33">
               <span>${d.date.slice(5)}</span>
               <span class="opacity-60">${d.day_of_week}</span>
-              ${d.type === 'holiday' ? `<span class="font-semibold">${d.label}</span>` : ''}
+              ${(d.type === 'holiday' || d.type === 'cycle_rest') ? `<span class="font-semibold">${d.label.length > 10 ? '순환휴' : d.label}</span>` : ''}
             </span>`
           }).join('')}
         </div>
@@ -13080,7 +13093,7 @@ function renderMonthlyScheduleTab() {
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h3 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h3>
-          <p class="text-xs text-gray-400 mt-0.5">클릭: 코드순환 &nbsp;|&nbsp; 드래그: 다중선택 &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; 우클릭: 상세입력</p>
+          <p class="text-xs text-gray-400 mt-0.5">클릭: 코드순환 &nbsp;|&nbsp; 더블클릭: 직접입력 &nbsp;|&nbsp; 드래그: 범위선택 &nbsp;|&nbsp; Ctrl+클릭: 개별선택 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; 우클릭: 상세입력</p>
         </div>
         <div class="flex gap-2 flex-wrap items-center">
           <!-- 근무코드 범례 -->
@@ -13123,19 +13136,24 @@ function renderMonthlyScheduleTab() {
           <tr style="background:#1e3a2f;border-bottom:2px solid #14532d">
             <td style="padding:5px 10px;position:sticky;left:0;background:#1e3a2f;z-index:5;border-right:3px solid #14532d;min-width:100px">
               <div style="font-size:10px;font-weight:700;color:#86efac">부여휴무</div>
-              <div style="font-size:9px;color:#4ade80;opacity:0.7">토·일·공휴·대체</div>
+              <div style="font-size:9px;color:#4ade80;opacity:0.7">${(scheduleOffGrants?.summary?.off_grant_type||'weekly5')==='cycle' ? '순환휴무·공휴·대체' : '토·일·공휴·대체'}</div>
             </td>
             ${Array.from({length:days},(_,i)=>{
               const day=i+1
               const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
               const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
               const isSub = substituteSet.has(dateStr)
-              const isHoliday = grantedSet.has(dateStr) && !['일','토'].includes(dow2)
               const isSun2 = dow2==='일', isSat2 = dow2==='토'
+              const isHoliday = grantedSet.has(dateStr) && !['일','토'].includes(dow2) && !isSub
+              const isCycleRest = grantedSet.has(dateStr) && !['일','토'].includes(dow2) && !isSub && !isHoliday
               const isOff = allOffSet.has(dateStr)
+              // granted_days의 type 확인
+              const grantedEntry = (scheduleOffGrants?.granted_days||[]).find(d=>d.date===dateStr)
+              const isCycleRestType = grantedEntry?.type === 'cycle_rest'
               let cellBg = 'transparent', cellIcon = '', cellTitle = ''
               if (isSub) { cellBg='#ea580c'; cellIcon='대'; cellTitle=offLabelMap[dateStr]||'대체휴무' }
-              else if (isHoliday) { cellBg='#d97706'; cellIcon='공'; cellTitle=offLabelMap[dateStr]||'공휴일' }
+              else if (isCycleRestType) { cellBg='#7c3aed'; cellIcon='순'; cellTitle=grantedEntry?.label||'순환휴무' }
+              else if (isHoliday || (grantedEntry?.type==='holiday')) { cellBg='#d97706'; cellIcon='공'; cellTitle=offLabelMap[dateStr]||grantedEntry?.label||'공휴일' }
               else if (isSun2) { cellBg='#dc2626'; cellIcon='휴'; cellTitle='일요일' }
               else if (isSat2) { cellBg='#b45309'; cellIcon='휴'; cellTitle='토요일' }
               const borderLeft=`border-left:1px solid ${isSun2?'rgba(252,165,165,0.3)':isSat2?'rgba(147,197,253,0.3)':'rgba(255,255,255,0.1)'};`
@@ -13266,6 +13284,7 @@ function renderMonthlyScheduleTab() {
 
                   return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}cursor:pointer;position:relative;user-select:none"
                     onclick="schedCellClick(event,${emp.id},'${dateStr}',this)"
+                    ondblclick="schedCellDblClick(event,${emp.id},'${dateStr}',this)"
                     onmousedown="schedDragStart(event,${emp.id},'${dateStr}',this)"
                     onmousemove="schedDragMove(event,${emp.id},'${dateStr}',this)"
                     onmouseup="schedDragEnd(event)"
@@ -13478,6 +13497,21 @@ function renderMonthlyScheduleTab() {
     <button onclick="applyMultiSelect()"
       class="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 transition-colors">
       <i class="fas fa-check mr-1"></i>일괄적용
+    </button>
+    <button onclick="schedCopyCells()"
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-teal-600 hover:bg-teal-500 transition-colors"
+      title="선택 셀 복사 (Ctrl+C)">
+      <i class="fas fa-copy mr-1"></i>복사
+    </button>
+    <button onclick="schedPasteCells()"
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 transition-colors"
+      title="붙여넣기 (Ctrl+V)">
+      <i class="fas fa-paste mr-1"></i>붙여넣기
+    </button>
+    <button onclick="schedDeleteCells()"
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 transition-colors"
+      title="선택 셀 삭제 (Delete)">
+      <i class="fas fa-trash mr-1"></i>삭제
     </button>
     <button onclick="clearMultiSelection()"
       class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-600 hover:bg-gray-500 transition-colors">
@@ -14717,15 +14751,70 @@ function renderWorkSettingsModal() {
   return `<div id="workSettingsModal" class="hidden modal-overlay" style="z-index:1030">
     <div class="modal-box max-w-lg p-0 overflow-hidden">
       <div class="bg-orange-700 text-white px-6 py-4 flex items-center justify-between">
-        <h3 class="font-bold text-lg"><i class="fas fa-shield-alt mr-2"></i>법정 근무시간 설정</h3>
+        <h3 class="font-bold text-lg"><i class="fas fa-shield-alt mr-2"></i>근무 환경 설정</h3>
         <button onclick="document.getElementById('workSettingsModal').classList.add('hidden')" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
       </div>
-      <div class="p-6 space-y-5 overflow-y-auto" style="max-height:70vh">
+      <div class="p-6 space-y-5 overflow-y-auto" style="max-height:75vh">
         <p class="text-xs text-gray-500 bg-orange-50 border border-orange-100 rounded-lg p-3">
           <i class="fas fa-info-circle mr-1 text-orange-500"></i>
-          병원별 법정 근무시간 기준을 설정합니다. 기준 초과 시 경고가 표시됩니다.
+          병원별 근무 기준 및 휴무 부여 방식을 설정합니다.
         </p>
-        <div class="space-y-4">
+        <div class="space-y-5">
+
+          <!-- 휴무 부여 방식 (NEW) -->
+          <div>
+            <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-calendar-check mr-1 text-blue-500"></i>휴무 부여 방식</h4>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors" onclick="wsToggleOffGrantType('weekly5')">
+                <input type="radio" name="ws_off_grant_type" id="ws_ogt_weekly5" value="weekly5" class="w-4 h-4 text-blue-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">주 5일제 <span class="text-xs text-gray-400 ml-1">(기본)</span></div>
+                  <div class="text-xs text-gray-500">토요일·일요일·공휴일을 휴무로 자동 부여</div>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors" onclick="wsToggleOffGrantType('cycle')">
+                <input type="radio" name="ws_off_grant_type" id="ws_ogt_cycle" value="cycle" class="w-4 h-4 text-blue-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">순환 근무제</div>
+                  <div class="text-xs text-gray-500">N일 근무 후 M일 휴무가 반복되는 방식 (예: 2일 근무/1일 휴무)</div>
+                </div>
+              </label>
+            </div>
+
+            <!-- 순환 패턴 세부 설정 (cycle 선택 시 표시) -->
+            <div id="ws_cycle_options" class="hidden mt-3 ml-7 p-3 bg-blue-50 rounded-xl border border-blue-100">
+              <div class="text-xs font-bold text-blue-700 mb-2"><i class="fas fa-sync-alt mr-1"></i>순환 패턴 설정</div>
+              <div class="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label class="text-xs text-gray-600">연속 근무일수</label>
+                  <div class="flex items-center gap-2 mt-1">
+                    <input type="number" id="ws_off_cycle_work_days" class="form-input flex-1" min="1" max="14" placeholder="5" oninput="wsUpdateCyclePreview()">
+                    <span class="text-xs text-gray-500">일</span>
+                  </div>
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600">연속 휴무일수</label>
+                  <div class="flex items-center gap-2 mt-1">
+                    <input type="number" id="ws_off_cycle_rest_days" class="form-input flex-1" min="1" max="14" placeholder="2" oninput="wsUpdateCyclePreview()">
+                    <span class="text-xs text-gray-500">일</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label class="text-xs text-gray-600">순환 기준 시작일 <span class="text-gray-400">(비워두면 매월 1일 기준)</span></label>
+                <input type="date" id="ws_off_cycle_start_date" class="form-input mt-1 w-full" oninput="wsUpdateCyclePreview()">
+              </div>
+              <div id="ws_cycle_preview" class="mt-2 text-xs text-blue-700 font-medium"></div>
+              <div class="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700">
+                <i class="fas fa-info-circle mr-1"></i>
+                공휴일은 순환패턴과 관계없이 항상 휴무로 추가됩니다.
+              </div>
+            </div>
+          </div>
+
+          <!-- 구분선 -->
+          <div class="border-t border-gray-100"></div>
+
           <!-- 하루 최대 근무시간 -->
           <div>
             <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-clock mr-1 text-orange-500"></i>근무시간 제한</h4>
@@ -16489,8 +16578,9 @@ window.openWorkSettingsModal = async () => {
   const modal = document.getElementById('workSettingsModal')
   if (!modal) return
   modal.classList.remove('hidden')
-  // 기존 설정 로드
-  const data = await api('GET', '/api/schedule/work-settings').catch(() => null)
+  // 기존 설정 로드 (admin이면 현재 병원 ID를 쿼리로 전달)
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const data = await api('GET', `/api/schedule/work-settings${hospQuery}`).catch(() => null)
   const ws = data || {}
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val }
   const setChk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val === '1' || val === true }
@@ -16501,12 +16591,21 @@ window.openWorkSettingsModal = async () => {
   setChk('ws_legal_warning_enabled',   ws.legal_warning_enabled   ?? '1')
   setChk('ws_ot_cost_enabled',         ws.ot_cost_enabled         ?? '1')
   setChk('ws_dispatch_enabled',        ws.dispatch_enabled        ?? '1')
+  // 휴무 부여 방식
+  const ogt = ws.off_grant_type || 'weekly5'
+  const radioEl = document.getElementById(`ws_ogt_${ogt}`)
+  if (radioEl) radioEl.checked = true
+  setVal('ws_off_cycle_work_days',   ws.off_cycle_work_days  ?? '5')
+  setVal('ws_off_cycle_rest_days',   ws.off_cycle_rest_days  ?? '2')
+  setVal('ws_off_cycle_start_date',  ws.off_cycle_start_date ?? '')
+  wsToggleOffGrantType(ogt)
   scheduleWorkSettings = ws
 }
 
 window.saveWorkSettings = async () => {
   const getVal = (id) => document.getElementById(id)?.value || ''
   const getChk = (id) => document.getElementById(id)?.checked ? '1' : '0'
+  const getRadio = (name) => document.querySelector(`input[name="${name}"]:checked`)?.value || 'weekly5'
   const body = {
     daily_max_hours:         getVal('ws_daily_max_hours'),
     weekly_max_hours:        getVal('ws_weekly_max_hours'),
@@ -16514,19 +16613,53 @@ window.saveWorkSettings = async () => {
     leave_cluster_threshold: getVal('ws_leave_cluster_threshold'),
     legal_warning_enabled:   getChk('ws_legal_warning_enabled'),
     ot_cost_enabled:         getChk('ws_ot_cost_enabled'),
-    dispatch_enabled:        getChk('ws_dispatch_enabled')
+    dispatch_enabled:        getChk('ws_dispatch_enabled'),
+    // 휴무 부여 방식
+    off_grant_type:          getRadio('ws_off_grant_type'),
+    off_cycle_work_days:     getVal('ws_off_cycle_work_days') || '5',
+    off_cycle_rest_days:     getVal('ws_off_cycle_rest_days') || '2',
+    off_cycle_start_date:    getVal('ws_off_cycle_start_date'),
+    // admin이면 현재 병원 ID 포함
+    ...(App.role === 'admin' && App.currentHospitalId ? { hospitalId: App.currentHospitalId } : {})
   }
   const res = await api('POST', '/api/schedule/work-settings', body).catch(() => null)
   if (res?.success !== false) {
-    showToast('근무시간 설정이 저장되었습니다', 'success')
+    showToast('근무 환경 설정이 저장되었습니다', 'success')
     scheduleWorkSettings = body
     document.getElementById('workSettingsModal')?.classList.add('hidden')
-    // 스케줄 탭 재렌더 (경고 뱃지 반영)
+    // 스케줄 탭 재렌더 (경고 뱃지·부여휴무 반영)
     const content = document.getElementById('pageContent')
-    if (content && scheduleTab === 'schedule') renderScheduleTab(content)
+    if (content) renderScheduleTab(content)
   } else {
     showToast('저장 실패', 'error')
   }
+}
+
+// 휴무 부여 방식 라디오 토글
+window.wsToggleOffGrantType = (type) => {
+  const el = document.getElementById('ws_ogt_' + type)
+  if (el) el.checked = true
+  const cycleOpts = document.getElementById('ws_cycle_options')
+  if (cycleOpts) {
+    if (type === 'cycle') cycleOpts.classList.remove('hidden')
+    else cycleOpts.classList.add('hidden')
+  }
+  wsUpdateCyclePreview()
+}
+
+// 순환패턴 미리보기 업데이트
+window.wsUpdateCyclePreview = () => {
+  const preview = document.getElementById('ws_cycle_preview')
+  if (!preview) return
+  const w = parseInt(document.getElementById('ws_off_cycle_work_days')?.value || '5')
+  const r = parseInt(document.getElementById('ws_off_cycle_rest_days')?.value || '2')
+  if (!w || !r || w < 1 || r < 1) { preview.textContent = ''; return }
+  const total = w + r
+  const monthDays = 30
+  const cycles = Math.floor(monthDays / total)
+  const rem = monthDays % total
+  const restInMonth = cycles * r + Math.max(0, rem - w)
+  preview.innerHTML = `<i class="fas fa-info-circle mr-1"></i>패턴: <b>${w}일 근무 → ${r}일 휴무</b> 반복 (주기 ${total}일) · 월 약 <b>${restInMonth}일</b> 휴무`
 }
 
 window.openLaborCostSettings = async () => {
@@ -16863,6 +16996,211 @@ window.schedCellClick = (event, empId, date, cell) => {
   }
 }
 
+// ────────────────────────────────────────────────────────────
+// 더블클릭 인라인 텍스트 입력
+// ────────────────────────────────────────────────────────────
+window.schedCellDblClick = (event, empId, date, cell) => {
+  event.preventDefault()
+  event.stopPropagation()
+  // 이미 입력창 열려있으면 무시
+  if (cell.querySelector('input.sched-inline-input')) return
+
+  const span = cell.querySelector('span')
+  const currentCode = cell.dataset.shift || ''
+  const origContent = cell.innerHTML
+
+  // 인라인 입력창 생성
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'sched-inline-input'
+  input.value = currentCode === '-' || !currentCode ? '' : currentCode
+  input.style.cssText = `
+    width:32px;height:28px;border:2px solid #3b82f6;border-radius:4px;
+    text-align:center;font-size:11px;font-weight:700;
+    background:white;color:#1f2937;outline:none;padding:0;
+    position:relative;z-index:10;
+  `
+  cell.innerHTML = ''
+  cell.appendChild(input)
+  input.focus()
+  input.select()
+
+  // 자동완성 힌트: 유효한 코드 목록
+  const allCodes = window._schedAllCodes || []
+
+  const applyInput = async () => {
+    let newCode = input.value.trim().toUpperCase()
+    // 빈 문자열이면 '-' (초기화)
+    if (!newCode) newCode = '-'
+    // 셀 원복 후 적용
+    cell.innerHTML = origContent
+    // schedCycleShift 대신 직접 적용
+    await schedApplyCodeToCell(empId, date, cell, newCode)
+  }
+
+  const cancelInput = () => {
+    cell.innerHTML = origContent
+  }
+
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      await applyInput()
+      // Tab이면 다음 날짜 셀로 이동
+      if (e.key === 'Tab') {
+        const days = getDaysInMonth(App.currentYear, App.currentMonth)
+        const mm = String(App.currentMonth).padStart(2,'0')
+        const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
+        const idx = allDates.indexOf(date)
+        const nextDate = allDates[idx+1]
+        if (nextDate) {
+          const nextCell = document.querySelector(`td[data-empid="${empId}"][data-date="${nextDate}"]`)
+          if (nextCell) setTimeout(() => window.schedCellDblClick({preventDefault:()=>{},stopPropagation:()=>{}}, empId, nextDate, nextCell), 50)
+        }
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelInput()
+    }
+    e.stopPropagation()
+  })
+
+  input.addEventListener('blur', async () => {
+    // 다른 곳 클릭 시 적용
+    if (cell.querySelector('input.sched-inline-input')) await applyInput()
+  })
+}
+
+// 코드를 셀에 직접 적용 (schedCycleShift와 다르게 순환 없이 직접 세팅)
+async function schedApplyCodeToCell(empId, date, cell, code) {
+  const isEmpty = !code || code === '-'
+  const sf = scheduleShifts.find(s => s.shift_code === code)
+  const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
+  const col = sf?.color || colMap[code] || '#374151'
+
+  cell.dataset.shift = isEmpty ? '' : code
+  const span = cell.querySelector('span')
+  if (span) {
+    span.style.cssText = isEmpty
+      ? 'display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;background:#f9fafb;color:#d1d5db'
+      : `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:700;background:${col}22;color:${col}`
+    span.textContent = isEmpty ? '·' : code
+  }
+  // 인메모리 업데이트
+  if (!scheduleMonthData) scheduleMonthData = { sched_map:{}, leave_map:{} }
+  const k = `${empId}_${date}`
+  if (isEmpty) delete scheduleMonthData.sched_map[k]
+  else scheduleMonthData.sched_map[k] = { ...(scheduleMonthData.sched_map[k]||{}), shift_code: code }
+  schedRecalcRow(empId)
+  // DB 저장
+  if (isEmpty) await api('DELETE', `/api/schedule/${empId}/${date}`).catch(()=>null)
+  else await api('POST', '/api/schedule/save', { employeeId: parseInt(empId), workDate: date, shiftCode: code }).catch(()=>null)
+}
+
+// ────────────────────────────────────────────────────────────
+// 복사 (Ctrl+C) - 선택된 셀들의 데이터를 버퍼에 저장
+// ────────────────────────────────────────────────────────────
+window.schedCopyCells = () => {
+  if (_selectedCells.size === 0) return
+
+  // 직원별, 날짜별로 정렬된 2D 배열로 저장
+  // 같은 직원의 연속 날짜 범위 추출
+  const keys = Array.from(_selectedCells).sort()
+  // empId_date 파싱
+  const entries = keys.map(k => {
+    const parts = k.split('_')
+    const empId = parts[0]
+    const date  = parts.slice(1).join('_')
+    const cell  = document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
+    return { empId, date, code: cell?.dataset?.shift || '' }
+  })
+
+  _copiedCellData = { entries }
+
+  // 단일 셀이면 코드만 저장 (단순 붙여넣기용)
+  const uniqueCodes = [...new Set(entries.map(e => e.code).filter(c => c && c !== '-'))]
+  const singleCode = entries.length === 1 ? entries[0].code : null
+
+  // 시각 피드백
+  const n = entries.length
+  showToast(`${n}개 셀 복사됨${singleCode ? ` (${singleCode})` : ''} · Ctrl+V로 붙여넣기`, 'info')
+}
+
+// ────────────────────────────────────────────────────────────
+// 붙여넣기 (Ctrl+V) - 복사 버퍼를 현재 선택 셀에 적용
+// ────────────────────────────────────────────────────────────
+window.schedPasteCells = async () => {
+  if (!_copiedCellData) { showToast('먼저 셀을 복사(Ctrl+C)하세요', 'error'); return }
+  if (_selectedCells.size === 0) { showToast('붙여넣을 셀을 선택하세요', 'error'); return }
+
+  const { entries: srcEntries } = _copiedCellData
+  const dstKeys = Array.from(_selectedCells).sort()
+  const items = []
+
+  if (srcEntries.length === 1) {
+    // 단일 셀 복사 → 선택 셀 전체에 동일 코드 적용
+    const srcCode = srcEntries[0].code
+    for (const dstKey of dstKeys) {
+      const parts = dstKey.split('_')
+      const empId = parts[0]
+      const date  = parts.slice(1).join('_')
+      const cell  = document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
+      if (cell) {
+        await schedApplyCodeToCell(empId, date, cell, srcCode || '-')
+        items.push(dstKey)
+      }
+    }
+  } else {
+    // 다중 셀 복사 → 대상 첫 번째 셀 기준으로 오프셋 적용
+    // 복사 원본의 첫 번째 직원/날짜 기준
+    const srcFirst = srcEntries[0]
+    const dstFirst_parts = dstKeys[0].split('_')
+    const dstEmpId = dstFirst_parts[0]
+    const dstFirstDate = dstFirst_parts.slice(1).join('_')
+
+    // 날짜 인덱스 맵 (해당 월)
+    const days = getDaysInMonth(App.currentYear, App.currentMonth)
+    const mm = String(App.currentMonth).padStart(2,'0')
+    const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
+
+    const srcFirstIdx = allDates.indexOf(srcFirst.date)
+    const dstFirstIdx = allDates.indexOf(dstFirstDate)
+    const dateOffset = dstFirstIdx - srcFirstIdx
+
+    for (const srcEntry of srcEntries) {
+      const srcIdx = allDates.indexOf(srcEntry.date)
+      const dstIdx = srcIdx + dateOffset
+      if (dstIdx < 0 || dstIdx >= allDates.length) continue
+      const dstDate = allDates[dstIdx]
+      // 같은 직원에 적용 (empId는 대상 첫 셀 기준)
+      const cell = document.querySelector(`td[data-empid="${dstEmpId}"][data-date="${dstDate}"]`)
+      if (cell) {
+        await schedApplyCodeToCell(dstEmpId, dstDate, cell, srcEntry.code || '-')
+        items.push(`${dstEmpId}_${dstDate}`)
+      }
+    }
+  }
+
+  showToast(`${items.length}개 셀에 붙여넣기 완료`, 'success')
+}
+
+// ────────────────────────────────────────────────────────────
+// Delete - 선택 셀 초기화
+// ────────────────────────────────────────────────────────────
+window.schedDeleteCells = async () => {
+  if (_selectedCells.size === 0) return
+  const dstKeys = Array.from(_selectedCells)
+  for (const dstKey of dstKeys) {
+    const parts = dstKey.split('_')
+    const empId = parts[0]
+    const date  = parts.slice(1).join('_')
+    const cell  = document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
+    if (cell) await schedApplyCodeToCell(empId, date, cell, '-')
+  }
+  showToast(`${dstKeys.length}개 셀 삭제됨`, 'info')
+  clearMultiSelection()
+}
+
 // 드래그 선택
 window.schedDragStart = (event, empId, date, cell) => {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return
@@ -16931,9 +17269,41 @@ window.schedDragEnd = (event) => {
   }
 }
 
-// ESC 키로 선택 해제
+// ────────────────────────────────────────────────────────────
+// 스케줄 셀 복사/붙여넣기 (Ctrl+C / Ctrl+V) + Delete 기능
+// ────────────────────────────────────────────────────────────
+let _copiedCellData = null   // { code, rows: [ [code,...], ... ] } 복사 버퍼
+
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && _selectedCells.size > 0) clearMultiSelection()
+  // ESC: 선택 해제
+  if (e.key === 'Escape' && _selectedCells.size > 0) { clearMultiSelection(); return }
+
+  // 스케줄 탭 외에서는 동작 안 함
+  if (scheduleTab !== 'schedule') return
+
+  // 선택된 셀 없으면 단축키 무시
+  if (_selectedCells.size === 0) return
+
+  // Ctrl+C / Cmd+C : 복사
+  if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+    e.preventDefault()
+    schedCopyCells()
+    return
+  }
+
+  // Ctrl+V / Cmd+V : 붙여넣기
+  if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+    e.preventDefault()
+    schedPasteCells()
+    return
+  }
+
+  // Delete / Backspace : 선택 셀 초기화
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea,select')) {
+    e.preventDefault()
+    schedDeleteCells()
+    return
+  }
 })
 
 window.schedCycleShift = async (empId, date, cell, codesJson) => {
