@@ -4541,12 +4541,10 @@ window.downloadOrdersExcel = async function() {
     const dateStr = `${year}-${mm}-${String(d).padStart(2,'0')}`
     const dow = DOWK[new Date(dateStr).getDay()]
     const row = [dateStr, dow]
-    let dayTotal = 0
 
     colDefs.forEach((cd, i) => {
       let v, n
       if (cd.isCard) {
-        // 법인카드: card_expenses 기준
         n = getCardCellValXl(cd.vendorId, dateStr)
         v = n || ''
       } else {
@@ -4555,12 +4553,28 @@ window.downloadOrdersExcel = async function() {
       }
       row.push(v)
       colTotals[i] += n
-      // 일 합계: 법인카드 포함, 일반업체는 total/mixed_total/exempt/taxable만 (부가세 중복방지)
-      if (cd.isCard) dayTotal += n
-      else if (cd.subType==='mixed_total' || cd.subType==='exempt') dayTotal += n
-      else if (cd.subType==='taxable') dayTotal += n
     })
-    row.push(dayTotal||'')
+
+    // ── 일 합계: colDefs 루프와 분리하여 업체×카테고리별 total 필드를 직접 합산 ──
+    // (taxable/exempt 필드가 0이고 total에만 값이 있는 업체(mixed_total·exempt·taxable 등) 누락 방지)
+    let dayTotal = 0
+    if (hasCats) {
+      patientCats.forEach(cat => {
+        normalVendors.forEach(v => {
+          const s = catOrderMapXl[`${dateStr}__${cat.id}__${v.id}`]
+          if (s) dayTotal += s.total || s.total_amount || 0
+        })
+      })
+    } else {
+      normalVendors.forEach(v => {
+        const o = normalOrderMap[`${dateStr}__${v.id}`]
+        if (o) dayTotal += o.total_amount || 0
+      })
+    }
+    // 법인카드 합산
+    cardVendors.forEach(v => { dayTotal += getCardCellValXl(v.id, dateStr) })
+
+    row.push(dayTotal || '')
     grandTotal += dayTotal
     wsData.push(row)
   }
