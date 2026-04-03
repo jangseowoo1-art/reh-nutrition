@@ -2843,6 +2843,20 @@ async function renderOrders() {
   window._ordersData = orderList || []
   window._catDailyOrders = catOrderData?.dailyByVendorCat || []
   window._ordersVendors = vendors || []
+  // ── _catDailyMap을 rAF/setTimeout 전에 미리 설정 (updateInsightPanel 즉시 사용 가능하도록) ──
+  const _catDailyMapEarly = {}
+  ;(catOrderData?.dailyByVendorCat || []).forEach(r => {
+    if (!_catDailyMapEarly[r.order_date]) _catDailyMapEarly[r.order_date] = {}
+    if (!_catDailyMapEarly[r.order_date][r.vendor_id]) _catDailyMapEarly[r.order_date][r.vendor_id] = {}
+    _catDailyMapEarly[r.order_date][r.vendor_id][r.patient_category_id] = r
+  })
+  window._catDailyMap = _catDailyMapEarly
+  const _catSettingsMapEarly = {}
+  ;(catOrderData?.settings || []).forEach(s => { _catSettingsMapEarly[s.patient_category_id] = s })
+  window._catSettingsMap = _catSettingsMapEarly
+  window._nullCatMonthlyAmt = (catOrderData?.monthly || [])
+    .filter(r => r.patient_category_id == null || r.patient_category_id === undefined)
+    .reduce((s, r) => s + (r.total || 0), 0)
   window._ordersMealStats = {
     totalMeals: (mealStats.total_patient||0)+(mealStats.total_staff||0)+(mealStats.total_guardian||0),
     totalPatient: mealStats.total_patient||0,
@@ -2860,9 +2874,16 @@ async function renderOrders() {
     apiTotalUsed: dashData?.totalUsed || 0
   }
 
+  // ── 인사이트 패널 즉시 업데이트 (모든 전역 데이터가 준비된 직후) ──
+  // setTimeout(0)으로 DOM 페인팅 후 실행 보장
+  setTimeout(() => {
+    if (typeof updateInsightPanel === 'function') updateInsightPanel()
+  }, 0)
+
   // tbody/tfoot를 requestAnimationFrame 후 비동기 렌더링
   requestAnimationFrame(() => {
     setTimeout(() => {
+      try {
       const _coveredDates = {}
       const _multiDayMap = {}
 
@@ -2943,6 +2964,13 @@ async function renderOrders() {
         if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
         if (typeof updateInsightPanel === 'function') updateInsightPanel()
       })
+      } catch(e) {
+        console.error('[renderOrders setTimeout] 테이블 렌더링 오류:', e)
+        // 오류가 있어도 인사이트 패널은 업데이트
+        requestAnimationFrame(() => {
+          if (typeof updateInsightPanel === 'function') updateInsightPanel()
+        })
+      }
     }, 0)
   })
 
@@ -5975,15 +6003,18 @@ window.toggleInsightPanel = function() {
 }
 
 function updateInsightPanel() {
+  try {
   const budget = window._ordersBudget
-  if (!budget) return
+  if (!budget) { console.warn('[InsightPanel] _ordersBudget 없음 - 건너뜀'); return }
   // 인사이트 패널 DOM이 아직 렌더링 안된 경우 재시도
   const forecastCheck = document.getElementById('budgetForecastContent')
   if (!forecastCheck) {
     // DOM이 아직 없으면 다음 프레임에서 재시도
+    console.warn('[InsightPanel] budgetForecastContent DOM 없음 - rAF 재시도')
     requestAnimationFrame(() => updateInsightPanel())
     return
   }
+  console.log('[InsightPanel] 실행 시작 - totalBudget:', budget.totalBudget, 'catDailyMap keys:', Object.keys(window._catDailyMap||{}).length)
   const vendors = window._ordersVendors || []
   const patientCats = window._patientCats || []
   const catSettingsMap = window._catSettingsMap || {}
@@ -6044,8 +6075,13 @@ function updateInsightPanel() {
     })
   }
 
+  console.log('[InsightPanel] monthOrdered:', monthOrdered, '/ totalBudget:', totalBudget)
   // ── 2. 월 예산 예측 카드 ──
   const forecastEl = document.getElementById('budgetForecastContent')
+  // 패널에 바로 디버그 표시 (totalBudget=0이어도 표시)
+  if (forecastEl && totalBudget === 0) {
+    forecastEl.innerHTML = `<div style="font-size:10px;color:#ef4444">⚠ totalBudget=0 (settings 로드 실패 가능)</div>`
+  }
   if (forecastEl && totalBudget > 0) {
     const pct = Math.round(monthOrdered / totalBudget * 100)
     const diff = monthOrdered - totalBudget
@@ -6080,7 +6116,28 @@ function updateInsightPanel() {
   // ── 3. 식단가 경고 카드 ──
   const dietAlertEl = document.getElementById('dietPriceAlertContent')
   if (dietAlertEl && hasCats && patientCats.length > 0) {
-    const catRows = patientCats.map(cat => {
+    // 식단가 표시 대상 필터링:
+    // - 관리자 식단가 설정에서 "식수 및 예산" 체크된 주요 환자군만 표시
+    // - budget_include_keys=NULL/빈배열인 보조 카테고리(항암 보호자, 경관식 등)는 항상 제외
+    // 조건: catDietPricesData의 budgetKeys가 1개 이상 있어야 함 (주요 환자군 판별 기준)
+    //        AND catSettingsMap에서 ref_meal_price > 0 또는 monthly_budget > 0 (예산/기준가 설정됨)
+    const dietTargetCats = patientCats.filter(cat => {
+      const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
+      // budgetKeys가 1개 이상 = 관리자가 "식수 및 예산" 설정한 주요 환자군
+      const hasBudgetKeys = catDietEntry && (catDietEntry.budgetKeys || []).length > 0
+      // catSettingsMap에서 ref_meal_price 또는 monthly_budget이 설정된 경우
+      const s = catSettingsMap[cat.id] || {}
+      const hasSettings = (s.ref_meal_price || 0) > 0 || (s.monthly_budget || 0) > 0
+      // budgetKeys가 있는 카테고리 우선 (보조 카테고리 제외)
+      // budgetKeys 없는 카테고리는 hasSettings로만 판단하되, catDietPricesData에서 명시적으로 빈배열이면 제외
+      if (hasBudgetKeys) return true
+      if (!hasSettings) return false
+      // catDietPricesData에 등록되어 있고 budgetKeys=[] 빈배열이면 보조 카테고리로 간주 → 제외
+      if (catDietEntry) return false
+      // catDietPricesData에 없는 경우는 hasSettings만으로 판단
+      return true
+    })
+    const catRows = dietTargetCats.map(cat => {
       const catColor = getCategoryColorHex(cat.category_key)
       const s = catSettingsMap[cat.id] || {}
       // 수정: ref_meal_price(관리자 설정 기준가) 우선, 없으면 target_meal_price(예산역산값) 폴백
@@ -6204,7 +6261,11 @@ function updateInsightPanel() {
         </div>
       </div>`
     }).join('')
-    dietAlertEl.innerHTML = catRows || `<div style="font-size:10px;color:#9ca3af">카테고리 없음</div>`
+    if (dietTargetCats.length === 0) {
+      dietAlertEl.innerHTML = `<div style="font-size:10px;color:#9ca3af">식단가 설정된 환자군 없음</div>`
+    } else {
+      dietAlertEl.innerHTML = catRows || `<div style="font-size:10px;color:#9ca3af">카테고리 없음</div>`
+    }
   } else if (dietAlertEl) {
     dietAlertEl.innerHTML = `<div style="font-size:10px;color:#9ca3af">카테고리 설정 필요</div>`
   }
@@ -6456,6 +6517,11 @@ function updateInsightPanel() {
     } else {
       forecastWarnEl.style.display = 'none'
     }
+  }
+  } catch(e) {
+    console.error('[InsightPanel] 오류 발생:', e)
+    const fe = document.getElementById('budgetForecastContent')
+    if (fe) fe.innerHTML = `<div style="font-size:10px;color:#dc2626">오류: ${e.message}</div>`
   }
 }
 
