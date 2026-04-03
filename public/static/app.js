@@ -1054,6 +1054,11 @@ async function renderDashboard() {
       ${orderAppr.targetMealPrice > 0 ? (() => {
         const bPct = orderAppr.budgetProgressPct || 0
         const dRatio = orderAppr.diffRatio || 0
+        const totalMealsVal = orderAppr.totalMeals || 0
+        const msDays = (data.mealStats && data.mealStats.days_entered) || 0
+        // 식수 데이터 신뢰도: 입력일수 3일 이상 + 발주일수 대비 25% 이상
+        const orderDays = (data.projection && data.projection.elapsedDays) || 1
+        const mealDataSufficient = msDays >= 3 && (msDays / orderDays) >= 0.25
         // 어느 기준으로 과다/적정/과소가 됐는지 표시
         let reasonText = ''
         if (orderAppr.label === 'over') {
@@ -1062,7 +1067,12 @@ async function renderDashboard() {
         } else if (orderAppr.label === 'under') {
           reasonText = `식단가 ${dRatio}% 미달`
         } else {
-          reasonText = `예산 ${bPct.toFixed(1)}% · 식단가 ${dRatio>0?'+':''}${dRatio}%`
+          if (!mealDataSufficient && totalMealsVal > 0) {
+            // 식수 입력이 부족한 경우: 예산 기준만 표시, 식단가 수치 숨김
+            reasonText = `예산 ${bPct.toFixed(1)}% · 식수 미입력(${msDays}일)`
+          } else {
+            reasonText = `예산 ${bPct.toFixed(1)}% · 식단가 ${dRatio>0?'+':''}${dRatio}%`
+          }
         }
         return `<div style="font-size:10px;color:#6b7280;margin-top:2px;margin-bottom:6px">${reasonText}</div>`
       })() : ''}
@@ -1093,7 +1103,16 @@ async function renderDashboard() {
               <span style="font-size:9px;color:${c};background:${c}20;padding:1px 4px;border-radius:8px;white-space:nowrap">${status}</span>
             </div>`
           }).join('')}
-          ${orderAppr.appropriateOrderAmt > 0 ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식단가 기준 적정액: ${fmtMan(orderAppr.appropriateOrderAmt)}원 (${orderAppr.diffRatio>0?'+':''}${orderAppr.diffRatio}%)</div>` : ''}
+          ${(() => {
+            const msDaysB = (data.mealStats && data.mealStats.days_entered) || 0
+            const orderDaysB = (data.projection && data.projection.elapsedDays) || 1
+            const mealSuffB = msDaysB >= 3 && (msDaysB / orderDaysB) >= 0.25
+            return (orderAppr.appropriateOrderAmt > 0 && mealSuffB)
+              ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식단가 기준 적정액: ${fmtMan(orderAppr.appropriateOrderAmt)}원 (${orderAppr.diffRatio>0?'+':''}${orderAppr.diffRatio}%)</div>`
+              : (orderAppr.appropriateOrderAmt > 0 && !mealSuffB)
+                ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식수 미입력 — 식단가 기준 적정액 산출 불가</div>`
+                : ''
+          })()}
         </div>`
       })() : `
       <div class="text-xs text-gray-400 mt-1">

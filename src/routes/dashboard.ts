@@ -991,15 +991,23 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // 예산 대비 사용률 (progress)
   const budgetProgressPct = totalBudget > 0 ? (totalUsed / totalBudget * 100) : 0
 
+  // 식수 입력 신뢰도 판정
+  // - 식수 입력 일수(mealDayCnt)가 발주 일수(orderDayCnt)의 25% 미만이거나
+  //   절대 일수가 3일 미만이면 식수 데이터가 불충분하므로 diffRatio 기반 판정 제외
+  const mealDataSufficient = mealDayCnt >= 3 && orderDayCnt > 0
+    && (mealDayCnt / orderDayCnt) >= 0.25
+
   // label 판정: 식수×단가 기준과 예산 대비 기준을 모두 고려
   // 1) 예산 초과(105% 이상)이면 무조건 'over'
-  // 2) 식수×단가 기준으로 +10% 초과이면 'over'
-  // 3) 식수×단가 기준으로 -10% 미만이면 'under'
-  // 4) 나머지는 'normal'
+  // 2) 식수 데이터가 충분하고, 식수×단가 기준으로 +10% 초과이면 'over'
+  // 3) 식수 데이터가 충분하고, 식수×단가 기준으로 -10% 미만이면 'under'
+  // 4) 나머지(식수 불충분 포함)는 예산 범위 내이면 'normal'
   let orderAppropriatenessLabel: 'over' | 'under' | 'normal'
-  if (budgetProgressPct >= 105 || orderAppropriatenessRatio >= 10) {
+  if (budgetProgressPct >= 105) {
     orderAppropriatenessLabel = 'over'
-  } else if (orderAppropriatenessRatio <= -10) {
+  } else if (mealDataSufficient && orderAppropriatenessRatio >= 10) {
+    orderAppropriatenessLabel = 'over'
+  } else if (mealDataSufficient && orderAppropriatenessRatio <= -10) {
     orderAppropriatenessLabel = 'under'
   } else {
     orderAppropriatenessLabel = 'normal'
