@@ -2507,9 +2507,27 @@ async function renderOrders() {
 
     // ── 카테고리 비율 섹션 생성 헬퍼 (A안 + B안) ──
     const hasCats2 = (patientCats||[]).length > 0
+    // 주요 환자군 필터: budgetKeys 있거나 예산/기준가 설정된 카테고리만 표시
+    // 보조 카테고리(항암 보호자, 경관식 등 - monthly_budget=0, ref_meal_price=0, budgetKeys=[]) 제외
+    const catSettingsMapForFilter = {}
+    ;(catSettings2||[]).forEach(s => { catSettingsMapForFilter[s.patient_category_id] = s })
+    const _catDietPricesForFilter = window._catDietPricesData || []
+    function isMainCat(cat) {
+      const dcEntry = _catDietPricesForFilter.find(d => d.id === cat.id)
+      // catDietPrices에 있고 budgetKeys가 1개 이상 → 주요 환자군
+      if (dcEntry && (dcEntry.budgetKeys || []).length > 0) return true
+      // catDietPrices에 있고 budgetKeys=[] → 보조 카테고리 → 제외
+      if (dcEntry && (dcEntry.budgetKeys || []).length === 0) return false
+      // catSettings에서 예산 또는 기준가 설정 → 주요 환자군
+      const s = catSettingsMapForFilter[cat.id] || {}
+      if ((s.monthly_budget || 0) > 0 || (s.ref_meal_price || 0) > 0) return true
+      return false
+    }
     function makeCatSection(catTotalsMap, catBudgetsMap, periodLabel) {
       if (!hasCats2) return ''
-      const cats = patientCats || []
+      // 보조 카테고리 필터링 적용
+      const cats = (patientCats || []).filter(isMainCat)
+      if (cats.length === 0) return ''
       const grandAmt = cats.reduce((s,c) => s+(catTotalsMap[c.id]||0), 0)
       const grandBudget = cats.reduce((s,c) => s+(catBudgetsMap[c.id]||0), 0)
       // 발주 데이터도 없고 예산도 없으면 숨김
@@ -5438,11 +5456,22 @@ function updateBudgetProgressPanel() {
 
     // 카테고리 바 실시간 업데이트 (A안+B안)
     const catSettingsMap = window._catSettingsMap || {}
-    const _showProportion2 = patientCats.length > 1  // 환자군 2개 이상일때만 점유 표시
+    // 보조 카테고리(항암 보호자, 경관식 등) 필터링: budgetKeys=[]이고 예산/기준가 미설정인 것 제외
+    const _catDietPricesForBar = window._catDietPricesData || []
+    const _catSettingsForBar = window._catOrderSettings || []
+    function isMainCatForBar(cat) {
+      const dc = _catDietPricesForBar.find(d => d.id === cat.id)
+      if (dc && (dc.budgetKeys || []).length > 0) return true
+      if (dc && (dc.budgetKeys || []).length === 0) return false
+      const s = _catSettingsForBar.find(s => s.patient_category_id === cat.id) || {}
+      return (s.monthly_budget || 0) > 0 || (s.ref_meal_price || 0) > 0
+    }
+    const mainPatientCats = patientCats.filter(isMainCatForBar)
+    const _showProportion2 = mainPatientCats.length > 1  // 환자군 2개 이상일때만 점유 표시
     const updateCatBars = (totalsMap, budgetsMap, periodLbl) => {
-      patientCats.forEach(cat => {
+      mainPatientCats.forEach(cat => {
         const color = getCategoryColorHex(cat.category_key)
-        const grand = patientCats.reduce((s,c)=>s+(totalsMap[c.id]||0),0)
+        const grand = mainPatientCats.reduce((s,c)=>s+(totalsMap[c.id]||0),0)
         const amt = totalsMap[cat.id] || 0
         const budg = budgetsMap[cat.id] || 0
 
@@ -5478,26 +5507,33 @@ function updateBudgetProgressPanel() {
 
     updateCatBars(catTodayAcc,  catDailyBudgets2, 'today')
     updateCatBars(catMonthAcc,  catMonthBudgets2, 'month')
-    // 주차 바 업데이트: 각 주차 카드의 실제 일수(data-week-days) 기반으로 카테고리 예산 계산
-    document.querySelectorAll('[id^="week"][id$="-card"]').forEach(el => {
-      const num = el.id.replace('-card','').replace('week','')
-      if (isNaN(num)) return
-      // 해당 주차 카드의 실제 일수 읽기
-      const weekPctCell = document.getElementById(`weekPctCell-${el.id.replace('-card','')}`) ||
-        document.querySelector(`[data-week-num="${num}"]`)
-      const wDaysCard = parseInt(weekPctCell?.dataset?.weekDays || 0)
-      if (wDaysCard > 0) {
-        // 이 주차용 카테고리 예산 생성
-        const wCatBudgets2 = {}
-        ;(window._catOrderSettings||[]).forEach(s => {
-          const id = s.patient_category_id
-          const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
-          wCatBudgets2[id] = daily * wDaysCard
+    // 주차 바 업데이트: 각 주차별 실제 _catDailyMap 집계 사용 (catWeekAcc는 이번 주 데이터만이라 오류)
+    const savedWeeklyData2 = window._ordersBudget?.weeklyData || []
+    const catDailyMapForWeek = window._catDailyMap || {}
+    const patientCatsForWeek = window._patientCats || []
+    savedWeeklyData2.forEach((w, i) => {
+      const num = i + 1
+      // 이 주차에 속하는 _catDailyMap 집계
+      const weekCatAcc = {}
+      patientCatsForWeek.forEach(c => { weekCatAcc[c.id] = 0 })
+      Object.entries(catDailyMapForWeek).forEach(([dk, vMap]) => {
+        if (dk < w.wk || dk > w.wkEnd) return
+        Object.entries(vMap).forEach(([vid, cMap]) => {
+          const vendorObj = (window._ordersVendors||[]).find(v=>v.id===parseInt(vid))
+          if (vendorObj && vendorObj.is_card_type) return
+          Object.entries(cMap).forEach(([cid, r]) => {
+            if (weekCatAcc[cid] !== undefined) weekCatAcc[cid] += r.total || 0
+          })
         })
-        updateCatBars(catWeekAcc, wCatBudgets2, `w${num}`)
-      } else {
-        updateCatBars(catWeekAcc, catWeekBudgets2, `w${num}`)
-      }
+      })
+      // 이 주차 일수 기반 카테고리 예산
+      const wCatBudgets2 = {}
+      ;(window._catOrderSettings||[]).forEach(s => {
+        const id = s.patient_category_id
+        const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+        wCatBudgets2[id] = daily * (w.wDays || 0)
+      })
+      updateCatBars(weekCatAcc, wCatBudgets2, `w${num}`)
     })
 
   } else {
