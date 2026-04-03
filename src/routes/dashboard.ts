@@ -371,7 +371,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   // 일/주/월 목표
   const dailyBudget = workingDays > 0 ? Math.round(totalBudget / workingDays) : 0
-  // 주간 예산: 현재 월인 경우에만 계산 (다른 달 조회 시 0)
+  // 주간 예산: 현재 월이면 실제 이번 주 날짜 기반, 과거/미래 달이면 5일(평균 주) 기준으로 계산
   const monthStr = `${year}-${String(parseInt(month)).padStart(2,'0')}`
   let weekDaysInMonth = 0
   if (isCurrentMonth) {
@@ -380,8 +380,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
       if (ds.startsWith(monthStr)) weekDaysInMonth++
     }
     if (weekDaysInMonth === 0) weekDaysInMonth = 7  // fallback
+  } else {
+    // 과거/미래 달: 평균 주 5일 기준
+    weekDaysInMonth = 5
   }
-  const weeklyBudget = isCurrentMonth ? (dailyBudget * weekDaysInMonth) : 0
+  const weeklyBudget = dailyBudget * weekDaysInMonth
+
+  // 과거 달 조회 시: 일평균/주평균 실적 계산 (totalUsed / workingDays 기반)
+  // → 실제 주/일 발주는 의미없으므로 월 실적으로 역산한 평균값 사용
+  const avgDailyUsed = !isCurrentMonth && workingDays > 0 ? Math.round(totalUsed / workingDays) : (todayOrders?.today_total || 0)
+  const avgWeeklyUsed = !isCurrentMonth && workingDays > 0 ? Math.round(totalUsed / workingDays * weekDaysInMonth) : (weekOrders?.week_total || 0)
 
   // 예산 초과 업체
   const overBudgetVendors = (vendors.results || []).filter((v: any) => 
@@ -1137,10 +1145,14 @@ dashboard.get('/summary/:year/:month', async (c) => {
       remaining: totalBudget - totalUsed,
       dailyBudget,
       weeklyBudget,
-      todayUsed: todayOrders?.today_total || 0,
-      weekUsed: weekOrders?.week_total || 0,
-      todayProgress: dailyBudget > 0 ? ((todayOrders?.today_total || 0) / dailyBudget * 100).toFixed(1) : '0.0',
-      weekProgress: weeklyBudget > 0 ? ((weekOrders?.week_total || 0) / weeklyBudget * 100).toFixed(1) : '0.0'
+      // 현재 달: 실제 오늘/이번 주 발주액, 과거 달: 일평균/주평균 실적(역산)
+      todayUsed: avgDailyUsed,
+      weekUsed: avgWeeklyUsed,
+      todayProgress: dailyBudget > 0 ? (avgDailyUsed / dailyBudget * 100).toFixed(1) : '0.0',
+      weekProgress: weeklyBudget > 0 ? (avgWeeklyUsed / weeklyBudget * 100).toFixed(1) : '0.0',
+      // 과거 달 여부 플래그 (프론트에서 레이블 구분에 사용)
+      isCurrentMonth,
+      isPastMonth: !isCurrentMonth && (dashReqYear < nowYear || (dashReqYear === nowYear && dashReqMonth < nowMonth))
     }
   })
   } catch(err: any) {

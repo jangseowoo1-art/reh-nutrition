@@ -1052,21 +1052,24 @@ async function renderDashboard() {
       </div>
       <!-- #6 일별/주별/월별 적정성 3단계 표시 -->
       ${orderAppr.targetMealPrice > 0 ? (() => {
+        const isPast = s.isPastMonth === true   // 백엔드가 내려준 과거 달 플래그
         const todayPct = s.dailyBudget > 0 ? Math.round(s.todayUsed / s.dailyBudget * 100) : null
         const weekPct  = s.weeklyBudget > 0 ? Math.round(s.weekUsed / s.weeklyBudget * 100) : null
         const monthPct = parseFloat(s.progress || 0)
+        // 과거 달: 레이블을 '일평균'/'주평균'으로 변경하여 평균 실적임을 명시
         const rows = [
-          { label:'일별', pct: todayPct, used: s.todayUsed, budget: s.dailyBudget },
-          { label:'주별', pct: weekPct,  used: s.weekUsed,  budget: s.weeklyBudget },
-          { label:'월별', pct: monthPct, used: s.totalUsed, budget: s.totalBudget },
+          { label: isPast ? '일평균' : '일별', pct: todayPct, used: s.todayUsed, budget: s.dailyBudget, isAvg: isPast },
+          { label: isPast ? '주평균' : '주별', pct: weekPct,  used: s.weekUsed,  budget: s.weeklyBudget, isAvg: isPast },
+          { label: '월별',  pct: monthPct, used: s.totalUsed, budget: s.totalBudget, isAvg: false },
         ]
         return `<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">
+          ${isPast ? `<div style="font-size:9px;color:#9ca3af;margin-bottom:2px">※ 과거 달 기준 · 일/주평균 실적</div>` : ''}
           ${rows.map(r => {
-            if (r.pct === null || r.budget <= 0) return `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;font-weight:700;color:#6b7280;width:24px">${r.label}</span><span style="font-size:10px;color:#9ca3af">미설정</span></div>`
+            if (r.pct === null || r.budget <= 0) return `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;font-weight:700;color:#6b7280;min-width:36px">${r.label}</span><span style="font-size:10px;color:#9ca3af">예산 미설정</span></div>`
             const c = r.pct >= 100 ? '#dc2626' : r.pct >= 80 ? '#f59e0b' : '#10b981'
             const status = r.pct >= 110 ? '초과' : r.pct >= 80 ? '주의' : '정상'
             return `<div style="display:flex;align-items:center;gap:6px">
-              <span style="font-size:10px;font-weight:700;color:#374151;width:24px">${r.label}</span>
+              <span style="font-size:10px;font-weight:700;color:#374151;min-width:36px">${r.label}</span>
               <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden">
                 <div style="height:100%;width:${Math.min(r.pct,100)}%;background:${c};border-radius:3px"></div>
               </div>
@@ -1160,22 +1163,22 @@ async function renderDashboard() {
 
     <div class="stat-card">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-xs text-gray-500 font-semibold uppercase tracking-wide">오늘 발주</span>
+        <span class="text-xs text-gray-500 font-semibold uppercase tracking-wide">${s.isPastMonth ? '일 평균' : '오늘 발주'}</span>
         <div class="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center">
           <i class="fas fa-calendar-day text-green-500 text-xs"></i>
         </div>
       </div>
       <div class="text-xl md:text-2xl font-bold ${parseFloat(s.todayProgress)>=100?'text-red-600':parseFloat(s.todayProgress)>=80?'text-yellow-600':'text-gray-800'}">${fmtMan(s.todayUsed)}<span class="text-xs font-normal text-gray-400 ml-1">원</span></div>
-      <div class="text-xs text-gray-400 mt-1">일 목표: ${fmtMan(s.dailyBudget)}원</div>
+      <div class="text-xs text-gray-400 mt-1">${s.isPastMonth ? '일 목표: ' : '일 목표: '}${fmtMan(s.dailyBudget)}원</div>
       <div class="mt-2 progress-bar">
         <div class="progress-fill ${getProgressColor(parseFloat(s.todayProgress))}" style="width:${Math.min(parseFloat(s.todayProgress||0),100)}%"></div>
       </div>
-      <div class="mt-1 text-xs text-gray-500">${s.todayProgress}%</div>
+      <div class="mt-1 text-xs text-gray-500">${s.todayProgress}%${s.isPastMonth ? ' <span style="color:#9ca3af;font-size:9px">(일평균)</span>' : ''}</div>
     </div>
 
     <div class="stat-card">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-xs text-gray-500 font-semibold uppercase tracking-wide">이번 주</span>
+        <span class="text-xs text-gray-500 font-semibold uppercase tracking-wide">${s.isPastMonth ? '주 평균' : '이번 주'}</span>
         <div class="w-8 h-8 rounded-lg bg-orange-50 flex items-center justify-center">
           <i class="fas fa-calendar-week text-orange-500 text-xs"></i>
         </div>
@@ -1185,7 +1188,7 @@ async function renderDashboard() {
       <div class="mt-2 progress-bar">
         <div class="progress-fill ${getProgressColor(parseFloat(s.weekProgress))}" style="width:${Math.min(parseFloat(s.weekProgress||0),100)}%"></div>
       </div>
-      <div class="mt-1 text-xs text-gray-500">${s.weekProgress}%</div>
+      <div class="mt-1 text-xs text-gray-500">${s.weekProgress}%${s.isPastMonth ? ' <span style="color:#9ca3af;font-size:9px">(주평균)</span>' : ''}</div>
     </div>
   </div>
 
