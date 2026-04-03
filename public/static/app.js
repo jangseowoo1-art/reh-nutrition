@@ -2152,6 +2152,14 @@ async function renderOrders() {
   const weekEndStr2   = `${_we.getFullYear()}-${String(_we.getMonth()+1).padStart(2,'0')}-${String(_we.getDate()).padStart(2,'0')}`
   // 하위 호환용 Date 객체 (weeklyData 계산에서 사용)
   const weekStart = _ws
+  // 조회 월 범위 (주간 집계 시 다른 월 데이터 제외용)
+  const _monthStr = String(App.currentMonth).padStart(2,'0')
+  const _lastDay = new Date(App.currentYear, App.currentMonth, 0).getDate()
+  const monthDateStart = `${App.currentYear}-${_monthStr}-01`
+  const monthDateEnd   = `${App.currentYear}-${_monthStr}-${String(_lastDay).padStart(2,'0')}`
+  // 이번 주 + 조회 월의 교집합 (월 경계 처리: 주가 다른 달에 걸쳐 있어도 해당 월만)
+  const weekInMonthStart = weekStartStr2 < monthDateStart ? monthDateStart : weekStartStr2
+  const weekInMonthEnd   = weekEndStr2   > monthDateEnd   ? monthDateEnd   : weekEndStr2
   const weekEnd   = _we
 
   // ── 카테고리별 금액 계산 (A안+B안용) ──
@@ -2194,13 +2202,14 @@ async function renderOrders() {
   let catTodayTotal = 0, catWeekTotal = 0
   catDailyData.forEach(r => {
     if (r.order_date === todayStr) catTodayTotal += r.total || 0
-    // 날짜 문자열 직접 비교 (UTC 파싱 버그 방지)
-    if (r.order_date >= weekStartStr2 && r.order_date <= weekEndStr2) catWeekTotal += r.total || 0
+    // 날짜 문자열 직접 비교 + 조회 월 범위 교집합 (다른 달 데이터 제외)
+    if (r.order_date >= weekInMonthStart && r.order_date <= weekInMonthEnd) catWeekTotal += r.total || 0
   })
   let normalTodayTotal = 0, normalWeekTotal = 0
   ;(orderList||[]).forEach(o => {
     if (o.order_date === todayStr) normalTodayTotal += o.total_amount||0
-    if (o.order_date >= weekStartStr2 && o.order_date <= weekEndStr2) normalWeekTotal += o.total_amount||0
+    // 조회 월과 이번 주의 교집합 날짜만 합산 (월 경계 처리)
+    if (o.order_date >= weekInMonthStart && o.order_date <= weekInMonthEnd) normalWeekTotal += o.total_amount||0
   })
   // 오늘/주간도 미분류 발주가 있으면 전체 기준 사용
   const todayTotal = hasCatsData ? (normalTodayTotal > catTodayTotal ? normalTodayTotal : catTodayTotal) : normalTodayTotal
@@ -2828,7 +2837,9 @@ async function renderOrders() {
   })
   const weekStartStr = weekStartStr2
   const weekEndStr = weekEndStr2
-  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr, vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*(curWeekData?.wDays||5)])), workingDays, weeklyData, card_budget: settings.card_budget || 0 }
+  window._ordersBudget = { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekStartStr, weekEndStr,
+    weekInMonthStart, weekInMonthEnd,  // 주간+조회월 교집합 (월 경계 주간 데이터 오류 방지)
+    vendorDailyBudgets: vendorDailyBudgets2, vendorWeeklyBudgets: Object.fromEntries(Object.entries(vendorDailyBudgets2).map(([k,v])=>[k,v*(curWeekData?.wDays||5)])), workingDays, weeklyData, card_budget: settings.card_budget || 0 }
   window._ordersData = orderList || []
   window._catDailyOrders = catOrderData?.dailyByVendorCat || []
   window._ordersVendors = vendors || []
@@ -5239,7 +5250,7 @@ function updateBudgetProgressPanel() {
   // 전체 입력값 합계 재계산
   const budget = window._ordersBudget
   if (!budget) return
-  const { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd } = budget
+  const { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekInMonthStart, weekInMonthEnd } = budget
 
   const patientCats = window._patientCats || []
   const hasCats = patientCats.length > 0
@@ -5248,8 +5259,9 @@ function updateBudgetProgressPanel() {
 
   if (hasCats) {
     // 카테고리 모드: cat-order-input 집계
-    const weekStartStr2 = weekStart instanceof Date ? weekStart.toISOString().split('T')[0] : weekStart
-    const weekEndStr2   = weekEnd   instanceof Date ? weekEnd.toISOString().split('T')[0]   : weekEnd
+    // weekInMonthStart/weekInMonthEnd: 이번 주 + 조회 월의 교집합 (월 경계 데이터 오류 방지)
+    const weekStartStr2 = weekInMonthStart || (weekStart instanceof Date ? `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}` : weekStart)
+    const weekEndStr2   = weekInMonthEnd   || (weekEnd   instanceof Date ? `${weekEnd.getFullYear()}-${String(weekEnd.getMonth()+1).padStart(2,'0')}-${String(weekEnd.getDate()).padStart(2,'0')}`   : weekEnd)
 
     // 카테고리별 합계도 실시간 계산
     const catMonthAcc = {}; const catTodayAcc = {}; const catWeekAcc = {}
@@ -5402,8 +5414,9 @@ function updateBudgetProgressPanel() {
 
   } else {
     // 기존 모드 (카테고리 없을 때): order-input 집계
-    const weekStartStr2 = weekStart instanceof Date ? weekStart.toISOString().split('T')[0] : weekStart
-    const weekEndStr2   = weekEnd   instanceof Date ? weekEnd.toISOString().split('T')[0]   : weekEnd
+    // weekInMonthStart/weekInMonthEnd: 이번 주 + 조회 월의 교집합 (월 경계 데이터 오류 방지)
+    const weekStartStr2 = weekInMonthStart || (weekStart instanceof Date ? `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}` : weekStart)
+    const weekEndStr2   = weekInMonthEnd   || (weekEnd   instanceof Date ? `${weekEnd.getFullYear()}-${String(weekEnd.getMonth()+1).padStart(2,'0')}-${String(weekEnd.getDate()).padStart(2,'0')}`   : weekEnd)
     const allInputs = document.querySelectorAll('.order-input')
     const processed = {}
     allInputs.forEach(inp => {
@@ -5964,6 +5977,13 @@ window.toggleInsightPanel = function() {
 function updateInsightPanel() {
   const budget = window._ordersBudget
   if (!budget) return
+  // 인사이트 패널 DOM이 아직 렌더링 안된 경우 재시도
+  const forecastCheck = document.getElementById('budgetForecastContent')
+  if (!forecastCheck) {
+    // DOM이 아직 없으면 다음 프레임에서 재시도
+    requestAnimationFrame(() => updateInsightPanel())
+    return
+  }
   const vendors = window._ordersVendors || []
   const patientCats = window._patientCats || []
   const catSettingsMap = window._catSettingsMap || {}
@@ -5971,26 +5991,49 @@ function updateInsightPanel() {
   const hasCats = patientCats.length > 0
 
   // ── 1. 월 발주 합계 계산 ──
+  // 1차: _catDailyMap (저장된 데이터) 기반으로 합산 (DOM 렌더링 여부와 무관하게 정확)
   let monthOrdered = 0
   const processedCardVendors = new Set()
-  if (hasCats) {
-    document.querySelectorAll('.cat-order-input').forEach(inp => {
-      const field = inp.dataset.field
-      const val = parseOrderVal(inp.value)
-      if (field === 'taxable') monthOrdered += val + Math.round(val * 0.1)
-      else if (field === 'exempt' || field === 'total') monthOrdered += val
+  const catDailyMapIns = window._catDailyMap || {}
+  const ordersDataIns = window._ordersData || []
+  const vendorsIns = window._ordersVendors || []
+  const cardVendorIds = new Set(vendorsIns.filter(v => v.is_card_type).map(v => String(v.id)))
+
+  if (Object.keys(catDailyMapIns).length > 0 || ordersDataIns.length > 0) {
+    // _catDailyMap 기반 합산 (카테고리 발주)
+    Object.values(catDailyMapIns).forEach(vMap => {
+      Object.entries(vMap).forEach(([vid, cMap]) => {
+        if (cardVendorIds.has(String(vid))) return
+        Object.values(cMap).forEach(r => { monthOrdered += r.total || 0 })
+      })
+    })
+    // _ordersData 기반 합산 - NULL 카테고리 발주 포함 (카테고리 미분류 발주)
+    ordersDataIns.forEach(o => {
+      if (o.patient_category_id != null) return  // 카테고리 지정 발주는 _catDailyMap에서 이미 합산
+      if (cardVendorIds.has(String(o.vendor_id))) return
+      monthOrdered += o.total_amount || 0
     })
   } else {
-    document.querySelectorAll('.order-input').forEach(inp => {
-      if (inp.dataset.type === 'taxable') {
+    // fallback: DOM input에서 합산
+    if (hasCats) {
+      document.querySelectorAll('.cat-order-input').forEach(inp => {
+        const field = inp.dataset.field
         const val = parseOrderVal(inp.value)
-        monthOrdered += val + Math.round(val * 0.1)
-      } else if (inp.dataset.type === 'exempt') {
-        monthOrdered += parseOrderVal(inp.value)
-      } else {
-        monthOrdered += parseOrderVal(inp.value)
-      }
-    })
+        if (field === 'taxable') monthOrdered += val + Math.round(val * 0.1)
+        else if (field === 'exempt' || field === 'total') monthOrdered += val
+      })
+    } else {
+      document.querySelectorAll('.order-input').forEach(inp => {
+        if (inp.dataset.type === 'taxable') {
+          const val = parseOrderVal(inp.value)
+          monthOrdered += val + Math.round(val * 0.1)
+        } else if (inp.dataset.type === 'exempt') {
+          monthOrdered += parseOrderVal(inp.value)
+        } else {
+          monthOrdered += parseOrderVal(inp.value)
+        }
+      })
+    }
   }
   // 법인카드형 업체 월 합계 추가
   if (window._cardDailyMap) {

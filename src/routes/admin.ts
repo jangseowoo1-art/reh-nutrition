@@ -618,9 +618,16 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       ).bind(h.id, today).first<any>()
       let weekUsedVal = 0
       if (isHospCurrentMonth) {
+        // 해당 월 범위와 이번 주 범위의 교집합으로 제한 (주가 두 달에 걸친 경우 조회 월 데이터만 집계)
+        const hMonthPadded = String(parseInt(hMonth)).padStart(2, '0')
+        const hLastDay = new Date(parseInt(hYear), parseInt(hMonth), 0).getDate()
+        const hDateStart = `${hYear}-${hMonthPadded}-01`
+        const hDateEnd   = `${hYear}-${hMonthPadded}-${String(hLastDay).padStart(2, '0')}`
+        const effWeekStart = weekStartStr > hDateStart ? weekStartStr : hDateStart
+        const effWeekEnd   = weekEndStr   < hDateEnd   ? weekEndStr   : hDateEnd
         const weekUsedRow = await c.env.DB.prepare(
           `SELECT COALESCE(SUM(total_amount),0) as t FROM daily_orders WHERE hospital_id=? AND order_date>=? AND order_date<=?`
-        ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+        ).bind(h.id, effWeekStart, effWeekEnd).first<any>()
         weekUsedVal = weekUsedRow?.t || 0
       }
 

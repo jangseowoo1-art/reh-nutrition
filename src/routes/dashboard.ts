@@ -143,18 +143,19 @@ dashboard.get('/summary/:year/:month', async (c) => {
        FROM daily_orders WHERE hospital_id = ? AND order_date = ?`
     ).bind(hospitalId, today).first<any>(),
 
-    // 이번 주 발주액
+    // 이번 주 발주액 (해당 월 내 날짜만 포함 - 주가 두 달에 걸친 경우 조회 월 데이터만 집계)
     (() => {
       const nowDate = new Date()
       const dayOfWeek = nowDate.getDay()
-      const weekStart = new Date(nowDate); weekStart.setDate(nowDate.getDate() - dayOfWeek)
+      const weekStart = new Date(nowDate); weekStart.setDate(nowDate.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
       const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6)
-      const weekStartStr = weekStart.toISOString().split('T')[0]
-      const weekEndStr = weekEnd.toISOString().split('T')[0]
+      // 이번 주와 해당 월의 교집합 날짜 범위
+      const effStart = weekStart.toISOString().split('T')[0] > dateStart ? weekStart.toISOString().split('T')[0] : dateStart
+      const effEnd   = weekEnd.toISOString().split('T')[0] < dateEnd     ? weekEnd.toISOString().split('T')[0]   : dateEnd
       return c.env.DB.prepare(
         `SELECT COALESCE(SUM(total_amount), 0) as week_total
          FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
-      ).bind(hospitalId, weekStartStr, weekEndStr).first<any>()
+      ).bind(hospitalId, effStart, effEnd).first<any>()
     })(),
 
     // totalUsed
@@ -360,8 +361,9 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const nowMonth = nowDate.getMonth() + 1
   // 요청한 월이 현재 월인지 확인 → 다른 달을 조회하면 주간 데이터는 의미없음
   const isCurrentMonth = (dashReqYear === nowYear && dashReqMonth === nowMonth)
+  // 월요일 기준 주 범위 계산 (일요일=0 → 6일 전, 월요일=1 → 0일 전, ...)
   const dayOfWeek2 = nowDate.getDay()
-  const weekStart2 = new Date(nowDate); weekStart2.setDate(nowDate.getDate() - dayOfWeek2)
+  const weekStart2 = new Date(nowDate); weekStart2.setDate(nowDate.getDate() - (dayOfWeek2 === 0 ? 6 : dayOfWeek2 - 1))
   const weekEnd2 = new Date(weekStart2); weekEnd2.setDate(weekStart2.getDate() + 6)
   const weekStartStr = weekStart2.toISOString().split('T')[0]
   const weekEndStr = weekEnd2.toISOString().split('T')[0]
@@ -1485,12 +1487,18 @@ dashboard.get('/admin/overview/:year/:month', async (c) => {
         `SELECT COALESCE(SUM(total_amount), 0) as today_total FROM daily_orders WHERE hospital_id = ? AND order_date = ?`
       ).bind(h.id, today).first<any>()
 
-      // 이번주 발주 (현재 월 조회 시에만 의미 있음)
+      // 이번주 발주 (현재 월 조회 시에만 의미 있음, 해당 월 교집합만 집계)
       let weekUsedAmount = 0
       if (isOverviewCurrentMonth) {
+        const mPadded2 = String(parseInt(month)).padStart(2,'0')
+        const mLastDay2 = new Date(parseInt(year), parseInt(month), 0).getDate()
+        const mDateStart2 = `${year}-${mPadded2}-01`
+        const mDateEnd2   = `${year}-${mPadded2}-${String(mLastDay2).padStart(2,'0')}`
+        const effWS = weekStartStr > mDateStart2 ? weekStartStr : mDateStart2
+        const effWE = weekEndStr   < mDateEnd2   ? weekEndStr   : mDateEnd2
         const weekUsedRow = await c.env.DB.prepare(
           `SELECT COALESCE(SUM(total_amount), 0) as week_total FROM daily_orders WHERE hospital_id = ? AND order_date >= ? AND order_date <= ?`
-        ).bind(h.id, weekStartStr, weekEndStr).first<any>()
+        ).bind(h.id, effWS, effWE).first<any>()
         weekUsedAmount = weekUsedRow?.week_total || 0
       }
 
