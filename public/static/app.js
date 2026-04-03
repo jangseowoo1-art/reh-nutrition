@@ -6102,29 +6102,61 @@ function updateInsightPanel() {
       const catKeyIdMap2 = {}
       patientCats.forEach(c2 => { catKeyIdMap2[c2.category_key] = c2.id })
 
-      // 발주 총액: budgetKeys 기반 (formula 있을 때), 없으면 해당 카테고리 직접 합산
+      // 발주 총액: _catDailyMap 기반으로 집계 (DOM 렌더링 여부와 무관하게 안정적)
+      const catDailyMapForDiet = window._catDailyMap || {}
+      const cardVendorIdsForDiet = new Set((window._ordersVendors || []).filter(v => v.is_card_type).map(v => String(v.id)))
       let catTotal = 0
       if (hasFormula2 && budgetKeys2.length > 0) {
-        budgetKeys2.forEach(bKey => {
-          const bCatId = catKeyIdMap2[bKey]
-          if (bCatId !== undefined) {
-            document.querySelectorAll(`.cat-order-input[data-category="${bCatId}"]`).forEach(inp => {
-              const field = inp.dataset.field
-              const val = parseOrderVal(inp.value)
-              if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
-              else catTotal += val
+        // budgetKeys에 해당하는 카테고리 ID 집합
+        const bCatIds = new Set(budgetKeys2.map(bKey => catKeyIdMap2[bKey]).filter(id => id !== undefined))
+        // _catDailyMap에서 해당 카테고리 발주금액 합산
+        Object.values(catDailyMapForDiet).forEach(vMap => {
+          Object.entries(vMap).forEach(([vid, cMap]) => {
+            if (cardVendorIdsForDiet.has(String(vid))) return
+            Object.entries(cMap).forEach(([catId, r]) => {
+              if (bCatIds.has(parseInt(catId))) {
+                catTotal += r.total || 0
+              }
             })
-          }
+          })
         })
-        // NULL 카테고리 발주금액도 포함 (category-monthly monthly에서 NULL 합산값 사용)
+        // NULL 카테고리 발주금액도 포함
         catTotal += (window._nullCatMonthlyAmt || 0)
+        // DOM fallback: _catDailyMap이 비어있을 때만 DOM에서 읽기
+        if (catTotal === 0) {
+          budgetKeys2.forEach(bKey => {
+            const bCatId = catKeyIdMap2[bKey]
+            if (bCatId !== undefined) {
+              document.querySelectorAll(`.cat-order-input[data-category="${bCatId}"]`).forEach(inp => {
+                const field = inp.dataset.field
+                const val = parseOrderVal(inp.value)
+                if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
+                else catTotal += val
+              })
+            }
+          })
+        }
       } else {
-        document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
-          const field = inp.dataset.field
-          const val = parseOrderVal(inp.value)
-          if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
-          else catTotal += val
+        // formula 없는 경우: _catDailyMap에서 해당 카테고리 발주금액 합산
+        Object.values(catDailyMapForDiet).forEach(vMap => {
+          Object.entries(vMap).forEach(([vid, cMap]) => {
+            if (cardVendorIdsForDiet.has(String(vid))) return
+            Object.entries(cMap).forEach(([catId, r]) => {
+              if (parseInt(catId) === cat.id) {
+                catTotal += r.total || 0
+              }
+            })
+          })
         })
+        // DOM fallback: _catDailyMap이 비어있을 때만 DOM에서 읽기
+        if (catTotal === 0) {
+          document.querySelectorAll(`.cat-order-input[data-category="${cat.id}"]`).forEach(inp => {
+            const field = inp.dataset.field
+            const val = parseOrderVal(inp.value)
+            if (field === 'taxable') catTotal += val + Math.round(val * 0.1)
+            else catTotal += val
+          })
+        }
       }
 
       // 식수: mealsKeys 기반 (formula 있을 때), 없으면 카테고리 key로 직접 조회
