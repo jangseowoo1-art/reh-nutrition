@@ -1050,7 +1050,23 @@ async function renderDashboard() {
       <div class="text-base font-bold ${orderAppr.label==='over'?'text-orange-600':orderAppr.label==='under'?'text-blue-600':'text-green-700'}">
         ${orderAppr.label==='over' ? '⚠ 과다 발주' : orderAppr.label==='under' ? '▼ 과소 발주' : (orderAppr.targetMealPrice > 0 ? '✓ 적정 수준' : '목표 미설정')}
       </div>
-      <!-- #6 일별/주별/월별 적정성 3단계 표시 -->
+      <!-- 판정 기준 설명 -->
+      ${orderAppr.targetMealPrice > 0 ? (() => {
+        const bPct = orderAppr.budgetProgressPct || 0
+        const dRatio = orderAppr.diffRatio || 0
+        // 어느 기준으로 과다/적정/과소가 됐는지 표시
+        let reasonText = ''
+        if (orderAppr.label === 'over') {
+          if (bPct >= 105) reasonText = `예산 ${bPct.toFixed(1)}% 초과`
+          else reasonText = `식단가 +${dRatio}% 초과`
+        } else if (orderAppr.label === 'under') {
+          reasonText = `식단가 ${dRatio}% 미달`
+        } else {
+          reasonText = `예산 ${bPct.toFixed(1)}% · 식단가 ${dRatio>0?'+':''}${dRatio}%`
+        }
+        return `<div style="font-size:10px;color:#6b7280;margin-top:2px;margin-bottom:6px">${reasonText}</div>`
+      })() : ''}
+      <!-- #6 일별/주별/월별 적정성 3단계 표시 (예산 대비) -->
       ${orderAppr.targetMealPrice > 0 ? (() => {
         const isPast = s.isPastMonth === true   // 백엔드가 내려준 과거 달 플래그
         const todayPct = s.dailyBudget > 0 ? Math.round(s.todayUsed / s.dailyBudget * 100) : null
@@ -1062,12 +1078,12 @@ async function renderDashboard() {
           { label: isPast ? '주평균' : '주별', pct: weekPct,  used: s.weekUsed,  budget: s.weeklyBudget, isAvg: isPast },
           { label: '월별',  pct: monthPct, used: s.totalUsed, budget: s.totalBudget, isAvg: false },
         ]
-        return `<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">
-          ${isPast ? `<div style="font-size:9px;color:#9ca3af;margin-bottom:2px">※ 과거 달 기준 · 일/주평균 실적</div>` : ''}
+        return `<div style="display:flex;flex-direction:column;gap:5px">
+          <div style="font-size:9px;color:#9ca3af;margin-bottom:1px">${isPast ? '※ 과거 달 · 일/주평균 실적 (예산 대비)' : '예산 대비 사용률'}</div>
           ${rows.map(r => {
             if (r.pct === null || r.budget <= 0) return `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;font-weight:700;color:#6b7280;min-width:36px">${r.label}</span><span style="font-size:10px;color:#9ca3af">예산 미설정</span></div>`
             const c = r.pct >= 100 ? '#dc2626' : r.pct >= 80 ? '#f59e0b' : '#10b981'
-            const status = r.pct >= 110 ? '초과' : r.pct >= 80 ? '주의' : '정상'
+            const status = r.pct >= 105 ? '초과' : r.pct >= 80 ? '주의' : '정상'
             return `<div style="display:flex;align-items:center;gap:6px">
               <span style="font-size:10px;font-weight:700;color:#374151;min-width:36px">${r.label}</span>
               <div style="flex:1;height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden">
@@ -1077,6 +1093,7 @@ async function renderDashboard() {
               <span style="font-size:9px;color:${c};background:${c}20;padding:1px 4px;border-radius:8px;white-space:nowrap">${status}</span>
             </div>`
           }).join('')}
+          ${orderAppr.appropriateOrderAmt > 0 ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식단가 기준 적정액: ${fmtMan(orderAppr.appropriateOrderAmt)}원 (${orderAppr.diffRatio>0?'+':''}${orderAppr.diffRatio}%)</div>` : ''}
         </div>`
       })() : `
       <div class="text-xs text-gray-400 mt-1">

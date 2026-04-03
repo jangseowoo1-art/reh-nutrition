@@ -987,10 +987,23 @@ dashboard.get('/summary/:year/:month', async (c) => {
     ? appropriateMealPrice * totalMeals : 0
   const orderAppropriatenessRatio = appropriateOrderAmt > 0
     ? parseFloat(((totalUsed - appropriateOrderAmt) / appropriateOrderAmt * 100).toFixed(1)) : 0
-  // +10 이상 = 과다, -10 이하 = 과소, ±10 이내 = 적정
-  const orderAppropriatenessLabel =
-    orderAppropriatenessRatio >= 10 ? 'over' :
-    orderAppropriatenessRatio <= -10 ? 'under' : 'normal'
+
+  // 예산 대비 사용률 (progress)
+  const budgetProgressPct = totalBudget > 0 ? (totalUsed / totalBudget * 100) : 0
+
+  // label 판정: 식수×단가 기준과 예산 대비 기준을 모두 고려
+  // 1) 예산 초과(105% 이상)이면 무조건 'over'
+  // 2) 식수×단가 기준으로 +10% 초과이면 'over'
+  // 3) 식수×단가 기준으로 -10% 미만이면 'under'
+  // 4) 나머지는 'normal'
+  let orderAppropriatenessLabel: 'over' | 'under' | 'normal'
+  if (budgetProgressPct >= 105 || orderAppropriatenessRatio >= 10) {
+    orderAppropriatenessLabel = 'over'
+  } else if (orderAppropriatenessRatio <= -10) {
+    orderAppropriatenessLabel = 'under'
+  } else {
+    orderAppropriatenessLabel = 'normal'
+  }
 
   // ══════════════════════════════════════════════════════════════
   // 자동 분석 문장 생성 (규칙 기반)
@@ -1130,6 +1143,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
       actualOrderAmt: totalUsed,
       diffAmt: Math.round(totalUsed - appropriateOrderAmt),
       diffRatio: orderAppropriatenessRatio,
+      budgetProgressPct: parseFloat(budgetProgressPct.toFixed(1)),  // 예산 대비 사용률
       label: orderAppropriatenessLabel  // 'over' | 'under' | 'normal'
     },
     // ── 2.5 발주 이상 탐지 ──
