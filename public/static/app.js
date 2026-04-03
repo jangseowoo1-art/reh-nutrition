@@ -13093,7 +13093,7 @@ function renderMonthlyScheduleTab() {
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h3 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h3>
-          <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">더블클릭: 직접입력</span> &nbsp;|&nbsp; 드래그: 범위선택 &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; 우클릭: 상세입력</p>
+          <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">더블클릭: 직접입력</span> &nbsp;|&nbsp; <span class="font-medium text-emerald-600">드래그: 자동채우기(엑셀↔)</span> &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C → Ctrl+V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; 우클릭: 상세입력</p>
         </div>
         <div class="flex gap-2 flex-wrap items-center">
           <!-- 근무코드 범례 -->
@@ -13301,6 +13301,7 @@ function renderMonthlyScheduleTab() {
                       ${extraIcon}
                     </div>
                   </td>`
+                  /* 채우기 핸들은 JS로 동적으로 붙임 (schedShowFillHandle) */
                 }).join('')
 
                 // ── 우측 집계: 연차 잔여 ─────────────────────────
@@ -13485,37 +13486,47 @@ function renderMonthlyScheduleTab() {
 
   <!-- 다중 선택 일괄 변경 툴바 (선택 시 자동 표시) -->
   <div id="multiSelectBar" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50
-    bg-gray-900 text-white rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-3 flex-wrap
-    border border-gray-700" style="min-width:360px">
-    <div class="flex items-center gap-2">
+    bg-gray-900 text-white rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-2 flex-wrap
+    border border-gray-700" style="min-width:400px;max-width:90vw">
+
+    <!-- 선택 카운트 -->
+    <div class="flex items-center gap-2 shrink-0">
       <div class="w-3 h-3 rounded-sm bg-blue-400 animate-pulse"></div>
       <span class="text-sm font-bold" id="multiSelectCount">0개 선택</span>
     </div>
-    <div class="w-px h-6 bg-gray-600"></div>
-    <div class="flex gap-1 flex-wrap" id="multiSelectCodeBtns"></div>
-    <div class="w-px h-6 bg-gray-600"></div>
-    <button onclick="applyMultiSelect()"
-      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 transition-colors">
-      <i class="fas fa-check mr-1"></i>일괄적용
-    </button>
+    <div class="w-px h-5 bg-gray-600 shrink-0"></div>
+
+    <!-- 근무 코드 버튼 (클릭 → 일괄 적용) -->
+    <div class="flex gap-1 flex-wrap items-center" id="multiSelectCodeBtns"></div>
+    <div class="w-px h-5 bg-gray-600 shrink-0"></div>
+
+    <!-- Ctrl+C 복사 -->
     <button onclick="schedCopyCells()"
-      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-teal-600 hover:bg-teal-500 transition-colors"
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-teal-700 hover:bg-teal-600 transition-colors shrink-0 flex items-center gap-1"
       title="선택 셀 복사 (Ctrl+C)">
-      <i class="fas fa-copy mr-1"></i>복사
+      <i class="fas fa-copy"></i><span>복사</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">C</kbd>
     </button>
+
+    <!-- Ctrl+V 붙여넣기 -->
     <button onclick="schedPasteCells()"
-      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 hover:bg-green-500 transition-colors"
-      title="붙여넣기 (Ctrl+V)">
-      <i class="fas fa-paste mr-1"></i>붙여넣기
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-700 hover:bg-green-600 transition-colors shrink-0 flex items-center gap-1"
+      title="붙여넣기 (Ctrl+V)" id="multiSelectPasteBtn">
+      <i class="fas fa-paste"></i><span>붙여넣기</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">V</kbd>
     </button>
+    <div class="w-px h-5 bg-gray-600 shrink-0"></div>
+
+    <!-- 삭제 -->
     <button onclick="schedDeleteCells()"
-      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 transition-colors"
-      title="선택 셀 삭제 (Delete)">
-      <i class="fas fa-trash mr-1"></i>삭제
+      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-700 hover:bg-red-600 transition-colors shrink-0 flex items-center gap-1"
+      title="선택 셀 삭제 (Delete/Backspace)">
+      <i class="fas fa-trash"></i><span>삭제</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">Del</kbd>
     </button>
+
+    <!-- 선택 해제 (ESC) -->
     <button onclick="clearMultiSelection()"
-      class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-600 hover:bg-gray-500 transition-colors">
-      <i class="fas fa-times mr-1"></i>선택해제
+      class="px-2 py-1.5 rounded-lg text-xs font-bold bg-gray-700 hover:bg-gray-600 transition-colors shrink-0 flex items-center gap-1"
+      title="선택 해제 (Esc)">
+      <i class="fas fa-times"></i><kbd class="text-gray-400 text-[9px] font-mono">Esc</kbd>
     </button>
   </div>`
 }
@@ -16844,27 +16855,152 @@ window.deleteShift = async (id, name) => {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 다중 선택 (드래그 + Ctrl/Shift 클릭) 시스템
+// 스케줄 그리드 CSS 스타일 주입 (한 번만)
 // ════════════════════════════════════════════════════════════════
-let _selectedCells = new Set()   // "empId_date" 키
-let _isDragging    = false
-let _dragStartKey  = null
-let _multiCode     = null        // 일괄 적용할 코드
+;(function injectSchedStyles() {
+  if (document.getElementById('sched-cell-styles')) return
+  const s = document.createElement('style')
+  s.id = 'sched-cell-styles'
+  s.textContent = `
+    /* 선택된 셀 - 엑셀 파란 테두리 */
+    td.sched-cell-selected {
+      outline: 2px solid #1d6bf3 !important;
+      outline-offset: -2px !important;
+      background-color: rgba(29,107,243,0.08) !important;
+      position: relative !important;
+      z-index: 5 !important;
+    }
+    /* 범위 내 셀 (드래그/Shift 선택) */
+    td.sched-cell-inrange {
+      outline: 1px solid #1d6bf3 !important;
+      outline-offset: -1px !important;
+      background-color: rgba(29,107,243,0.12) !important;
+      position: relative !important;
+      z-index: 4 !important;
+    }
+    /* 채우기 미리보기 */
+    td.sched-cell-fill-preview {
+      outline: 1px dashed #059669 !important;
+      outline-offset: -1px !important;
+      background-color: rgba(5,150,105,0.1) !important;
+    }
+    /* 복사된 셀 (점선 테두리) */
+    td.sched-cell-copied {
+      outline: 2px dashed #1d6bf3 !important;
+      outline-offset: -2px !important;
+    }
+    /* 채우기 핸들 (오른쪽 하단 작은 사각형) */
+    .sched-fill-handle {
+      position: absolute !important;
+      right: -1px !important;
+      bottom: -1px !important;
+      width: 7px !important;
+      height: 7px !important;
+      background: #1d6bf3 !important;
+      border: 1px solid white !important;
+      cursor: crosshair !important;
+      z-index: 10 !important;
+    }
+    /* 인라인 입력 셀 */
+    td.sched-cell-editing {
+      outline: 2px solid #1d6bf3 !important;
+      outline-offset: -2px !important;
+      z-index: 20 !important;
+    }
+  `
+  document.head.appendChild(s)
+})()
 
-// 선택 상태 셀 스타일 업데이트
+// ════════════════════════════════════════════════════════════════
+// 스케줄 그리드 - 엑셀 방식 선택 상태 관리
+// ════════════════════════════════════════════════════════════════
+let _selectedCells = new Set()   // "empId_date" 키 (현재 선택 범위)
+let _anchorKey     = null        // 범위 선택 시작점 (Shift 기준)
+let _isDragging    = false       // 셀 드래그 선택 중
+let _dragStartKey  = null        // 드래그 시작 키
+let _isFillDrag    = false       // 채우기 핸들 드래그 중
+let _fillSrcKey    = null        // 채우기 소스 셀 키
+let _multiCode     = null        // 툴바 일괄 적용 코드
+
+// ── 셀 DOM 조회 헬퍼 ──────────────────────────────────────────
+function _getCellEl(empId, date) {
+  return document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
+}
+function _parseKey(key) {
+  const parts = key.split('_')
+  return { empId: parts[0], date: parts.slice(1).join('_') }
+}
+
+// ── 선택 스타일 적용/해제 (CSS 클래스 기반) ──────────────────
 function updateCellSelectStyle(cell, selected) {
+  if (!cell) return
   if (selected) {
-    cell.style.outline = '2px solid #3b82f6'
-    cell.style.outlineOffset = '-2px'
-    cell.style.zIndex = '2'
+    cell.classList.add('sched-cell-selected')
+    cell.classList.remove('sched-cell-inrange')
   } else {
+    cell.classList.remove('sched-cell-selected', 'sched-cell-inrange', 'sched-cell-fill-preview')
     cell.style.outline = ''
     cell.style.outlineOffset = ''
     cell.style.zIndex = ''
   }
 }
 
-// 선택 툴바 업데이트
+// ── 범위 전체 스타일 적용 (앵커~현재 사이 모두 inrange) ───────
+function applyRangeStyle() {
+  // 먼저 모든 범위 스타일 초기화
+  document.querySelectorAll('td.sched-cell-selected, td.sched-cell-inrange').forEach(el => {
+    el.classList.remove('sched-cell-selected', 'sched-cell-inrange')
+    el.style.outline = ''
+    el.style.zIndex = ''
+  })
+  const keys = Array.from(_selectedCells)
+  if (keys.length === 0) return
+  if (keys.length === 1) {
+    const { empId, date } = _parseKey(keys[0])
+    const cell = _getCellEl(empId, date)
+    if (cell) cell.classList.add('sched-cell-selected')
+  } else {
+    keys.forEach((k, idx) => {
+      const { empId, date } = _parseKey(k)
+      const cell = _getCellEl(empId, date)
+      if (!cell) return
+      if (idx === 0 || k === _anchorKey) {
+        cell.classList.add('sched-cell-selected')
+      } else {
+        cell.classList.add('sched-cell-inrange')
+      }
+    })
+  }
+  schedShowFillHandle()
+}
+
+// ── 채우기 핸들 표시/숨김 ─────────────────────────────────────
+function schedShowFillHandle() {
+  // 기존 핸들 제거
+  document.querySelectorAll('.sched-fill-handle').forEach(el => el.remove())
+  if (_selectedCells.size === 0) return
+
+  // 마지막 선택 셀(가장 오른쪽)에 핸들 부착
+  const keys = Array.from(_selectedCells).sort()
+  const lastKey = keys[keys.length - 1]
+  const { empId, date } = _parseKey(lastKey)
+  const cell = _getCellEl(empId, date)
+  if (!cell) return
+
+  const handle = document.createElement('div')
+  handle.className = 'sched-fill-handle'
+  handle.title = '드래그: 자동 채우기'
+  handle.addEventListener('mousedown', (e) => {
+    e.stopPropagation()
+    e.preventDefault()
+    _isFillDrag = true
+    _fillSrcKey = lastKey
+    document.body.style.cursor = 'crosshair'
+  })
+  cell.appendChild(handle)
+}
+
+// ── 선택 툴바 업데이트 ────────────────────────────────────────
 function updateMultiSelectBar() {
   const bar = document.getElementById('multiSelectBar')
   const cnt = document.getElementById('multiSelectCount')
@@ -16872,21 +17008,47 @@ function updateMultiSelectBar() {
   const n = _selectedCells.size
   if (n === 0) { bar.classList.add('hidden'); return }
   bar.classList.remove('hidden')
-  cnt.textContent = `${n}개 선택됨`
+  const keys = Array.from(_selectedCells).sort()
+  // 선택 범위의 현재 코드 표시
+  const srcKey = keys[0]
+  const { empId: se, date: sd } = _parseKey(srcKey)
+  const srcCell = _getCellEl(se, sd)
+  const curCode = srcCell?.dataset?.shift || ''
+  cnt.textContent = n === 1
+    ? `${n}개 선택${curCode ? ` · [${curCode}]` : ''}`
+    : `${n}개 선택됨`
 
-  // 코드 버튼 갱신
+  // 코드 버튼 갱신 (처음 한 번만 렌더링)
   const codes = window._schedAllCodes || ['연','휴','오전','오후','경조','OT','-']
   const btnBox = document.getElementById('multiSelectCodeBtns')
   if (btnBox && !btnBox.dataset.built) {
     btnBox.dataset.built = '1'
+    const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
     btnBox.innerHTML = codes.filter(c=>c!=='-').map(c => {
       const sf = scheduleShifts.find(s=>s.shift_code===c)
-      const col = sf?.color || {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}[c] || '#374151'
-      return `<button onclick="setMultiCode('${c}')" id="mcb_${c}"
-        class="px-2 py-1 rounded text-xs font-bold border-2 transition-all"
-        style="background:${col}22;color:${col};border-color:${col}44">${c}</button>`
+      const col = sf?.color || colMap[c] || '#374151'
+      // 클릭 시 즉시 일괄 적용 (setMultiCode + applyMultiSelect 한번에)
+      return `<button onclick="applyCodeInstant('${c}')" id="mcb_${c}"
+        class="px-2 py-1 rounded text-xs font-bold border transition-all hover:scale-105"
+        style="background:${col}22;color:${col};border-color:${col}66;min-width:32px"
+        title="${c} 코드 즉시 적용">${c}</button>`
     }).join('')
   }
+  applyRangeStyle()
+}
+
+// 코드 버튼 클릭 → 즉시 일괄 적용 (별도 버튼 없이)
+window.applyCodeInstant = async (code) => {
+  if (_selectedCells.size === 0) { showToast('셀을 먼저 선택하세요', 'error'); return }
+  _multiCode = code
+  // 버튼 활성화 표시
+  document.querySelectorAll('#multiSelectCodeBtns button').forEach(b => {
+    const isActive = b.id === `mcb_${code}`
+    b.style.borderWidth = isActive ? '2px' : '1px'
+    b.style.transform   = isActive ? 'scale(1.1)' : 'scale(1)'
+    b.style.boxShadow   = isActive ? `0 0 0 2px ${b.style.color}44` : ''
+  })
+  await applyMultiSelect()
 }
 
 window.setMultiCode = (code) => {
@@ -16898,12 +17060,15 @@ window.setMultiCode = (code) => {
 }
 
 window.clearMultiSelection = () => {
-  _selectedCells.forEach(key => {
-    const [eid, dt] = key.split('_', 2)
-    const cell = document.querySelector(`td[data-empid="${eid}"][data-date="${dt}"]`)
-    if (cell) updateCellSelectStyle(cell, false)
+  // 모든 스케줄 셀 스타일 초기화
+  document.querySelectorAll('td.sched-cell-selected, td.sched-cell-inrange, td.sched-cell-copied, td.sched-cell-fill-preview').forEach(el => {
+    el.classList.remove('sched-cell-selected', 'sched-cell-inrange', 'sched-cell-copied', 'sched-cell-fill-preview')
+    el.style.outline = ''
+    el.style.zIndex = ''
   })
+  document.querySelectorAll('.sched-fill-handle').forEach(el => el.remove())
   _selectedCells.clear()
+  _anchorKey = null
   _multiCode = null
   const bar = document.getElementById('multiSelectBar')
   if (bar) bar.classList.add('hidden')
@@ -16952,53 +17117,49 @@ window.applyMultiSelect = async () => {
   clearMultiSelection()
 }
 
-// 셀 클릭 핸들러 (클릭: 단순 선택/해제, Ctrl/Shift: 다중선택)
+// ════════════════════════════════════════════════════════════════
+// 셀 클릭 핸들러 - 엑셀 방식
+// ════════════════════════════════════════════════════════════════
 window.schedCellClick = (event, empId, date, cell) => {
+  // 채우기 핸들 클릭이면 무시
+  if (event.target.classList.contains('sched-fill-handle')) return
+
+  const key = `${empId}_${date}`
+
   if (event.ctrlKey || event.metaKey) {
-    // Ctrl+클릭: 개별 토글
+    // ── Ctrl+클릭: 개별 추가/제거 ────────────────────────────
     event.preventDefault()
-    const key = `${empId}_${date}`
     if (_selectedCells.has(key)) {
       _selectedCells.delete(key)
-      updateCellSelectStyle(cell, false)
     } else {
       _selectedCells.add(key)
-      updateCellSelectStyle(cell, true)
+      if (!_anchorKey) _anchorKey = key
     }
+    applyRangeStyle()
     updateMultiSelectBar()
-  } else if (event.shiftKey && _selectedCells.size > 0) {
-    // Shift+클릭: 마지막 선택~현재까지 범위 선택 (같은 직원 행)
+
+  } else if (event.shiftKey && _anchorKey) {
+    // ── Shift+클릭: 앵커~현재 범위 선택 ─────────────────────
     event.preventDefault()
-    const keys = Array.from(_selectedCells)
-    const lastKey = keys[keys.length-1]
-    const [lastEmpId] = lastKey.split('_')
-    if (String(empId) === String(lastEmpId)) {
-      const lastDate = lastKey.slice(lastKey.indexOf('_')+1)
-      const days     = getDaysInMonth(App.currentYear, App.currentMonth)
-      const mm       = String(App.currentMonth).padStart(2,'0')
+    const { empId: aEmpId, date: aDate } = _parseKey(_anchorKey)
+    if (String(empId) === String(aEmpId)) {
+      const days = getDaysInMonth(App.currentYear, App.currentMonth)
+      const mm   = String(App.currentMonth).padStart(2,'0')
       const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
-      const i1 = allDates.indexOf(lastDate), i2 = allDates.indexOf(date)
+      const i1 = allDates.indexOf(aDate), i2 = allDates.indexOf(date)
       const [lo, hi] = [Math.min(i1,i2), Math.max(i1,i2)]
-      for (let i=lo; i<=hi; i++) {
-        const k = `${empId}_${allDates[i]}`
-        _selectedCells.add(k)
-        const c2 = document.querySelector(`td[data-empid="${empId}"][data-date="${allDates[i]}"]`)
-        if (c2) updateCellSelectStyle(c2, true)
-      }
+      _selectedCells.clear()
+      for (let i=lo; i<=hi; i++) _selectedCells.add(`${empId}_${allDates[i]}`)
+      applyRangeStyle()
       updateMultiSelectBar()
     }
-  } else if (_selectedCells.size > 0) {
-    // 선택 중에 다른 셀 단순 클릭 → 기존 선택 해제 후 새 셀 선택
-    clearMultiSelection()
-    const key = `${empId}_${date}`
-    _selectedCells.add(key)
-    updateCellSelectStyle(cell, true)
-    updateMultiSelectBar()
+
   } else {
-    // 빈 상태에서 단순 클릭 → 해당 셀 선택
-    const key = `${empId}_${date}`
+    // ── 일반 클릭: 단일 셀 선택 ──────────────────────────────
+    clearMultiSelection()
     _selectedCells.add(key)
-    updateCellSelectStyle(cell, true)
+    _anchorKey = key
+    applyRangeStyle()
     updateMultiSelectBar()
   }
 }
@@ -17125,12 +17286,29 @@ window.schedCopyCells = () => {
   _copiedCellData = { entries }
 
   // 단일 셀이면 코드만 저장 (단순 붙여넣기용)
-  const uniqueCodes = [...new Set(entries.map(e => e.code).filter(c => c && c !== '-'))]
   const singleCode = entries.length === 1 ? entries[0].code : null
+
+  // 복사된 셀에 점선 테두리 표시 (엑셀 복사 효과)
+  document.querySelectorAll('td.sched-cell-copied').forEach(el => el.classList.remove('sched-cell-copied'))
+  entries.forEach(({ empId, date }) => {
+    const cell = _getCellEl(empId, date)
+    if (cell) cell.classList.add('sched-cell-copied')
+  })
+
+  // 붙여넣기 버튼 강조
+  const pasteBtn = document.getElementById('multiSelectPasteBtn')
+  if (pasteBtn) {
+    pasteBtn.classList.remove('bg-green-700')
+    pasteBtn.classList.add('bg-green-500')
+    setTimeout(() => {
+      pasteBtn.classList.add('bg-green-700')
+      pasteBtn.classList.remove('bg-green-500')
+    }, 2000)
+  }
 
   // 시각 피드백
   const n = entries.length
-  showToast(`${n}개 셀 복사됨${singleCode ? ` (${singleCode})` : ''} · Ctrl+V로 붙여넣기`, 'info')
+  showToast(`${n}개 셀 복사됨${singleCode ? ` [${singleCode}]` : ''} · 붙여넣을 셀 선택 후 Ctrl+V`, 'info')
 }
 
 // ────────────────────────────────────────────────────────────
@@ -17208,57 +17386,142 @@ window.schedDeleteCells = async () => {
   clearMultiSelection()
 }
 
-// 드래그 선택
+// ════════════════════════════════════════════════════════════════
+// 마우스 드래그 - 셀 범위 선택 / 채우기 핸들 자동채우기
+// ════════════════════════════════════════════════════════════════
 window.schedDragStart = (event, empId, date, cell) => {
-  if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return
-  // 선택이 이미 있으면 무시 (Ctrl 클릭 모드 우선)
-  if (_selectedCells.size > 0) return
+  if (event.button !== 0) return
+  if (event.ctrlKey || event.metaKey || event.shiftKey) return
+  // 채우기 핸들 클릭이면 무시 (핸들 자체에서 처리)
+  if (event.target.classList.contains('sched-fill-handle')) return
+
+  event.preventDefault()
   _isDragging = true
   _dragStartKey = `${empId}_${date}`
-  // 단일 선택 시작
+  // 기존 선택 해제 후 드래그 시작 셀만 선택
+  clearMultiSelection()
   _selectedCells.add(_dragStartKey)
-  updateCellSelectStyle(cell, true)
+  _anchorKey = _dragStartKey
+  applyRangeStyle()
   updateMultiSelectBar()
-  event.preventDefault()
 }
 
 window.schedDragMove = (event, empId, date, cell) => {
+  // ── 채우기 핸들 드래그 ────────────────────────────────────
+  if (_isFillDrag && _fillSrcKey) {
+    event.preventDefault()
+    const { empId: srcEmpId } = _parseKey(_fillSrcKey)
+    if (String(empId) !== String(srcEmpId)) return  // 같은 행만
+
+    const days = getDaysInMonth(App.currentYear, App.currentMonth)
+    const mm   = String(App.currentMonth).padStart(2,'0')
+    const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
+
+    // 소스 셀들의 범위 (현재 선택)
+    const srcKeys = Array.from(_selectedCells).sort()
+    const lastSrcIdx = allDates.indexOf(_parseKey(srcKeys[srcKeys.length-1]).date)
+    const targetIdx  = allDates.indexOf(date)
+
+    // 채우기 미리보기: 소스 이후 ~ 대상까지
+    document.querySelectorAll('td.sched-cell-fill-preview').forEach(el => el.classList.remove('sched-cell-fill-preview'))
+    if (targetIdx > lastSrcIdx) {
+      for (let i = lastSrcIdx+1; i <= targetIdx; i++) {
+        const c = _getCellEl(srcEmpId, allDates[i])
+        if (c) c.classList.add('sched-cell-fill-preview')
+      }
+    }
+    return
+  }
+
+  // ── 일반 셀 범위 드래그 선택 ─────────────────────────────
   if (!_isDragging || !_dragStartKey) return
-  const [startEmpId, ...startDateParts] = _dragStartKey.split('_')
-  const startDate = startDateParts.join('_')
-  // 같은 행(직원)만 드래그 지원
-  if (String(empId) !== String(startEmpId)) return
+  const { empId: startEmpId, date: startDate } = _parseKey(_dragStartKey)
+  if (String(empId) !== String(startEmpId)) return  // 같은 행만
+
   const days   = getDaysInMonth(App.currentYear, App.currentMonth)
   const mm     = String(App.currentMonth).padStart(2,'0')
   const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
   const i1 = allDates.indexOf(startDate), i2 = allDates.indexOf(date)
   const [lo, hi] = [Math.min(i1,i2), Math.max(i1,i2)]
-  // 기존 드래그 선택 초기화 후 재설정
-  _selectedCells.forEach(k => {
-    const [eid, ...dp] = k.split('_')
-    if (String(eid) === String(startEmpId)) {
-      const c2 = document.querySelector(`td[data-empid="${eid}"][data-date="${dp.join('_')}"]`)
-      if (c2) updateCellSelectStyle(c2, false)
-      _selectedCells.delete(k)
-    }
-  })
-  for (let i=lo; i<=hi; i++) {
-    const k = `${startEmpId}_${allDates[i]}`
-    _selectedCells.add(k)
-    const c2 = document.querySelector(`td[data-empid="${startEmpId}"][data-date="${allDates[i]}"]`)
-    if (c2) updateCellSelectStyle(c2, true)
-  }
+
+  _selectedCells.clear()
+  for (let i=lo; i<=hi; i++) _selectedCells.add(`${startEmpId}_${allDates[i]}`)
+  applyRangeStyle()
   updateMultiSelectBar()
 }
 
-window.schedDragEnd = (event) => {
+window.schedDragEnd = async (event) => {
+  document.body.style.cursor = ''
+
+  // ── 채우기 핸들 드래그 완료 → 자동채우기 적용 ────────────
+  if (_isFillDrag && _fillSrcKey) {
+    _isFillDrag = false
+
+    // 소스 코드 수집 (선택된 셀들)
+    const srcKeys  = Array.from(_selectedCells).sort()
+    const srcCodes = srcKeys.map(k => {
+      const { empId, date } = _parseKey(k)
+      return _getCellEl(empId, date)?.dataset?.shift || ''
+    })
+
+    // 미리보기 셀들 찾기
+    const previewCells = document.querySelectorAll('td.sched-cell-fill-preview')
+    if (previewCells.length > 0) {
+      const items = []
+      let codeIdx = 0
+      for (const pCell of previewCells) {
+        const pEmpId = pCell.dataset.empid
+        const pDate  = pCell.dataset.date
+        // 소스 코드 순환 적용 (단일이면 동일 코드 반복, 다중이면 패턴 반복)
+        const fillCode = srcCodes[codeIdx % srcCodes.length] || ''
+        codeIdx++
+        pCell.classList.remove('sched-cell-fill-preview')
+        await schedApplyCodeToCell(pEmpId, pDate, pCell, fillCode || '-')
+        items.push(`${pEmpId}_${pDate}`)
+      }
+      showToast(`${items.length}개 셀 자동채우기 완료`, 'success')
+    }
+
+    _fillSrcKey = null
+    document.querySelectorAll('td.sched-cell-fill-preview').forEach(el => el.classList.remove('sched-cell-fill-preview'))
+    return
+  }
+
+  // ── 일반 드래그 선택 완료 → 엑셀처럼 소스 셀 코드를 범위 전체에 자동 채움 ────
   if (!_isDragging) return
   _isDragging = false
-  // 드래그 선택 완료 → 선택 범위 유지하고 툴바 표시
-  // (자동 코드 적용 없음 — 사용자가 더블클릭 입력 or Ctrl+V 붙여넣기로 직접 처리)
-  if (_selectedCells.size >= 1) {
-    updateMultiSelectBar()
+
+  const srcKey = _dragStartKey
+  _dragStartKey = null
+
+  // 드래그 범위가 2개 이상이면 소스 셀 코드를 전체 범위에 자동 적용 (엑셀 드래그 채우기)
+  if (_selectedCells.size > 1 && srcKey) {
+    const { empId: srcEmpId, date: srcDate } = _parseKey(srcKey)
+    const srcCell = _getCellEl(srcEmpId, srcDate)
+    const srcCode = srcCell?.dataset?.shift || ''
+
+    if (srcCode && srcCode !== '-') {
+      // 소스 셀 제외한 나머지 셀에 소스 코드 적용
+      const allKeys = Array.from(_selectedCells).sort()
+      const otherKeys = allKeys.filter(k => k !== srcKey)
+      const items = []
+      for (const k of otherKeys) {
+        const { empId, date } = _parseKey(k)
+        const cell = _getCellEl(empId, date)
+        if (cell) {
+          await schedApplyCodeToCell(empId, date, cell, srcCode)
+          items.push(k)
+        }
+      }
+      if (items.length > 0) {
+        showToast(`${items.length}개 셀에 [${srcCode}] 채우기 완료`, 'success')
+      }
+    }
   }
+
+  // 선택 범위 유지 + 툴바 표시
+  applyRangeStyle()
+  updateMultiSelectBar()
 }
 
 // ────────────────────────────────────────────────────────────

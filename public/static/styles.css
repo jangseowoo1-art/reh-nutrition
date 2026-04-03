@@ -742,3 +742,84 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   }
 }
 
+/* ════════════════════════════════════════
+   스케줄 그리드 - 엑셀 방식 선택/채우기
+   ════════════════════════════════════════ */
+
+/* 선택된 단일 셀 (파란 테두리) */
+td.sched-cell-selected {
+  outline: 2px solid #1d6fea !important;
+  outline-offset: -2px !important;
+  z-index: 3 !important;
+  position: relative !important;
+}
+
+/* 범위 선택 영역 (연한 파랑 배경) */
+td.sched-cell-inrange {
+  background-color: rgba(29, 111, 234, 0.10) !important;
+  outline: 1px solid rgba(29, 111, 234, 0.35) !important;
+  outline-offset: -1px !important;
+  z-index: 2 !important;
+  position: relative !important;
+}
+
+/* 범위의 경계 셀 (왼쪽/오른쪽 끝) */
+td.sched-cell-range-start {
+  outline-left: 2px solid #1d6fea !important;
+}
+td.sched-cell-range-end {
+  outline-right: 2px solid #1d6fea !important;
+}
+
+/* 채우기 핸들 (우하단 파란 점) */
+.sched-fill-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  background: #1d6fea;
+  border: 1.5px solid white;
+  border-radius: 1px;
+  cursor: crosshair;
+  z-index: 10;
+  box-shadow: 0 0 0 1px rgba(29,111,234,0.4);
+}
+.sched-fill-handle:hover {
+  transform: scale(1.3);
+  background: #1558c7;
+}
+
+/* 채우기 드래그 중 미리보기 오버레이 */
+td.sched-cell-fill-preview {
+  background-color: rgba(29, 111, 234, 0.18) !important;
+  outline: 1px dashed #1d6fea !important;
+  outline-offset: -1px !important;
+  z-index: 2 !important;
+}
+
+/* 복사 상태 (점선 테두리) */
+td.sched-cell-copied {
+  outline: 2px dashed #1d6fea !important;
+  outline-offset: -2px !important;
+  animation: sched-copy-blink 1.2s ease-in-out infinite;
+}
+@keyframes sched-copy-blink {
+  0%, 100% { outline-color: #1d6fea; }
+  50%       { outline-color: rgba(29,111,234,0.3); }
+}
+
+/* 인라인 입력 */
+input.sched-inline-input {
+  width: 30px !important;
+  height: 26px !important;
+  border: 2px solid #1d6fea !important;
+  border-radius: 3px !important;
+  text-align: center !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  background: white !important;
+  color: #1f2937 !important;
+  outline: none !important;
+  padding: 0 !important;
+}
