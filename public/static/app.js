@@ -13523,7 +13523,7 @@ function renderMonthlyScheduleTab() {
     </button>
 
     <!-- 실행 취소 (Ctrl+Z) -->
-    <button onclick="schedUndo()"
+    <button id="schedUndoBtn" onclick="schedUndo()"
       class="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-700 hover:bg-amber-600 transition-colors shrink-0 flex items-center gap-1"
       title="실행 취소 (Ctrl+Z)">
       <i class="fas fa-undo"></i><span>취소</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">Z</kbd>
@@ -17067,9 +17067,9 @@ window.setMultiCode = (code) => {
 }
 
 window.clearMultiSelection = () => {
-  // 모든 스케줄 셀 스타일 초기화
-  document.querySelectorAll('td.sched-cell-selected, td.sched-cell-inrange, td.sched-cell-copied, td.sched-cell-fill-preview').forEach(el => {
-    el.classList.remove('sched-cell-selected', 'sched-cell-inrange', 'sched-cell-copied', 'sched-cell-fill-preview')
+  // 선택/범위 스타일 초기화 (복사 점선 sched-cell-copied는 유지 — 붙여넣기 위치 표시)
+  document.querySelectorAll('td.sched-cell-selected, td.sched-cell-inrange, td.sched-cell-fill-preview').forEach(el => {
+    el.classList.remove('sched-cell-selected', 'sched-cell-inrange', 'sched-cell-fill-preview')
     el.style.outline = ''
     el.style.zIndex = ''
   })
@@ -17081,6 +17081,15 @@ window.clearMultiSelection = () => {
   if (bar) bar.classList.add('hidden')
   const btnBox = document.getElementById('multiSelectCodeBtns')
   if (btnBox) delete btnBox.dataset.built
+}
+
+// 복사 버퍼 완전 초기화 (붙여넣기 완료 후 호출)
+function _clearCopyBuffer() {
+  _copiedCellData = null
+  document.querySelectorAll('td.sched-cell-copied').forEach(el => {
+    el.classList.remove('sched-cell-copied')
+    el.style.outline = ''
+  })
 }
 
 window.applyMultiSelect = async () => {
@@ -17295,31 +17304,41 @@ window.schedCellDblClick = (event, empId, date, cell) => {
 }
 
 // ════════════════════════════════════════════════════════════════
-// Undo 스택 (Ctrl+Z)
+// Undo 스택 (Ctrl+Z) — window에 붙여 전역 접근 보장
 // ════════════════════════════════════════════════════════════════
-const _undoStack = []       // [ { items:[{empId,date,oldCode,newCode},...] }, ... ]
-const UNDO_LIMIT = 50       // 최대 50단계
+window._undoStack = []      // [ { items:[{empId,date,oldCode,newCode},...] }, ... ]
+const UNDO_LIMIT  = 50
 
 function _undoPushBatch(items) {
-  // items: [{empId, date, oldCode, newCode}, ...]
   if (!items || items.length === 0) return
-  _undoStack.push({ items: items.map(i => ({ ...i })) })
-  if (_undoStack.length > UNDO_LIMIT) _undoStack.shift()
+  window._undoStack.push({ items: items.map(i => ({ ...i })) })
+  if (window._undoStack.length > UNDO_LIMIT) window._undoStack.shift()
+  // undo 가능 상태 툴바 표시
+  _syncUndoBtn()
+}
+
+function _syncUndoBtn() {
+  const btn = document.getElementById('schedUndoBtn')
+  if (!btn) return
+  const has = window._undoStack.length > 0
+  btn.disabled = !has
+  btn.title = has ? `실행취소 (${window._undoStack.length}단계 남음) Ctrl+Z` : '취소할 작업 없음'
+  btn.style.opacity = has ? '1' : '0.4'
 }
 
 window.schedUndo = async () => {
-  if (_undoStack.length === 0) { showToast('더 이상 취소할 작업이 없습니다', 'info'); return }
-  const batch = _undoStack.pop()
-  const restoreItems = []
+  if (window._undoStack.length === 0) {
+    showToast('취소할 작업이 없습니다', 'info')
+    return
+  }
+  const batch = window._undoStack.pop()
+  _syncUndoBtn()
   for (const { empId, date, oldCode } of batch.items) {
     const cell = _getCellEl(empId, date)
     if (!cell) continue
-    // Undo 스택에 다시 push하지 않도록 플래그
     await _applyCodeNoPush(empId, date, cell, oldCode || '-')
-    restoreItems.push({ empId, date, code: oldCode })
   }
-  showToast(`↩ ${batch.items.length}개 셀 실행취소`, 'info')
-  // 복원된 셀 재선택
+  showToast(`↩ ${batch.items.length}개 셀 실행취소 (남은단계: ${window._undoStack.length})`, 'info')
   clearMultiSelection()
   batch.items.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
   if (batch.items.length > 0) _anchorKey = `${batch.items[0].empId}_${batch.items[0].date}`
@@ -17423,7 +17442,12 @@ window.schedCopyCells = () => {
 // ────────────────────────────────────────────────────────────
 window.schedPasteCells = async () => {
   if (!_copiedCellData) { showToast('먼저 셀을 복사(Ctrl+C)하세요', 'error'); return }
-  if (_selectedCells.size === 0) { showToast('붙여넣을 셀을 선택하세요', 'error'); return }
+
+  // 선택 셀이 없으면 → 앵커(마지막 선택 위치) 기준으로 붙여넣기
+  if (_selectedCells.size === 0) {
+    if (!_anchorKey) { showToast('붙여넣을 위치의 셀을 클릭하세요', 'error'); return }
+    _selectedCells.add(_anchorKey)
+  }
 
   const { entries: srcEntries } = _copiedCellData
   const dstKeys = Array.from(_selectedCells).sort()
@@ -17455,6 +17479,7 @@ window.schedPasteCells = async () => {
   if (batchItems.length === 0) return
   await schedApplyBatch(batchItems)
   showToast(`${batchItems.length}개 셀에 붙여넣기 완료 (Ctrl+Z 취소 가능)`, 'success')
+  _clearCopyBuffer()   // 붙여넣기 완료 → 복사 점선 제거
   // 붙여넣은 셀 선택 유지
   clearMultiSelection()
   batchItems.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
@@ -17613,44 +17638,47 @@ window.schedDragEnd = async (event) => {
 let _copiedCellData = null   // { code, rows: [ [code,...], ... ] } 복사 버퍼
 
 document.addEventListener('keydown', (e) => {
-  // input/textarea/select에서 온 이벤트는 대부분 무시 (단, ESC·Ctrl+Z는 통과)
   const inInput = e.target.matches('input,textarea,select')
 
-  // ESC: 선택 해제
-  if (e.key === 'Escape' && _selectedCells.size > 0) { clearMultiSelection(); return }
-
-  // ── Ctrl+Z / Cmd+Z : 실행 취소 ───────────────────────────
-  // input 안이든, 스케줄 탭이 아니든 무조건 동작
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-    if (_undoStack.length > 0) {          // undo 스택이 있을 때만 가로챔
+  // ── 1순위: Ctrl+Z — 탭/input 조건 완전 무시, 항상 최우선 처리 ──
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    if (window._undoStack && window._undoStack.length > 0) {
       e.preventDefault()
-      schedUndo()
+      e.stopPropagation()
+      window.schedUndo()
     }
     return
   }
 
+  // ESC: 선택 해제
+  if (e.key === 'Escape' && _selectedCells.size > 0) { clearMultiSelection(); return }
+
   // 스케줄 탭 외에서는 이하 단축키 동작 안 함
   if (scheduleTab !== 'schedule') return
 
-  // ── input 안에 있으면 이하 스케줄 단축키 무시 ────────────
+  // input 안에 있으면 이하 스케줄 단축키 무시
   if (inInput) return
 
-  // 선택된 셀 없으면 이하 단축키 무시
-  if (_selectedCells.size === 0) return
-
-  // Ctrl+C / Cmd+C : 복사
+  // ── Ctrl+C : 복사 (선택 셀 없어도 복사 버퍼 유지) ──────────
   if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-    e.preventDefault()
-    schedCopyCells()
+    if (_selectedCells.size > 0) {
+      e.preventDefault()
+      schedCopyCells()
+    }
     return
   }
 
-  // Ctrl+V / Cmd+V : 붙여넣기
+  // ── Ctrl+V : 붙여넣기 (복사 버퍼 있으면 선택 셀 없어도 동작) ──
   if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-    e.preventDefault()
-    schedPasteCells()
+    if (_copiedCellData) {   // 복사 버퍼가 있으면 무조건 시도
+      e.preventDefault()
+      schedPasteCells()
+    }
     return
   }
+
+  // 이하는 선택된 셀이 있어야 동작
+  if (_selectedCells.size === 0) return
 
   // Delete / Backspace : 선택 셀 초기화
   if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -17659,26 +17687,20 @@ document.addEventListener('keydown', (e) => {
     return
   }
 
-  // ── 바로 타이핑 입력: 영문/숫자/한글 키 입력 시 즉시 편집 모드 진입 ──
-  // Ctrl/Meta/Alt/Function 키 조합은 무시
+  // ── 바로 타이핑 입력 ──────────────────────────────────────
   if (e.ctrlKey || e.metaKey || e.altKey) return
-  // 특수키 무시 (화살표, F1~F12, Tab, Enter, Home, End 등)
   const ignoreKeys = new Set(['Tab','Enter','ArrowLeft','ArrowRight','ArrowUp','ArrowDown',
     'Home','End','PageUp','PageDown','CapsLock','Shift','Control','Alt','Meta',
     'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'])
   if (ignoreKeys.has(e.key)) return
-  // 출력 가능 문자(1글자) 또는 한글 조합 중인 경우 → 편집 모드 진입
   if (e.key.length === 1 || e.isComposing) {
-    // 첫 번째 선택 셀(앵커)에 인라인 입력창 열기
     const targetKey = _anchorKey || Array.from(_selectedCells)[0]
     if (!targetKey) return
     const { empId, date } = _parseKey(targetKey)
     const cell = _getCellEl(empId, date)
     if (!cell) return
-    // 이미 입력창 열려있으면 무시
     if (cell.querySelector('input.sched-inline-input')) return
     e.preventDefault()
-    // 입력창 열고 첫 글자를 미리 채움
     _openInlineInput(empId, date, cell, e.key === '-' ? '' : e.key)
     return
   }
