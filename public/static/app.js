@@ -2145,9 +2145,12 @@ async function renderOrders() {
   window._catDailyOrders = (catOrderData?.dailyByVendorCat) || []  // 실제 카테고리 발주 데이터
   window._catTodayMeals = catOrderData?.todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 }
   window._catPrevSettings = catOrderData?.prevSettings || []
-  // 발주 페이지에서 직접 접근 시 catDietPricesData 초기화 (대시보드 미방문 대비)
-  if (!window._catDietPricesData || window._catDietPricesData.length === 0) {
-    window._catDietPricesData = dashData?.catDietPrices || []
+  // 발주 페이지 로드 시 항상 최신 dashData로 catDietPricesData 갱신
+  // (대시보드에서 다른 병원을 보다가 넘어온 경우 stale 데이터 방지)
+  if (dashData?.catDietPrices && dashData.catDietPrices.length > 0) {
+    window._catDietPricesData = dashData.catDietPrices
+  } else if (!window._catDietPricesData || window._catDietPricesData.length === 0) {
+    window._catDietPricesData = []
   }
 
   // API 응답 구조: { orders: [...], multidaySettings: [...] } 또는 하위호환 배열
@@ -6342,52 +6345,53 @@ function updateInsightPanel() {
   const vendorShareEl = document.getElementById('vendorShareContent')
   const vendorShareDonutCanvas = document.getElementById('vendorShareDonut')
   if ((vendorShareEl || vendorShareDonutCanvas) && vendors.length > 0) {
-    // 업체별 발주 합계 (현재 입력값 + 저장된 데이터 병합)
+    // 업체별 발주 합계 - 항상 _catDailyMap/_ordersData 기반으로 집계 (DOM 직접 읽기 금지)
+    // DOM의 숨겨진 input까지 합산하는 이중집계 문제 방지
     const vendorTotals = {}
     vendors.forEach(v => { vendorTotals[v.id] = 0 })
 
-    // 1) 화면 입력값 집계
     if (hasCats) {
-      document.querySelectorAll('.cat-order-input').forEach(inp => {
-        const vid = parseInt(inp.dataset.vendor)
-        const field = inp.dataset.field
-        const val = parseOrderVal(inp.value)
-        if (vid && vendorTotals[vid] !== undefined) {
-          if (field === 'taxable') vendorTotals[vid] += val + Math.round(val * 0.1)
-          else vendorTotals[vid] += val
-        }
-      })
-    } else {
-      document.querySelectorAll('.order-input').forEach(inp => {
-        const vid = parseInt(inp.dataset.vendor)
-        if (vid && vendorTotals[vid] !== undefined) {
-          if (inp.dataset.type === 'taxable') {
-            const val = parseOrderVal(inp.value)
-            vendorTotals[vid] += val + Math.round(val * 0.1)
-          } else {
-            vendorTotals[vid] += parseOrderVal(inp.value)
-          }
-        }
-      })
-    }
-
-    // 2) 입력값이 없으면 저장된 데이터(_ordersData / _catDailyOrders) 사용
-    const liveGrand = Object.values(vendorTotals).reduce((a,b)=>a+b,0)
-    if (liveGrand === 0) {
-      if (hasCats) {
-        ;(window._catDailyOrders || []).forEach(r => {
-          if (vendorTotals[r.vendor_id] !== undefined) {
-            vendorTotals[r.vendor_id] += r.total || 0
+      // 카테고리 모드: _catDailyMap 기반 집계 (저장된 데이터 = 정확한 값)
+      const catDmapIns = window._catDailyMap || {}
+      Object.values(catDmapIns).forEach(vMap => {
+        Object.entries(vMap).forEach(([vid, cMap]) => {
+          const vInt = parseInt(vid)
+          if (vendorTotals[vInt] !== undefined) {
+            Object.values(cMap).forEach(r => { vendorTotals[vInt] += r.total || 0 })
           }
         })
-      } else {
-        ;(window._ordersData || []).forEach(o => {
-          if (vendorTotals[o.vendor_id] !== undefined) {
-            vendorTotals[o.vendor_id] += o.total_amount || 0
-          }
-        })
+      })
+      // NULL 카테고리 발주도 업체별로 반영 (_ordersData에서 patient_category_id=null인 것)
+      ;(window._ordersData || []).forEach(o => {
+        if (o.patient_category_id != null) return
+        const vInt = parseInt(o.vendor_id)
+        if (vendorTotals[vInt] !== undefined) vendorTotals[vInt] += o.total_amount || 0
+      })
+      // 현재 편집 중인 쌍만 DOM 값으로 교체
+      const aepIns = window._activeEditPair
+      if (aepIns) {
+        const savedInsAmt = ((catDmapIns[aepIns.date]||{})[aepIns.vendorId]||{})[aepIns.catId]?.total || 0
+        const tbodyIns = document.getElementById('ordersTbody')
+        const selIns = `.cat-order-input[data-vendor="${aepIns.vendorId}"][data-category="${aepIns.catId}"][data-date="${aepIns.date}"]`
+        const txIns = parseOrderVal(tbodyIns?.querySelector(`${selIns}[data-field="taxable"]`)?.value)
+        const exIns = parseOrderVal(tbodyIns?.querySelector(`${selIns}[data-field="exempt"]`)?.value)
+        const totIns = parseOrderVal(tbodyIns?.querySelector(`${selIns}[data-field="total"]`)?.value)
+        const domAmtIns = txIns > 0 || exIns > 0 ? txIns + Math.round(txIns*0.1) + exIns : totIns
+        if (vendorTotals[aepIns.vendorId] !== undefined) vendorTotals[aepIns.vendorId] += domAmtIns - savedInsAmt
       }
+    } else {
+      // 일반 모드: _ordersData 기반 집계
+      ;(window._ordersData || []).forEach(o => {
+        const vInt = parseInt(o.vendor_id)
+        if (vendorTotals[vInt] !== undefined) vendorTotals[vInt] += o.total_amount || 0
+      })
     }
+    // 법인카드형 업체 월 합계 추가
+    vendors.filter(v => v.is_card_type).forEach(v => {
+      if (window._cardDailyMap?.[v.id]) {
+        Object.values(window._cardDailyMap[v.id]).forEach(amt => { vendorTotals[v.id] += amt || 0 })
+      }
+    })
     const grandV = Object.values(vendorTotals).reduce((a,b)=>a+b,0)
     const vendorColors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#84cc16','#ec4899','#f97316','#14b8a6']
 
