@@ -17613,24 +17613,27 @@ window.schedDragEnd = async (event) => {
 let _copiedCellData = null   // { code, rows: [ [code,...], ... ] } 복사 버퍼
 
 document.addEventListener('keydown', (e) => {
-  // input/textarea/select에서 온 이벤트는 대부분 무시 (단, ESC는 통과)
+  // input/textarea/select에서 온 이벤트는 대부분 무시 (단, ESC·Ctrl+Z는 통과)
   const inInput = e.target.matches('input,textarea,select')
 
   // ESC: 선택 해제
   if (e.key === 'Escape' && _selectedCells.size > 0) { clearMultiSelection(); return }
 
-  // 스케줄 탭 외에서는 동작 안 함
+  // ── Ctrl+Z / Cmd+Z : 실행 취소 ───────────────────────────
+  // input 안이든, 스케줄 탭이 아니든 무조건 동작
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    if (_undoStack.length > 0) {          // undo 스택이 있을 때만 가로챔
+      e.preventDefault()
+      schedUndo()
+    }
+    return
+  }
+
+  // 스케줄 탭 외에서는 이하 단축키 동작 안 함
   if (scheduleTab !== 'schedule') return
 
   // ── input 안에 있으면 이하 스케줄 단축키 무시 ────────────
   if (inInput) return
-
-  // Ctrl+Z / Cmd+Z : 실행 취소
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-    e.preventDefault()
-    schedUndo()
-    return
-  }
 
   // 선택된 셀 없으면 이하 단축키 무시
   if (_selectedCells.size === 0) return
