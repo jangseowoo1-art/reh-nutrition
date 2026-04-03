@@ -12401,10 +12401,10 @@ function renderScheduleTab(content) {
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
               <i class="fas fa-cog mr-1"></i>단가
             </button>` : ''}
-            ${isAdm ? `
+            ${(isAdm || App.role === 'hospital') ? `
             <button onclick="openWorkSettingsModal()"
-              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-gray-500 text-white hover:bg-gray-600" title="법정근무시간 설정">
-              <i class="fas fa-shield-alt mr-1"></i>근무시간
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-gray-500 text-white hover:bg-gray-600" title="근무 환경 설정 (휴무패턴·법정근무시간)">
+              <i class="fas fa-sliders-h mr-1"></i>근무설정
             </button>` : ''}
           </div>
 
@@ -13093,7 +13093,7 @@ function renderMonthlyScheduleTab() {
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h3 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h3>
-          <p class="text-xs text-gray-400 mt-0.5">클릭: 코드순환 &nbsp;|&nbsp; 더블클릭: 직접입력 &nbsp;|&nbsp; 드래그: 범위선택 &nbsp;|&nbsp; Ctrl+클릭: 개별선택 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; 우클릭: 상세입력</p>
+          <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">더블클릭: 직접입력</span> &nbsp;|&nbsp; 드래그: 범위선택 &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; 우클릭: 상세입력</p>
         </div>
         <div class="flex gap-2 flex-wrap items-center">
           <!-- 근무코드 범례 -->
@@ -16952,7 +16952,7 @@ window.applyMultiSelect = async () => {
   clearMultiSelection()
 }
 
-// 셀 클릭 핸들러 (Ctrl/Shift 다중선택 vs 일반 클릭)
+// 셀 클릭 핸들러 (클릭: 단순 선택/해제, Ctrl/Shift: 다중선택)
 window.schedCellClick = (event, empId, date, cell) => {
   if (event.ctrlKey || event.metaKey) {
     // Ctrl+클릭: 개별 토글
@@ -16988,11 +16988,18 @@ window.schedCellClick = (event, empId, date, cell) => {
       updateMultiSelectBar()
     }
   } else if (_selectedCells.size > 0) {
-    // 선택 중에 일반 클릭 → 선택 해제
+    // 선택 중에 다른 셀 단순 클릭 → 기존 선택 해제 후 새 셀 선택
     clearMultiSelection()
-    schedCycleShift(empId, date, cell, null)
+    const key = `${empId}_${date}`
+    _selectedCells.add(key)
+    updateCellSelectStyle(cell, true)
+    updateMultiSelectBar()
   } else {
-    schedCycleShift(empId, date, cell, null)
+    // 빈 상태에서 단순 클릭 → 해당 셀 선택
+    const key = `${empId}_${date}`
+    _selectedCells.add(key)
+    updateCellSelectStyle(cell, true)
+    updateMultiSelectBar()
   }
 }
 
@@ -17247,25 +17254,10 @@ window.schedDragMove = (event, empId, date, cell) => {
 window.schedDragEnd = (event) => {
   if (!_isDragging) return
   _isDragging = false
-  // 1개만 선택됐으면 드래그 아닌 일반 클릭으로 처리 (선택 해제)
-  if (_selectedCells.size === 1) {
-    clearMultiSelection()
-    // schedCycleShift는 onclick(schedCellClick)에서 이미 처리됨
-  } else if (_selectedCells.size > 1 && _dragStartKey) {
-    // 드래그 시작 셀에 코드가 있으면 드래그 복사 실행
-    const [startEmpId, ...startDateParts] = _dragStartKey.split('_')
-    const startDate = startDateParts.join('_')
-    const startCell = document.querySelector(`td[data-empid="${startEmpId}"][data-date="${startDate}"]`)
-    const startCode = startCell?.dataset?.shift || ''
-    if (startCode && startCode !== '-' && startCode !== '') {
-      // 드래그 복사: 시작 셀 코드를 모든 선택 셀에 적용
-      _multiCode = startCode
-      // 코드 버튼 표시를 위해 툴바 업데이트
-      updateMultiSelectBar()
-      // 자동 적용 (드래그-복사)
-      applyMultiSelect()
-    }
-    // 코드 없으면 툴바 유지하여 수동 선택
+  // 드래그 선택 완료 → 선택 범위 유지하고 툴바 표시
+  // (자동 코드 적용 없음 — 사용자가 더블클릭 입력 or Ctrl+V 붙여넣기로 직접 처리)
+  if (_selectedCells.size >= 1) {
+    updateMultiSelectBar()
   }
 }
 
