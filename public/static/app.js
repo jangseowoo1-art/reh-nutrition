@@ -13600,7 +13600,7 @@ function renderMonthlyScheduleTab() {
     <div class="w-px h-5 bg-gray-600 shrink-0"></div>
 
     <!-- Ctrl+C 복사 -->
-    <button onclick="schedCopyCells()"
+    <button id="toolbar-copy-btn" onclick="schedCopyCells()"
       class="px-3 py-1.5 rounded-lg text-xs font-bold bg-teal-700 hover:bg-teal-600 transition-colors shrink-0 flex items-center gap-1"
       title="선택 셀 복사 (Ctrl+C)">
       <i class="fas fa-copy"></i><span>복사</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">C</kbd>
@@ -13615,7 +13615,7 @@ function renderMonthlyScheduleTab() {
     <div class="w-px h-5 bg-gray-600 shrink-0"></div>
 
     <!-- 삭제 -->
-    <button onclick="schedDeleteCells()"
+    <button id="toolbar-del-btn" onclick="schedDeleteCells()"
       class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-700 hover:bg-red-600 transition-colors shrink-0 flex items-center gap-1"
       title="선택 셀 삭제 (Delete/Backspace)">
       <i class="fas fa-trash"></i><span>삭제</span><kbd class="ml-1 text-gray-400 text-[9px] font-mono">Del</kbd>
@@ -13636,7 +13636,7 @@ function renderMonthlyScheduleTab() {
     </button>
 
     <!-- 선택 해제 (ESC) -->
-    <button onclick="clearMultiSelection()"
+    <button onclick="clearMultiSelection(); _extClearSelection && _extClearSelection()"
       class="px-2 py-1.5 rounded-lg text-xs font-bold bg-gray-700 hover:bg-gray-600 transition-colors shrink-0 flex items-center gap-1"
       title="선택 해제 (Esc)">
       <i class="fas fa-times"></i><kbd class="text-gray-400 text-[9px] font-mono">Esc</kbd>
@@ -16867,6 +16867,9 @@ function _extClearSelection() {
 // ── 셀 클릭 처리 ─────────────────────────────────────────────
 function _extHandleCellClick(e, cell) {
   const key = _extCellKey(cell)
+  const wid  = parseInt(cell.dataset.extid)
+  const date = cell.dataset.date
+
   // 직원 셀 선택 해제
   if (_selectedCells.size > 0) clearMultiSelection()
 
@@ -16878,14 +16881,19 @@ function _extHandleCellClick(e, cell) {
   } else if (e.shiftKey && _extAnchorKey) {
     // Shift+클릭: 범위 선택
     _extSelectRange(_extAnchorKey, key)
+  } else if (_extSelectedCells.has(key) && _extSelectedCells.size === 1) {
+    // 이미 선택된 단일 셀을 다시 클릭 → 드롭다운 열기 (더블클릭 대체)
+    _extOpenInlineInput(wid, date, cell, null)
+    return  // 선택 스타일 갱신 불필요 (드롭다운이 처리)
   } else {
-    // 단독 클릭 → 선택만 (입력 없음)
+    // 단독 클릭 → 선택
     _extSelectedCells.clear()
     _extSelectedCells.add(key)
     _extAnchorKey = key
   }
   _extUpdateSelectStyle()
   _extShowFillHandle()
+  _extUpdateBar()
 }
 
 // ── 범위 선택 ─────────────────────────────────────────────────
@@ -17102,41 +17110,60 @@ function _extMoveSelection(dir) {
 function _extOpenInlineInput(workerId, date, cell, initChar) {
   if (!cell) cell = _extGetCell(workerId, date)
   if (!cell) return
+  // 이미 열린 드롭다운 있으면 제거
+  const existing = cell.querySelector('.ext-inline-select')
+  if (existing) { existing.remove(); return }
   const seq = getExtShiftSeq().filter(s => s !== '')
-  // 팝업 입력창 대신 select 드롭다운
-  const old = cell.querySelector('.ext-inline-select')
-  if (old) old.remove()
+  if (seq.length === 0) { showToast('활성화된 근무유형이 없습니다. 근무조 설정에서 활성화하세요.', 'info'); return }
+  // select 드롭다운 생성
   const sel = document.createElement('select')
   sel.className = 'ext-inline-select'
   sel.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;font-size:10px;border:2px solid #3b82f6;border-radius:3px;background:white;z-index:20;cursor:pointer'
-  sel.innerHTML = `<option value="">·</option>` + seq.map(s =>
-    `<option value="${s}" ${cell.dataset.extshift===s?'selected':''}>${EXT_SHIFT_LABEL_MAP[s]||s}</option>`
-  ).join('')
+  sel.innerHTML = `<option value="">· 비우기</option>` + seq.map(s => {
+    const cfg = _getExtShiftCfg(s)
+    const label = cfg?.label || EXT_SHIFT_LABEL_MAP[s] || s
+    return `<option value="${s}" ${cell.dataset.extshift===s?'selected':''}>${label}</option>`
+  }).join('')
   // 초기 문자로 미리 매핑
   if (initChar) {
-    const labelMap = { '오':'morning', 'ㅇ':'morning', 'A':'morning', 'B':'afternoon',
-      '9':'full_9h', '1':'full_12h', 'F':'full_12h', 'f':'full_12h' }
-    const matched = labelMap[initChar.toUpperCase()]
+    const labelMap = { '오':'morning', 'ㅇ':'morning', 'a':'morning', 'A':'morning',
+      'b':'afternoon', 'B':'afternoon', '9':'full_9h', '1':'full_12h', 'F':'full_12h', 'f':'full_12h' }
+    const matched = labelMap[initChar] || labelMap[initChar.toUpperCase()]
     if (matched && seq.includes(matched)) sel.value = matched
   }
   cell.style.position = 'relative'
   cell.appendChild(sel)
-  sel.focus()
-  sel.onchange = () => {
-    const v = sel.value
-    const old = cell.dataset.extshift || ''
-    _extPushUndo([{ workerId, date, oldType: old, newType: v }])
-    _extApplyOne(workerId, date, cell, v)
+  // 짧은 딜레이 후 focus (이벤트 버블링 방지)
+  requestAnimationFrame(() => { sel.focus() })
+  const _commit = (v) => {
+    const oldShift = cell.dataset.extshift || ''
+    if (v !== oldShift) {
+      _extPushUndo([{ workerId, date, oldType: oldShift, newType: v }])
+      _extApplyDOM(workerId, date, cell, v)
+      _extQueueSave(workerId, date, v)
+      _extRecalcRow(workerId)
+    }
     sel.remove()
     _extSelectedCells.clear()
     _extSelectedCells.add(`${workerId}_${date}`)
     _extAnchorKey = `${workerId}_${date}`
     _extUpdateSelectStyle()
+    _extUpdateBar()
   }
-  sel.onblur = () => { setTimeout(() => sel.remove(), 100) }
-  sel.onkeydown = (e) => {
-    if (e.key === 'Escape') { sel.remove(); e.preventDefault() }
+  sel.onchange = () => _commit(sel.value)
+  sel.onblur = () => { setTimeout(() => { if (cell.contains(sel)) sel.remove() }, 150) }
+  sel.onkeydown = (ev) => {
+    if (ev.key === 'Escape') { sel.remove(); ev.preventDefault() }
+    if (ev.key === 'Enter') { ev.preventDefault(); _commit(sel.value) }
   }
+}
+
+// 헬퍼: extShiftConfig에서 특정 키의 설정 가져오기
+function _getExtShiftCfg(key) {
+  try {
+    const cfg = JSON.parse(localStorage.getItem('extShiftConfig') || '[]')
+    return cfg.find(c => c.key === key) || null
+  } catch(e) { return null }
 }
 
 // ── 하단 툴바 (외부인력 선택 시) ─────────────────────────────
@@ -17146,26 +17173,76 @@ function _extUpdateBar() {
   if (!bar) return
   bar.classList.remove('hidden')
 
+  // 선택 카운트 표시
   const countEl = document.getElementById('multiSelectCount')
-  if (countEl) countEl.textContent = `${_extSelectedCells.size}개 선택 (파출/알바)`
+  const n = _extSelectedCells.size
+  // 현재 앵커 셀의 코드 표시
+  const anchorCell = _extAnchorKey ? (() => {
+    const { workerId, date } = _extParseKey(_extAnchorKey)
+    return _extGetCell(workerId, date)
+  })() : null
+  const curShift = anchorCell?.dataset?.extshift || ''
+  const curLabel = curShift ? (EXT_SHIFT_LABEL_MAP[curShift] || curShift) : ''
+  if (countEl) countEl.textContent = n === 1
+    ? `${n}개 선택 (파출/알바)${curLabel ? ` · [${curLabel}]` : ''}`
+    : `${n}개 선택 (파출/알바)`
 
-  // 근무 코드 버튼을 외부인력용으로 교체
+  // 근무 코드 버튼을 외부인력용으로 교체 (extShiftConfig 기반)
   const btnsEl = document.getElementById('multiSelectCodeBtns')
   if (btnsEl) {
     const seq = getExtShiftSeq().filter(s => s !== '')
     btnsEl.innerHTML = seq.map(s => {
-      const col = EXT_SHIFT_COLORS[s]?.match(/color:([^;]+)/)?.[1] || '#374151'
-      const bg  = EXT_SHIFT_COLORS[s]?.match(/background:([^;]+)/)?.[1] || '#f9fafb'
-      return `<button onclick="extApplyCodeInstant('${s}')" style="padding:3px 7px;border-radius:4px;font-size:11px;font-weight:700;background:${bg};color:${col};border:1px solid ${col}33;cursor:pointer">${EXT_SHIFT_LABEL_MAP[s]||s}</button>`
+      const cfg = _getExtShiftCfg(s)
+      const label = cfg?.label || EXT_SHIFT_LABEL_MAP[s] || s
+      // 색상: cfg에서 bg/color 우선, 없으면 EXT_SHIFT_COLORS fallback
+      const colStr = EXT_SHIFT_COLORS[s] || 'background:#f9fafb;color:#374151'
+      const col = colStr.match(/color:([^;]+)/)?.[1] || '#374151'
+      const bg  = colStr.match(/background:([^;]+)/)?.[1] || '#f9fafb'
+      const isActive = curShift === s
+      return `<button onclick="extApplyCodeInstant('${s}')"
+        style="padding:3px 9px;border-radius:4px;font-size:11px;font-weight:700;
+               background:${bg};color:${col};
+               border:${isActive?'2px':'1px'} solid ${col}${isActive?'':'44'};
+               cursor:pointer;transform:${isActive?'scale(1.1)':'scale(1)'};
+               box-shadow:${isActive?`0 0 0 2px ${col}33`:'none'};
+               transition:all 0.1s"
+        title="${label} 적용 (파출/알바)">${label}</button>`
     }).join('')
   }
+
+  // 복사/붙여넣기/삭제 버튼을 외부인력용으로 교체
+  const copyBtn = document.getElementById('multiSelectPasteBtn')?.previousElementSibling
+  // 직원용 버튼들을 data-mode로 구분
+  _extSyncToolbarButtons(true)
 }
+
+// 툴바 버튼을 직원/외부인력 모드로 전환
+function _extSyncToolbarButtons(isExt) {
+  const copyBtn = document.getElementById('toolbar-copy-btn')
+  const pasteBtn = document.getElementById('multiSelectPasteBtn')
+  const delBtn  = document.getElementById('toolbar-del-btn')
+  if (copyBtn) {
+    copyBtn.onclick = isExt ? () => extCopyCells() : () => schedCopyCells()
+    copyBtn.title = isExt ? '파출/알바 셀 복사 (Ctrl+C)' : '선택 셀 복사 (Ctrl+C)'
+  }
+  if (pasteBtn) {
+    pasteBtn.onclick = isExt ? () => extPasteCells() : () => schedPasteCells()
+    pasteBtn.title = isExt ? '파출/알바 붙여넣기 (Ctrl+V)' : '붙여넣기 (Ctrl+V)'
+  }
+  if (delBtn) {
+    delBtn.onclick = isExt ? () => extDeleteCells() : () => schedDeleteCells()
+    delBtn.title = isExt ? '파출/알바 셀 삭제 (Del)' : '선택 셀 삭제 (Delete/Backspace)'
+  }
+}
+
 function _extHideBar() {
   // 직원 셀이 선택된 상태면 숨기지 않음
   if (_selectedCells && _selectedCells.size > 0) return
   // 외부인력 셀도 없고 직원 셀도 없을 때만 숨김
   const bar = document.getElementById('multiSelectBar')
   if (bar) bar.classList.add('hidden')
+  // 툴바 버튼을 직원 모드로 복원
+  _extSyncToolbarButtons(false)
 }
 
 window.extApplyCodeInstant = (shiftType) => {
@@ -17737,42 +17814,6 @@ window.toggleSchedToolbar = () => {
   }
 }
 
-function updateMultiSelectBar() {
-  const bar = document.getElementById('multiSelectBar')
-  const cnt = document.getElementById('multiSelectCount')
-  if (!bar) return
-  const n = _selectedCells.size
-  // 툴바 OFF이거나 선택 없으면 숨김
-  if (n === 0 || !_toolbarEnabled) { bar.classList.add('hidden'); return }
-  bar.classList.remove('hidden')
-  const keys = Array.from(_selectedCells).sort()
-  // 선택 범위의 현재 코드 표시
-  const srcKey = keys[0]
-  const { empId: se, date: sd } = _parseKey(srcKey)
-  const srcCell = _getCellEl(se, sd)
-  const curCode = srcCell?.dataset?.shift || ''
-  cnt.textContent = n === 1
-    ? `${n}개 선택${curCode ? ` · [${curCode}]` : ''}`
-    : `${n}개 선택됨`
-
-  // 코드 버튼 갱신 (처음 한 번만 렌더링)
-  const codes = window._schedAllCodes || ['연','휴','오전','오후','경조','OT','-']
-  const btnBox = document.getElementById('multiSelectCodeBtns')
-  if (btnBox && !btnBox.dataset.built) {
-    btnBox.dataset.built = '1'
-    const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
-    btnBox.innerHTML = codes.filter(c=>c!=='-').map(c => {
-      const sf = scheduleShifts.find(s=>s.shift_code===c)
-      const col = sf?.color || colMap[c] || '#374151'
-      return `<button onclick="applyCodeInstant('${c}')" id="mcb_${c}"
-        class="px-2 py-1 rounded text-xs font-bold border transition-all hover:scale-105"
-        style="background:${col}22;color:${col};border-color:${col}66;min-width:32px"
-        title="${c} 코드 즉시 적용">${c}</button>`
-    }).join('')
-  }
-  // ※ applyRangeStyle() 호출 제거 - 중복 호출 방지
-}
-
 // 코드 버튼 클릭 → 즉시 일괄 적용
 window.applyCodeInstant = (code) => {
   if (_selectedCells.size === 0) { showToast('셀을 먼저 선택하세요', 'error'); return }
@@ -17808,8 +17849,8 @@ window.clearMultiSelection = () => {
   _multiCode = null
   const bar = document.getElementById('multiSelectBar')
   if (bar) bar.classList.add('hidden')
-  const btnBox = document.getElementById('multiSelectCodeBtns')
-  if (btnBox) delete btnBox.dataset.built
+  // 툴바 버튼을 직원 모드로 복원
+  if (typeof _extSyncToolbarButtons === 'function') _extSyncToolbarButtons(false)
 }
 
 // 복사 버퍼 완전 초기화 (붙여넣기 완료 후 호출)
