@@ -17211,8 +17211,6 @@ function _extUpdateBar() {
   }
 
   // 복사/붙여넣기/삭제 버튼을 외부인력용으로 교체
-  const copyBtn = document.getElementById('multiSelectPasteBtn')?.previousElementSibling
-  // 직원용 버튼들을 data-mode로 구분
   _extSyncToolbarButtons(true)
 }
 
@@ -17812,6 +17810,49 @@ window.toggleSchedToolbar = () => {
     if (_extSelectedCells?.size > 0) _extUpdateBar()
     else updateMultiSelectBar()
   }
+}
+
+// ── 직원 셀 선택 시 하단 툴바 업데이트 ──────────────────────
+function updateMultiSelectBar() {
+  const bar = document.getElementById('multiSelectBar')
+  const cnt = document.getElementById('multiSelectCount')
+  if (!bar) return
+  const n = _selectedCells.size
+  if (n === 0 || !_toolbarEnabled) { bar.classList.add('hidden'); return }
+  bar.classList.remove('hidden')
+
+  // 첫 번째 선택 셀의 현재 코드 표시
+  const keys = Array.from(_selectedCells).sort()
+  const srcKey = keys[0]
+  const { empId: se, date: sd } = _parseKey(srcKey)
+  const srcCell = _getCellEl(se, sd)
+  const curCode = srcCell?.dataset?.shift || ''
+  cnt.textContent = n === 1
+    ? `${n}개 선택${curCode ? ` · [${curCode}]` : ''}`
+    : `${n}개 선택됨`
+
+  // 직원 근무조 버튼 렌더링 (scheduleShifts 기반, 매번 갱신)
+  const codes = window._schedAllCodes || ['연','휴','오전','오후','경조','OT','-']
+  const btnBox = document.getElementById('multiSelectCodeBtns')
+  if (btnBox) {
+    const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
+    btnBox.innerHTML = codes.filter(c => c !== '-').map(c => {
+      const sf = (scheduleShifts || []).find(s => s.shift_code === c)
+      const col = sf?.color || colMap[c] || '#374151'
+      const isActive = c === curCode
+      return `<button onclick="applyCodeInstant('${c}')" id="mcb_${c}"
+        class="px-2 py-1 rounded text-xs font-bold border transition-all hover:scale-105"
+        style="background:${col}22;color:${col};
+               border-color:${isActive ? col : col+'44'};
+               border-width:${isActive ? '2px' : '1px'};
+               min-width:32px;
+               transform:${isActive ? 'scale(1.1)' : 'scale(1)'};
+               box-shadow:${isActive ? `0 0 0 2px ${col}33` : 'none'}"
+        title="${c} 코드 즉시 적용">${c}</button>`
+    }).join('')
+  }
+  // 직원 모드로 복사/붙여넣기/삭제 버튼 설정
+  if (typeof _extSyncToolbarButtons === 'function') _extSyncToolbarButtons(false)
 }
 
 // 코드 버튼 클릭 → 즉시 일괄 적용
