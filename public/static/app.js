@@ -13364,14 +13364,15 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     let bg, fg
     if (shiftColorMap[code]) {
       const hex = shiftColorMap[code]
-      bg = hex + '28'; fg = hex
+      bg = hex + '18'; fg = hex
     } else {
-      const dm = {'연':'#f59e0b,#fef3c7','휴':'#ef4444,#fee2e2','경조':'#a855f7,#fdf4ff','병가':'#6366f1,#eef2ff','OT':'#059669,#ecfdf5'}
-      const parts = (dm[code]||'#374151,#f3f4f6').split(',')
+      const dm = {'연':'#854d0e,#fefce8','휴':'#991b1b,#fef2f2','경조':'#6b21a8,#fdf4ff','병가':'#3730a3,#eef2ff','OT':'#14532d,#f0fdf4'}
+      const parts = (dm[code]||'#1e293b,#f8fafc').split(',')
       fg = parts[0]; bg = parts[1]
     }
     const isOffCode = REST_CODES.has(code)
-    const border = isHoliday ? 'border:2px solid #ef4444;' : ''
+    // 공휴일 근무 강조: 테두리만 살짝 진하게
+    const border = isHoliday && !isOffCode ? `border:1.5px solid ${fg}66;` : ''
     return `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border-radius:5px;font-size:11px;font-weight:800;background:${bg};color:${fg};${border}">${code}</span>`
   }
 
@@ -13397,11 +13398,11 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
         codeCounts[code] = (codeCounts[code]||0)+1
       }
       // 배경색: 공휴일 > 연/휴 > 부여휴무 > 주말 > 평일
-      const cellBg = isOff ? (code==='연'?'#fef3c7':(code==='경조'?'#fdf4ff':'#fee2e2'))
-                   : isHoliday ? '#fff1f2'
-                   : isGrantOff ? '#fffbeb'
-                   : isSun ? '#fff5f5' : isSat ? '#f0f7ff' : (empIdx%2===0 ? '#fff' : '#f9fafb')
-      const borderCol = isHoliday ? '#fca5a5' : isSun ? '#fecaca' : isSat ? '#bfdbfe' : '#e5e7eb'
+      const cellBg = isOff ? (code==='연'?'#fefce8':(code==='경조'?'#fdf4ff':'#fef2f2'))
+                   : isHoliday ? '#fdf2f8'
+                   : isGrantOff ? '#fefce8'
+                   : isSun ? '#fdf2f8' : isSat ? '#f0f4ff' : (empIdx%2===0 ? '#fff' : '#f9fafb')
+      const borderCol = isHoliday ? '#f9a8d4' : isSun ? '#fce7f3' : isSat ? '#e0e7ff' : '#e2e8f0'
       const badge = getCodeBadge(code, isSun, isSat, isHoliday)
       // 공휴일 표시 도트
       const hDot = isHoliday && !code ? `<span style="display:block;width:5px;height:5px;border-radius:50%;background:#ef4444;margin:2px auto 0"></span>` : ''
@@ -13422,21 +13423,21 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
       if(REST_CODES.has(code)) offCount++
     }
 
-    return `<tr class="staff-emp-row" style="border-bottom:1px solid ${empIdx%2===0?'#e5e7eb':'#f3f4f6'}">
-      <td style="padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;background:${empIdx%2===0?'#fff':'#f9fafb'};z-index:5;border-right:2px solid #d1fae5">
-        <div style="font-size:12px;font-weight:800;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
-        <div style="font-size:9px;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.position_name||emp.position||''}</div>
+    return `<tr class="staff-emp-row" style="border-bottom:1px solid #e2e8f0">
+      <td style="padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;background:${empIdx%2===0?'#fff':'#f9fafb'};z-index:5;border-right:3px solid #e2e8f0">
+        <div style="font-size:12px;font-weight:800;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
+        <div style="font-size:9px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.position_name||emp.position||''}</div>
       </td>
       ${cells}
-      <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:2px solid #d1fae5;background:#f0fdf4;white-space:nowrap">
+      <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:2px solid #e2e8f0;background:#f8fafc;white-space:nowrap">
         <div style="font-size:13px;font-weight:900;color:#166534">${workCount}</div>
-        <div style="font-size:8px;color:#4ade80">근무</div>
+        <div style="font-size:8px;color:#86efac">근무</div>
       </td>
-      <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:1px solid #fde68a;background:#fffbeb;white-space:nowrap">
+      <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:1px solid #e2e8f0;background:#f8fafc;white-space:nowrap">
         <div style="font-size:13px;font-weight:900;color:#b45309">${offCount}</div>
-        <div style="font-size:8px;color:#d97706">휴무</div>
+        <div style="font-size:8px;color:#fbbf24">휴무</div>
       </td>
-      <td style="padding:3px 6px;min-width:80px;border-left:1px solid #e5e7eb;background:#fafafa">
+      <td style="padding:3px 6px;min-width:80px;border-left:1px solid #e2e8f0;background:#f9fafb">
         <div style="display:flex;flex-wrap:wrap;gap:2px">${summaryItems}</div>
       </td>
     </tr>`
@@ -13449,9 +13450,11 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     const dow = new Date(year, month-1, day).getDay()
     const isSun = dow===0, isSat = dow===6
     const isHoliday = holidaySet.has(ds)
-    const bg = isHoliday ? '#ef4444' : isSun ? '#dc2626' : isSat ? '#2563eb' : '#166534'
-    return `<th style="padding:3px 0;min-width:26px;text-align:center;font-size:9px;border-left:1px solid rgba(255,255,255,.15);background:${bg};color:white;white-space:nowrap">
-      <div style="font-size:10px">${day}</div><div style="opacity:.8">${dayNames[dow]}</div>${isHoliday?'<div style="font-size:6px;opacity:.9">★</div>':''}
+    // 연한 배경, 진한 텍스트
+    const bg = isHoliday ? '#fce7f3' : isSun ? '#fce7f3' : isSat ? '#eff6ff' : '#f8fafc'
+    const tc = isHoliday ? '#9d174d' : isSun ? '#9d174d' : isSat ? '#1e40af' : '#334155'
+    return `<th style="padding:3px 0;min-width:26px;text-align:center;font-size:9px;border-left:1px solid #e2e8f0;background:${bg};color:${tc};white-space:nowrap;font-weight:800">
+      <div style="font-size:10px;font-weight:800">${day}</div><div>${dayNames[dow]}</div>${isHoliday?'<div style="font-size:6px;color:#be185d">★</div>':''}
     </th>`
   }).join('')
 
@@ -13471,10 +13474,11 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
 
   // 공휴일 목록
   const holidayListHtml = holidays.length ? holidays.map(h=>{
-    const hDate = h.date||h
+    const hDate = typeof h === 'string' ? h : (h?.date || '')
+    if (!hDate || typeof hDate !== 'string') return ''
     const dw = new Date(hDate).getDay()
-    return `<span style="font-size:10px;color:#b91c1c;background:#fff1f2;border:1px solid #fecaca;border-radius:5px;padding:2px 7px">${hDate.substring(5)} ${h.name||''}</span>`
-  }).join('') : '<span style="font-size:10px;color:#9ca3af">공휴일 없음</span>'
+    return `<span style="font-size:10px;color:#b91c1c;background:#fff1f2;border:1px solid #fecaca;border-radius:5px;padding:2px 7px">${hDate.substring(5)} ${h?.name||''}</span>`
+  }).filter(Boolean).join('') : '<span style="font-size:10px;color:#9ca3af">공휴일 없음</span>'
 
   return `
   <div style="background:white;border-radius:16px;border:1px solid #e5e7eb;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
@@ -13510,12 +13514,12 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     <div style="overflow-x:auto;max-height:68vh">
       <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead style="position:sticky;top:0;z-index:10">
-          <tr style="background:#166534;color:white">
-            <th style="padding:8px 10px;text-align:left;min-width:90px;position:sticky;left:0;background:#166534;z-index:20;border-right:2px solid #14532d;font-size:11px">이름</th>
+          <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0">
+            <th style="padding:8px 10px;text-align:left;min-width:90px;position:sticky;left:0;background:#f8fafc;z-index:20;border-right:2px solid #e2e8f0;font-size:11px;color:#374151">이름</th>
             ${dateHeader}
-            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:2px solid #14532d;background:#0f3d25;font-size:9px">근무</th>
-            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:1px solid #0f3d25;background:#0f3d25;font-size:9px">휴무</th>
-            <th style="padding:4px 8px;min-width:80px;text-align:left;border-left:1px solid #0f3d25;background:#0f3d25;font-size:9px">유형별 요약</th>
+            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:2px solid #e2e8f0;background:#f8fafc;font-size:9px;color:#374151">근무</th>
+            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:1px solid #e2e8f0;background:#f8fafc;font-size:9px;color:#374151">휴무</th>
+            <th style="padding:4px 8px;min-width:80px;text-align:left;border-left:1px solid #e2e8f0;background:#f8fafc;font-size:9px;color:#374151">유형별 요약</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -13523,9 +13527,9 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     </div>
 
     <!-- 하단 안내 -->
-    <div style="padding:8px 14px;background:#f0fdf4;border-top:1px solid #d1fae5;font-size:10px;color:#15803d;display:flex;align-items:center;gap:6px">
-      <i class="fas fa-info-circle"></i>
-      <span>★ 표시는 공휴일 · 빨간 테두리 배지는 공휴일 근무 · 노란 배경은 부여휴무일</span>
+    <div style="padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:10px;color:#64748b;display:flex;align-items:center;gap:6px">
+      <i class="fas fa-info-circle" style="color:#94a3b8"></i>
+      <span>★ 표시는 공휴일 · 분홍 배경은 일요일/공휴일 · 파랑 배경은 토요일 · 노랑 배경은 부여휴무일</span>
     </div>
   </div>
   <style>
@@ -14251,10 +14255,10 @@ function renderMonthlyScheduleTab() {
               // 그룹 구분 헤더 (큰 섹션 분리)
               allGroupHtml += `<tr>
                 <td colspan="${days+3}" style="padding:0">
-                  <div style="background:${grp.headerBg};border-top:3px solid ${grp.headerColor};border-bottom:1px solid ${grp.border};padding:6px 14px;display:flex;align-items:center;gap:8px">
-                    <i class="fas ${grp.icon}" style="color:${grp.headerColor};font-size:13px"></i>
-                    <span style="font-size:13px;font-weight:800;color:${grp.headerColor}">${grp.label}</span>
-                    <span style="font-size:10px;color:${grp.headerColor};opacity:.7">(${grp.members.length}명)</span>
+                  <div style="background:#ffffff;border-top:3px solid ${grp.headerColor};border-bottom:1px solid #e2e8f0;padding:5px 14px;display:flex;align-items:center;gap:8px">
+                    <i class="fas ${grp.icon}" style="color:${grp.headerColor};font-size:12px"></i>
+                    <span style="font-size:12px;font-weight:800;color:${grp.headerColor}">${grp.label}</span>
+                    <span style="font-size:10px;color:#94a3b8">(${grp.members.length}명)</span>
                   </div>
                 </td>
               </tr>`
