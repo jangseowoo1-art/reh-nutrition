@@ -26168,8 +26168,8 @@ window.printReportA4 = async function() {
   })
 }
 
-// ── 인쇄 미리보기 모달 ─────────────────────────────────────────
-window.showPrintPreview = async function() {
+// ── 인쇄 미리보기 모달 (DOM 직접 렌더링 방식 - CDN/캡처 불필요) ──
+window.showPrintPreview = function() {
   const existing = document.getElementById('printPreviewModal')
   if (existing) existing.remove()
 
@@ -26177,166 +26177,178 @@ window.showPrintPreview = async function() {
   if (!reportBody) { showToast('보고서를 먼저 불러오세요', 'warning'); return }
 
   const slides = Array.from(reportBody.querySelectorAll('.report-slide'))
+  if (slides.length === 0) { showToast('출력할 슬라이드가 없습니다', 'warning'); return }
+
   const totalPages = slides.length
 
-  // 로딩 모달 먼저 표시 (취소 버튼 포함)
-  const loadingModal = document.createElement('div')
-  loadingModal.id = 'printPreviewModal'
-  loadingModal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;'
-  loadingModal.innerHTML = `
-    <div style="background:#1f2937;border-radius:16px;padding:40px 60px;text-align:center;color:white;">
-      <i class="fas fa-spinner fa-spin" style="font-size:32px;color:#60a5fa;margin-bottom:16px;display:block"></i>
-      <div style="font-size:16px;font-weight:700;margin-bottom:8px">미리보기 준비 중...</div>
-      <div id="ppLoadingText" style="font-size:13px;color:#9ca3af">라이브러리 로드 중...</div>
-      <div style="margin-top:16px;background:#374151;border-radius:99px;height:6px;width:240px;overflow:hidden">
-        <div id="ppLoadingBar" style="height:100%;width:0%;background:#3b82f6;border-radius:99px;transition:width 0.3s"></div>
-      </div>
-      <button onclick="document.getElementById('printPreviewModal')?.remove()"
-        style="margin-top:20px;padding:7px 20px;background:#374151;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:13px;">
-        취소
-      </button>
-    </div>
-  `
-  document.body.appendChild(loadingModal)
+  // 현재 페이지에서 적용된 모든 스타일 수집
+  const styleSheets = Array.from(document.styleSheets).map(ss => {
+    try {
+      return Array.from(ss.cssRules || []).map(r => r.cssText).join('\n')
+    } catch(e) { return '' }
+  }).join('\n')
 
-  const txt0 = document.getElementById('ppLoadingText')
-  if (txt0) txt0.textContent = `라이브러리 로드 중... (0/${totalPages})`
-
-  // 전체 캡처 (_captureAllSlides 내부에서 html2canvas 로드 처리)
-  const cache = await _captureAllSlides(slides, (cur, tot) => {
-    const txt = document.getElementById('ppLoadingText')
-    const bar = document.getElementById('ppLoadingBar')
-    if (cur === 0) {
-      if (txt) txt.textContent = `라이브러리 로드 중...`
-      if (bar) bar.style.width = `5%`
-    } else {
-      if (txt) txt.textContent = `슬라이드 캡처 중 (${cur}/${tot})`
-      if (bar) bar.style.width = `${Math.round(cur/tot*100)}%`
-    }
+  // 각 슬라이드 HTML 클론 (inline style 포함)
+  const slideHtmlList = slides.map(s => {
+    const clone = s.cloneNode(true)
+    // canvas → img 변환 (차트 등)
+    clone.querySelectorAll('canvas').forEach((c, ci) => {
+      try {
+        const img = document.createElement('img')
+        img.src = c.toDataURL('image/png')
+        img.style.cssText = `width:100%;height:auto;display:block;`
+        c.replaceWith(img)
+      } catch(e) {}
+    })
+    return clone.outerHTML
   })
 
-  // 캡처가 모두 실패(null)인 경우 → 라이브러리 로드 실패로 판단
-  const allFailed = cache.every(c => !c.imgData)
-  if (allFailed && slides.length > 0) {
-    const lm = document.getElementById('printPreviewModal')
-    if (lm) lm.remove()
-    showToast('캡처 라이브러리 로드 실패 — 직접 인쇄 버튼을 사용하세요', 'error')
-    return
-  }
-
-  // 로딩 모달 제거 후 미리보기 모달 생성
-  loadingModal.remove()
-
+  // ── 모달 생성 (즉시 표시) ──
   const modal = document.createElement('div')
   modal.id = 'printPreviewModal'
-  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;'
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,sans-serif;'
+
+  // 페이지 번호 도트 버튼
+  const dotBtns = slides.map((_,i) =>
+    `<button onclick="jumpPrintPage(${i})" id="ppDot-${i}"
+      style="min-width:28px;height:28px;padding:0 6px;border-radius:5px;border:none;cursor:pointer;font-size:10px;font-weight:700;
+      background:${i===0?'#3b82f6':'#374151'};color:white;transition:background 0.15s;">${i+1}</button>`
+  ).join('')
+
   modal.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:#1f2937;color:white;flex-shrink:0;">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <i class="fas fa-print" style="color:#60a5fa"></i>
-        <span style="font-weight:700;font-size:15px">인쇄 미리보기</span>
-        <span id="ppPageInfo" style="font-size:12px;color:#9ca3af">페이지 1 / ${totalPages}</span>
+    <!-- 상단 툴바 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:#1f2937;color:white;flex-shrink:0;gap:8px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <i class="fas fa-print" style="color:#60a5fa;font-size:16px;"></i>
+        <span style="font-weight:700;font-size:15px;">인쇄 미리보기</span>
+        <span id="ppPageInfo" style="font-size:12px;color:#9ca3af;">페이지 1 / ${totalPages}</span>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;">
         <button onclick="document.getElementById('printPreviewModal').remove()"
           style="background:#374151;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">
-          <i class="fas fa-times mr-1"></i>닫기
+          <i class="fas fa-times" style="margin-right:4px;"></i>닫기
         </button>
-        <button onclick="document.getElementById('printPreviewModal').remove(); printReportA4()"
-          style="background:#3b82f6;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
-          <i class="fas fa-print mr-1"></i>인쇄/PDF저장
+        <button onclick="window._ppPrintAll()"
+          style="background:#3b82f6;color:white;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
+          <i class="fas fa-print" style="margin-right:4px;"></i>인쇄 / PDF 저장
         </button>
       </div>
     </div>
     <!-- 페이지 네비게이션 -->
-    <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:8px;background:#111827;flex-shrink:0;">
+    <div style="display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 16px;background:#111827;flex-shrink:0;flex-wrap:wrap;">
       <button id="ppPrevBtn" onclick="changePrintPage(-1)"
-        style="background:#374151;color:white;border:none;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:12px;">
-        <i class="fas fa-chevron-left mr-1"></i>이전
+        style="background:#374151;color:white;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:12px;opacity:0.4;">
+        <i class="fas fa-chevron-left" style="margin-right:2px;"></i>이전
       </button>
-      <div id="ppPageDots" style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center;max-width:700px;">
-        ${cache.map((_,i) =>
-          `<button onclick="jumpPrintPage(${i})" id="ppDot-${i}"
-            style="width:28px;height:28px;border-radius:5px;border:none;cursor:pointer;font-size:10px;font-weight:700;
-            background:${i===0?'#3b82f6':'#374151'};color:white;transition:all 0.2s;">${i+1}</button>`
-        ).join('')}
+      <div style="display:flex;gap:3px;flex-wrap:wrap;justify-content:center;max-width:700px;">
+        ${dotBtns}
       </div>
       <button id="ppNextBtn" onclick="changePrintPage(1)"
-        style="background:#374151;color:white;border:none;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:12px;">
-        다음<i class="fas fa-chevron-right ml-1"></i>
+        style="background:#374151;color:white;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:12px;${totalPages<=1?'opacity:0.4;':''}">
+        다음<i class="fas fa-chevron-right" style="margin-left:2px;"></i>
       </button>
     </div>
-    <!-- 슬라이드 미리보기 영역 -->
-    <div style="flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:20px;background:#374151;">
-      <div id="ppSlideContainer" style="box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:8px;overflow:hidden;width:100%;max-width:960px;background:white;">
+    <!-- 슬라이드 뷰어 -->
+    <div style="flex:1;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:24px 20px;background:#4b5563;">
+      <div id="ppSlideContainer"
+        style="background:white;border-radius:6px;box-shadow:0 8px 32px rgba(0,0,0,0.55);width:100%;max-width:900px;overflow:hidden;">
       </div>
     </div>
-    <!-- 안내 문구 -->
-    <div style="padding:8px;text-align:center;color:#9ca3af;font-size:11px;background:#111827;flex-shrink:0;">
-      <i class="fas fa-info-circle mr-1"></i>
-      인쇄/PDF 저장 시 모든 ${totalPages}페이지가 자동으로 출력됩니다. Chrome에서 최적 출력됩니다.
+    <!-- 안내 -->
+    <div style="padding:7px;text-align:center;color:#9ca3af;font-size:11px;background:#111827;flex-shrink:0;">
+      <i class="fas fa-info-circle" style="margin-right:4px;"></i>
+      총 ${totalPages}페이지 · "인쇄/PDF 저장" 클릭 시 모든 페이지가 출력됩니다 · Chrome 권장
     </div>
   `
   document.body.appendChild(modal)
 
-  // 캐시를 전역에 저장 (페이지 이동 시 재사용)
-  window._ppImgCache  = cache
+  // 슬라이드 HTML / 스타일 전역 저장
+  window._ppSlideHtml  = slideHtmlList
+  window._ppStyleSheet = styleSheets
   window._ppCurrentPage = 0
   window._ppTotal       = totalPages
 
-  _renderCachedPreviewPage(0)
+  // 첫 슬라이드 렌더링
+  _renderDomPreviewPage(0)
+
+  // 인쇄 함수 (새 창)
+  window._ppPrintAll = function() {
+    const allHtml = window._ppSlideHtml.map((h, i) =>
+      `<div class="pp-page" style="page-break-after:${i < window._ppSlideHtml.length-1 ? 'always' : 'auto'};background:white;width:100%;box-sizing:border-box;">${h}</div>`
+    ).join('')
+    const pw = window.open('', '_blank', 'width=1000,height=800')
+    if (!pw) { showToast('팝업 차단 해제 후 다시 시도하세요', 'error'); return }
+    pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+      <style>
+        *{box-sizing:border-box;}
+        body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
+        @media print {
+          .pp-page{page-break-after:always;}
+          .pp-page:last-child{page-break-after:auto;}
+        }
+        ${window._ppStyleSheet}
+      </style>
+      </head><body>${allHtml}<script>window.onload=function(){window.print();}<\/script></body></html>`)
+    pw.document.close()
+  }
 }
 
-function _renderCachedPreviewPage(idx) {
+// DOM 클론을 직접 ppSlideContainer에 주입
+function _renderDomPreviewPage(idx) {
   const container = document.getElementById('ppSlideContainer')
   const pageInfo  = document.getElementById('ppPageInfo')
-  const cache     = window._ppImgCache || []
-  if (!container || !cache[idx]) return
+  const htmlList  = window._ppSlideHtml || []
+  if (!container || !htmlList[idx]) return
 
-  const { imgData, naturalW, naturalH } = cache[idx]
-
-  container.innerHTML = ''
-  // 컨테이너 너비에 맞게 비율 유지 (height:auto)
-  if (imgData) {
-    const img = document.createElement('img')
-    img.src = imgData
-    img.style.cssText = 'width:100%;height:auto;display:block;border-radius:8px;'
-    container.appendChild(img)
-  } else {
-    container.innerHTML = `<div style="padding:60px;text-align:center;color:#9ca3af;font-size:14px;">페이지 ${idx+1} 캡처 실패</div>`
-  }
-
-  // 페이지 번호 배지
-  const pgBadge = document.createElement('div')
-  pgBadge.style.cssText = 'text-align:right;padding:6px 12px;font-size:10px;color:#9ca3af;background:#f9fafb;border-top:1px solid #e5e7eb;'
-  pgBadge.textContent = `${idx+1} / ${window._ppTotal}`
-  container.appendChild(pgBadge)
+  // 스타일 + HTML 직접 주입
+  container.innerHTML = `
+    <style>
+      #ppSlideContainer .report-slide,
+      #ppSlideContainer .rpt-report-page {
+        width:100% !important;
+        max-width:100% !important;
+        min-height:auto !important;
+        height:auto !important;
+        overflow:visible !important;
+      }
+    </style>
+    ${htmlList[idx]}
+    <div style="text-align:right;padding:5px 12px;font-size:10px;color:#9ca3af;background:#f9fafb;border-top:1px solid #e5e7eb;">
+      ${idx+1} / ${window._ppTotal}
+    </div>
+  `
 
   if (pageInfo) pageInfo.textContent = `페이지 ${idx+1} / ${window._ppTotal}`
 
-  // dot 버튼 상태
-  cache.forEach((_,i) => {
+  // 도트 상태 업데이트
+  htmlList.forEach((_,i) => {
     const dot = document.getElementById(`ppDot-${i}`)
     if (dot) dot.style.background = i===idx ? '#3b82f6' : '#374151'
   })
 
-  // 이전/다음 버튼
+  // 이전/다음 버튼 opacity
   const prev = document.getElementById('ppPrevBtn')
   const next = document.getElementById('ppNextBtn')
-  if (prev) prev.style.opacity = idx===0 ? '0.4' : '1'
-  if (next) next.style.opacity = idx===window._ppTotal-1 ? '0.4' : '1'
+  if (prev) prev.style.opacity = idx === 0 ? '0.4' : '1'
+  if (next) next.style.opacity = idx === window._ppTotal - 1 ? '0.4' : '1'
 }
 
 window.changePrintPage = function(dir) {
   const newIdx = (window._ppCurrentPage || 0) + dir
   if (newIdx < 0 || newIdx >= (window._ppTotal || 0)) return
   window._ppCurrentPage = newIdx
-  _renderCachedPreviewPage(newIdx)
+  _renderDomPreviewPage(newIdx)
+  // 뷰어 상단으로 스크롤
+  const wrap = document.querySelector('#printPreviewModal > div[style*="overflow:auto"]')
+  if (wrap) wrap.scrollTop = 0
 }
 
 window.jumpPrintPage = function(idx) {
   window._ppCurrentPage = idx
-  _renderCachedPreviewPage(idx)
+  _renderDomPreviewPage(idx)
+  const wrap = document.querySelector('#printPreviewModal > div[style*="overflow:auto"]')
+  if (wrap) wrap.scrollTop = 0
 }
 
 // ── PPT 저장 ─────────────────────────────────────────────────────
