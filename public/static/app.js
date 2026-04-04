@@ -38986,27 +38986,27 @@ window.qrLoadTeamPanel = async () => {
       <i class="fas fa-link" style="color:#9ca3af;margin-right:4px"></i>${teamUrl}
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:16px">
-      <button onclick="qrTeamCopyKakao('${teamUrl}','${hospitalName}',${month})" style="padding:9px 16px;background:#FEE500;color:#3C1E1E;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+      <button id="teamBtnKakao" style="padding:9px 16px;background:#FEE500;color:#3C1E1E;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
         <i class="fas fa-comment" style="margin-right:5px"></i>카톡 전송용 복사
       </button>
-      <button onclick="qrTeamCopyLink('${teamUrl}')" style="padding:9px 16px;background:#166534;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+      <button id="teamBtnCopy" style="padding:9px 16px;background:#166534;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
         <i class="fas fa-copy" style="margin-right:5px"></i>링크 복사
       </button>
-      <button onclick="qrTeamOpen('${teamUrl}')" style="padding:9px 16px;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+      <button id="teamBtnOpen" style="padding:9px 16px;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
         <i class="fas fa-eye" style="margin-right:5px"></i>미리보기
       </button>
-      <button onclick="qrTeamDownload()" style="padding:9px 16px;background:#7c3aed;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+      <button id="teamBtnDl" style="padding:9px 16px;background:#7c3aed;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
         <i class="fas fa-download" style="margin-right:5px"></i>QR 저장
       </button>
     </div>
     <div style="border-top:1px solid #e5e7eb;padding-top:12px;text-align:center">
-      <button onclick="qrTeamRegen()" style="padding:7px 14px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
+      <button id="teamBtnRegen" style="padding:7px 14px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
         <i class="fas fa-redo" style="margin-right:4px"></i>QR 재생성 (기존 링크 무효화)
       </button>
     </div>` : `
     <div style="text-align:center">
       <p style="font-size:12px;color:#6b7280;margin-bottom:16px">아직 전체 근무표 QR이 생성되지 않았습니다</p>
-      <button onclick="qrTeamGenerate()" style="padding:12px 28px;background:#166534;color:white;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">
+      <button id="teamBtnGenerate" style="padding:12px 28px;background:#166534;color:white;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">
         <i class="fas fa-qrcode" style="margin-right:6px"></i>전체 근무표 QR 생성
       </button>
     </div>`}
@@ -39014,6 +39014,15 @@ window.qrLoadTeamPanel = async () => {
       <i class="fas fa-info-circle" style="margin-right:4px"></i>
       <strong>전체 공유 QR</strong>은 누구나 열람 가능합니다. 외부 공개가 우려되면 재생성하세요.
     </div>`
+
+    // innerHTML 렌더 후 버튼에 이벤트 직접 바인딩 (onclick 따옴표 충돌 방지)
+    const _s = (id) => document.getElementById(id)
+    if (_s('teamBtnKakao'))    _s('teamBtnKakao').addEventListener('click', () => qrTeamCopyKakao(teamUrl, hospitalName, month))
+    if (_s('teamBtnCopy'))     _s('teamBtnCopy').addEventListener('click', () => qrTeamCopyLink(teamUrl))
+    if (_s('teamBtnOpen'))     _s('teamBtnOpen').addEventListener('click', () => window.open(teamUrl, '_blank'))
+    if (_s('teamBtnDl'))       _s('teamBtnDl').addEventListener('click', () => qrTeamDownload())
+    if (_s('teamBtnRegen'))    _s('teamBtnRegen').addEventListener('click', () => qrTeamRegen())
+    if (_s('teamBtnGenerate')) _s('teamBtnGenerate').addEventListener('click', () => qrTeamGenerate())
 
     // QR 렌더링
     if (token && window.QRCode) {
@@ -39105,6 +39114,7 @@ window.qrLoadList = async function qrLoadList() {
     listEl.innerHTML = employees.map(emp => {
       const token = tokenMap[emp.id]
       const url = token ? `${location.origin}/my-schedule/${token}` : ''
+      // data-* 속성으로 URL/이름 전달 (onclick 따옴표 충돌 방지)
       return `<div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:10px;background:white" id="qrRow_${emp.id}">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:${token ? '12px' : '0'}">
           <div style="width:36px;height:36px;border-radius:8px;background:#f0fdf4;display:flex;align-items:center;justify-content:center;flex-shrink:0">
@@ -39129,19 +39139,19 @@ window.qrLoadList = async function qrLoadList() {
               <i class="fas fa-link" style="color:#9ca3af;margin-right:4px"></i>${url}
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button onclick="qrCopyKakao('${emp.name}', '${url}')" style="padding:6px 12px;background:#FEE500;color:#3C1E1E;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer">
+              <button class="qr-btn-kakao" data-name="${emp.name.replace(/"/g,'&quot;')}" data-url="${url}" data-empid="${emp.id}" style="padding:6px 12px;background:#FEE500;color:#3C1E1E;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer">
                 <i class="fas fa-comment" style="margin-right:4px"></i>카톡 전송용
               </button>
-              <button onclick="qrCopyLink('${url}')" style="padding:6px 12px;background:#166534;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
+              <button class="qr-btn-copy" data-url="${url}" style="padding:6px 12px;background:#166534;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
                 <i class="fas fa-copy" style="margin-right:4px"></i>링크 복사
               </button>
-              <button onclick="qrOpenLink('${url}')" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
+              <button class="qr-btn-open" data-url="${url}" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
                 <i class="fas fa-eye" style="margin-right:4px"></i>미리보기
               </button>
-              <button onclick="qrDownload(${emp.id}, '${emp.name}')" style="padding:6px 12px;background:#7c3aed;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
+              <button class="qr-btn-dl" data-empid="${emp.id}" data-name="${emp.name.replace(/"/g,'&quot;')}" style="padding:6px 12px;background:#7c3aed;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
                 <i class="fas fa-download" style="margin-right:4px"></i>QR저장
               </button>
-              <button onclick="qrRegen(${emp.id})" style="padding:6px 12px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
+              <button class="qr-btn-regen" data-empid="${emp.id}" style="padding:6px 12px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
                 <i class="fas fa-redo" style="margin-right:4px"></i>재생성
               </button>
             </div>
@@ -39152,6 +39162,23 @@ window.qrLoadList = async function qrLoadList() {
         </div>` : ''}
       </div>`
     }).join('')
+
+    // data-* 이벤트 위임 (onclick 따옴표 충돌 완전 방지)
+    listEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button')
+      if (!btn) return
+      if (btn.classList.contains('qr-btn-kakao')) {
+        qrCopyKakao(btn.dataset.name, btn.dataset.url)
+      } else if (btn.classList.contains('qr-btn-copy')) {
+        qrCopyLink(btn.dataset.url)
+      } else if (btn.classList.contains('qr-btn-open')) {
+        window.open(btn.dataset.url, '_blank')
+      } else if (btn.classList.contains('qr-btn-dl')) {
+        qrDownload(Number(btn.dataset.empid), btn.dataset.name)
+      } else if (btn.classList.contains('qr-btn-regen')) {
+        qrRegen(Number(btn.dataset.empid))
+      }
+    }, { once: false })
 
     // QR 캔버스 렌더링 (비동기, 하나씩 처리)
     for (const t of tokens) {

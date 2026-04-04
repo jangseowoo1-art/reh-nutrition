@@ -509,7 +509,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .spinner{width:40px;height:40px;border:4px solid #d1fae5;border-top-color:#166534;border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .error-box{margin:20px;padding:20px;background:#fff1f2;border-radius:12px;text-align:center;color:#b91c1c;}
-@media print{.bottom-bar,.month-nav button{display:none!important;} body{background:white;} .header{background:#166534 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+.change-log{background:white;margin:0 0 80px;border-top:4px solid #f0fdf4;}
+.change-log-header{padding:12px 16px;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;border-bottom:1px solid #f3f4f6;}
+.change-log-header span{font-size:13px;font-weight:700;color:#374151;flex:1;}
+.change-log-body{padding:0 16px 12px;}
+.change-item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f9fafb;font-size:12px;}
+.change-item:last-child{border-bottom:none;}
+@media print{.bottom-bar,.month-nav button,.change-log{display:none!important;} body{background:white;} .header{background:#166534 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
 </style>
 </head>
 <body>
@@ -540,7 +546,7 @@ function style(code, shifts) {
 }
 
 function render(d) {
-  const {employee:emp, hospital, year, month, schedMap, workDays, codeCount, shifts, totalDays} = d
+  const {employee:emp, hospital, year, month, schedMap, workDays, codeCount, shifts, totalDays, changeLog} = d
   const td = new Date(), todayStr = td.getFullYear()+'-'+String(td.getMonth()+1).padStart(2,'0')+'-'+String(td.getDate()).padStart(2,'0')
 
   // 페이지 타이틀 업데이트
@@ -564,12 +570,44 @@ function render(d) {
     cells += '<div class="'+cls+'"><div class="day-num">'+day+'</div>'+(code?'<div class="shift-badge" style="'+st+'">'+code+'</div>':(dow===0?'<div style="font-size:8px;color:#fca5a5">휴</div>':''))+'</div>'
   }
 
+  // 변경 이력 섹션
+  const logs = changeLog || []
+  let changeHtml = ''
+  if (logs.length > 0) {
+    const items = logs.map(lg => {
+      const dt = lg.work_date  // 'YYYY-MM-DD'
+      const [y2,m2,d2] = dt.split('-')
+      const dateStr = parseInt(m2)+'월 '+parseInt(d2)+'일'
+      const oldTxt = lg.old_shift_code || '없음'
+      const newTxt = lg.new_shift_code || '삭제'
+      const oldSt = style(lg.old_shift_code, shifts)
+      const newSt = style(lg.new_shift_code, shifts)
+      const timeStr = lg.changed_at ? lg.changed_at.slice(0,16).replace('T',' ') : ''
+      return '<div class="change-item">'+
+        '<div style="width:52px;font-weight:700;color:#374151;flex-shrink:0">'+dateStr+'</div>'+
+        '<div style="padding:2px 7px;border-radius:5px;font-weight:700;font-size:11px;'+(oldSt||'background:#f3f4f6;color:#9ca3af')+'">'+oldTxt+'</div>'+
+        '<i class="fas fa-arrow-right" style="color:#9ca3af;font-size:10px;flex-shrink:0"></i>'+
+        '<div style="padding:2px 7px;border-radius:5px;font-weight:700;font-size:11px;'+(newSt||'background:#f3f4f6;color:#9ca3af')+'">'+newTxt+'</div>'+
+        '<div style="margin-left:auto;font-size:10px;color:#9ca3af;flex-shrink:0">'+timeStr+'</div>'+
+        '</div>'
+    }).join('')
+    changeHtml = '<div class="change-log">'+
+      '<div class="change-log-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">'+
+      '<i class="fas fa-history" style="color:#166534;font-size:13px"></i>'+
+      '<span>최근 스케줄 변경 이력 ('+logs.length+'건)</span>'+
+      '<i class="fas fa-chevron-down" style="color:#9ca3af;font-size:11px"></i>'+
+      '</div>'+
+      '<div class="change-log-body">'+items+'</div>'+
+      '</div>'
+  }
+
   document.getElementById('app').innerHTML =
     '<div class="header"><div style="display:flex;align-items:center;gap:10px"><div style="width:40px;height:40px;background:rgba(255,255,255,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-user" style="font-size:16px"></i></div><div><h1 style="font-size:17px;font-weight:800"><span style="opacity:.9;font-weight:500;font-size:14px">'+emp.name+'</span> 님의 근무표</h1><div class="sub">'+hospital.name+(emp.position?' · '+emp.position:'')+'</div></div></div></div>'+
     '<div class="month-nav"><button onclick="prev()"><i class="fas fa-chevron-left"></i></button><div class="month-label">'+year+'년 '+month+'월</div><button onclick="next()"><i class="fas fa-chevron-right"></i></button></div>'+
     '<div class="stats"><div class="stat-card"><div class="val">'+workDays+'</div><div class="lbl">근무일수</div></div>'+statsItems+'</div>'+
     '<div class="code-legend">'+legend+'</div>'+
     '<div class="calendar"><div class="cal-header"><div class="sun">일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="sat">토</div></div><div class="cal-grid">'+cells+'</div></div>'+
+    changeHtml+
     '<div class="bottom-bar"><button class="btn-print" onclick="window.print()"><i class="fas fa-print" style="margin-right:6px"></i>인쇄 / PDF 저장</button><button class="btn-share" onclick="share()" title="링크 복사"><i class="fas fa-share-alt"></i></button></div>'
 }
 

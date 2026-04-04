@@ -728,12 +728,22 @@ schedule.get('/public/:token', async (c) => {
     FROM schedule_shifts WHERE hospital_id=? AND is_active=1 ORDER BY sort_order
   `).bind(tokenRow.hospital_id).all<any>()
 
+  // 최근 변경 이력 (최근 30일, 최대 20건)
+  const changeLog = await c.env.DB.prepare(`
+    SELECT work_date, old_shift_code, new_shift_code, changed_at
+    FROM schedule_change_log
+    WHERE employee_id=? AND changed_at >= datetime('now', '-30 days')
+    ORDER BY changed_at DESC
+    LIMIT 20
+  `).bind(tokenRow.employee_id).all<any>()
+
   return c.json({
     employee: { id: tokenRow.employee_id, name: tokenRow.emp_name, position: tokenRow.position },
     hospital: { name: tokenRow.hospital_name },
     year, month, schedMap, workDays, codeCount,
     shifts: shifts.results || [],
     totalDays: lastDay,
+    changeLog: changeLog.results || [],
   })
 })
 
@@ -1006,12 +1016,28 @@ schedule.post('/save', async (c) => {
   if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
   if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
 
+  // 변경 전 기존 스케줄 조회 (변경 이력용)
+  const oldRow = await c.env.DB.prepare(
+    `SELECT shift_code FROM daily_schedules WHERE hospital_id=? AND employee_id=? AND work_date=?`
+  ).bind(emp.hospital_id, employeeId, workDate).first<any>()
+  const oldCode = oldRow?.shift_code ?? null
+
   await upsertScheduleWithCalc(
     c.env.DB, emp.hospital_id, employeeId, workDate,
     shiftCode, shiftId || null, leaveType,
     !!isOvertime, overtimeHours || 0,
     !!isTempStaff, !!isNightWork, tempType || null, tempHours || 0, note || null
   )
+
+  // 변경 이력 기록 (내용이 실제로 바뀐 경우만)
+  const newCode = shiftCode || null
+  if (oldCode !== newCode) {
+    await c.env.DB.prepare(
+      `INSERT INTO schedule_change_log (hospital_id, employee_id, work_date, old_shift_code, new_shift_code, changed_by)
+       VALUES (?,?,?,?,?,?)`
+    ).bind(emp.hospital_id, employeeId, workDate, oldCode, newCode, (user as any).id || null).run()
+  }
+
   return c.json({ success: true })
 })
 
@@ -1037,12 +1063,28 @@ schedule.post('/save-batch', async (c) => {
     const emp = empCache[employeeId]
     if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) continue
 
+    // 변경 전 기존 코드 조회 (변경 이력용)
+    const oldRow2 = await c.env.DB.prepare(
+      `SELECT shift_code FROM daily_schedules WHERE hospital_id=? AND employee_id=? AND work_date=?`
+    ).bind(emp.hospital_id, employeeId, workDate).first<any>()
+    const oldCode = oldRow2?.shift_code ?? null
+
     await upsertScheduleWithCalc(
       c.env.DB, emp.hospital_id, employeeId, workDate,
       shiftCode, shiftId || null, leaveType,
       !!isOvertime, overtimeHours || 0,
       !!isTempStaff, !!isNightWork, tempType || null, tempHours || 0, note || null
     )
+
+    // 변경 이력 기록 (내용 변경 시)
+    const newCode = shiftCode || null
+    if (oldCode !== newCode) {
+      await c.env.DB.prepare(
+        `INSERT INTO schedule_change_log (hospital_id, employee_id, work_date, old_shift_code, new_shift_code, changed_by)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(emp.hospital_id, employeeId, workDate, oldCode, newCode, (user as any).id || null).run()
+    }
+
     count++
   }
   return c.json({ success: true, count })
