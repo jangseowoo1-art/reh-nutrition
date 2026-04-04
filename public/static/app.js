@@ -12259,19 +12259,24 @@ async function renderSchedule() {
   // 스케줄 관리 메뉴 진입 시 항상 월간 스케줄 탭을 첫 화면으로 표시
   scheduleTab = 'schedule'
 
+  // admin이 병원을 선택한 경우 hospitalId 파라미터 포함
+  const hId = App.role === 'admin' && App.currentHospitalId ? App.currentHospitalId : null
+  const hq  = hId ? `&hospitalId=${hId}` : ''
+  const hqs = hId ? `?hospitalId=${hId}` : ''
+
   // 모든 데이터 병렬 로드
   const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData, holidayPolicySummaryData] = await Promise.all([
-    api('GET', '/api/schedule/employees').catch(() => []),
-    api('GET', '/api/schedule/shifts').catch(() => []),
-    api('GET', '/api/schedule/positions').catch(() => []),
-    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
-    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => []),
-    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', '/api/schedule/work-settings').catch(() => null),
-    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    api('GET', `/api/schedule/employees${hqs}`).catch(() => []),
+    api('GET', `/api/schedule/shifts${hqs}`).catch(() => []),
+    api('GET', `/api/schedule/positions${hqs}`).catch(() => []),
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/work-settings${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null)
   ])
 
   scheduleEmployees = empData || []
@@ -12298,13 +12303,18 @@ async function reloadScheduleMonth() {
   const tc = document.getElementById('scheduleTabContent')
   if (tc) tc.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
+  // admin이 병원을 선택한 경우 hospitalId 파라미터 포함
+  const hId = App.role === 'admin' && App.currentHospitalId ? App.currentHospitalId : null
+  const hq  = hId ? `&hospitalId=${hId}` : ''   // 기존 쿼리에 추가용
+  const hqs = hId ? `?hospitalId=${hId}` : ''   // 쿼리가 없는 경로용
+
   const [offGrants, monthData, leaveAlerts, analysisData, mealStats, holidayPolicySum] = await Promise.all([
-    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
-    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null)
   ])
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
@@ -19898,9 +19908,8 @@ window.saveWorkSettings = async () => {
     showToast('근무 환경 설정이 저장되었습니다', 'success')
     scheduleWorkSettings = body
     document.getElementById('workSettingsModal')?.classList.add('hidden')
-    // 스케줄 탭 재렌더 (경고 뱃지·부여휴무 반영)
-    const content = document.getElementById('pageContent')
-    if (content) renderScheduleTab(content)
+    // 근무설정 변경 후 off-grants 데이터 새로 불러와서 즉시 반영
+    await reloadScheduleMonth()
   } else {
     showToast('저장 실패', 'error')
   }
