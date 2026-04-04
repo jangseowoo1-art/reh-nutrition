@@ -81,6 +81,13 @@ app.get('/ingredient-prices', (c) => { c.header('Cache-Control','no-store'); ret
 app.get('/transaction-analysis', (c) => { c.header('Cache-Control','no-store'); return c.html(getAppShell()) })
 app.get('/executive', (c) => { c.header('Cache-Control','no-store'); return c.html(getExecutiveShell()) })
 
+// ── 직원용 개인 스케줄 공유 페이지 (QR 코드 스캔 후 표시) ──────
+app.get('/my-schedule/:token', (c) => {
+  c.header('Cache-Control', 'no-store')
+  const token = c.req.param('token')
+  return c.html(getMySchedulePage(token))
+})
+
 // ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
 app.notFound((c) => c.json({ error: 'Not Found' }, 404))
 app.onError((err, c) => {
@@ -435,6 +442,122 @@ function getExecutiveShell(): string {
 </main>
 
 <script src="/static/executive.js?v=20260330d"></script>
+</body>
+</html>`
+}
+
+// ── 직원용 개인 스케줄 모바일 페이지 ──────────────────────────
+function getMySchedulePage(token: string): string {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>내 근무표</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0fdf4;min-height:100vh;}
+.header{background:linear-gradient(135deg,#166534,#15803d);color:white;padding:16px 20px;position:sticky;top:0;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.2);}
+.header h1{font-size:18px;font-weight:700;}
+.header .sub{font-size:12px;opacity:.8;margin-top:2px;}
+.month-nav{display:flex;align-items:center;gap:8px;background:white;padding:10px 16px;border-bottom:1px solid #e5e7eb;}
+.month-nav button{width:32px;height:32px;border:1px solid #d1d5db;border-radius:8px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;}
+.month-nav .month-label{flex:1;text-align:center;font-weight:700;font-size:15px;color:#166534;}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 16px;background:white;border-bottom:1px solid #e5e7eb;}
+.stat-card{background:#f9fafb;border-radius:10px;padding:10px;text-align:center;}
+.stat-card .val{font-size:22px;font-weight:800;color:#166534;}
+.stat-card .lbl{font-size:10px;color:#6b7280;margin-top:2px;}
+.calendar{padding:12px 16px 80px;}
+.cal-header{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px;}
+.cal-header div{text-align:center;font-size:10px;font-weight:700;color:#6b7280;padding:4px 0;}
+.cal-header div.sun{color:#ef4444;}
+.cal-header div.sat{color:#3b82f6;}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+.cal-day{min-height:56px;border-radius:10px;padding:4px;display:flex;flex-direction:column;align-items:center;gap:2px;background:white;border:1px solid #f3f4f6;}
+.cal-day.empty{background:transparent;border-color:transparent;}
+.cal-day.today .day-num{background:#166534;color:white;border-radius:50%;}
+.cal-day.off-day{background:#fff1f2;}
+.cal-day .day-num{width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#374151;}
+.cal-day.sun .day-num{color:#ef4444;}
+.cal-day.sat .day-num{color:#3b82f6;}
+.shift-badge{padding:2px 6px;border-radius:5px;font-size:9px;font-weight:700;width:100%;text-align:center;max-width:38px;}
+.code-legend{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;background:white;border-bottom:1px solid #e5e7eb;}
+.legend-item{display:flex;align-items:center;gap:4px;font-size:10px;color:#374151;}
+.legend-dot{width:10px;height:10px;border-radius:3px;}
+.bottom-bar{position:fixed;bottom:0;left:0;right:0;background:white;border-top:1px solid #e5e7eb;padding:12px 16px;display:flex;gap:8px;z-index:10;box-shadow:0 -2px 8px rgba(0,0,0,.08);}
+.btn-print{flex:1;padding:10px;border-radius:10px;background:#166534;color:white;border:none;font-size:13px;font-weight:700;cursor:pointer;}
+.btn-share{padding:10px 14px;border-radius:10px;background:#f3f4f6;color:#374151;border:none;font-size:13px;cursor:pointer;}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;}
+.spinner{width:40px;height:40px;border:4px solid #d1fae5;border-top-color:#166534;border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.error-box{margin:20px;padding:20px;background:#fff1f2;border-radius:12px;text-align:center;color:#b91c1c;}
+@media print{.bottom-bar,.month-nav button{display:none!important;} body{background:white;} .header{background:#166534 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">근무표 불러오는 중...</p></div>
+</div>
+<script>
+const TOKEN = '${token}'
+let curY = new Date().getFullYear(), curM = new Date().getMonth()+1
+
+async function load() {
+  document.getElementById('app').innerHTML = '<div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">불러오는 중...</p></div>'
+  try {
+    const r = await fetch('/api/schedule/public/'+TOKEN+'?year='+curY+'&month='+curM)
+    if (!r.ok) throw new Error('유효하지 않은 링크입니다')
+    render(await r.json())
+  } catch(e) {
+    document.getElementById('app').innerHTML = '<div class="error-box"><i class="fas fa-exclamation-triangle" style="font-size:24px;margin-bottom:8px;display:block"></i><b>오류</b><p style="margin-top:6px;font-size:13px;">'+e.message+'</p></div>'
+  }
+}
+
+function style(code, shifts) {
+  if (!code) return ''
+  const sf = shifts.find(s => s.shift_code === code)
+  if (sf && sf.color) return 'background:'+sf.color+'22;color:'+sf.color
+  const m = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c','오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8','경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'}
+  return m[code] || 'background:#f3f4f6;color:#374151'
+}
+
+function render(d) {
+  const {employee:emp, hospital, year, month, schedMap, workDays, codeCount, shifts, totalDays} = d
+  const td = new Date(), todayStr = td.getFullYear()+'-'+String(td.getMonth()+1).padStart(2,'0')+'-'+String(td.getDate()).padStart(2,'0')
+
+  const legend = shifts.filter(s=>s.shift_code).map(s=>'<div class="legend-item"><div class="legend-dot" style="background:'+s.color+'33;border:1.5px solid '+s.color+'"></div><span>'+s.shift_code+(s.shift_name&&s.shift_name!==s.shift_code?' ('+s.shift_name+')':'')+'</span></div>').join('')+
+    ['연','휴'].map(c=>{const s=style(c,[]);const bg=s.match(/background:([^;]+)/);return '<div class="legend-item"><div class="legend-dot" style="background:'+(bg?bg[1]:'#eee')+'"></div><span>'+c+'</span></div>'}).join('')
+
+  const statsItems = Object.entries(codeCount).slice(0,2).map(([k,v])=>'<div class="stat-card"><div class="val" style="font-size:18px">'+v+'</div><div class="lbl">'+k+'</div></div>').join('')
+
+  const firstDow = new Date(year, month-1, 1).getDay()
+  let cells = ''
+  for (let i=0;i<firstDow;i++) cells += '<div class="cal-day empty"></div>'
+  for (let day=1;day<=totalDays;day++) {
+    const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
+    const dow = new Date(year,month-1,day).getDay()
+    const code = (schedMap[ds] && schedMap[ds].shift_code) || ''
+    const isOff = code==='연'||code==='휴'
+    const cls = 'cal-day'+(dow===0?' sun':'')+(dow===6?' sat':'')+(isOff?' off-day':'')+(ds===todayStr?' today':'')
+    const st = style(code, shifts)
+    cells += '<div class="'+cls+'"><div class="day-num">'+day+'</div>'+(code?'<div class="shift-badge" style="'+st+'">'+code+'</div>':(dow===0?'<div style="font-size:8px;color:#fca5a5">휴</div>':''))+'</div>'
+  }
+
+  document.getElementById('app').innerHTML =
+    '<div class="header"><h1><i class="fas fa-calendar-alt" style="margin-right:6px"></i>'+emp.name+' 님의 근무표</h1><div class="sub">'+hospital.name+' · '+(emp.position||'')+'</div></div>'+
+    '<div class="month-nav"><button onclick="prev()"><i class="fas fa-chevron-left"></i></button><div class="month-label">'+year+'년 '+month+'월</div><button onclick="next()"><i class="fas fa-chevron-right"></i></button></div>'+
+    '<div class="stats"><div class="stat-card"><div class="val">'+workDays+'</div><div class="lbl">근무일수</div></div>'+statsItems+'</div>'+
+    '<div class="code-legend">'+legend+'</div>'+
+    '<div class="calendar"><div class="cal-header"><div class="sun">일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="sat">토</div></div><div class="cal-grid">'+cells+'</div></div>'+
+    '<div class="bottom-bar"><button class="btn-print" onclick="window.print()"><i class="fas fa-print" style="margin-right:6px"></i>인쇄 / PDF 저장</button><button class="btn-share" onclick="share()" title="링크 복사"><i class="fas fa-share-alt"></i></button></div>'
+}
+
+function prev(){curM--;if(curM<1){curM=12;curY--}load()}
+function next(){curM++;if(curM>12){curM=1;curY++}load()}
+function share(){const u=location.href;if(navigator.share)navigator.share({title:'내 근무표',url:u});else if(navigator.clipboard)navigator.clipboard.writeText(u).then(()=>alert('링크가 복사되었습니다'))}
+load()
+</script>
 </body>
 </html>`
 }

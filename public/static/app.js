@@ -12441,6 +12441,24 @@ function renderScheduleTab(content) {
           title="하단 툴바 숨기기">
           <i class="fas fa-eye-slash"></i><span class="hidden sm:inline"> 툴바ON</span>
         </button>
+        <span class="w-px h-4 bg-gray-300"></span>
+        <!-- 뷰 전환 -->
+        <span class="text-xs text-gray-400 font-medium">뷰:</span>
+        <button onclick="openStaffScheduleView()"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700"
+          title="직원에게 공유할 단순 근무표">
+          <i class="fas fa-user mr-1"></i>직원용
+        </button>
+        <button onclick="openExecutiveSummaryView()"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-600 text-white hover:bg-purple-700"
+          title="운영진용 요약 현황">
+          <i class="fas fa-chart-pie mr-1"></i>운영진용
+        </button>
+        <button onclick="openQrManageModal()"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-500 text-white hover:bg-orange-600"
+          title="직원별 QR코드 / 개인 근무표 링크">
+          <i class="fas fa-qrcode mr-1"></i>QR 공유
+        </button>
       </div>` : ''}
     </div>
 
@@ -13123,6 +13141,281 @@ async function deleteSubstituteOff(id) {
   }
 }
 
+// ─── 스케줄 뷰 모드 ('admin' | 'staff' | 'executive') ────────
+let _schedViewMode = 'admin'
+window.switchSchedView = function(mode) {
+  _schedViewMode = mode
+  const tc = document.getElementById('schedTabContent')
+  if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  setTimeout(() => { initExtWorkerEvents(); _syncToolbarToggleBtn() }, 100)
+}
+
+// ── 직원 공유 뷰 렌더 함수 ────────────────────────────────────
+function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSet, offLabelMap, getShiftStyle, viewTabsHtml }) {
+  const year = App.currentYear, month = App.currentMonth
+  const shiftColorMap = {}
+  shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
+
+  function getCodeStyle(code) {
+    if (!code || code === '-') return 'background:#f9fafb;color:#9ca3af'
+    if (shiftColorMap[code]) {
+      const hex = shiftColorMap[code]
+      return `background:${hex}22;color:${hex};font-weight:700`
+    }
+    const defMap = {
+      '연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
+      '오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8',
+      '경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'
+    }
+    return defMap[code] || 'background:#f3f4f6;color:#374151'
+  }
+
+  const md = scheduleMonthData
+  const sm = md?.sched_map || {}
+
+  // 직원 행 생성
+  const rows = emps.map(emp => {
+    let workCount = 0
+    const cells = Array.from({length: days}, (_, i) => {
+      const day = i + 1
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+      const dow = new Date(year, month-1, day).getDay()
+      const key = `${emp.id}_${ds}`
+      const entry = sm[key] || {}
+      const code = entry.shift_code || ''
+      const isOff = code==='연'||code==='휴'
+      const isSun = dow===0, isSat = dow===6
+      if (code && !isOff && code!=='-') workCount++
+      const bgDay = isOff ? '#fff1f2' : allOffSet.has(ds) ? '#fffbeb' : isSun ? '#fff5f5' : isSat ? '#eff6ff' : 'white'
+      const codeSt = code ? getCodeStyle(code) : ''
+      return `<td style="padding:1px;text-align:center;min-width:28px;border-left:1px solid ${isSun?'#fca5a5':isSat?'#93c5fd':'#e5e7eb'};background:${bgDay}">
+        ${code ? `<span style="${codeSt};padding:1px 4px;border-radius:3px;font-size:10px;font-weight:700;display:block;text-align:center">${code}</span>` : ''}
+      </td>`
+    }).join('')
+
+    return `<tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:6px 10px;min-width:100px;position:sticky;left:0;background:white;z-index:5;border-right:2px solid #e5e7eb">
+        <div style="font-size:12px;font-weight:700;color:#374151">${emp.name}</div>
+        <div style="font-size:10px;color:#9ca3af">${emp.position||''}</div>
+      </td>
+      ${cells}
+      <td style="padding:4px 6px;text-align:center;min-width:36px;border-left:2px solid #e5e7eb;font-weight:800;color:#166534;font-size:13px">${workCount}</td>
+    </tr>`
+  }).join('')
+
+  // 날짜 헤더
+  const dateHeader = Array.from({length: days}, (_, i) => {
+    const day = i+1
+    const dow = new Date(year, month-1, day).getDay()
+    const isSun = dow===0, isSat = dow===6
+    const dayNames = ['일','월','화','수','목','금','토']
+    return `<th style="padding:4px 1px;min-width:28px;text-align:center;font-size:10px;border-left:1px solid ${isSun?'#fca5a5':isSat?'#93c5fd':'rgba(255,255,255,.2)'};background:${isSun?'#b91c1c':isSat?'#1d4ed8':'#166534'};color:white">
+      <div>${day}</div><div style="font-size:8px;opacity:.8">${dayNames[dow]}</div>
+    </th>`
+  }).join('')
+
+  const legend = shifts.filter(s=>s.shift_code).map(s=>
+    `<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px">
+      <span style="width:24px;height:18px;border-radius:4px;background:${s.color}22;color:${s.color};font-weight:700;font-size:9px;display:flex;align-items:center;justify-content:center;border:1px solid ${s.color}44">${s.shift_code}</span>${s.shift_name||s.shift_code}
+    </span>`
+  ).join('')
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100">
+      ${viewTabsHtml}
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="font-size:16px;font-weight:800;color:#1e40af">${year}년 ${month}월 근무표 (직원 공유용)</h3>
+          <p style="font-size:11px;color:#6b7280;margin-top:2px"><i class="fas fa-info-circle" style="margin-right:4px;color:#3b82f6"></i>이름·근무코드·근무일수만 표시 — 급여·내부 지표 제외</p>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button onclick="window.print()" style="padding:7px 14px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:5px"></i>인쇄/PDF</button>
+          <button onclick="openQrManageModal()" style="padding:7px 14px;background:#166534;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer"><i class="fas fa-qrcode" style="margin-right:5px"></i>QR 공유</button>
+        </div>
+      </div>
+      ${legend ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;background:#f0fdf4;border-radius:8px">${legend}</div>` : ''}
+    </div>
+    <div style="overflow-x:auto;max-height:70vh">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead style="position:sticky;top:0;z-index:10">
+          <tr style="background:#166534;color:white">
+            <th style="padding:8px 12px;text-align:left;min-width:100px;position:sticky;left:0;background:#166534;z-index:20;border-right:2px solid #14532d">이름/직위</th>
+            ${dateHeader}
+            <th style="padding:6px 4px;min-width:36px;text-align:center;border-left:2px solid #14532d;background:#0f3d25;font-size:10px">근무</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>
+  <style>
+  @media print {
+    .bottom-bar, nav, .month-nav, button:not(.noprint) { display:none!important }
+    body { background:white }
+    .bg-white { box-shadow:none!important }
+    table { font-size:9px!important }
+    th, td { padding:2px!important }
+  }
+  </style>`
+}
+
+// ── 운영진 요약 뷰 렌더 함수 ──────────────────────────────────
+function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allOffSet, viewTabsHtml }) {
+  const year = App.currentYear, month = App.currentMonth
+  const md = scheduleMonthData
+  const sm = md?.sched_map || {}
+  const extWorkers = md?.ext_workers || []
+
+  // 직원별 근무 집계
+  const empStats = emps.map(emp => {
+    let workDays = 0, offDays = 0, otDays = 0
+    const codeCounts = {}
+    for (let d = 1; d <= days; d++) {
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const key = `${emp.id}_${ds}`
+      const entry = sm[key] || {}
+      const code = entry.shift_code || ''
+      if (!code || code==='-') continue
+      codeCounts[code] = (codeCounts[code]||0)+1
+      if (code==='연'||code==='휴'||code==='경조') offDays++
+      else if (code==='OT') { workDays++; otDays++ }
+      else workDays++
+    }
+    return { ...emp, workDays, offDays, otDays, codeCounts }
+  })
+
+  const totalWork = empStats.reduce((a,e)=>a+e.workDays,0)
+  const avgWork = empStats.length ? (totalWork/empStats.length).toFixed(1) : 0
+  const maxWork = Math.max(...empStats.map(e=>e.workDays), 0)
+  const minWork = empStats.length ? Math.min(...empStats.map(e=>e.workDays)) : 0
+
+  // 근무조별 사용 집계
+  const globalCodeCount = {}
+  empStats.forEach(e => { Object.entries(e.codeCounts).forEach(([c,n]) => { globalCodeCount[c]=(globalCodeCount[c]||0)+n }) })
+  const shiftColorMap = {}
+  shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
+  const defColorMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
+
+  // 외부인력 집계
+  const extMap = md?.ext_map || {}
+  let extWorkDays = 0
+  const extWorkerList = extWorkers || []
+  extWorkerList.forEach(w => {
+    for (let d=1;d<=days;d++) {
+      const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const key=`${w.id}_${ds}`
+      if (extMap[key]?.shift_type) extWorkDays++
+    }
+  })
+
+  // 직원별 근무 바 차트
+  const maxBar = Math.max(maxWork, 1)
+  const empBars = empStats.map(emp => {
+    const pct = Math.round((emp.workDays/maxBar)*100)
+    const warn = emp.workDays > avgWork*1.3 ? '#ef4444' : emp.workDays < avgWork*0.7 ? '#f59e0b' : '#166534'
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <div style="min-width:70px;font-size:11px;font-weight:600;color:#374151;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
+      <div style="flex:1;background:#f3f4f6;border-radius:4px;height:18px;position:relative">
+        <div style="width:${pct}%;background:${warn};height:100%;border-radius:4px;transition:width .3s"></div>
+        <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:700;color:#374151">${emp.workDays}일</span>
+      </div>
+      ${emp.workDays > avgWork*1.3 ? '<span style="font-size:9px;color:#ef4444;font-weight:700">⚠과중</span>' : emp.workDays < avgWork*0.7 ? '<span style="font-size:9px;color:#f59e0b;font-weight:700">⚠부족</span>' : ''}
+    </div>`
+  }).join('')
+
+  // 근무조 분포 카드
+  const topCodes = Object.entries(globalCodeCount).sort((a,b)=>b[1]-a[1]).slice(0,6)
+  const codeCards = topCodes.map(([code,cnt]) => {
+    const color = shiftColorMap[code] || defColorMap[code] || '#6b7280'
+    return `<div style="background:${color}11;border:1.5px solid ${color}44;border-radius:10px;padding:10px;text-align:center;min-width:64px">
+      <div style="font-size:20px;font-weight:800;color:${color}">${cnt}</div>
+      <div style="font-size:10px;color:${color};font-weight:700">${code}</div>
+    </div>`
+  }).join('')
+
+  // 경고 시스템
+  const warnings = []
+  if (emps.length > 0) {
+    const overloaded = empStats.filter(e=>e.workDays>avgWork*1.3)
+    if (overloaded.length) warnings.push(`⚠️ 과중 근무: ${overloaded.map(e=>e.name).join(', ')} (평균 ${avgWork}일 대비 130% 초과)`)
+    const underloaded = empStats.filter(e=>e.workDays<avgWork*0.7 && e.workDays>0)
+    if (underloaded.length) warnings.push(`📉 근무 부족: ${underloaded.map(e=>e.name).join(', ')} (평균 대비 70% 미만)`)
+  }
+  const warningHtml = warnings.length ? warnings.map(w=>
+    `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 12px;font-size:12px;color:#9a3412">${w}</div>`
+  ).join('') : `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;font-size:12px;color:#166534"><i class="fas fa-check-circle" style="margin-right:6px"></i>특이 사항 없음 — 근무 분포가 양호합니다</div>`
+
+  return `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100">
+      ${viewTabsHtml}
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="font-size:16px;font-weight:800;color:#7c3aed">${year}년 ${month}월 운영진 요약</h3>
+          <p style="font-size:11px;color:#6b7280;margin-top:2px"><i class="fas fa-chart-bar" style="margin-right:4px;color:#7c3aed"></i>전체 인력 현황 및 근무 분포 요약</p>
+        </div>
+        <button onclick="window.print()" style="padding:7px 14px;background:#7c3aed;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:5px"></i>보고서 출력</button>
+      </div>
+    </div>
+    <div style="padding:16px;overflow-y:auto;max-height:70vh;display:flex;flex-direction:column;gap:14px">
+      <!-- KPI 카드 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
+        <div style="background:linear-gradient(135deg,#166534,#16a34a);color:white;border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:28px;font-weight:800">${emps.length}</div>
+          <div style="font-size:11px;opacity:.85">재직 직원</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:white;border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:28px;font-weight:800">${avgWork}</div>
+          <div style="font-size:11px;opacity:.85">평균 근무일</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:28px;font-weight:800">${maxWork}</div>
+          <div style="font-size:11px;opacity:.85">최대 근무일</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#065f46,#047857);color:white;border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:28px;font-weight:800">${minWork}</div>
+          <div style="font-size:11px;opacity:.85">최소 근무일</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:28px;font-weight:800">${extWorkerList.length}</div>
+          <div style="font-size:11px;opacity:.85">외부인력</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#9d174d,#be185d);color:white;border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:28px;font-weight:800">${extWorkDays}</div>
+          <div style="font-size:11px;opacity:.85">외부 근무일수</div>
+        </div>
+      </div>
+
+      <!-- 경고 -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:2px"><i class="fas fa-exclamation-triangle" style="margin-right:6px;color:#f59e0b"></i>근무 불균형 경고</div>
+        ${warningHtml}
+      </div>
+
+      <!-- 직원별 근무 분포 바 차트 -->
+      <div style="background:#f9fafb;border-radius:12px;padding:14px">
+        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-users" style="margin-right:6px;color:#2563eb"></i>직원별 근무일수</div>
+        ${empBars}
+      </div>
+
+      <!-- 근무조 분포 -->
+      ${topCodes.length ? `
+      <div style="background:#f9fafb;border-radius:12px;padding:14px">
+        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-layer-group" style="margin-right:6px;color:#7c3aed"></i>근무유형 분포 (횟수)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${codeCards}</div>
+      </div>` : ''}
+    </div>
+  </div>
+  <style>
+  @media print {
+    nav, button { display:none!important }
+    body { background:white }
+    .bg-white { box-shadow:none!important }
+  }
+  </style>`
+}
+
 // ─── 월간 스케줄 탭 ──────────────────────────────────────────
 function renderMonthlyScheduleTab() {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
@@ -13172,10 +13465,29 @@ function renderMonthlyScheduleTab() {
   const schedMap  = md?.sched_map  || {}
   const leaveMap  = md?.leave_map  || {}   // { empId: { annual:{total,used}, ... } }
 
+  // ── 뷰 모드별 탭 버튼 헤더 공통 ──────────────────────────────
+  const viewTabsHtml = `
+  <div style="display:flex;gap:4px;margin-bottom:12px;padding:4px;background:#f9fafb;border-radius:12px;width:fit-content">
+    <button onclick="switchSchedView('admin')" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;${_schedViewMode==='admin'?'background:#166534;color:white;box-shadow:0 2px 8px rgba(22,101,52,.3)':'background:transparent;color:#6b7280'}" title="입력·분석 전용 (관리자)"><i class="fas fa-table" style="margin-right:5px"></i>관리자 뷰</button>
+    <button onclick="switchSchedView('staff')" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;${_schedViewMode==='staff'?'background:#2563eb;color:white;box-shadow:0 2px 8px rgba(37,99,235,.3)':'background:transparent;color:#6b7280'}" title="직원 공유용 (급여 제외)"><i class="fas fa-user" style="margin-right:5px"></i>직원 공유 뷰</button>
+    <button onclick="switchSchedView('executive')" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;${_schedViewMode==='executive'?'background:#7c3aed;color:white;box-shadow:0 2px 8px rgba(124,58,237,.3)':'background:transparent;color:#6b7280'}" title="경영진 요약 (그래프·지표)"><i class="fas fa-chart-bar" style="margin-right:5px"></i>운영진 뷰</button>
+  </div>`
+
+  // ── 직원 공유 뷰 렌더 ──────────────────────────────────────
+  if (_schedViewMode === 'staff') {
+    return renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSet, offLabelMap, getShiftStyle, viewTabsHtml })
+  }
+
+  // ── 운영진 요약 뷰 렌더 ────────────────────────────────────
+  if (_schedViewMode === 'executive') {
+    return renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allOffSet, viewTabsHtml })
+  }
+
   return `
   ${renderOffGrantsPanel()}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <div class="px-5 py-4 border-b border-gray-100">
+      ${viewTabsHtml}
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h3 class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 근무 스케줄</h3>
@@ -13207,6 +13519,7 @@ function renderMonthlyScheduleTab() {
                 const active = extCfg.filter(c => c.enabled !== false)
                 if (active.length === 0) {
                   // 기본 4가지
+
                   const defaults = [
                     {key:'morning',  label:'오전', bg:'#fff7ed', color:'#c2410c'},
                     {key:'afternoon',label:'오후', bg:'#fef3c7', color:'#b45309'},
@@ -13237,6 +13550,10 @@ function renderMonthlyScheduleTab() {
               } catch(e) { return '' }
             })()}
           </div>
+          <!-- QR 공유 관리 버튼 -->
+          <button onclick="openQrManageModal()" style="padding:5px 10px;background:#166534;color:white;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap" title="직원별 QR 코드 생성 및 관리">
+            <i class="fas fa-qrcode" style="margin-right:4px"></i>QR 공유
+          </button>
         </div>
       </div>
     </div>
@@ -37194,3 +37511,372 @@ async function confirmInvoiceVendorTest(vendorId, hospitalId) {
       })
   }, 3000)
 })()
+
+// ══════════════════════════════════════════════════════════════
+// ① 직원용 스케줄 뷰 (단순 출력용 근무표)
+// ══════════════════════════════════════════════════════════════
+window.openStaffScheduleView = () => {
+  const year = App.currentYear, month = App.currentMonth
+  const employees = scheduleEmployees || []
+  const schedMap = scheduleMonthData?.sched_map || {}
+  const shifts = scheduleShifts || []
+  const days = new Date(year, month, 0).getDate()
+  const mm = String(month).padStart(2,'0')
+
+  const shiftColorMap = {}
+  shifts.forEach(s => { if (s.color) shiftColorMap[s.shift_code] = s.color })
+
+  function cellStyle(code) {
+    if (!code) return 'background:#f9fafb;color:#9ca3af'
+    if (shiftColorMap[code]) return `background:${shiftColorMap[code]}22;color:${shiftColorMap[code]};font-weight:700`
+    const m = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
+      '오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8',
+      '경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'}
+    return m[code] || 'background:#f3f4f6;color:#374151'
+  }
+
+  const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
+
+  // 날짜 헤더
+  let thHtml = '<th style="padding:6px 10px;text-align:left;font-size:11px;min-width:100px;position:sticky;left:0;background:#166534;z-index:3">이름</th>'
+  for (let d=1; d<=days; d++) {
+    const dow = getDayOfWeek(year, month, d)
+    const isSun = dow==='일', isSat = dow==='토'
+    thHtml += `<th style="min-width:28px;padding:4px 2px;text-align:center;font-size:10px;color:${isSun?'#fca5a5':isSat?'#93c5fd':'white'};${isSun||isSat?'background:#1a4731;':''}">
+      <div>${d}</div><div style="font-size:8px;opacity:.8">${dow}</div></th>`
+  }
+  thHtml += '<th style="padding:4px 6px;font-size:10px;min-width:36px">근무</th>'
+
+  // 직원 행
+  let rowsHtml = ''
+  employees.filter(e => e.is_active !== 0).forEach((emp, idx) => {
+    const bg = idx % 2 === 0 ? '#fff' : '#f9fafb'
+    let workDays = 0
+    let cells = ''
+    for (let d=1; d<=days; d++) {
+      const dd = String(d).padStart(2,'0')
+      const dateStr = `${year}-${mm}-${dd}`
+      const rec = schedMap[`${emp.id}_${dateStr}`]
+      const code = rec?.shift_code || ''
+      const dow = getDayOfWeek(year, month, d)
+      const isSun = dow==='일', isSat = dow==='토'
+      const bg2 = isSun ? '#fff1f2' : isSat ? '#fffbeb' : bg
+      if (code && code !== '연' && code !== '휴') workDays++
+      cells += `<td style="padding:2px 1px;text-align:center;background:${bg2};border-left:1px solid #f3f4f6">
+        ${code ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:4px;font-size:9px;font-weight:700;${cellStyle(code)}">${code}</span>` : '<span style="color:#e5e7eb;font-size:9px">·</span>'}
+      </td>`
+    }
+    rowsHtml += `<tr style="border-bottom:1px solid #f3f4f6">
+      <td style="padding:5px 10px;position:sticky;left:0;background:${bg};z-index:1;min-width:100px;border-right:1px solid #e5e7eb">
+        <div style="font-size:11px;font-weight:600;color:#374151">${emp.name}</div>
+        <div style="font-size:9px;color:#9ca3af">${emp.position || ''}</div>
+      </td>
+      ${cells}
+      <td style="text-align:center;font-size:10px;font-weight:700;color:#166534;padding:2px 4px">${workDays}</td>
+    </tr>`
+  })
+
+  const legend = shifts.map(s =>
+    `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#374151;background:${s.color}22;border:1px solid ${s.color}44;border-radius:4px;padding:2px 6px">
+      <span style="font-weight:700;color:${s.color}">${s.shift_code}</span> ${s.shift_name||''} ${s.start_time||''}${s.start_time?'~':''}${s.end_time||''}
+    </span>`
+  ).join('')
+
+  const html = `
+  <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.12);max-width:calc(100vw - 40px)">
+    <div style="background:linear-gradient(135deg,#166534,#15803d);padding:16px 20px;display:flex;align-items:center;justify-content:between;gap:12px">
+      <div>
+        <h2 style="color:white;font-size:16px;font-weight:800;margin:0">${year}년 ${month}월 근무 스케줄</h2>
+        <p style="color:rgba(255,255,255,.7);font-size:11px;margin:4px 0 0">직원용 · 금액/분석 제외</p>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button onclick="window.print()" style="padding:6px 12px;background:white;color:#166534;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>인쇄</button>
+        <button onclick="document.getElementById('staffSchedModal').remove()" style="padding:6px 10px;background:rgba(255,255,255,.2);color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer">닫기</button>
+      </div>
+    </div>
+    <div style="padding:10px 16px;background:#f9fafb;border-bottom:1px solid #e5e7eb;display:flex;flex-wrap:wrap;gap:6px">
+      ${legend}
+    </div>
+    <div style="overflow-x:auto;max-height:70vh">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
+        <thead style="position:sticky;top:0;z-index:10">
+          <tr style="background:#166534;color:white">${thHtml}</tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+  </div>`
+
+  const modal = document.createElement('div')
+  modal.id = 'staffSchedModal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9000;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto'
+  modal.innerHTML = html
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  document.body.appendChild(modal)
+}
+
+// ══════════════════════════════════════════════════════════════
+// ③ 운영진용 요약 뷰 (대시보드 스타일)
+// ══════════════════════════════════════════════════════════════
+window.openExecutiveSummaryView = () => {
+  const year = App.currentYear, month = App.currentMonth
+  const employees = (scheduleEmployees || []).filter(e => e.is_active !== 0)
+  const schedMap = scheduleMonthData?.sched_map || {}
+  const shifts = scheduleShifts || []
+  const extWorkers = scheduleExternalWorkers || []
+  const extMap = scheduleExtSchedMap || {}
+  const days = new Date(year, month, 0).getDate()
+  const mm = String(month).padStart(2,'0')
+
+  // 직원별 근무일수 계산
+  let totalWorkDays = 0, maxWorkDays = 0, minWorkDays = 999
+  const empStats = employees.map(emp => {
+    let wd = 0, codeCnt = {}
+    for (let d=1; d<=days; d++) {
+      const ds = `${year}-${mm}-${String(d).padStart(2,'0')}`
+      const code = schedMap[`${emp.id}_${ds}`]?.shift_code || ''
+      if (code && code !== '연' && code !== '휴') { wd++; codeCnt[code] = (codeCnt[code]||0)+1 }
+    }
+    totalWorkDays += wd
+    if (wd > maxWorkDays) maxWorkDays = wd
+    if (wd < minWorkDays) minWorkDays = wd
+    return { name: emp.name, position: emp.position, wd, codeCnt }
+  })
+  if (minWorkDays === 999) minWorkDays = 0
+  const avgWorkDays = employees.length ? (totalWorkDays / employees.length).toFixed(1) : 0
+
+  // 코드별 총 집계
+  const totalCodeCnt = {}
+  empStats.forEach(e => Object.entries(e.codeCnt).forEach(([k,v]) => { totalCodeCnt[k] = (totalCodeCnt[k]||0) + v }))
+
+  // 외부인력 현황
+  const extTotal = extWorkers.length
+  let extWorkDays = 0
+  extWorkers.forEach(w => {
+    for (let d=1; d<=days; d++) {
+      const ds = `${year}-${mm}-${String(d).padStart(2,'0')}`
+      if (extMap[`${w.id}_${ds}`]?.shift_type) extWorkDays++
+    }
+  })
+
+  // 근무 분포 바 차트 HTML
+  const maxWd = Math.max(...empStats.map(e => e.wd), 1)
+  const barRows = empStats.map(e => {
+    const pct = Math.round(e.wd / maxWd * 100)
+    const color = e.wd >= avgWorkDays * 1.1 ? '#ef4444' : e.wd <= avgWorkDays * 0.9 ? '#f59e0b' : '#166534'
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <div style="width:70px;font-size:11px;color:#374151;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.name}</div>
+      <div style="flex:1;background:#f3f4f6;border-radius:4px;height:16px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="width:30px;text-align:right;font-size:11px;font-weight:700;color:${color}">${e.wd}일</div>
+    </div>`
+  }).join('')
+
+  // 코드 분포
+  const codeItems = Object.entries(totalCodeCnt).sort((a,b)=>b[1]-a[1]).map(([k,v]) => {
+    const sf = shifts.find(s => s.shift_code === k)
+    const col = sf?.color || '#6b7280'
+    return `<div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:${col}11;border:1px solid ${col}33;border-radius:8px">
+      <span style="font-size:16px;font-weight:800;color:${col}">${v}</span>
+      <div><div style="font-size:10px;font-weight:700;color:${col}">${k}</div><div style="font-size:9px;color:#9ca3af">${sf?.shift_name||''}</div></div>
+    </div>`
+  }).join('')
+
+  // 과부하 경고 (평균 +2일 이상)
+  const overloaded = empStats.filter(e => e.wd > Number(avgWorkDays) + 2)
+  const underloaded = empStats.filter(e => e.wd < Number(avgWorkDays) - 2 && e.wd > 0)
+  const warningHtml = overloaded.length || underloaded.length ? `
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px 16px;margin-top:12px">
+      <h4 style="font-size:12px;font-weight:700;color:#c2410c;margin:0 0 8px"><i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>인력 불균형 알림</h4>
+      ${overloaded.map(e => `<div style="font-size:11px;color:#c2410c">⚠️ <b>${e.name}</b> — ${e.wd}일 근무 (평균 +${(e.wd-Number(avgWorkDays)).toFixed(1)}일)</div>`).join('')}
+      ${underloaded.map(e => `<div style="font-size:11px;color:#b45309">🔵 <b>${e.name}</b> — ${e.wd}일 근무 (평균 -${(Number(avgWorkDays)-e.wd).toFixed(1)}일)</div>`).join('')}
+    </div>` : ''
+
+  const html = `
+  <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.12);max-width:680px;width:100%">
+    <div style="background:linear-gradient(135deg,#581c87,#7c3aed);padding:16px 20px;display:flex;align-items:center;gap:12px">
+      <div>
+        <h2 style="color:white;font-size:16px;font-weight:800;margin:0">${year}년 ${month}월 운영 현황</h2>
+        <p style="color:rgba(255,255,255,.7);font-size:11px;margin:4px 0 0">운영진 요약 · 개인정보 제외</p>
+      </div>
+      <button onclick="document.getElementById('execSummaryModal').remove()" style="margin-left:auto;padding:6px 10px;background:rgba(255,255,255,.2);color:white;border:none;border-radius:6px;font-size:11px;cursor:pointer">닫기</button>
+    </div>
+    <!-- KPI 카드 -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#e5e7eb;border-bottom:1px solid #e5e7eb">
+      ${[
+        {label:'총 직원', val:employees.length, icon:'fa-users', color:'#2563eb'},
+        {label:'평균 근무일', val:avgWorkDays+'일', icon:'fa-calendar-check', color:'#166534'},
+        {label:'최대 근무', val:maxWorkDays+'일', icon:'fa-arrow-up', color:'#ef4444'},
+        {label:'최소 근무', val:minWorkDays+'일', icon:'fa-arrow-down', color:'#f59e0b'},
+      ].map(c=>`<div style="background:white;padding:12px;text-align:center">
+        <i class="fas ${c.icon}" style="color:${c.color};font-size:16px;margin-bottom:4px;display:block"></i>
+        <div style="font-size:18px;font-weight:800;color:${c.color}">${c.val}</div>
+        <div style="font-size:10px;color:#9ca3af">${c.label}</div>
+      </div>`).join('')}
+    </div>
+    <!-- 파출/알바 현황 -->
+    ${extTotal > 0 ? `<div style="padding:10px 16px;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;gap:16px;align-items:center">
+      <i class="fas fa-people-carry" style="color:#ea580c;font-size:14px"></i>
+      <span style="font-size:12px;color:#c2410c;font-weight:600">외부인력 ${extTotal}명 운영 중</span>
+      <span style="font-size:11px;color:#9a3412">총 ${extWorkDays}일 근무</span>
+    </div>` : ''}
+    <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <!-- 근무 분포 -->
+      <div>
+        <h3 style="font-size:12px;font-weight:700;color:#374151;margin:0 0 10px"><i class="fas fa-chart-bar" style="margin-right:6px;color:#6b7280"></i>직원별 근무일수</h3>
+        <div>${barRows}</div>
+        ${warningHtml}
+      </div>
+      <!-- 코드 분포 -->
+      <div>
+        <h3 style="font-size:12px;font-weight:700;color:#374151;margin:0 0 10px"><i class="fas fa-th-large" style="margin-right:6px;color:#6b7280"></i>근무유형 현황</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${codeItems || '<p style="font-size:11px;color:#9ca3af">근무 데이터 없음</p>'}</div>
+      </div>
+    </div>
+  </div>`
+
+  const modal = document.createElement('div')
+  modal.id = 'execSummaryModal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9000;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto'
+  modal.innerHTML = html
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  document.body.appendChild(modal)
+}
+
+// ══════════════════════════════════════════════════════════════
+// QR 코드 공유 관리 모달
+// ══════════════════════════════════════════════════════════════
+window.openQrManageModal = async () => {
+  // QR 라이브러리 동적 로드
+  if (!window.QRCode) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
+      s.onload = res; s.onerror = rej
+      document.head.appendChild(s)
+    })
+  }
+
+  // 기존 모달 제거
+  document.getElementById('qrManageModal')?.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'qrManageModal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9000;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto'
+  modal.innerHTML = `
+    <div style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.2);width:100%;max-width:700px;max-height:90vh;display:flex;flex-direction:column">
+      <div style="background:linear-gradient(135deg,#ea580c,#f97316);padding:16px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0">
+        <i class="fas fa-qrcode" style="color:white;font-size:20px"></i>
+        <div>
+          <h2 style="color:white;font-size:16px;font-weight:800;margin:0">QR 코드 공유 관리</h2>
+          <p style="color:rgba(255,255,255,.8);font-size:11px;margin:3px 0 0">직원별 개인 근무표 QR코드를 생성하고 공유하세요</p>
+        </div>
+        <button onclick="document.getElementById('qrManageModal').remove()" style="margin-left:auto;padding:6px 10px;background:rgba(255,255,255,.2);color:white;border:none;border-radius:6px;cursor:pointer">닫기</button>
+      </div>
+      <div style="padding:14px 16px;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;gap:8px;flex-shrink:0">
+        <button onclick="qrBulkGenerate()" style="padding:8px 16px;background:#ea580c;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+          <i class="fas fa-magic" style="margin-right:6px"></i>전체 QR 일괄 생성
+        </button>
+        <span style="font-size:11px;color:#9a3412;align-self:center">· QR 스캔 시 본인 근무표만 확인 (급여 제외)</span>
+      </div>
+      <div id="qrEmployeeList" style="overflow-y:auto;padding:12px 16px;flex:1">
+        <div style="text-align:center;padding:30px;color:#9ca3af"><i class="fas fa-circle-notch fa-spin"></i> 불러오는 중...</div>
+      </div>
+    </div>`
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+  document.body.appendChild(modal)
+
+  await qrLoadList()
+}
+
+async function qrLoadList() {
+  const listEl = document.getElementById('qrEmployeeList')
+  if (!listEl) return
+  try {
+    const data = await api('GET', '/api/schedule/share-tokens')
+    const tokens = data.tokens || []
+    const employees = (scheduleEmployees || []).filter(e => e.is_active !== 0)
+    const tokenMap = {}
+    tokens.forEach(t => { tokenMap[t.employee_id] = t.token })
+
+    listEl.innerHTML = employees.map(emp => {
+      const token = tokenMap[emp.id]
+      const url = token ? `${location.origin}/my-schedule/${token}` : ''
+      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #f3f4f6" id="qrRow_${emp.id}">
+        <div style="width:40px;height:40px;border-radius:8px;background:#f0fdf4;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-user" style="color:#166534;font-size:14px"></i>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:700;color:#374151">${emp.name}</div>
+          <div style="font-size:10px;color:#9ca3af">${emp.position || ''}</div>
+        </div>
+        ${token ? `
+        <div style="display:flex;gap:6px;align-items:center">
+          <canvas id="qr_${emp.id}" style="border-radius:6px"></canvas>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <button onclick="qrCopyLink('${url}')" style="padding:4px 8px;background:#166534;color:white;border:none;border-radius:5px;font-size:10px;cursor:pointer" title="링크 복사">
+              <i class="fas fa-link"></i> 복사
+            </button>
+            <button onclick="qrOpenLink('${url}')" style="padding:4px 8px;background:#3b82f6;color:white;border:none;border-radius:5px;font-size:10px;cursor:pointer" title="미리보기">
+              <i class="fas fa-eye"></i> 보기
+            </button>
+            <button onclick="qrRegen(${emp.id})" style="padding:4px 8px;background:#f3f4f6;color:#6b7280;border:none;border-radius:5px;font-size:10px;cursor:pointer" title="QR 재생성">
+              <i class="fas fa-redo"></i>
+            </button>
+          </div>
+        </div>` : `
+        <button onclick="qrGenOne(${emp.id})" style="padding:6px 12px;background:#ea580c;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">
+          <i class="fas fa-qrcode" style="margin-right:4px"></i>QR 생성
+        </button>`}
+      </div>`
+    }).join('')
+
+    // QR 캔버스 렌더링
+    tokens.forEach(t => {
+      const canvas = document.getElementById(`qr_${t.employee_id}`)
+      if (canvas && window.QRCode) {
+        const url = `${location.origin}/my-schedule/${t.token}`
+        QRCode.toCanvas(canvas, url, { width: 72, margin: 1, color:{dark:'#166534',light:'#ffffff'} })
+          .catch(() => {})
+      }
+    })
+  } catch(e) {
+    listEl.innerHTML = `<div style="color:#ef4444;padding:20px;text-align:center">오류: ${e.message}</div>`
+  }
+}
+
+window.qrGenOne = async (empId) => {
+  try {
+    await api('POST', '/api/schedule/share-tokens', { employeeId: empId })
+    await qrLoadList()
+    showToast('QR 코드가 생성되었습니다', 'success')
+  } catch(e) { showToast('생성 실패: ' + e.message, 'error') }
+}
+
+window.qrRegen = async (empId) => {
+  if (!confirm('QR 코드를 재생성하면 기존 링크가 무효화됩니다. 계속하시겠습니까?')) return
+  try {
+    await api('POST', '/api/schedule/share-tokens', { employeeId: empId })
+    await qrLoadList()
+    showToast('QR 코드가 재생성되었습니다', 'success')
+  } catch(e) { showToast('재생성 실패', 'error') }
+}
+
+window.qrBulkGenerate = async () => {
+  try {
+    const r = await api('POST', '/api/schedule/share-tokens/bulk')
+    await qrLoadList()
+    showToast(`${r.created}명 QR 코드 생성 완료`, 'success')
+  } catch(e) { showToast('일괄 생성 실패', 'error') }
+}
+
+window.qrCopyLink = (url) => {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => showToast('링크가 복사되었습니다', 'success'))
+  } else {
+    prompt('아래 링크를 복사하세요:', url)
+  }
+}
+
+window.qrOpenLink = (url) => { window.open(url, '_blank') }
