@@ -12418,7 +12418,7 @@ function renderScheduleTab(content) {
       </div>
       <!-- 2줄: 월간 스케줄 탭 전용 기능 버튼 (일괄입력 / 주복사 / 인쇄 / 엑셀) -->
       ${tab === 'schedule' ? `
-      <div class="px-5 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+      <div class="px-5 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2 flex-wrap">
         <span class="text-xs text-gray-400 font-medium mr-1">스케줄 도구</span>
         <button onclick="openBatchInputModal()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700">
           <i class="fas fa-th mr-1"></i>일괄입력
@@ -12432,6 +12432,14 @@ function renderScheduleTab(content) {
         </button>
         <button onclick="exportScheduleExcel()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800">
           <i class="fas fa-file-excel mr-1"></i>엑셀
+        </button>
+        <span class="w-px h-4 bg-gray-300"></span>
+        <!-- 하단 툴바 표시/숨기기 토글 -->
+        <button id="schedToolbarToggleBtn" onclick="toggleSchedToolbar()"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-colors flex items-center gap-1"
+          style="background:#15803d"
+          title="하단 툴바 숨기기">
+          <i class="fas fa-eye-slash"></i><span class="hidden sm:inline"> 툴바ON</span>
         </button>
       </div>` : ''}
     </div>
@@ -12457,6 +12465,8 @@ function renderScheduleTab(content) {
   `
   // 외부인력 이벤트 위임 초기화
   setTimeout(initExtWorkerEvents, 0)
+  // 툴바 토글 버튼 초기 상태 동기화
+  setTimeout(_syncToolbarToggleBtn, 0)
 }
 
 // ─── 인사카드 탭 ─────────────────────────────────────────────
@@ -17015,12 +17025,42 @@ function schedShowFillHandle() {
 }
 
 // ── 선택 툴바 업데이트 ────────────────────────────────────────
+// 툴바 표시 여부 (사용자 설정, localStorage 저장)
+let _toolbarEnabled = localStorage.getItem('schedToolbarEnabled') !== 'false'
+
+function _syncToolbarToggleBtn() {
+  const btn = document.getElementById('schedToolbarToggleBtn')
+  if (!btn) return
+  if (_toolbarEnabled) {
+    btn.style.background = '#15803d'
+    btn.title = '하단 툴바 숨기기'
+    btn.innerHTML = '<i class="fas fa-eye-slash"></i><span class="hidden sm:inline"> 툴바ON</span>'
+  } else {
+    btn.style.background = '#4b5563'
+    btn.title = '하단 툴바 표시'
+    btn.innerHTML = '<i class="fas fa-bars"></i><span class="hidden sm:inline"> 툴바OFF</span>'
+  }
+}
+
+window.toggleSchedToolbar = () => {
+  _toolbarEnabled = !_toolbarEnabled
+  localStorage.setItem('schedToolbarEnabled', _toolbarEnabled)
+  _syncToolbarToggleBtn()
+  if (!_toolbarEnabled) {
+    const bar = document.getElementById('multiSelectBar')
+    if (bar) bar.classList.add('hidden')
+  } else {
+    updateMultiSelectBar()
+  }
+}
+
 function updateMultiSelectBar() {
   const bar = document.getElementById('multiSelectBar')
   const cnt = document.getElementById('multiSelectCount')
   if (!bar) return
   const n = _selectedCells.size
-  if (n === 0) { bar.classList.add('hidden'); return }
+  // 툴바 비활성화 설정이거나 선택 없으면 숨김
+  if (n === 0 || !_toolbarEnabled) { bar.classList.add('hidden'); return }
   bar.classList.remove('hidden')
   const keys = Array.from(_selectedCells).sort()
   // 선택 범위의 현재 코드 표시
@@ -17041,18 +17081,17 @@ function updateMultiSelectBar() {
     btnBox.innerHTML = codes.filter(c=>c!=='-').map(c => {
       const sf = scheduleShifts.find(s=>s.shift_code===c)
       const col = sf?.color || colMap[c] || '#374151'
-      // 클릭 시 즉시 일괄 적용 (setMultiCode + applyMultiSelect 한번에)
       return `<button onclick="applyCodeInstant('${c}')" id="mcb_${c}"
         class="px-2 py-1 rounded text-xs font-bold border transition-all hover:scale-105"
         style="background:${col}22;color:${col};border-color:${col}66;min-width:32px"
         title="${c} 코드 즉시 적용">${c}</button>`
     }).join('')
   }
-  applyRangeStyle()
+  // ※ applyRangeStyle() 호출 제거 - 중복 호출 방지
 }
 
-// 코드 버튼 클릭 → 즉시 일괄 적용 (별도 버튼 없이)
-window.applyCodeInstant = async (code) => {
+// 코드 버튼 클릭 → 즉시 일괄 적용
+window.applyCodeInstant = (code) => {
   if (_selectedCells.size === 0) { showToast('셀을 먼저 선택하세요', 'error'); return }
   _multiCode = code
   // 버튼 활성화 표시
@@ -17062,7 +17101,7 @@ window.applyCodeInstant = async (code) => {
     b.style.transform   = isActive ? 'scale(1.1)' : 'scale(1)'
     b.style.boxShadow   = isActive ? `0 0 0 2px ${b.style.color}44` : ''
   })
-  await applyMultiSelect()
+  applyMultiSelect()
 }
 
 window.setMultiCode = (code) => {
