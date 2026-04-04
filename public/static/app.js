@@ -38891,14 +38891,28 @@ window.openQrManageModal = async () => {
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
   document.body.appendChild(modal)
 
-  // QR 라이브러리 로드 (타임아웃 5초, 실패해도 목록은 표시)
+  // QR 라이브러리 로드 (로컬 번들 우선, 실패 시 CDN 폴백)
   if (!window.QRCode) {
     await new Promise((res) => {
       const s = document.createElement('script')
-      s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
-      const timer = setTimeout(() => { res(); }, 5000) // 5초 타임아웃
+      s.src = '/static/qrcode.min.js'
+      const timer = setTimeout(() => {
+        // 로컬 실패 시 CDN 폴백
+        const s2 = document.createElement('script')
+        s2.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
+        s2.onload = () => res()
+        s2.onerror = () => res()
+        document.head.appendChild(s2)
+      }, 3000)
       s.onload = () => { clearTimeout(timer); res() }
-      s.onerror = () => { clearTimeout(timer); res() } // 실패해도 진행
+      s.onerror = () => {
+        clearTimeout(timer)
+        const s2 = document.createElement('script')
+        s2.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
+        s2.onload = () => res()
+        s2.onerror = () => res()
+        document.head.appendChild(s2)
+      }
       document.head.appendChild(s)
     })
   }
@@ -38939,32 +38953,45 @@ window.qrLoadList = async function qrLoadList() {
     listEl.innerHTML = employees.map(emp => {
       const token = tokenMap[emp.id]
       const url = token ? `${location.origin}/my-schedule/${token}` : ''
-      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #f3f4f6" id="qrRow_${emp.id}">
-        <div style="width:40px;height:40px;border-radius:8px;background:#f0fdf4;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-user" style="color:#166534;font-size:14px"></i>
-        </div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:700;color:#374151">${emp.name}</div>
-          <div style="font-size:10px;color:#9ca3af">${emp.position || ''}</div>
+      return `<div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:10px;background:white" id="qrRow_${emp.id}">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:${token ? '12px' : '0'}">
+          <div style="width:36px;height:36px;border-radius:8px;background:#f0fdf4;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-user" style="color:#166534;font-size:13px"></i>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:14px;font-weight:700;color:#111827">${emp.name}</div>
+            <div style="font-size:11px;color:#6b7280">${emp.position || '직책 미설정'} · ${emp.team === 'cook' ? '조리팀' : '영양팀'}</div>
+          </div>
+          ${!token ? `
+          <button onclick="qrGenOne(${emp.id})" style="padding:7px 14px;background:#166534;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+            <i class="fas fa-qrcode" style="margin-right:4px"></i>QR 생성
+          </button>` : ''}
         </div>
         ${token ? `
-        <div style="display:flex;gap:6px;align-items:center">
-          <canvas id="qr_${emp.id}" style="border-radius:6px"></canvas>
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <button onclick="qrCopyLink('${url}')" style="padding:4px 8px;background:#166534;color:white;border:none;border-radius:5px;font-size:10px;cursor:pointer" title="링크 복사">
-              <i class="fas fa-link"></i> 복사
-            </button>
-            <button onclick="qrOpenLink('${url}')" style="padding:4px 8px;background:#3b82f6;color:white;border:none;border-radius:5px;font-size:10px;cursor:pointer" title="미리보기">
-              <i class="fas fa-eye"></i> 보기
-            </button>
-            <button onclick="qrRegen(${emp.id})" style="padding:4px 8px;background:#f3f4f6;color:#6b7280;border:none;border-radius:5px;font-size:10px;cursor:pointer" title="QR 재생성">
-              <i class="fas fa-redo"></i>
-            </button>
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="flex-shrink:0;background:#f0fdf4;border-radius:10px;padding:8px;border:2px solid #bbf7d0">
+            <canvas id="qr_${emp.id}" style="display:block;border-radius:4px"></canvas>
           </div>
-        </div>` : `
-        <button onclick="qrGenOne(${emp.id})" style="padding:6px 12px;background:#ea580c;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">
-          <i class="fas fa-qrcode" style="margin-right:4px"></i>QR 생성
-        </button>`}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;color:#6b7280;margin-bottom:8px;word-break:break-all;background:#f9fafb;border-radius:6px;padding:6px 8px;border:1px solid #e5e7eb">
+              <i class="fas fa-link" style="color:#9ca3af;margin-right:4px"></i>${url}
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button onclick="qrCopyLink('${url}')" style="padding:6px 12px;background:#166534;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
+                <i class="fas fa-copy" style="margin-right:4px"></i>링크 복사
+              </button>
+              <button onclick="qrOpenLink('${url}')" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
+                <i class="fas fa-eye" style="margin-right:4px"></i>미리보기
+              </button>
+              <button onclick="qrRegen(${emp.id})" style="padding:6px 12px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
+                <i class="fas fa-redo" style="margin-right:4px"></i>재생성
+              </button>
+            </div>
+            <div style="font-size:10px;color:#9ca3af;margin-top:8px">
+              <i class="fas fa-info-circle" style="margin-right:3px"></i>QR 스캔 또는 링크로 본인 근무표 확인
+            </div>
+          </div>
+        </div>` : ''}
       </div>`
     }).join('')
 
@@ -38975,14 +39002,14 @@ window.qrLoadList = async function qrLoadList() {
       if (window.QRCode) {
         const url = `${location.origin}/my-schedule/${t.token}`
         try {
-          await QRCode.toCanvas(canvas, url, { width: 72, margin: 1, color:{dark:'#166534',light:'#ffffff'} })
+          await QRCode.toCanvas(canvas, url, { width: 120, margin: 1, color:{dark:'#166534',light:'#ffffff'} })
         } catch(e) {
           // QR 렌더 실패시 링크 아이콘으로 대체
           canvas.style.display = 'none'
           const parent = canvas.parentElement
           if (parent) {
             const fallback = document.createElement('div')
-            fallback.style.cssText = 'width:72px;height:72px;background:#f0fdf4;border-radius:6px;display:flex;align-items:center;justify-content:center;border:1px solid #bbf7d0'
+            fallback.style.cssText = 'width:120px;height:120px;background:#f0fdf4;border-radius:8px;display:flex;align-items:center;justify-content:center;border:2px solid #bbf7d0'
             fallback.innerHTML = '<i class="fas fa-link" style="color:#166534;font-size:20px"></i>'
             parent.insertBefore(fallback, canvas)
           }
