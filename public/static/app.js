@@ -859,7 +859,6 @@ async function renderDashboard() {
       class="text-sm border border-blue-200 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-blue-300 focus:outline-none">
       ${App._adminHospitals.map(h => `<option value="${h.id}" ${h.id==App.adminHospitalId?'selected':''}>${h.name}</option>`).join('')}
     </select>
-  </div>` : ''
 
   content.innerHTML = `
   ${adminHospitalBar}
@@ -3364,7 +3363,6 @@ async function renderOrders() {
               const isActive = i2 === ci
               return `<span style="padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;cursor:pointer;border:1.5px solid ${isActive?c2Color:'#e5e7eb'};background:${isActive?c2Color:'white'};color:${isActive?'white':'#6b7280'}" onclick="switchOrderDetailTab('${dateStr}',${i2})">${c2.category_name}</span>`
             }).join('')}
-          </div>` : ''
 
           // 업체별 행 (월목표·누적·잔여·진행률·오늘입력)
           const vendorRows = vendors.map((v, vi) => {
@@ -8376,7 +8374,6 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       class="form-input" style="width:auto;min-width:180px">
       ${hospitals.map(h => `<option value="${h.id}" ${h.id==selectedHospitalId?'selected':''}>${h.name}</option>`).join('')}
     </select>
-  </div>` : ''
 
   content.innerHTML = `
   <!-- 헤더 -->
@@ -14186,9 +14183,7 @@ function renderMonthlyScheduleTab() {
                 return 8
               }
               let weeklyHoursMap2 = {}, maxWeeklyHoursFound = 0
-              // 경고 셀 추적용: 연속근무 초과 발생 날짜 Set, 주간 초과 주차 Set
-              const consecWarnDates2 = new Set()
-              const weekOverSet2 = new Set()
+
 
               const cells = Array.from({length:days},(_,i)=>{
                 const day = i+1
@@ -14210,16 +14205,14 @@ function renderMonthlyScheduleTab() {
                 if (code && code !== '-' && !REST_CODES2.has(code) && !ltype) {
                   curConsec2++
                   if (curConsec2 > maxConsecFound2) maxConsecFound2 = curConsec2
-                  // 연속근무 초과 시 해당 날짜 기록
-                  if (legalWarnEnabled2 && curConsec2 > maxConsec2) consecWarnDates2.add(dateStr)
+
                   const d2 = new Date(dateStr)
                   const startOfYear2 = new Date(d2.getFullYear(), 0, 1)
                   const weekNum2 = Math.ceil(((d2 - startOfYear2) / 86400000 + startOfYear2.getDay() + 1) / 7)
                   if (!weeklyHoursMap2[weekNum2]) weeklyHoursMap2[weekNum2] = 0
                   weeklyHoursMap2[weekNum2] += calcShiftHoursInner(code)
                   if (weeklyHoursMap2[weekNum2] > maxWeeklyHoursFound) maxWeeklyHoursFound = weeklyHoursMap2[weekNum2]
-                  // 주간 초과 시 해당 날짜 기록
-                  if (legalWarnEnabled2 && weeklyHoursMap2[weekNum2] > weeklyMaxHours2) weekOverSet2.add(dateStr)
+
                 } else { curConsec2 = 0 }
 
                 let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd2 ? 'background:#fffbeb;' : `background:${rowBg};`
@@ -14234,13 +14227,6 @@ function renderMonthlyScheduleTab() {
                 const extraIcon2 = otH2>0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH2}h</div>`
                   : isTempS2 ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
                   : isNightW2 ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
-                // 경고 배지: 연속근무 초과=빨간 i, 주간초과=주황 W
-                const isConsecWarn = consecWarnDates2.has(dateStr)
-                const isWeekWarn = weekOverSet2.has(dateStr)
-                const warnDot = (isConsecWarn || isWeekWarn) ? `<div style="display:flex;gap:1px;justify-content:center;margin-top:1px">
-                  ${isConsecWarn ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:900;line-height:1" title="연속근무 ${maxConsec2}일 초과">i</span>` : ''}
-                  ${isWeekWarn ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:50%;background:#f97316;color:white;font-size:7px;font-weight:900;line-height:1" title="주간 ${weeklyMaxHours2}h 초과">W</span>` : ''}
-                </div>` : ''
 
                 return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft2}cursor:pointer;position:relative;user-select:none"
                   onclick="schedCellClick(event,${emp.id},'${dateStr}',this)"
@@ -14256,7 +14242,6 @@ function renderMonthlyScheduleTab() {
                   <div style="display:inline-flex;flex-direction:column;align-items:center">
                     <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle2}">${spanText2}</span>
                     ${extraIcon2}
-                    ${warnDot}
                   </div>
                 </td>`
               }).join('')
@@ -14582,7 +14567,22 @@ function renderEmployeeModal() {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
-            <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장" value="${isEdit ? (emp?.position||'') : ''}">
+            <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장" 
+              list="ei_position_list"
+              value="${isEdit ? (emp?.position||'') : ''}">
+            <datalist id="ei_position_list">
+              <option value="영양사">
+              <option value="영양사(주임)">
+              <option value="영양사(대리)">
+              <option value="조리장">
+              <option value="조리사">
+              <option value="조리원">
+              <option value="셰프">
+              <option value="수석조리사">
+              <option value="전처리(조리)">
+              <option value="파트타이머">
+              <option value="매니저">
+            </datalist>
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">고용형태</label>
@@ -15103,6 +15103,35 @@ function renderAnalysisTab() {
   const shortCount   = Object.keys(shortDates).length
   const clusterCount = Object.keys(clusterDates).length
 
+  // ── 파출/알바 외부인력 집계 ──────────────────────────────
+  const extWorkers = scheduleExternalWorkers || []
+  const extMap = scheduleExtSchedMap || {}
+  let extDispatchDays = 0, extParttimeDays = 0
+  let extDispatchCount = 0, extParttimeCount = 0
+  const dispatchSet = new Set(), parttimeSet = new Set()
+  extWorkers.forEach(w => {
+    let worked = false
+    for (let d = 1; d <= days; d++) {
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const key = `${w.id}_${ds}`
+      if (extMap[key]?.shift_type || extMap[key]?.shift_code) {
+        if (w.worker_type === 'dispatch') { extDispatchDays++; worked = true }
+        else { extParttimeDays++; worked = true }
+      }
+    }
+    if (worked) {
+      if (w.worker_type === 'dispatch') dispatchSet.add(w.id)
+      else parttimeSet.add(w.id)
+    }
+  })
+  extDispatchCount = dispatchSet.size
+  extParttimeCount = parttimeSet.size
+  const hasExtWorkers = extWorkers.length > 0
+
+  // ── 전체 인력 기준 통합 근무일수 ─────────────────────────
+  const totalWorkDays = (monthly.totalWork || 0) + extDispatchDays + extParttimeDays
+  const totalPersonnel = (ad.total_employees || 0) + extDispatchCount + extParttimeCount
+
   return `
   <div class="space-y-4">
     <!-- 월간 요약 카드 -->
@@ -15120,6 +15149,36 @@ function renderAnalysisTab() {
           <div class="text-xl font-bold ${c.color}">${c.value}<span class="text-xs ml-0.5">${c.unit}</span></div>
         </div>`).join('')}
     </div>
+
+    <!-- 파출/알바 + 전체 인력 통합 분석 -->
+    ${hasExtWorkers ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden">
+      <div class="px-5 py-3 border-b border-orange-100 bg-orange-50">
+        <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-people-carry mr-2"></i>파출·알바 외부인력 현황</h3>
+      </div>
+      <div class="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="bg-orange-50 rounded-xl p-3 border border-orange-200">
+          <div class="text-xs text-orange-600 mb-1">파출 인원</div>
+          <div class="text-xl font-bold text-orange-700">${extDispatchCount}<span class="text-xs ml-1">명</span></div>
+          <div class="text-xs text-orange-400 mt-1">총 ${extDispatchDays}일 근무</div>
+        </div>
+        <div class="bg-amber-50 rounded-xl p-3 border border-amber-200">
+          <div class="text-xs text-amber-600 mb-1">알바 인원</div>
+          <div class="text-xl font-bold text-amber-700">${extParttimeCount}<span class="text-xs ml-1">명</span></div>
+          <div class="text-xs text-amber-400 mt-1">총 ${extParttimeDays}일 근무</div>
+        </div>
+        <div class="bg-blue-50 rounded-xl p-3 border border-blue-200">
+          <div class="text-xs text-blue-600 mb-1">전체 인원 (정규+외부)</div>
+          <div class="text-xl font-bold text-blue-700">${totalPersonnel}<span class="text-xs ml-1">명</span></div>
+          <div class="text-xs text-blue-400 mt-1">정규 ${ad.total_employees||0}명 + 외부 ${extDispatchCount+extParttimeCount}명</div>
+        </div>
+        <div class="bg-green-50 rounded-xl p-3 border border-green-200">
+          <div class="text-xs text-green-600 mb-1">전체 근무일수 합계</div>
+          <div class="text-xl font-bold text-green-700">${totalWorkDays}<span class="text-xs ml-1">건</span></div>
+          <div class="text-xs text-green-400 mt-1">정규 ${monthly.totalWork||0} + 파출 ${extDispatchDays} + 알바 ${extParttimeDays}</div>
+        </div>
+      </div>
+    </div>` : ''}
 
     <!-- 경고 섹션 -->
     ${(shortCount > 0 || clusterCount > 0) ? `
@@ -15258,46 +15317,125 @@ function renderAnalysisTab() {
 // 직원 공유 뷰 전용 인쇄 함수
 // ════════════════════════════════════════════════════════════════
 window.printStaffView = function() {
-  // 직원 공유 뷰 컨테이너 찾기 (staff-emp-row를 포함한 최상위 div)
+  // 직원 공유 뷰 컨테이너 찾기
   const staffTable = document.querySelector('.staff-emp-row')
   if (!staffTable) {
     alert('직원 공유 뷰가 현재 표시되어 있지 않습니다.')
     return
   }
-  // 직원 공유 뷰 wrapper (전체 카드)
+
+  // 직급 그룹 목록 수집 (그룹 헤더 행에서)
   const container = staffTable.closest('div[style*="border-radius:16px"]') ||
                     staffTable.closest('div[style*="border-radius: 16px"]')
   if (!container) { window.print(); return }
 
-  // 새 창으로 인쇄
+  // 그룹 헤더 행에서 직급 목록 추출
+  const groupHeaders = container.querySelectorAll('tr td[colspan]')
+  const groups = []
+  groupHeaders.forEach((td, idx) => {
+    const label = td.querySelector('span[style*="font-weight:800"]')?.textContent?.trim()
+    if (label) groups.push({ label, idx })
+  })
+
+  // 인쇄 옵션 모달 표시
+  const existingModal = document.getElementById('printSelectModal')
+  if (existingModal) existingModal.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'printSelectModal'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px'
+  modal.innerHTML = `
+    <div style="background:white;border-radius:16px;padding:24px;min-width:320px;max-width:440px;box-shadow:0 8px 30px rgba(0,0,0,.2)">
+      <h3 style="font-size:16px;font-weight:800;color:#1f2937;margin:0 0 6px"><i class="fas fa-print" style="color:#2563eb;margin-right:8px"></i>인쇄 범위 선택</h3>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 16px">인쇄할 직급을 선택하세요</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+        <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;color:#374151">
+          <input type="checkbox" id="printGrp_all" value="all" checked 
+            onchange="document.querySelectorAll('#printSelectModal input[type=checkbox]:not(#printGrp_all)').forEach(cb=>cb.checked=this.checked)"
+            style="accent-color:#2563eb">
+          전체 인쇄
+        </label>
+        ${groups.map((g, i) => `
+        <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;font-size:13px;color:#374151">
+          <input type="checkbox" class="printGrpCb" value="${i}" checked style="accent-color:#2563eb">
+          ${g.label}
+        </label>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="document.getElementById('printSelectModal').remove()"
+          style="padding:8px 16px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;color:#374151">취소</button>
+        <button onclick="executePrintStaffView()"
+          style="padding:8px 20px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">
+          <i class="fas fa-print" style="margin-right:6px"></i>인쇄 실행</button>
+      </div>
+    </div>`
+  document.body.appendChild(modal)
+}
+
+window.executePrintStaffView = function() {
+  const modal = document.getElementById('printSelectModal')
+  const checkedIdxs = new Set(
+    Array.from(document.querySelectorAll('#printSelectModal .printGrpCb:checked')).map(cb => parseInt(cb.value))
+  )
+  modal?.remove()
+
+  const container = document.querySelector('.staff-emp-row')?.closest('div[style*="border-radius:16px"]') ||
+                    document.querySelector('.staff-emp-row')?.closest('div[style*="border-radius: 16px"]')
+  if (!container) { window.print(); return }
+
+  // 선택된 그룹만 포함한 클론 생성
+  const clone = container.cloneNode(true)
+
+  if (checkedIdxs.size > 0) {
+    // tbody에서 각 그룹의 행들을 필터링
+    const tbody = clone.querySelector('tbody')
+    if (tbody) {
+      const allRows = Array.from(tbody.querySelectorAll('tr'))
+      let currentGroupIdx = -1
+      allRows.forEach(row => {
+        const isGroupHeader = row.querySelector('td[colspan]')
+        if (isGroupHeader) {
+          currentGroupIdx++
+          if (!checkedIdxs.has(currentGroupIdx)) {
+            row.remove()
+          }
+        } else {
+          // 현재 그룹이 체크되지 않았으면 행 제거 (이미 헤더 제거로 인해 구조가 달라졌으므로 data-group으로 처리)
+          if (currentGroupIdx >= 0 && !checkedIdxs.has(currentGroupIdx)) {
+            row.remove()
+          }
+        }
+      })
+    }
+  }
+
   const year = App.currentYear, month = App.currentMonth
   const printWindow = window.open('', '_blank', 'width=1400,height=900')
   printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>${year}년 ${month}월 근무표 - 직원 공유용</title>
+<title>${year}년 ${month}월 근무표</title>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
 <style>
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:white; font-size:10px; }
-  @page { margin:6mm; size:A4 landscape; }
+  body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:white; }
+  @page { margin:5mm; size:A4 landscape; }
   @media print {
     body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     button { display:none!important; }
   }
-  table { width:100%; border-collapse:collapse; font-size:9px; }
-  th, td { padding:2px 1px; }
-  div[style*="overflow-x:auto"] { overflow:visible!important; max-height:none!important; }
+  table { width:100%; border-collapse:collapse; font-size:8px; }
+  th, td { padding:1px; }
+  div[style*="overflow-x:auto"], div[style*="max-height"] { overflow:visible!important; max-height:none!important; }
 </style>
 </head>
 <body>
-${container.outerHTML}
+${clone.outerHTML}
 <script>
-  // 버튼 숨기기
   document.querySelectorAll('button').forEach(b => b.style.display='none');
   window.onload = function() { window.print(); window.close(); }
-</script>
+<\/script>
 </body>
 </html>`)
   printWindow.document.close()
@@ -16171,6 +16309,21 @@ window.saveSchedDetail = async () => {
       }
     }
     schedRecalcRow(parseInt(empId))
+    // 연차 코드('연') 저장 시 leave_map used값 즉시 재계산
+    if (scheduleMonthData?.leave_map) {
+      const yr = App.currentYear
+      const sm2 = scheduleMonthData.sched_map
+      let annualCount = 0
+      for (let d=1; d<=getDaysInMonth(yr,App.currentMonth); d++) {
+        const ds=`${yr}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+        if (sm2[`${empId}_${ds}`]?.shift_code==='연') annualCount++
+      }
+      if (!scheduleMonthData.leave_map[empId]) scheduleMonthData.leave_map[empId]={}
+      if (scheduleMonthData.leave_map[empId].annual) {
+        scheduleMonthData.leave_map[empId].annual.used = annualCount
+      }
+      schedRecalcRow(parseInt(empId))
+    }
     showToast('저장되었습니다', 'success')
     modal.classList.add('hidden')
   } else {
@@ -20169,7 +20322,20 @@ function renderAdminStaffContent(content) {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
-            <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장">
+            <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장" list="aem_position_list">
+            <datalist id="aem_position_list">
+              <option value="영양사">
+              <option value="영양사(주임)">
+              <option value="영양사(대리)">
+              <option value="조리장">
+              <option value="조리사">
+              <option value="조리원">
+              <option value="셰프">
+              <option value="수석조리사">
+              <option value="전처리(조리)">
+              <option value="파트타이머">
+              <option value="매니저">
+            </datalist>
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">고용형태</label>
@@ -38267,7 +38433,6 @@ window.openExecutiveSummaryView = () => {
       <h4 style="font-size:12px;font-weight:700;color:#c2410c;margin:0 0 8px"><i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>인력 불균형 알림</h4>
       ${overloaded.map(e => `<div style="font-size:11px;color:#c2410c">⚠️ <b>${e.name}</b> — ${e.wd}일 근무 (평균 +${(e.wd-Number(avgWorkDays)).toFixed(1)}일)</div>`).join('')}
       ${underloaded.map(e => `<div style="font-size:11px;color:#b45309">🔵 <b>${e.name}</b> — ${e.wd}일 근무 (평균 -${(Number(avgWorkDays)-e.wd).toFixed(1)}일)</div>`).join('')}
-    </div>` : ''
 
   const html = `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.12);max-width:680px;width:100%">
@@ -38370,7 +38535,10 @@ window.qrLoadList = async function qrLoadList() {
   const listEl = document.getElementById('qrEmployeeList')
   if (!listEl) return
   try {
-    const data = await api('GET', '/api/schedule/share-tokens')
+    // 관리자인 경우 현재 병원 ID를 쿼리에 포함
+    const hqParam = App.role === 'admin' && (App.currentHospitalId || App.adminHospitalId)
+      ? `?hospitalId=${App.currentHospitalId || App.adminHospitalId}` : ''
+    const data = await api('GET', `/api/schedule/share-tokens${hqParam}`)
     const tokens = data.tokens || []
     const employees = (scheduleEmployees || []).filter(e => e.is_active !== 0)
     const tokenMap = {}
@@ -38441,7 +38609,9 @@ window.qrRegen = async (empId) => {
 
 window.qrBulkGenerate = async () => {
   try {
-    const r = await api('POST', '/api/schedule/share-tokens/bulk')
+    const hqParam = App.role === 'admin' && (App.currentHospitalId || App.adminHospitalId)
+      ? `?hospitalId=${App.currentHospitalId || App.adminHospitalId}` : ''
+    const r = await api('POST', `/api/schedule/share-tokens/bulk${hqParam}`)
     await qrLoadList()
     showToast(`${r.created}명 QR 코드 생성 완료`, 'success')
   } catch(e) { showToast('일괄 생성 실패', 'error') }

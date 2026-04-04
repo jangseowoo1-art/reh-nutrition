@@ -860,6 +860,22 @@ async function upsertScheduleWithCalc(
     calcIsNight ? 1 : 0, tempType || null, tempHours || 0, note || null,
     basicWorkHours, nightWorkHours, holidayWorkHours, weeklyHolidayPay
   ).run()
+
+  // ── 연차 사용일수 자동 재집계 ──────────────────────────────
+  // 스케줄 저장/삭제 시마다 해당 직원의 해당 연도 연차 used_days를 실제 스케줄 기준으로 재계산
+  const workYear = workDate.substring(0, 4)
+  const annualCount = await db.prepare(
+    `SELECT COUNT(*) as cnt FROM daily_schedules
+     WHERE hospital_id=? AND employee_id=? AND shift_code='연'
+       AND work_date LIKE ?`
+  ).bind(hospitalId, employeeId, `${workYear}-%`).first<any>()
+  const usedAnnual = annualCount?.cnt ?? 0
+
+  // employee_leaves에 annual 행이 있으면 used_days 업데이트, 없으면 무시
+  await db.prepare(
+    `UPDATE employee_leaves SET used_days=?, updated_at=CURRENT_TIMESTAMP
+     WHERE hospital_id=? AND employee_id=? AND year=? AND leave_type='annual'`
+  ).bind(usedAnnual, hospitalId, employeeId, parseInt(workYear)).run()
 }
 
 // 스케줄 저장 (upsert)
@@ -1212,7 +1228,7 @@ schedule.get('/analysis/:year/:month', async (c) => {
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const paddedMonth = String(month).padStart(2, '0')
 
-  const [schedRows, empRows, minStaffRows] = await Promise.all([
+  const [schedRows, empRows, minStaffRows, workSettingsRows] = await Promise.all([
     c.env.DB.prepare(
       `SELECT s.*, e.name as emp_name, e.team, p.name as position_name
        FROM daily_schedules s
@@ -1235,8 +1251,17 @@ schedule.get('/analysis/:year/:month', async (c) => {
       `SELECT ms.*, p.name as position_name FROM schedule_min_staff ms
        LEFT JOIN employee_positions p ON ms.position_id = p.id
        WHERE ms.hospital_id = ?`
+    ).bind(hospitalId).all<any>(),
+
+    c.env.DB.prepare(
+      `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
     ).bind(hospitalId).all<any>()
   ])
+
+  // 근무 설정값 파싱
+  const wsMap: Record<string,string> = {}
+  for (const r of (workSettingsRows.results||[])) wsMap[r.setting_key] = r.setting_value
+  const clusterThreshold = parseInt(wsMap['leave_cluster_threshold'] || '3')
 
   const scheds = schedRows.results || []
   const emps   = empRows.results   || []
@@ -1302,10 +1327,12 @@ schedule.get('/analysis/:year/:month', async (c) => {
     if (shorts.length > 0) shortDates[date] = shorts
   }
 
-  // 연차/휴무 쏠림 감지 (같은 날 3명 이상 연차/휴무)
+  // 연차/휴무 쏠림 감지 (설정된 임계값 이상 연차/휴무 시 경고)
   const clusterDates: Record<string, {annual: number, rest: number, warning: boolean}> = {}
   for (const [date, data] of Object.entries(dateMap)) {
-    if (data.annual >= 3 || data.rest >= 5) {
+    // clusterThreshold명 이상 연차이거나, 그 1.5배 이상 휴무일 때 경고
+    const restThreshold = Math.ceil(clusterThreshold * 1.5)
+    if (data.annual >= clusterThreshold || data.rest >= restThreshold) {
       clusterDates[date] = { annual: data.annual, rest: data.rest, warning: true }
     }
   }
@@ -2476,7 +2503,7 @@ schedule.get('/external-cost-report/:year/:month', async (c) => {
 // 직원별 공유 토큰 생성 / 조회
 schedule.get('/share-tokens', async (c) => {
   const user = c.get('user' as any) as any
-  const hospitalId = user?.hospitalId
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
 
   const rows = await c.env.DB.prepare(`
@@ -2494,7 +2521,7 @@ schedule.get('/share-tokens', async (c) => {
 // 직원 공유 토큰 생성
 schedule.post('/share-tokens', async (c) => {
   const user = c.get('user' as any) as any
-  const hospitalId = user?.hospitalId
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
 
   const { employeeId } = await c.req.json()
@@ -2517,7 +2544,7 @@ schedule.post('/share-tokens', async (c) => {
 // 모든 직원 토큰 일괄 생성
 schedule.post('/share-tokens/bulk', async (c) => {
   const user = c.get('user' as any) as any
-  const hospitalId = user?.hospitalId
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
 
   const employees = await c.env.DB.prepare(`
