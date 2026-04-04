@@ -16627,11 +16627,14 @@ function initExtWorkerEvents() {
       if (wid) deleteExternalWorker(wid, delBtn.dataset.wname || '')
       return
     }
+    // inline select 드롭다운 클릭이면 무시 (select 자체가 처리)
+    if (e.target.closest('.ext-inline-select')) return
     // 외부인력 셀 클릭 (단독 클릭 = 선택만)
     const cell = e.target.closest('.ext-cell')
     if (cell) {
-      e.preventDefault(); e.stopPropagation()
       if (!(App.role === 'admin' || App.role === 'hospital')) return
+      // 드래그 중에는 click 무시 (드래그가 이미 선택 처리함)
+      if (_extIsDragging) return
       _extHandleCellClick(e, cell)
       return
     }
@@ -16662,7 +16665,7 @@ function initExtWorkerEvents() {
     _extUpdateSelectStyle()
     _extOpenInlineInput(wid, date, cell, null)
   }
-  tc.addEventListener('dblclick', tc._extDblHandler)
+  // (dblclick 핸들러는 아래에서 한 번만 등록)
 
   // 마우스다운: 드래그 시작
   tc._extMdHandler = function(e) {
@@ -16676,8 +16679,9 @@ function initExtWorkerEvents() {
       _extFillDragStart(cell)
       return
     }
-    // 일반 드래그 시작
-    e.preventDefault()
+    // inline select 클릭이면 무시
+    if (e.target.closest('.ext-inline-select')) return
+    // 일반 드래그 시작 (e.preventDefault 제거 - click 이벤트 살리기)
     _extDragStart(cell, e)
   }
 
@@ -16694,7 +16698,7 @@ function initExtWorkerEvents() {
   }
 
   tc.addEventListener('click',     tc._extEvtHandler)
-  tc.addEventListener('dblclick',  tc._extDblHandler)
+  tc.addEventListener('dblclick',  tc._extDblHandler)  // 한 번만 등록
   tc.addEventListener('mousedown', tc._extMdHandler)
   tc.addEventListener('mousemove', tc._extMmHandler)
   tc.addEventListener('mouseup',   tc._extMuHandler)
@@ -16918,16 +16922,21 @@ function _extHandleCellClick(e, cell) {
   const wid  = parseInt(cell.dataset.extid)
   const date = cell.dataset.date
 
+  // mousedown에서 시작된 드래그 변수 초기화 (단순 클릭이었으므로)
+  _extDragStartKey = null
+
   // 직원 셀 선택 해제
   if (_selectedCells.size > 0) clearMultiSelection()
 
   if (e.ctrlKey || e.metaKey) {
     // Ctrl+클릭: 토글 추가
+    if (_extClickTimer) { clearTimeout(_extClickTimer); _extClickTimer = null }
     if (_extSelectedCells.has(key)) _extSelectedCells.delete(key)
     else _extSelectedCells.add(key)
     _extAnchorKey = key
   } else if (e.shiftKey && _extAnchorKey) {
     // Shift+클릭: 범위 선택
+    if (_extClickTimer) { clearTimeout(_extClickTimer); _extClickTimer = null }
     _extSelectRange(_extAnchorKey, key)
   } else if (_extSelectedCells.has(key) && _extSelectedCells.size === 1) {
     // 이미 선택된 단일 셀 재클릭 → 지연 후 드롭다운 열기 (더블클릭이면 취소됨)
@@ -16938,8 +16947,8 @@ function _extHandleCellClick(e, cell) {
       if (!cell.querySelector('.ext-inline-select')) {
         _extOpenInlineInput(wid, date, cell, null)
       }
-    }, 230)
-    return
+    }, 260)
+    return  // 선택 스타일 이미 유지됨
   } else {
     // 단독 클릭 → 선택
     if (_extClickTimer) { clearTimeout(_extClickTimer); _extClickTimer = null }
@@ -16986,24 +16995,35 @@ function _extShowFillHandle() {
 // ── 드래그 선택 ───────────────────────────────────────────────
 function _extDragStart(cell, e) {
   if (e.ctrlKey || e.metaKey || e.shiftKey) return
-  _extIsDragging = true
+  _extIsDragging = false  // mouseMove 발생 후에야 true로 변경
   _extDragStartKey = _extCellKey(cell)
-  _extSelectedCells.clear()
-  _extSelectedCells.add(_extDragStartKey)
-  _extAnchorKey = _extDragStartKey
-  _extUpdateSelectStyle()
+  // mousedown에서 선택은 하지 않음 — click에서 처리
+  // (drag가 실제로 일어나면 _extDragMove에서 선택 처리)
 }
 function _extDragMove(cell) {
-  if (!_extIsDragging || !_extDragStartKey) return
+  if (!_extDragStartKey) return
   const key = _extCellKey(cell)
+  if (key === _extDragStartKey && !_extIsDragging) return  // 같은 셀에서는 drag 미시작
+  // 실제로 다른 셀로 이동 → 드래그 모드 시작
+  if (!_extIsDragging) {
+    _extIsDragging = true
+    // 드래그 시작 셀 선택
+    _extSelectedCells.clear()
+    _extSelectedCells.add(_extDragStartKey)
+    _extAnchorKey = _extDragStartKey
+  }
   _extSelectRange(_extDragStartKey, key)
   _extUpdateSelectStyle()
 }
 function _extDragEnd() {
+  const wasDragging = _extIsDragging
   _extIsDragging = false
-  // 드래그 선택 후 같은 shift 있으면 일괄 적용 옵션 표시
-  _extShowFillHandle()
-  _extUpdateBar()
+  _extDragStartKey = null
+  // 실제 드래그가 일어난 경우에만 툴바 업데이트
+  if (wasDragging) {
+    _extShowFillHandle()
+    _extUpdateBar()
+  }
 }
 
 // ── Fill 드래그 ───────────────────────────────────────────────
