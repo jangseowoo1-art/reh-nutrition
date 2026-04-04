@@ -25949,24 +25949,28 @@ function canvasToHiResPng(canvas) {
 //  - 각 슬라이드의 실제 높이 비율을 보존하여 짤림/늘어남 방지
 // ══════════════════════════════════════════════════════════════════
 
-// html2canvas CDN 로드 (공통)
+// html2canvas CDN 로드 (공통) - 타임아웃 10초
 async function _loadHtml2Canvas() {
-  if (window.html2canvas) return
-  await new Promise((resolve, reject) => {
+  if (window.html2canvas) return true
+  return new Promise((resolve) => {
     const s = document.createElement('script')
     s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
-    s.onload = resolve; s.onerror = reject
+    const timer = setTimeout(() => { resolve(false) }, 10000) // 10초 타임아웃
+    s.onload  = () => { clearTimeout(timer); resolve(true) }
+    s.onerror = () => { clearTimeout(timer); resolve(false) }
     document.head.appendChild(s)
   })
 }
 
-// PptxGenJS CDN 로드 (공통)
+// PptxGenJS CDN 로드 (공통) - 타임아웃 10초
 async function _loadPptxGenJS() {
-  if (window.PptxGenJS) return
-  await new Promise((resolve, reject) => {
+  if (window.PptxGenJS) return true
+  return new Promise((resolve) => {
     const s = document.createElement('script')
     s.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js'
-    s.onload = resolve; s.onerror = reject
+    const timer = setTimeout(() => { resolve(false) }, 10000)
+    s.onload  = () => { clearTimeout(timer); resolve(true) }
+    s.onerror = () => { clearTimeout(timer); resolve(false) }
     document.head.appendChild(s)
   })
 }
@@ -25981,7 +25985,11 @@ window._rptImgCacheKey = ''  // 마지막 캡처한 병원+년월 키
  *         (뷰포트 밖이어도 100% 캡처 성공)
  */
 async function _captureAllSlides(slides, onProgress) {
-  await _loadHtml2Canvas()
+  const loaded = await _loadHtml2Canvas()
+  if (!loaded || !window.html2canvas) {
+    // html2canvas 로드 실패 → 빈 캐시 반환 (각 슬라이드를 실패로 표시)
+    return slides.map(() => ({ imgData: null, naturalW: 1920, naturalH: 1080 }))
+  }
   const cache = []
 
   // 16:9 고정 해상도 (1920×1080 기준)
@@ -26085,6 +26093,14 @@ window.printReportA4 = async function() {
 
   showToast('인쇄 준비 중... 잠시 기다려주세요', 'warning')
 
+  // html2canvas 로드 여부 먼저 확인
+  const loaded = await _loadHtml2Canvas()
+  if (!loaded || !window.html2canvas) {
+    showToast('캡처 라이브러리 로드 실패 — 직접 인쇄합니다', 'warning')
+    window.print()
+    return
+  }
+
   // 캡처
   const cache = await _captureAllSlides(Array.from(slides), (cur, tot) => {
     showToast(`인쇄 준비 중... (${cur}/${tot}페이지)`, 'warning')
@@ -26143,7 +26159,7 @@ window.showPrintPreview = async function() {
   const slides = Array.from(reportBody.querySelectorAll('.report-slide'))
   const totalPages = slides.length
 
-  // 로딩 모달 먼저 표시
+  // 로딩 모달 먼저 표시 (취소 버튼 포함)
   const loadingModal = document.createElement('div')
   loadingModal.id = 'printPreviewModal'
   loadingModal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;'
@@ -26151,13 +26167,29 @@ window.showPrintPreview = async function() {
     <div style="background:#1f2937;border-radius:16px;padding:40px 60px;text-align:center;color:white;">
       <i class="fas fa-spinner fa-spin" style="font-size:32px;color:#60a5fa;margin-bottom:16px;display:block"></i>
       <div style="font-size:16px;font-weight:700;margin-bottom:8px">미리보기 준비 중...</div>
-      <div id="ppLoadingText" style="font-size:13px;color:#9ca3af">슬라이드 캡처 중 (0/${totalPages})</div>
+      <div id="ppLoadingText" style="font-size:13px;color:#9ca3af">라이브러리 로드 중...</div>
       <div style="margin-top:16px;background:#374151;border-radius:99px;height:6px;width:240px;overflow:hidden">
         <div id="ppLoadingBar" style="height:100%;width:0%;background:#3b82f6;border-radius:99px;transition:width 0.3s"></div>
       </div>
+      <button onclick="document.getElementById('printPreviewModal')?.remove()"
+        style="margin-top:20px;padding:7px 20px;background:#374151;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:13px;">
+        취소
+      </button>
     </div>
   `
   document.body.appendChild(loadingModal)
+
+  // html2canvas 로드 먼저 확인
+  const loaded = await _loadHtml2Canvas()
+  if (!loaded || !window.html2canvas) {
+    const existing2 = document.getElementById('printPreviewModal')
+    if (existing2) existing2.remove()
+    showToast('캡처 라이브러리 로드 실패 (네트워크 확인 필요) — 직접 인쇄를 사용하세요', 'error')
+    return
+  }
+
+  const txt0 = document.getElementById('ppLoadingText')
+  if (txt0) txt0.textContent = `슬라이드 캡처 중 (0/${totalPages})`
 
   // 전체 캡처
   const cache = await _captureAllSlides(slides, (cur, tot) => {
