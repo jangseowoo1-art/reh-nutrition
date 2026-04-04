@@ -3364,6 +3364,7 @@ async function renderOrders() {
               const isActive = i2 === ci
               return `<span style="padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;cursor:pointer;border:1.5px solid ${isActive?c2Color:'#e5e7eb'};background:${isActive?c2Color:'white'};color:${isActive?'white':'#6b7280'}" onclick="switchOrderDetailTab('${dateStr}',${i2})">${c2.category_name}</span>`
             }).join('')}
+          </div>` : ''
 
           // 업체별 행 (월목표·누적·잔여·진행률·오늘입력)
           const vendorRows = vendors.map((v, vi) => {
@@ -8375,6 +8376,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       class="form-input" style="width:auto;min-width:180px">
       ${hospitals.map(h => `<option value="${h.id}" ${h.id==selectedHospitalId?'selected':''}>${h.name}</option>`).join('')}
     </select>
+  </div>` : ''
 
   content.innerHTML = `
   <!-- 헤더 -->
@@ -14206,14 +14208,12 @@ function renderMonthlyScheduleTab() {
                 if (code && code !== '-' && !REST_CODES2.has(code) && !ltype) {
                   curConsec2++
                   if (curConsec2 > maxConsecFound2) maxConsecFound2 = curConsec2
-
                   const d2 = new Date(dateStr)
                   const startOfYear2 = new Date(d2.getFullYear(), 0, 1)
                   const weekNum2 = Math.ceil(((d2 - startOfYear2) / 86400000 + startOfYear2.getDay() + 1) / 7)
                   if (!weeklyHoursMap2[weekNum2]) weeklyHoursMap2[weekNum2] = 0
                   weeklyHoursMap2[weekNum2] += calcShiftHoursInner(code)
                   if (weeklyHoursMap2[weekNum2] > maxWeeklyHoursFound) maxWeeklyHoursFound = weeklyHoursMap2[weekNum2]
-
                 } else { curConsec2 = 0 }
 
                 let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd2 ? 'background:#fffbeb;' : `background:${rowBg};`
@@ -14568,7 +14568,7 @@ function renderEmployeeModal() {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
-            <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장" 
+            <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장"
               list="ei_position_list"
               value="${isEdit ? (emp?.position||'') : ''}">
             <datalist id="ei_position_list">
@@ -15108,7 +15108,6 @@ function renderAnalysisTab() {
   const extWorkers = scheduleExternalWorkers || []
   const extMap = scheduleExtSchedMap || {}
   let extDispatchDays = 0, extParttimeDays = 0
-  let extDispatchCount = 0, extParttimeCount = 0
   const dispatchSet = new Set(), parttimeSet = new Set()
   extWorkers.forEach(w => {
     let worked = false
@@ -15125,11 +15124,9 @@ function renderAnalysisTab() {
       else parttimeSet.add(w.id)
     }
   })
-  extDispatchCount = dispatchSet.size
-  extParttimeCount = parttimeSet.size
+  const extDispatchCount = dispatchSet.size
+  const extParttimeCount = parttimeSet.size
   const hasExtWorkers = extWorkers.length > 0
-
-  // ── 전체 인력 기준 통합 근무일수 ─────────────────────────
   const totalWorkDays = (monthly.totalWork || 0) + extDispatchDays + extParttimeDays
   const totalPersonnel = (ad.total_employees || 0) + extDispatchCount + extParttimeCount
 
@@ -15318,40 +15315,39 @@ function renderAnalysisTab() {
 // 직원 공유 뷰 전용 인쇄 함수
 // ════════════════════════════════════════════════════════════════
 window.printStaffView = function() {
-  // 직원 공유 뷰 컨테이너 찾기
   const staffTable = document.querySelector('.staff-emp-row')
   if (!staffTable) {
     alert('직원 공유 뷰가 현재 표시되어 있지 않습니다.')
     return
   }
-
-  // 직급 그룹 목록 수집 (그룹 헤더 행에서)
   const container = staffTable.closest('div[style*="border-radius:16px"]') ||
-                    staffTable.closest('div[style*="border-radius: 16px"]')
+                    staffTable.closest('div[style*="border-radius: 16px"]') ||
+                    staffTable.closest('div')
   if (!container) { window.print(); return }
 
   // 그룹 헤더 행에서 직급 목록 추출
   const groupHeaders = container.querySelectorAll('tr td[colspan]')
   const groups = []
   groupHeaders.forEach((td, idx) => {
-    const label = td.querySelector('span[style*="font-weight:800"]')?.textContent?.trim()
-    if (label) groups.push({ label, idx })
+    const span = td.querySelector('span')
+    const label = span?.textContent?.trim() || td.textContent?.trim() || ('그룹 ' + (idx+1))
+    groups.push({ label, idx })
   })
 
-  // 인쇄 옵션 모달 표시
+  // 인쇄 옵션 모달
   const existingModal = document.getElementById('printSelectModal')
   if (existingModal) existingModal.remove()
 
   const modal = document.createElement('div')
   modal.id = 'printSelectModal'
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px'
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px'
   modal.innerHTML = `
     <div style="background:white;border-radius:16px;padding:24px;min-width:320px;max-width:440px;box-shadow:0 8px 30px rgba(0,0,0,.2)">
       <h3 style="font-size:16px;font-weight:800;color:#1f2937;margin:0 0 6px"><i class="fas fa-print" style="color:#2563eb;margin-right:8px"></i>인쇄 범위 선택</h3>
       <p style="font-size:12px;color:#6b7280;margin:0 0 16px">인쇄할 직급을 선택하세요</p>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
         <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;color:#374151">
-          <input type="checkbox" id="printGrp_all" value="all" checked 
+          <input type="checkbox" id="printGrp_all" value="all" checked
             onchange="document.querySelectorAll('#printSelectModal input[type=checkbox]:not(#printGrp_all)').forEach(cb=>cb.checked=this.checked)"
             style="accent-color:#2563eb">
           전체 인쇄
@@ -15381,14 +15377,13 @@ window.executePrintStaffView = function() {
   modal?.remove()
 
   const container = document.querySelector('.staff-emp-row')?.closest('div[style*="border-radius:16px"]') ||
-                    document.querySelector('.staff-emp-row')?.closest('div[style*="border-radius: 16px"]')
+                    document.querySelector('.staff-emp-row')?.closest('div[style*="border-radius: 16px"]') ||
+                    document.querySelector('.staff-emp-row')?.closest('div')
   if (!container) { window.print(); return }
 
   // 선택된 그룹만 포함한 클론 생성
   const clone = container.cloneNode(true)
-
   if (checkedIdxs.size > 0) {
-    // tbody에서 각 그룹의 행들을 필터링
     const tbody = clone.querySelector('tbody')
     if (tbody) {
       const allRows = Array.from(tbody.querySelectorAll('tr'))
@@ -15397,14 +15392,9 @@ window.executePrintStaffView = function() {
         const isGroupHeader = row.querySelector('td[colspan]')
         if (isGroupHeader) {
           currentGroupIdx++
-          if (!checkedIdxs.has(currentGroupIdx)) {
-            row.remove()
-          }
+          if (!checkedIdxs.has(currentGroupIdx)) row.remove()
         } else {
-          // 현재 그룹이 체크되지 않았으면 행 제거 (이미 헤더 제거로 인해 구조가 달라졌으므로 data-group으로 처리)
-          if (currentGroupIdx >= 0 && !checkedIdxs.has(currentGroupIdx)) {
-            row.remove()
-          }
+          if (currentGroupIdx >= 0 && !checkedIdxs.has(currentGroupIdx)) row.remove()
         }
       })
     }
@@ -15428,7 +15418,7 @@ window.executePrintStaffView = function() {
   }
   table { width:100%; border-collapse:collapse; font-size:8px; }
   th, td { padding:1px; }
-  div[style*="overflow-x:auto"], div[style*="max-height"] { overflow:visible!important; max-height:none!important; }
+  div[style*="overflow-x:auto"] { overflow:visible!important; max-height:none!important; }
 </style>
 </head>
 <body>
@@ -15436,11 +15426,12 @@ ${clone.outerHTML}
 <script>
   document.querySelectorAll('button').forEach(b => b.style.display='none');
   window.onload = function() { window.print(); window.close(); }
-<\/script>
+</script>
 </body>
 </html>`)
   printWindow.document.close()
 }
+
 
 // ════════════════════════════════════════════════════════════════
 // 인쇄/PDF 출력
@@ -16310,21 +16301,6 @@ window.saveSchedDetail = async () => {
       }
     }
     schedRecalcRow(parseInt(empId))
-    // 연차 코드('연') 저장 시 leave_map used값 즉시 재계산
-    if (scheduleMonthData?.leave_map) {
-      const yr = App.currentYear
-      const sm2 = scheduleMonthData.sched_map
-      let annualCount = 0
-      for (let d=1; d<=getDaysInMonth(yr,App.currentMonth); d++) {
-        const ds=`${yr}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-        if (sm2[`${empId}_${ds}`]?.shift_code==='연') annualCount++
-      }
-      if (!scheduleMonthData.leave_map[empId]) scheduleMonthData.leave_map[empId]={}
-      if (scheduleMonthData.leave_map[empId].annual) {
-        scheduleMonthData.leave_map[empId].annual.used = annualCount
-      }
-      schedRecalcRow(parseInt(empId))
-    }
     showToast('저장되었습니다', 'success')
     modal.classList.add('hidden')
   } else {
@@ -20323,7 +20299,8 @@ function renderAdminStaffContent(content) {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
-            <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장" list="aem_position_list">
+            <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장"
+              list="aem_position_list">
             <datalist id="aem_position_list">
               <option value="영양사">
               <option value="영양사(주임)">
@@ -38434,6 +38411,7 @@ window.openExecutiveSummaryView = () => {
       <h4 style="font-size:12px;font-weight:700;color:#c2410c;margin:0 0 8px"><i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>인력 불균형 알림</h4>
       ${overloaded.map(e => `<div style="font-size:11px;color:#c2410c">⚠️ <b>${e.name}</b> — ${e.wd}일 근무 (평균 +${(e.wd-Number(avgWorkDays)).toFixed(1)}일)</div>`).join('')}
       ${underloaded.map(e => `<div style="font-size:11px;color:#b45309">🔵 <b>${e.name}</b> — ${e.wd}일 근무 (평균 -${(Number(avgWorkDays)-e.wd).toFixed(1)}일)</div>`).join('')}
+    </div>` : ''
 
   const html = `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.12);max-width:680px;width:100%">
@@ -38536,10 +38514,7 @@ window.qrLoadList = async function qrLoadList() {
   const listEl = document.getElementById('qrEmployeeList')
   if (!listEl) return
   try {
-    // 관리자인 경우 현재 병원 ID를 쿼리에 포함
-    const hqParam = App.role === 'admin' && (App.currentHospitalId || App.adminHospitalId)
-      ? `?hospitalId=${App.currentHospitalId || App.adminHospitalId}` : ''
-    const data = await api('GET', `/api/schedule/share-tokens${hqParam}`)
+    const data = await api('GET', '/api/schedule/share-tokens')
     const tokens = data.tokens || []
     const employees = (scheduleEmployees || []).filter(e => e.is_active !== 0)
     const tokenMap = {}
@@ -38610,9 +38585,7 @@ window.qrRegen = async (empId) => {
 
 window.qrBulkGenerate = async () => {
   try {
-    const hqParam = App.role === 'admin' && (App.currentHospitalId || App.adminHospitalId)
-      ? `?hospitalId=${App.currentHospitalId || App.adminHospitalId}` : ''
-    const r = await api('POST', `/api/schedule/share-tokens/bulk${hqParam}`)
+    const r = await api('POST', '/api/schedule/share-tokens/bulk')
     await qrLoadList()
     showToast(`${r.created}명 QR 코드 생성 완료`, 'success')
   } catch(e) { showToast('일괄 생성 실패', 'error') }
