@@ -12962,13 +12962,38 @@ function renderOffGrantsPanel() {
 
   // 날짜별 맵 (스케줄 그리드에서 하이라이트용)
   const DOW_COLORS = {
-    sunday:      { bg: '#fee2e2', color: '#b91c1c', label: '일' },
-    saturday:    { bg: '#fffbeb', color: '#b45309', label: '토' },
-    holiday:     { bg: '#fef3c7', color: '#92400e', label: '공휴' },
-    cycle_rest:  { bg: '#ede9fe', color: '#6d28d9', label: '순환' }
+    sunday:        { bg: '#fee2e2', color: '#b91c1c', label: '일' },
+    saturday:      { bg: '#fffbeb', color: '#b45309', label: '토' },
+    holiday:       { bg: '#fef3c7', color: '#92400e', label: '공휴' },
+    cycle_rest:    { bg: '#ede9fe', color: '#6d28d9', label: '순환' },
+    monthly_fixed: { bg: '#eff6ff', color: '#1d4ed8', label: '고정' },
+    min_guarantee: { bg: '#f5f3ff', color: '#7c3aed', label: '최소보장' },
+    substitute:    { bg: '#fef9c3', color: '#a16207', label: '대체' },
+    manual:        { bg: '#fff7ed', color: '#c2410c', label: '수동' }
   }
-  const isWeekly5 = !sm.off_grant_type || sm.off_grant_type === 'weekly5'
-  const isCycle = sm.off_grant_type === 'cycle'
+  const offType      = sm.off_grant_type || 'weekly5'
+  const isWeekly5    = offType === 'weekly5'
+  const isCycle      = offType === 'cycle'
+  const isMonthlyFix = offType === 'monthly_fixed'
+  const isMixed      = offType === 'mixed'
+
+  // 근무제 유형 레이블
+  // cycle_holiday_policy 표시 문구
+  const chpLabel = { ignore: '공휴무시', pay: '공휴수당', add: '추가휴무', substitute: '대체생성' }
+  const typeLabel = isCycle      ? `<i class="fas fa-sync-alt mr-1"></i>순환근무제 (${sm.cycle_work_days||5}일근무/${sm.cycle_rest_days_setting||2}일휴무)`
+                  : isMonthlyFix ? `<i class="fas fa-calendar-alt mr-1"></i>월 고정 휴무제 (목표 ${sm.monthly_fixed_target||10}일)`
+                  : isMixed      ? `<i class="fas fa-layer-group mr-1"></i>혼합형 (순환 ${sm.cycle_work_days||5}일근무/${sm.cycle_rest_days_setting||2}일휴무 + ${chpLabel[sm.cycle_holiday_policy||'add']||'공휴추가'})`
+                  : '토·일·공휴일 자동 집계 + 대체휴무 수동 등록'
+  const typeCls  = isCycle      ? 'text-purple-500 font-medium'
+                  : isMonthlyFix ? 'text-blue-600 font-medium'
+                  : isMixed      ? 'text-teal-600 font-medium'
+                  : 'text-gray-400'
+
+  // monthly_fixed 배치 결과 분석
+  const autoCount      = gd.filter(d => d.type === 'monthly_fixed' && d.lock_flag !== 1).length
+  const manualCount    = gd.filter(d => d.lock_flag === 1).length
+  const minGuaranteeN  = sm.min_guarantee_days || 0
+  const policyReview   = sm.policy_review_signal === true
 
   return `
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
@@ -12977,12 +13002,7 @@ function renderOffGrantsPanel() {
         <i class="fas fa-calendar-check text-blue-500"></i>
         <div>
           <span class="font-bold text-gray-800">${App.currentYear}년 ${App.currentMonth}월 부여휴무</span>
-          <span class="text-xs ml-2 ${isCycle ? 'text-purple-500 font-medium' : 'text-gray-400'}">
-            ${isCycle
-              ? `<i class="fas fa-sync-alt mr-1"></i>순환근무제 (${sm.cycle_work_days||5}일근무/${sm.cycle_rest_days_setting||2}일휴무)`
-              : '토·일·공휴일 자동 집계 + 대체휴무 수동 등록'
-            }
-          </span>
+          <span class="text-xs ml-2 ${typeCls}">${typeLabel}</span>
         </div>
       </div>
       ${isAdm ? `
@@ -13003,15 +13023,24 @@ function renderOffGrantsPanel() {
           <div class="text-2xl font-bold text-red-600">${sm.sundays || 0}</div>
           <div class="text-xs text-red-400 mt-0.5">일요일</div>
         </div>
-        ${isCycle ? `
+        ${isCycle || isMixed ? `
         <div class="bg-purple-50 rounded-xl p-3 text-center">
           <div class="text-2xl font-bold text-purple-600">${sm.cycle_rest_days || 0}</div>
           <div class="text-xs text-purple-500 mt-0.5">순환휴무</div>
+        </div>` : isMonthlyFix ? `
+        <div class="bg-blue-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-blue-700">${sm.monthly_fixed_days || 0}</div>
+          <div class="text-xs text-blue-500 mt-0.5">고정배치<span class="block text-gray-400">목표 ${sm.monthly_fixed_target||10}일</span></div>
         </div>` : `
         <div class="bg-yellow-50 rounded-xl p-3 text-center">
           <div class="text-2xl font-bold text-yellow-600">${sm.saturdays || 0}</div>
           <div class="text-xs text-yellow-500 mt-0.5">토요일</div>
         </div>`}
+        ${minGuaranteeN > 0 ? `
+        <div class="bg-violet-50 rounded-xl p-3 text-center">
+          <div class="text-2xl font-bold text-violet-600">${minGuaranteeN}</div>
+          <div class="text-xs text-violet-500 mt-0.5">최소보장<span class="block text-gray-400">자동추가</span></div>
+        </div>` : ''}
         <div class="bg-amber-50 rounded-xl p-3 text-center">
           <div class="text-2xl font-bold text-amber-700">${sm.national_holidays || 0}</div>
           <div class="text-xs text-amber-500 mt-0.5">공휴일</div>
@@ -13026,18 +13055,61 @@ function renderOffGrantsPanel() {
         </div>
       </div>
 
+      <!-- 월 고정 휴무제: 자동배치 vs 수동수정 현황 배너 -->
+      ${isMonthlyFix ? `
+      <div class="mb-3 p-3 rounded-xl border flex items-center gap-3 flex-wrap ${manualCount > 0 ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-100'}">
+        <div class="flex items-center gap-1.5 text-xs">
+          <span class="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"></span>
+          <span class="text-blue-700 font-medium">자동배치 ${autoCount}일</span>
+        </div>
+        ${manualCount > 0 ? `
+        <div class="flex items-center gap-1.5 text-xs">
+          <span class="w-2.5 h-2.5 rounded-full bg-orange-500 inline-block"></span>
+          <span class="text-orange-700 font-medium">수동수정(잠금) ${manualCount}일</span>
+          <span class="text-gray-400">— 재계산 시 보호됨</span>
+        </div>` : ''}
+        <div class="ml-auto text-xs text-gray-500">
+          기준인원: <strong>${sm.required_staff||0}명</strong>
+        </div>
+      </div>` : ''}
+
+      <!-- 최소휴무 보장(min_guarantee) 발생 경고 배너 -->
+      ${policyReview ? `
+      <div class="mb-3 p-3 rounded-xl border bg-violet-50 border-violet-200 flex items-start gap-2">
+        <i class="fas fa-exclamation-triangle text-violet-500 mt-0.5 flex-shrink-0"></i>
+        <div class="text-xs text-violet-700">
+          <strong>최소 휴무 보장 ${minGuaranteeN}일 자동 추가됨</strong>
+          — 이달 기본 휴무 배정만으로 월 최소 기준(${sm.monthly_min_off_target||0}일)에 미달하여 자동 추가되었습니다.
+          <span class="text-violet-500">※ 현재 근무 정책 검토를 권장합니다.</span>
+        </div>
+      </div>` : ''}
+
       <!-- 부여휴무 날짜 목록 -->
       ${gd.length > 0 ? `
       <div class="mb-3">
-        <div class="text-xs font-bold text-gray-500 mb-2">📅 부여휴무 일정 ${isCycle ? '(순환근무제)' : '(토·일·공휴일)'}</div>
+        <div class="text-xs font-bold text-gray-500 mb-2">
+          📅 부여휴무 일정
+          ${isMonthlyFix ? `<span class="ml-1 text-blue-500">(월고정제 — 파란색:자동 / 주황색:수동 / 보라색:최소보장)</span>` : isCycle ? '(순환근무제)' : isMixed ? '(혼합형)' : '(토·일·공휴일)'}
+        </div>
         <div class="flex flex-wrap gap-1.5">
           ${gd.map(d => {
-            const cfg = DOW_COLORS[d.type] || { bg: '#f3f4f6', color: '#374151', label: d.type }
-            return `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border"
-              style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33">
+            const isManual = d.lock_flag === 1
+            const cfg = isManual
+              ? { bg: '#fff7ed', color: '#c2410c' }
+              : (DOW_COLORS[d.type] || { bg: '#f3f4f6', color: '#374151' })
+            const lockIcon = isManual ? '<i class="fas fa-lock text-orange-400" style="font-size:8px"></i>' : ''
+            const reasonTip = d.reason ? ` title="${d.reason}"` : ''
+            return `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border cursor-default"
+              style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33"${reasonTip}>
+              ${lockIcon}
               <span>${d.date.slice(5)}</span>
               <span class="opacity-60">${d.day_of_week}</span>
-              ${(d.type === 'holiday' || d.type === 'cycle_rest') ? `<span class="font-semibold">${d.label.length > 10 ? '순환휴' : d.label}</span>` : ''}
+              ${d.type === 'holiday' ? `<span class="font-semibold">${d.label.length > 8 ? '공휴' : d.label}</span>`
+                : d.type === 'cycle_rest' ? `<span class="font-semibold">순환휴</span>`
+                : d.type === 'monthly_fixed' ? `<span class="font-semibold text-blue-600">${isManual ? '수동' : '자동'}</span>`
+                : d.type === 'min_guarantee' ? `<span class="font-semibold text-violet-600">최소보장</span>`
+                : d.type === 'substitute' ? `<span class="font-semibold text-amber-600">대체</span>`
+                : ''}
             </span>`
           }).join('')}
         </div>
@@ -13950,6 +14022,19 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     else evalItems.push({ type:'info', text:`외부인력 ${extDependencyPct}% 활용 — 적정 수준입니다.` })
   }
   if(empStats.some(e=>e.holidayWorkDays>2)) evalItems.push({ type:'warn', text:`공휴일 3일 이상 근무자 ${empStats.filter(e=>e.holidayWorkDays>2).map(e=>e.name).join(', ')} — 휴일수당 발생 여부를 확인하세요.` })
+
+  // min_guarantee 정책 검토 신호 (off-grants 요약에서 가져옴)
+  const ogSummary = scheduleOffGrants?.summary || {}
+  if (ogSummary.policy_review_signal) {
+    evalItems.push({ type:'warn', text:`월 최소 휴무 보장 자동 추가 ${ogSummary.min_guarantee_days||0}일 발생 — 기본 근무 배정만으로는 최소 기준(${ogSummary.monthly_min_off_target||0}일) 미달. 근무 정책 검토를 권장합니다.` })
+  }
+
+  // 공휴일 많은 달 외부인력 동반 증가 연관 추이 참고 (안전한 표현)
+  const natHolidays = ogSummary.national_holidays || 0
+  if (natHolidays >= 3 && extWorkDays > 0) {
+    evalItems.push({ type:'info', text:`이달 공휴일 ${natHolidays}일, 외부인력 근무 ${extWorkDays}일 — 공휴일 증가 월의 외부인력 동반 증가 추이 참고 (인과 단정 아님, 연관 추이로만 참고)` })
+  }
+
   if(evalItems.length === 0) evalItems.push({ type:'good', text:'전반적으로 안정적인 인력 운영 상태입니다.' })
 
   const evalHtml = evalItems.map(item => {
@@ -14358,7 +14443,7 @@ function renderMonthlyScheduleTab() {
           <tr style="background:#1e3a2f;border-bottom:2px solid #14532d">
             <td style="padding:5px 10px;position:sticky;left:0;background:#1e3a2f;z-index:5;border-right:3px solid #14532d;min-width:100px">
               <div style="font-size:10px;font-weight:700;color:#86efac">부여휴무</div>
-              <div style="font-size:9px;color:#4ade80;opacity:0.7">${(scheduleOffGrants?.summary?.off_grant_type||'weekly5')==='cycle' ? '순환휴무·공휴·대체' : '토·일·공휴·대체'}</div>
+              <div style="font-size:9px;color:#4ade80;opacity:0.7">${(()=>{const t=scheduleOffGrants?.summary?.off_grant_type||'weekly5';return t==='cycle'?'순환휴무·공휴·대체':t==='monthly_fixed'?'월고정·공휴·대체':t==='mixed'?'혼합형·공휴·대체':'토·일·공휴·대체'})()} </div>
             </td>
             ${Array.from({length:days},(_,i)=>{
               const day=i+1
@@ -14374,8 +14459,11 @@ function renderMonthlyScheduleTab() {
               const isCycleRestType = grantedEntry?.type === 'cycle_rest'
               let cellBg = 'transparent', cellIcon = '', cellTitle = ''
               if (isSub) { cellBg='#ea580c'; cellIcon='대'; cellTitle=offLabelMap[dateStr]||'대체휴무' }
+              else if (grantedEntry?.type === 'min_guarantee') { cellBg='#7c3aed'; cellIcon='보'; cellTitle=grantedEntry?.reason||'최소휴무 보장' }
+              else if (grantedEntry?.type === 'monthly_fixed') { cellBg=grantedEntry?.lock_flag===1?'#c2410c':'#1d4ed8'; cellIcon=grantedEntry?.lock_flag===1?'수':'고'; cellTitle=grantedEntry?.reason||grantedEntry?.label||'월고정 자동배치' }
               else if (isCycleRestType) { cellBg='#7c3aed'; cellIcon='순'; cellTitle=grantedEntry?.label||'순환휴무' }
               else if (isHoliday || (grantedEntry?.type==='holiday')) { cellBg='#d97706'; cellIcon='공'; cellTitle=offLabelMap[dateStr]||grantedEntry?.label||'공휴일' }
+              else if (grantedEntry?.type==='substitute') { cellBg='#a16207'; cellIcon='대'; cellTitle=grantedEntry?.label||'대체휴무' }
               else if (isSun2) { cellBg='#dc2626'; cellIcon='휴'; cellTitle='일요일' }
               else if (isSat2) { cellBg='#b45309'; cellIcon='휴'; cellTitle='토요일' }
               const borderLeft=`border-left:1px solid ${isSun2?'rgba(252,165,165,0.3)':isSat2?'rgba(147,197,253,0.3)':'rgba(255,255,255,0.1)'};`

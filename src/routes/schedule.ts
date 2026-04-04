@@ -1215,6 +1215,324 @@ schedule.post('/min-staff', async (c) => {
 // DELETE /off-grants/substitute/:date → 대체휴무 삭제 (관리자만)
 // ════════════════════════════════════════════════════════════════
 
+// ────────────────────────────────────────────────────────────────
+// 📌 월 고정 휴무 자동 배치 알고리즘 (computeMonthlyFixedOff)
+//
+// 설계 원칙 (정책 우선순위 반영):
+//   STEP 1. 공휴일·주말 먼저 휴무 배정 (이미 확정)
+//   STEP 2. 잔여 목표 휴무일 = N - 공휴일/주말 수
+//   STEP 3. 후보 평일 목록을 "일별 예상 근무인원"이 높은 순으로 정렬
+//            → 가장 인원이 많은 날(여유 있는 날)부터 휴무 배정
+//            → 기준인원(required_staff_count) 이하로 떨어지지 않도록 보호
+//   STEP 4. 주별 균등 분산 (주당 최대 허용 초과 방지)
+//   STEP 5. 연속 휴무 3일 이상 지양 (이미 앞뒤로 2일 휴무이면 해당 날 후보 제외)
+//   STEP 6. 수동 수정된 날짜(lock_flag=1)는 재계산 시 건드리지 않음
+//
+// 반환값:
+//   배치된 날짜 배열 (type='monthly_fixed', is_auto=true)
+//   + 각 날짜에 배치 근거(reason) 포함
+// ────────────────────────────────────────────────────────────────
+
+interface OffGrantDay {
+  date: string
+  day_of_week: string
+  type: string
+  label: string
+  is_auto?: boolean       // true = 자동 배치, false = 수동 수정
+  lock_flag?: number      // 0 = 자동(덮어쓰기 가능), 1 = 수동 잠금
+  base_off_type?: string  // 수동 수정 전 원본 자동 유형
+  reason?: string         // 배치 근거 텍스트
+}
+
+/**
+ * 일별 정규직원 예상 근무인원 집계
+ * - daily_schedules 에서 해당 월의 실제 입력된 근무코드 기반
+ * - team='nutrition' 직원 제외 (기존 정책 유지)
+ * - 반환: { 'YYYY-MM-DD': number }
+ */
+async function buildDailyWorkCount(
+  db: D1Database,
+  hospitalId: number,
+  year: number,
+  month: number,
+  restCodes: Set<string>
+): Promise<Record<string, number>> {
+  const monthStr = String(month).padStart(2, '0')
+  const prefix   = `${year}-${monthStr}`
+
+  // 영양사 제외 정규직원 ID 목록 조회
+  const empRows = await db.prepare(
+    `SELECT id FROM employees
+     WHERE hospital_id=? AND team != 'nutrition' AND is_active=1`
+  ).bind(hospitalId).all<any>()
+  const empIds = new Set((empRows.results || []).map((e: any) => e.id))
+  if (empIds.size === 0) return {}
+
+  // 해당 월 스케줄 조회 (영양사 제외)
+  const schedRows = await db.prepare(
+    `SELECT employee_id, work_date, shift_code
+     FROM daily_schedules
+     WHERE hospital_id=? AND work_date LIKE ?`
+  ).bind(hospitalId, `${prefix}-%`).all<any>()
+
+  const countMap: Record<string, number> = {}
+  for (const r of (schedRows.results || [])) {
+    if (!empIds.has(r.employee_id)) continue
+    const code = r.shift_code || ''
+    if (!code || code === '-' || restCodes.has(code)) continue
+    countMap[r.work_date] = (countMap[r.work_date] || 0) + 1
+  }
+  return countMap
+}
+
+/**
+ * 월 고정 휴무 자동 배치 핵심 함수
+ *
+ * @param targetOff     목표 총 휴무일수 (예: 10)
+ * @param year, month   대상 년월
+ * @param holidays      공휴일 Set<'YYYY-MM-DD'>
+ * @param holidayMap    공휴일 이름 Map
+ * @param dailyWorkCount 일별 현재 근무인원 { 'YYYY-MM-DD': number }
+ * @param requiredStaff 일일 기준(목표) 근무인원 (0 = 미설정)
+ * @param lockedDates   수동 잠금 날짜 Set<'YYYY-MM-DD'>
+ * @param lockedTypes   수동 잠금 날짜의 off_type Map
+ */
+function computeMonthlyFixedOff(
+  targetOff: number,
+  year: number,
+  month: number,
+  holidays: Set<string>,
+  holidayMap: Map<string, string>,
+  dailyWorkCount: Record<string, number>,
+  requiredStaff: number,
+  lockedDates: Set<string>,
+  lockedTypes: Map<string, string>
+): OffGrantDay[] {
+  const DOW_LABEL = ['일', '월', '화', '수', '목', '금', '토']
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const monthStr    = String(month).padStart(2, '0')
+  const result: OffGrantDay[] = []
+
+  // ── STEP 1: 공휴일·주말 먼저 확정 ──────────────────────────
+  const fixedOffDates = new Set<string>()   // 이미 휴무로 확정된 날짜
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds  = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
+    const dow = new Date(year, month - 1, d).getDay()
+
+    // 수동 잠금된 날짜: 기존 유형 그대로 유지
+    if (lockedDates.has(ds)) {
+      const lockedType = lockedTypes.get(ds) || 'manual'
+      result.push({
+        date: ds,
+        day_of_week: DOW_LABEL[dow],
+        type: lockedType,
+        label: lockedType === 'monthly_fixed' ? '월고정(수동수정)'
+             : lockedType === 'holiday'       ? (holidayMap.get(ds) || '공휴일')
+             : lockedType === 'manual'        ? '수동지정'
+             : lockedType,
+        is_auto: false,
+        lock_flag: 1,
+        base_off_type: lockedType,
+        reason: '관리자 수동 수정 (잠금)'
+      })
+      fixedOffDates.add(ds)
+      continue
+    }
+
+    // 공휴일 (주말 중복 포함 — 단일 처리)
+    if (holidays.has(ds)) {
+      const label = holidayMap.get(ds) || '공휴일'
+      const type  = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'holiday'
+      result.push({
+        date: ds, day_of_week: DOW_LABEL[dow],
+        type, label, is_auto: true, lock_flag: 0,
+        reason: '공휴일 자동 배정'
+      })
+      fixedOffDates.add(ds)
+      continue
+    }
+    // 일요일
+    if (dow === 0) {
+      result.push({
+        date: ds, day_of_week: '일', type: 'sunday', label: '일요일',
+        is_auto: true, lock_flag: 0, reason: '일요일 자동 배정'
+      })
+      fixedOffDates.add(ds)
+      continue
+    }
+    // 토요일
+    if (dow === 6) {
+      result.push({
+        date: ds, day_of_week: '토', type: 'saturday', label: '토요일',
+        is_auto: true, lock_flag: 0, reason: '토요일 자동 배정'
+      })
+      fixedOffDates.add(ds)
+      continue
+    }
+  }
+
+  // ── STEP 2: 잔여 목표 휴무일 계산 ──────────────────────────
+  const alreadyOff   = fixedOffDates.size
+  const remaining    = Math.max(0, targetOff - alreadyOff)
+  if (remaining === 0) return result
+
+  // ── STEP 3: 후보 평일 목록 구성 ────────────────────────────
+  // 후보 = 아직 휴무로 배정되지 않은 평일
+  const candidates: {
+    ds: string; dow: number; week: number; workCount: number
+  }[] = []
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds  = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
+    const dow = new Date(year, month - 1, d).getDay()
+    if (fixedOffDates.has(ds)) continue          // 이미 휴무 확정
+    if (dow === 0 || dow === 6) continue         // 주말 제외 (이미 처리)
+
+    const week = Math.ceil(d / 7)                // 주차 (1~5)
+    const workCount = dailyWorkCount[ds] ?? -1   // -1: 스케줄 미입력
+    candidates.push({ ds, dow, week, workCount })
+  }
+
+  // ── STEP 4: 정렬 기준 ────────────────────────────────────
+  // 우선순위: ① 근무인원이 많은 날(여유 있는 날) ② 주차 균등 ③ 요일(금→월 순 약간 가중)
+  // 근무인원 정보가 없는 날(-1)은 가장 낮은 우선순위로 처리
+  const weekCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+
+  // 이미 잠금(수동) 날짜가 포함된 주 카운트 선반영
+  for (const d of result) {
+    if (d.lock_flag === 1) {
+      const day = parseInt(d.date.split('-')[2])
+      const wk  = Math.ceil(day / 7)
+      weekCount[wk] = (weekCount[wk] || 0) + 1
+    }
+  }
+
+  // 정렬: 근무인원 내림차순 → 주차 카운트 오름차순 → 날짜 오름차순
+  candidates.sort((a, b) => {
+    const wDiff = (weekCount[a.week] || 0) - (weekCount[b.week] || 0)
+    if (wDiff !== 0) return wDiff  // 적게 배정된 주 우선
+
+    // 근무인원이 많은 날 우선 (여유 있는 날에 휴무 배정)
+    if (b.workCount !== a.workCount) return b.workCount - a.workCount
+
+    return a.ds.localeCompare(b.ds)  // 날짜 순
+  })
+
+  // ── STEP 5: 연속 휴무 방지 + 기준인원 보호 로직으로 배정 ──
+  let assigned = 0
+  const assignedDates = new Set<string>(fixedOffDates)
+
+  // 배정 후보 순서대로 순회
+  for (const cand of candidates) {
+    if (assigned >= remaining) break
+
+    const { ds, dow, week } = cand
+
+    // 연속 휴무 3일 이상 방지: 앞뒤 이틀 범위 내 기존 휴무 확인
+    const d = parseInt(ds.split('-')[2])
+    const prev1 = `${year}-${monthStr}-${String(d - 1).padStart(2, '0')}`
+    const prev2 = `${year}-${monthStr}-${String(d - 2).padStart(2, '0')}`
+    const next1 = `${year}-${monthStr}-${String(d + 1).padStart(2, '0')}`
+    const next2 = `${year}-${monthStr}-${String(d + 2).padStart(2, '0')}`
+
+    const consecBefore = assignedDates.has(prev1) && assignedDates.has(prev2)
+    const consecAfter  = assignedDates.has(next1) && assignedDates.has(next2)
+    const bridgeCons   = assignedDates.has(prev1) && assignedDates.has(next1)
+
+    if (consecBefore || consecAfter || bridgeCons) {
+      // 연속 3일 이상 발생 → 이 날은 건너뜀 (나중에 재시도)
+      continue
+    }
+
+    // 기준인원 보호: 이 날을 휴무로 배정하면 근무인원이 기준 미달인지 확인
+    // workCount: 현재 해당 날짜에 실제 입력된 근무인원
+    // 해당 날짜에 월고정 휴무가 배정되면 그 직원이 빠지므로 예상 인원 = workCount - 1
+    if (requiredStaff > 0 && cand.workCount >= 0) {
+      const afterOff = cand.workCount - 1  // 1명 추가 휴무 시 예상 잔여 인원
+
+      // 단계별 임계값 적용:
+      //   일반 배정: 기준인원의 85% 미만이면 거부
+      //   목표의 마지막 20% 배정 시: 75%까지 허용 (목표 달성 우선)
+      //   스케줄 미입력(-1)인 날: 건너뜀 없이 배정 (Step6에서 처리)
+      const nearEnd = (remaining - assigned) <= Math.ceil(remaining * 0.2)
+      const threshold = nearEnd ? requiredStaff * 0.75 : requiredStaff * 0.85
+
+      if (afterOff < threshold) {
+        // 인력 부족 우려 → 배정 금지 (STEP 6에서 기준 완화 후 재시도)
+        continue
+      }
+    }
+
+    // 배정 확정
+    result.push({
+      date: ds,
+      day_of_week: DOW_LABEL[dow],
+      type: 'monthly_fixed',
+      label: '월고정 자동배치',
+      is_auto: true,
+      lock_flag: 0,
+      reason: cand.workCount >= 0
+        ? `자동배치 (당일 근무인원 ${cand.workCount}명, 기준 ${requiredStaff}명)`
+        : '자동배치 (스케줄 미입력 — 균등분산 기준)'
+    })
+    assignedDates.add(ds)
+    weekCount[week] = (weekCount[week] || 0) + 1
+    assigned++
+  }
+
+  // ── STEP 6: 기준인원 보호로 못 채운 경우 재시도 (기준 완화) ──
+  if (assigned < remaining) {
+    for (const cand of candidates) {
+      if (assigned >= remaining) break
+      if (assignedDates.has(cand.ds)) continue
+      // 연속 휴무 방지만 유지, 기준인원 제약 제거
+      const d = parseInt(cand.ds.split('-')[2])
+      const prev1 = `${year}-${monthStr}-${String(d - 1).padStart(2, '0')}`
+      const prev2 = `${year}-${monthStr}-${String(d - 2).padStart(2, '0')}`
+      const next1 = `${year}-${monthStr}-${String(d + 1).padStart(2, '0')}`
+      const next2 = `${year}-${monthStr}-${String(d + 2).padStart(2, '0')}`
+      if (assignedDates.has(prev1) && assignedDates.has(prev2)) continue
+      if (assignedDates.has(next1) && assignedDates.has(next2)) continue
+
+      result.push({
+        date: cand.ds,
+        day_of_week: DOW_LABEL[cand.dow],
+        type: 'monthly_fixed',
+        label: '월고정 자동배치',
+        is_auto: true,
+        lock_flag: 0,
+        reason: `자동배치 (기준인원 제약 완화 — 잔여 ${remaining - assigned}일 배정)`
+      })
+      assignedDates.add(cand.ds)
+      weekCount[cand.week] = (weekCount[cand.week] || 0) + 1
+      assigned++
+    }
+  }
+
+  // ── STEP 7: 연속 휴무 제약도 완화하여 최종 마무리 ─────────
+  if (assigned < remaining) {
+    for (const cand of candidates) {
+      if (assigned >= remaining) break
+      if (assignedDates.has(cand.ds)) continue
+      result.push({
+        date: cand.ds,
+        day_of_week: DOW_LABEL[cand.dow],
+        type: 'monthly_fixed',
+        label: '월고정 자동배치',
+        is_auto: true,
+        lock_flag: 0,
+        reason: `자동배치 (연속휴무 제약 완화 — 목표 ${targetOff}일 달성)`
+      })
+      assignedDates.add(cand.ds)
+      assigned++
+    }
+  }
+
+  // 날짜순 정렬 후 반환
+  return result.sort((a, b) => a.date.localeCompare(b.date))
+}
+
 schedule.get('/off-grants', async (c) => {
   const user = c.get('user')
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
@@ -1227,12 +1545,18 @@ schedule.get('/off-grants', async (c) => {
   ).bind(hospitalId).all<any>()
   const wsMap: Record<string, string> = { ...DEFAULT_WORK_SETTINGS }
   for (const r of (wsRows.results || [])) wsMap[r.setting_key] = r.setting_value
-  const offGrantType     = wsMap.off_grant_type       || 'weekly5'
-  const cycleWorkDays    = parseInt(wsMap.off_cycle_work_days || '5')
-  const cycleRestDays    = parseInt(wsMap.off_cycle_rest_days || '2')
-  const cycleStartDate   = wsMap.off_cycle_start_date || ''
 
-  // ─── 해당 월의 공휴일 조회 (전국 공통) ────────────────────────
+  const offGrantType       = wsMap.off_grant_type          || 'weekly5'
+  const cycleWorkDays      = parseInt(wsMap.off_cycle_work_days  || '5')
+  const cycleRestDays      = parseInt(wsMap.off_cycle_rest_days  || '2')
+  const cycleStartDate     = wsMap.off_cycle_start_date    || ''
+  const monthlyFixedDays   = parseInt(wsMap.monthly_fixed_off_days || '10')
+  const requiredStaff      = parseInt(wsMap.required_staff_count  || '0')
+  const monthlyMinOff      = parseInt(wsMap.monthly_min_off_days  || '0')
+  const holidayPolicy      = wsMap.holiday_policy          || 'off'
+  const cycleHolidayPolicy = wsMap.cycle_holiday_policy    || 'add'
+
+  // ─── 해당 월의 공휴일 조회 ────────────────────────────────────
   const monthStr = String(month).padStart(2, '0')
   const prefix   = `${year}-${monthStr}`
 
@@ -1246,16 +1570,60 @@ schedule.get('/off-grants', async (c) => {
   const nationalHolidayDates = new Set(
     (holidayRows.results || []).map((h: any) => h.holiday_date)
   )
+  // 공휴일 이름 Map
+  const holidayNameMap = new Map<string, string>(
+    (holidayRows.results || []).map((h: any) => [h.holiday_date, h.holiday_name])
+  )
 
   // ─── 해당 월 날짜별 자동 계산 ────────────────────────────────
   const daysInMonth = new Date(year, month, 0).getDate()
-  const grantedDays: { date: string; day_of_week: string; type: string; label: string }[] = []
-  const DOW_LABEL = ['일', '월', '화', '수', '목', '금', '토']
+  const DOW_LABEL   = ['일', '월', '화', '수', '목', '금', '토']
 
-  if (offGrantType === 'cycle') {
-    // ── 순환 패턴 (예: 2일근무 1일휴무, 5일근무 2일휴무 등) ─────
+  // REST_CODES (off-grants 계산에서 제외할 휴무 코드)
+  const REST_CODES_OG = new Set(['연', '휴', '경조', '병가', '대체'])
+
+  let grantedDays: OffGrantDay[] = []
+
+  // 일별 근무인원 집계 (monthly_fixed 배치 + min_guarantee 공통 사용)
+  const dailyWorkCount = await buildDailyWorkCount(
+    c.env.DB, hospitalId, year, month, REST_CODES_OG
+  )
+
+  if (offGrantType === 'monthly_fixed') {
+    // ── 월 고정 휴무제 ────────────────────────────────────────
+    // 수동 잠금 날짜 조회 (off_grant_history 에서 lock=1인 날짜)
+    const lockRows = await c.env.DB.prepare(
+      `SELECT target_date, new_off_type
+       FROM off_grant_history
+       WHERE hospital_id=? AND new_lock_flag=1
+         AND target_date LIKE ?
+       ORDER BY changed_at DESC`
+    ).bind(hospitalId, `${prefix}-%`).all<any>()
+
+    const lockedDates = new Set<string>()
+    const lockedTypes = new Map<string, string>()
+    for (const r of (lockRows.results || [])) {
+      if (!lockedDates.has(r.target_date)) {
+        lockedDates.add(r.target_date)
+        lockedTypes.set(r.target_date, r.new_off_type || 'manual')
+      }
+    }
+
+    grantedDays = computeMonthlyFixedOff(
+      monthlyFixedDays,
+      year, month,
+      nationalHolidayDates,
+      holidayNameMap,
+      dailyWorkCount,
+      requiredStaff,
+      lockedDates,
+      lockedTypes
+    )
+
+  } else if (offGrantType === 'cycle' || offGrantType === 'mixed') {
+    // ── 순환 패턴 / 혼합형 ──────────────────────────────────────
+    // mixed = 순환패턴 기반 + 공휴일 별도 처리 정책(cycleHolidayPolicy) 적용
     const cycleLen = cycleWorkDays + cycleRestDays
-    // 기준일 결정: 직접 지정 or 해당 월 1일
     let baseDate: Date
     if (cycleStartDate) {
       baseDate = new Date(cycleStartDate)
@@ -1267,54 +1635,165 @@ schedule.get('/off-grants', async (c) => {
     for (let d = 1; d <= daysInMonth; d++) {
       const dateObj = new Date(year, month - 1, d)
       const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
-      const dow = dateObj.getDay()
+      const dow     = dateObj.getDay()
       const dowLabel = DOW_LABEL[dow]
+      const isHoliday = nationalHolidayDates.has(dateStr)
+      const holidayName = holidayNameMap.get(dateStr) || '공휴일'
 
-      // 기준일로부터 경과일 수
       const diffMs   = dateObj.getTime() - baseTime
       const diffDays = Math.floor(diffMs / 86400000)
-      // 음수면 모듈러가 음수가 될 수 있으므로 보정
       const posIdx   = ((diffDays % cycleLen) + cycleLen) % cycleLen
-      // cycleWorkDays번 이후가 휴무
       const isRestDay = posIdx >= cycleWorkDays
 
       if (isRestDay) {
-        // 공휴일 여부 확인
-        const isHoliday = nationalHolidayDates.has(dateStr)
+        // ── 순환 휴무일 ────────────────────────────────────────
+        // Case A: 순환휴무일 + 공휴일 겹침 → 단일 'holiday' 처리 (중복 안 함)
         const typeLabel = dow === 0 ? 'sunday'
           : dow === 6 ? 'saturday'
-          : isHoliday  ? 'holiday'
+          : isHoliday  ? 'holiday'   // Case A: 공휴일이 있으면 holiday로
           : 'cycle_rest'
         const label = dow === 0 ? '일요일'
           : dow === 6 ? '토요일'
-          : isHoliday  ? ((holidayRows.results||[]).find((r:any)=>r.holiday_date===dateStr)?.holiday_name||'공휴일')
+          : isHoliday  ? holidayName
           : `순환휴무 (${cycleWorkDays}일근무/${cycleRestDays}일휴무)`
-        grantedDays.push({ date: dateStr, day_of_week: dowLabel, type: typeLabel, label })
+        grantedDays.push({
+          date: dateStr, day_of_week: dowLabel,
+          type: typeLabel, label,
+          is_auto: true, lock_flag: 0,
+          reason: isHoliday ? 'Case A: 순환휴무 + 공휴일 중복 → 공휴일 단일 처리' : undefined
+        })
       } else {
-        // 근무일이지만 공휴일이면 추가
-        const isHoliday = nationalHolidayDates.has(dateStr)
-        if (isHoliday && dow !== 0 && dow !== 6) {
-          const h = (holidayRows.results||[]).find((r:any)=>r.holiday_date===dateStr)
-          grantedDays.push({ date: dateStr, day_of_week: dowLabel, type: 'holiday', label: h?.holiday_name||'공휴일' })
+        // ── 순환 근무일 ────────────────────────────────────────
+        if (dow === 0) {
+          // 일요일이 근무일과 겹칠 경우 (순환이 일요일에 근무)
+          grantedDays.push({
+            date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일',
+            is_auto: true, lock_flag: 0
+          })
+        } else if (dow === 6) {
+          // 토요일이 근무일과 겹칠 경우
+          grantedDays.push({
+            date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일',
+            is_auto: true, lock_flag: 0
+          })
+        } else if (isHoliday) {
+          // ── Case B: 순환 근무일 + 공휴일 겹침 ──────────────
+          // cycleHolidayPolicy 에 따라 처리
+          if (offGrantType === 'mixed') {
+            // 혼합형: cycleHolidayPolicy 적용
+            if (cycleHolidayPolicy === 'ignore') {
+              // ignore: 공휴일 무시, 근무 유지 (휴무 없음)
+            } else if (cycleHolidayPolicy === 'pay') {
+              // pay: 공휴수당 지급, 휴무 없음 (분석 표시용으로만 기록)
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: 'holiday',
+                label: `${holidayName} (공휴수당 지급)`,
+                is_auto: true, lock_flag: 0,
+                reason: 'Case B: 순환근무일+공휴일 → 공휴수당 지급'
+              })
+            } else if (cycleHolidayPolicy === 'substitute') {
+              // substitute: 대체휴무 자동 생성 (여기서는 표시만)
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: 'substitute',
+                label: `${holidayName} (대체휴무 생성)`,
+                is_auto: true, lock_flag: 0,
+                reason: 'Case B: 순환근무일+공휴일 → 대체휴무 생성'
+              })
+            } else {
+              // add (기본): 추가 휴무 부여
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: 'holiday',
+                label: `${holidayName} (추가 휴무)`,
+                is_auto: true, lock_flag: 0,
+                reason: 'Case B: 순환근무일+공휴일 → 추가 휴무 부여'
+              })
+            }
+          } else {
+            // cycle 모드: 공휴일 기본 처리 (holiday_policy 적용)
+            if (holidayPolicy === 'work_pay' || holidayPolicy === 'work_substitute') {
+              // work_pay / work_substitute: 근무 + 수당/대체
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: holidayPolicy === 'work_substitute' ? 'substitute' : 'holiday',
+                label: holidayPolicy === 'work_substitute'
+                  ? `${holidayName} (대체휴무)`
+                  : `${holidayName} (공휴수당)`,
+                is_auto: true, lock_flag: 0,
+                reason: `공휴일 정책(${holidayPolicy}) 적용`
+              })
+            } else {
+              // off (기본): 공휴일 = 휴무
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: 'holiday', label: holidayName,
+                is_auto: true, lock_flag: 0
+              })
+            }
+          }
         }
       }
     }
   } else {
-    // ── 주5일제 (기본: 토·일·공휴일) ─────────────────────────────
+    // ── 주5일제 기본 (토·일·공휴일) ─────────────────────────────
     for (let d = 1; d <= daysInMonth; d++) {
       const dateObj = new Date(year, month - 1, d)
-      const dow = dateObj.getDay()   // 0=일, 6=토
+      const dow     = dateObj.getDay()
       const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
-
       const isNationalHoliday = nationalHolidayDates.has(dateStr)
-      // 공휴일이 이미 일/토이면 중복 제외
+
       if (dow === 0) {
         grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일' })
       } else if (dow === 6) {
         grantedDays.push({ date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일' })
       } else if (isNationalHoliday) {
-        const h = (holidayRows.results || []).find((r: any) => r.holiday_date === dateStr)
-        grantedDays.push({ date: dateStr, day_of_week: DOW_LABEL[dow], type: 'holiday', label: h?.holiday_name || '공휴일' })
+        grantedDays.push({
+          date: dateStr, day_of_week: DOW_LABEL[dow],
+          type: 'holiday', label: holidayNameMap.get(dateStr) || '공휴일'
+        })
+      }
+    }
+  }
+
+  // ─── monthly_min_off_days: 최소 휴무 보장 (min_guarantee 자동 삽입) ───
+  // 대체휴무는 아래에서 조회되므로 여기선 grantedDays 기준으로만 계산
+  if (monthlyMinOff > 0) {
+    const currentTotal = grantedDays.length
+    const deficit = monthlyMinOff - currentTotal
+
+    if (deficit > 0) {
+      // 이미 휴무인 날짜 집합
+      const offDateSet = new Set<string>(grantedDays.map(d => d.date))
+
+      // 최소 보장 추가 후보: 평일 중 아직 휴무가 아닌 날
+      const minCandidates: { ds: string; dow: number; workCount: number }[] = []
+      for (let d = 1; d <= daysInMonth; d++) {
+        const ds  = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
+        if (offDateSet.has(ds)) continue
+        const dow = new Date(year, month - 1, d).getDay()
+        if (dow === 0 || dow === 6) continue  // 주말은 이미 처리됨
+        const wc = dailyWorkCount[ds] ?? -1
+        minCandidates.push({ ds, dow, workCount: wc })
+      }
+
+      // 근무인원 많은 날 우선 정렬
+      minCandidates.sort((a, b) => b.workCount - a.workCount)
+
+      let minAdded = 0
+      for (const mc of minCandidates) {
+        if (minAdded >= deficit) break
+        grantedDays.push({
+          date: mc.ds,
+          day_of_week: DOW_LABEL[mc.dow],
+          type: 'min_guarantee',
+          label: '최소휴무 보장',
+          is_auto: true,
+          lock_flag: 0,
+          reason: `월 최소 휴무 ${monthlyMinOff}일 보장 자동 추가 (현재 ${currentTotal + minAdded}일 → 목표 ${monthlyMinOff}일)`
+        })
+        minAdded++
       }
     }
   }
@@ -1328,26 +1807,39 @@ schedule.get('/off-grants', async (c) => {
   ).bind(hospitalId, `${prefix}-%`).all<any>()
 
   const substituteDays = (subRows.results || []).map((r: any) => ({
-    id:         r.id,
-    date:       r.off_date,
-    name:       r.off_name,
-    reason:     r.off_reason || '',
+    id:          r.id,
+    date:        r.off_date,
+    name:        r.off_name,
+    reason:      r.off_reason || '',
     hospital_id: r.hospital_id,
-    created_by: r.created_by || ''
+    created_by:  r.created_by || ''
   }))
 
-  // ─── 요약 집계 ────────────────────────────────────────────────
+  // ─── 요약 집계 (월 고정 휴무제 항목 포함 확장) ──────────────
+  const minGuaranteeCount = grantedDays.filter(d => d.type === 'min_guarantee').length
   const summary = {
-    total_granted:     grantedDays.length,
-    sundays:           grantedDays.filter(d => d.type === 'sunday').length,
-    saturdays:         grantedDays.filter(d => d.type === 'saturday').length,
-    national_holidays: grantedDays.filter(d => d.type === 'holiday').length,
-    cycle_rest_days:   grantedDays.filter(d => d.type === 'cycle_rest').length,
-    substitute_count:  substituteDays.length,
-    grand_total:       grantedDays.length + substituteDays.length,
-    off_grant_type:    offGrantType,
-    cycle_work_days:   cycleWorkDays,
+    total_granted:           grantedDays.length,
+    sundays:                 grantedDays.filter(d => d.type === 'sunday').length,
+    saturdays:               grantedDays.filter(d => d.type === 'saturday').length,
+    national_holidays:       grantedDays.filter(d => d.type === 'holiday').length,
+    cycle_rest_days:         grantedDays.filter(d => d.type === 'cycle_rest').length,
+    monthly_fixed_days:      grantedDays.filter(d => d.type === 'monthly_fixed').length,
+    monthly_fixed_auto:      grantedDays.filter(d => d.type === 'monthly_fixed' && d.is_auto !== false).length,
+    monthly_fixed_manual:    grantedDays.filter(d => d.lock_flag === 1).length,
+    min_guarantee_days:      minGuaranteeCount,
+    substitute_type_days:    grantedDays.filter(d => d.type === 'substitute').length,
+    substitute_count:        substituteDays.length,
+    grand_total:             grantedDays.length + substituteDays.length,
+    off_grant_type:          offGrantType,
+    monthly_fixed_target:    monthlyFixedDays,
+    monthly_min_off_target:  monthlyMinOff,
+    cycle_work_days:         cycleWorkDays,
     cycle_rest_days_setting: cycleRestDays,
+    holiday_policy:          holidayPolicy,
+    cycle_holiday_policy:    cycleHolidayPolicy,
+    required_staff:          requiredStaff,
+    // 정책 검토 신호: min_guarantee 발생 여부
+    policy_review_signal:    minGuaranteeCount > 0,
   }
 
   return c.json({
@@ -1355,6 +1847,115 @@ schedule.get('/off-grants', async (c) => {
     granted_days:    grantedDays,
     substitute_days: substituteDays,
     summary
+  })
+})
+
+// ── 월 고정 휴무 수동 잠금 설정/해제 API ─────────────────────────────────
+// POST /api/schedule/off-grants/lock
+// body: { date, off_type, lock_flag (0|1), base_off_type?, hospitalId? }
+schedule.post('/off-grants/lock', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
+
+  const body = await c.req.json()
+  const hospitalId = isAdmin(user)
+    ? (body.hospitalId ? parseInt(body.hospitalId) : getHospitalId(user, c.req.query('hospitalId')))
+    : (user as any).hospitalId
+  if (!hospitalId) return c.json({ error: 'hospitalId가 필요합니다' }, 400)
+
+  const { date, off_type, lock_flag, base_off_type } = body
+  if (!date) return c.json({ error: '날짜(date)는 필수입니다' }, 400)
+
+  const changedBy = (user as any)?.username || (user as any)?.name || 'system'
+  const newLockFlag = lock_flag === 0 ? 0 : 1
+
+  // 기존 이력 조회 (이전 값 보존)
+  const prevRow = await c.env.DB.prepare(
+    `SELECT new_off_type, new_lock_flag FROM off_grant_history
+     WHERE hospital_id=? AND target_date=?
+     ORDER BY changed_at DESC LIMIT 1`
+  ).bind(hospitalId, date).first<any>()
+
+  const prevOffType  = prevRow?.new_off_type  ?? null
+  const prevLockFlag = prevRow?.new_lock_flag ?? null
+
+  // off_grant_history에 기록
+  await c.env.DB.prepare(
+    `INSERT INTO off_grant_history
+       (hospital_id, target_date, prev_off_type, new_off_type,
+        prev_lock_flag, new_lock_flag, base_off_type,
+        changed_by, change_type, changed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', datetime('now'))`
+  ).bind(
+    hospitalId, date,
+    prevOffType,  off_type || prevOffType || 'monthly_fixed',
+    prevLockFlag, newLockFlag,
+    base_off_type || prevOffType || off_type || 'monthly_fixed',
+    changedBy
+  ).run()
+
+  return c.json({
+    success: true,
+    date,
+    off_type: off_type || prevOffType || 'monthly_fixed',
+    lock_flag: newLockFlag,
+    message: newLockFlag === 1 ? '수동 잠금 설정됨' : '잠금 해제됨'
+  })
+})
+
+// ── 월 고정 휴무 강제 재계산 (잠금 해제) API ──────────────────────────────
+// POST /api/schedule/off-grants/force-recalc
+// body: { year, month, hospitalId? }
+schedule.post('/off-grants/force-recalc', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
+
+  const body = await c.req.json()
+  const hospitalId = isAdmin(user)
+    ? (body.hospitalId ? parseInt(body.hospitalId) : getHospitalId(user, c.req.query('hospitalId')))
+    : (user as any).hospitalId
+  if (!hospitalId) return c.json({ error: 'hospitalId가 필요합니다' }, 400)
+
+  const year  = parseInt(body.year  || new Date().getFullYear().toString())
+  const month = parseInt(body.month || (new Date().getMonth() + 1).toString())
+  const monthStr = String(month).padStart(2, '0')
+  const prefix   = `${year}-${monthStr}`
+
+  const changedBy = (user as any)?.username || (user as any)?.name || 'system'
+
+  // 해당 월 잠금된 이력 조회 후 모두 잠금 해제
+  const lockRows = await c.env.DB.prepare(
+    `SELECT target_date, new_off_type FROM off_grant_history
+     WHERE hospital_id=? AND new_lock_flag=1 AND target_date LIKE ?
+     ORDER BY changed_at DESC`
+  ).bind(hospitalId, `${prefix}-%`).all<any>()
+
+  const seenDates = new Set<string>()
+  let unlockedCount = 0
+
+  for (const r of (lockRows.results || [])) {
+    if (seenDates.has(r.target_date)) continue
+    seenDates.add(r.target_date)
+
+    await c.env.DB.prepare(
+      `INSERT INTO off_grant_history
+         (hospital_id, target_date, prev_off_type, new_off_type,
+          prev_lock_flag, new_lock_flag, base_off_type,
+          changed_by, change_type, changed_at)
+       VALUES (?, ?, ?, ?, 1, 0, ?, ?, 'force_recalc', datetime('now'))`
+    ).bind(
+      hospitalId, r.target_date,
+      r.new_off_type, r.new_off_type,
+      r.new_off_type, changedBy
+    ).run()
+    unlockedCount++
+  }
+
+  return c.json({
+    success: true,
+    year, month,
+    unlocked_count: unlockedCount,
+    message: `${unlockedCount}개 날짜의 잠금을 해제했습니다. 다음 off-grants 조회 시 자동 재계산됩니다.`
   })
 })
 
