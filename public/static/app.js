@@ -13378,8 +13378,28 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
 
   const dayNames = ['일','월','화','수','목','금','토']
 
-  // 직원 행 생성
-  const rows = emps.map((emp, empIdx) => {
+  // 직급별 그룹 정의 (관리자 뷰와 동일)
+  const STAFF_GROUPS = [
+    { key:'nutritionist', label:'영양사',      icon:'fa-heartbeat',  color:'#9d174d', filter: e => e.team === 'nutrition' },
+    { key:'chef',         label:'조리장/셰프', icon:'fa-crown',      color:'#92400e', filter: e => e.team !== 'nutrition' && /(장|셰프|chef|수석)/i.test(e.position_name||e.position||'') },
+    { key:'cook',         label:'조리사',      icon:'fa-utensils',   color:'#166534', filter: e => e.team !== 'nutrition' && /(조리사)/.test(e.position_name||e.position||'') },
+    { key:'assistant',    label:'조리원',      icon:'fa-user-cog',   color:'#1e40af', filter: e => e.team !== 'nutrition' && /(조리원)/.test(e.position_name||e.position||'') },
+    { key:'manager',      label:'매니저',      icon:'fa-user-tie',   color:'#5b21b6', filter: e => e.team !== 'nutrition' && /(매니저|manager)/i.test(e.position_name||e.position||'') },
+    { key:'parttime',     label:'파트타이머',  icon:'fa-user-clock', color:'#0e7490', filter: e => e.team !== 'nutrition' && /(파트|파트타이|part)/i.test(e.position_name||e.position||'') },
+    { key:'other',        label:'기타',        icon:'fa-users',      color:'#374151', filter: null }
+  ]
+  const assignedStaff = new Set()
+  const staffGroups = []
+  STAFF_GROUPS.forEach(grp => {
+    const members = grp.filter
+      ? emps.filter(e => !assignedStaff.has(e.id) && grp.filter(e))
+      : emps.filter(e => !assignedStaff.has(e.id))
+    members.forEach(e => assignedStaff.add(e.id))
+    if (members.length > 0) staffGroups.push({ ...grp, members })
+  })
+
+  // 직원 행 생성 함수
+  function renderStaffEmpRow(emp, empIdx, grpColor) {
     let workCount = 0
     const codeCounts = {}
     const cells = Array.from({length: days}, (_, i) => {
@@ -13397,25 +13417,21 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
         workCount++
         codeCounts[code] = (codeCounts[code]||0)+1
       }
-      // 배경색: 공휴일 > 연/휴 > 부여휴무 > 주말 > 평일
       const cellBg = isOff ? (code==='연'?'#fefce8':(code==='경조'?'#fdf4ff':'#fef2f2'))
                    : isHoliday ? '#fdf2f8'
                    : isGrantOff ? '#fefce8'
                    : isSun ? '#fdf2f8' : isSat ? '#f0f4ff' : (empIdx%2===0 ? '#fff' : '#f9fafb')
       const borderCol = isHoliday ? '#f9a8d4' : isSun ? '#fce7f3' : isSat ? '#e0e7ff' : '#e2e8f0'
       const badge = getCodeBadge(code, isSun, isSat, isHoliday)
-      // 공휴일 표시 도트
-      const hDot = isHoliday && !code ? `<span style="display:block;width:5px;height:5px;border-radius:50%;background:#ef4444;margin:2px auto 0"></span>` : ''
+      const hDot = isHoliday && !code ? `<span style="display:block;width:5px;height:5px;border-radius:50%;background:#be185d;margin:2px auto 0"></span>` : ''
       return `<td style="padding:2px 1px;text-align:center;min-width:26px;border-left:1px solid ${borderCol};background:${cellBg};vertical-align:middle">${badge}${hDot}</td>`
     }).join('')
 
-    // 근무유형 요약
-    const summaryItems = Object.entries(codeCounts).sort((a,b)=>b[1]-a[1]).map(([code,cnt])=>{
-      let fg = shiftColorMap[code] || '#6b7280'
-      return `<span style="display:inline-flex;align-items:center;gap:2px;font-size:9px;background:${fg}18;color:${fg};border-radius:4px;padding:1px 5px;font-weight:700">${code}<span style="opacity:.7">${cnt}</span></span>`
+    const summaryItems = Object.entries(codeCounts).sort((a,b)=>b[1]-a[1]).map(([c,cnt])=>{
+      const fg = shiftColorMap[c] || '#6b7280'
+      return `<span style="display:inline-flex;align-items:center;gap:2px;font-size:9px;background:${fg}18;color:${fg};border-radius:4px;padding:1px 5px;font-weight:700">${c}<span style="opacity:.7">${cnt}</span></span>`
     }).join('')
 
-    // 휴무 횟수 (연+휴+경조)
     let offCount = 0
     for (let i=1;i<=days;i++) {
       const ds=`${year}-${String(month).padStart(2,'0')}-${String(i).padStart(2,'0')}`
@@ -13424,7 +13440,7 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     }
 
     return `<tr class="staff-emp-row" style="border-bottom:1px solid #e2e8f0">
-      <td style="padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;background:${empIdx%2===0?'#fff':'#f9fafb'};z-index:5;border-right:3px solid #e2e8f0">
+      <td style="padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;background:${empIdx%2===0?'#fff':'#f9fafb'};z-index:5;border-right:4px solid ${grpColor}">
         <div style="font-size:12px;font-weight:800;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
         <div style="font-size:9px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.position_name||emp.position||''}</div>
       </td>
@@ -13441,22 +13457,53 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
         <div style="display:flex;flex-wrap:wrap;gap:2px">${summaryItems}</div>
       </td>
     </tr>`
-  }).join('')
+  }
 
-  // 날짜 헤더
-  const dateHeader = Array.from({length: days}, (_, i) => {
-    const day = i+1
-    const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-    const dow = new Date(year, month-1, day).getDay()
-    const isSun = dow===0, isSat = dow===6
-    const isHoliday = holidaySet.has(ds)
-    // 연한 배경, 진한 텍스트
-    const bg = isHoliday ? '#fce7f3' : isSun ? '#fce7f3' : isSat ? '#eff6ff' : '#f8fafc'
-    const tc = isHoliday ? '#9d174d' : isSun ? '#9d174d' : isSat ? '#1e40af' : '#334155'
-    return `<th style="padding:3px 0;min-width:26px;text-align:center;font-size:9px;border-left:1px solid #e2e8f0;background:${bg};color:${tc};white-space:nowrap;font-weight:800">
-      <div style="font-size:10px;font-weight:800">${day}</div><div>${dayNames[dow]}</div>${isHoliday?'<div style="font-size:6px;color:#be185d">★</div>':''}
-    </th>`
-  }).join('')
+  // 날짜 헤더 행 생성 (그룹별 공유)
+  function buildStaffDateHeader(grpColor) {
+    const ths = Array.from({length: days}, (_, i) => {
+      const day = i+1
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+      const dow = new Date(year, month-1, day).getDay()
+      const isSun = dow===0, isSat = dow===6
+      const isHoliday = holidaySet.has(ds)
+      const bg = isHoliday||isSun ? '#fce7f3' : isSat ? '#eff6ff' : '#f8fafc'
+      const tc = isHoliday||isSun ? '#9d174d' : isSat ? '#1e40af' : '#334155'
+      return `<th style="padding:2px 0;min-width:26px;text-align:center;font-size:9px;border-left:1px solid #e2e8f0;background:${bg};color:${tc};font-weight:800">
+        <div style="font-size:10px;font-weight:800">${day}</div>
+        <div style="font-size:9px">${dayNames[dow]}</div>
+        ${isHoliday?'<div style="font-size:6px;color:#be185d">★</div>':''}
+      </th>`
+    }).join('')
+    return `<tr style="background:#f8fafc;border-top:2px solid ${grpColor}">
+      <th style="padding:5px 10px;text-align:left;min-width:90px;position:sticky;left:0;background:#f8fafc;z-index:15;color:${grpColor};font-size:11px;font-weight:800;border-right:4px solid ${grpColor}">이름/직위</th>
+      ${ths}
+      <th style="padding:3px 4px;min-width:34px;text-align:center;font-size:9px;color:#64748b;border-left:2px solid #e2e8f0;background:#f8fafc">근무</th>
+      <th style="padding:3px 4px;min-width:34px;text-align:center;font-size:9px;color:#64748b;border-left:1px solid #e2e8f0;background:#f8fafc">휴무</th>
+      <th style="padding:3px 6px;min-width:80px;text-align:left;font-size:9px;color:#64748b;border-left:1px solid #e2e8f0;background:#f8fafc">유형요약</th>
+    </tr>`
+  }
+
+  // 직급별 그룹 rows 생성
+  let allGroupRows = ''
+  staffGroups.forEach(grp => {
+    // 그룹 헤더
+    allGroupRows += `<tr>
+      <td colspan="${days+4}" style="padding:0">
+        <div style="background:#fff;border-top:3px solid ${grp.color};border-bottom:1px solid #e2e8f0;padding:5px 14px;display:flex;align-items:center;gap:8px">
+          <i class="fas ${grp.icon}" style="color:${grp.color};font-size:12px"></i>
+          <span style="font-size:12px;font-weight:800;color:${grp.color}">${grp.label}</span>
+          <span style="font-size:10px;color:#94a3b8">(${grp.members.length}명)</span>
+        </div>
+      </td>
+    </tr>`
+    // 날짜/요일 헤더
+    allGroupRows += buildStaffDateHeader(grp.color)
+    // 직원 행
+    grp.members.forEach((emp, empIdx) => {
+      allGroupRows += renderStaffEmpRow(emp, empIdx, grp.color)
+    })
+  })
 
   // 범례
   const legend = shifts.filter(s=>s.shift_code).map(s=>
@@ -13491,8 +13538,8 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
           <p style="font-size:10px;color:rgba(255,255,255,.75);margin:3px 0 0"><i class="fas fa-shield-alt" style="margin-right:4px"></i>직원 공유용 — 급여·분석 정보 미포함</p>
         </div>
         <div style="display:flex;gap:6px">
-          <button onclick="window.print()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>인쇄/PDF</button>
-          <button onclick="window.openQrManageModal&&openQrManageModal()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-qrcode" style="margin-right:4px"></i>QR 공유</button>
+          <button onclick="printStaffView()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>인쇄/PDF</button>
+          <button onclick="openQrManageModal()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-qrcode" style="margin-right:4px"></i>QR 공유</button>
         </div>
       </div>
     </div>
@@ -13513,16 +13560,7 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     <!-- 테이블 -->
     <div style="overflow-x:auto;max-height:68vh">
       <table style="width:100%;border-collapse:collapse;font-size:11px">
-        <thead style="position:sticky;top:0;z-index:10">
-          <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0">
-            <th style="padding:8px 10px;text-align:left;min-width:90px;position:sticky;left:0;background:#f8fafc;z-index:20;border-right:2px solid #e2e8f0;font-size:11px;color:#374151">이름</th>
-            ${dateHeader}
-            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:2px solid #e2e8f0;background:#f8fafc;font-size:9px;color:#374151">근무</th>
-            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:1px solid #e2e8f0;background:#f8fafc;font-size:9px;color:#374151">휴무</th>
-            <th style="padding:4px 8px;min-width:80px;text-align:left;border-left:1px solid #e2e8f0;background:#f8fafc;font-size:9px;color:#374151">유형별 요약</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
+        <tbody>${allGroupRows}</tbody>
       </table>
     </div>
 
@@ -13535,12 +13573,15 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
   <style>
   @media print {
     .bottom-bar, nav, .month-nav, button { display:none!important }
+    #pageContent > *:not(:has(.staff-emp-row)) { display:none!important }
     body { background:white!important }
-    div[style*="linear-gradient"] { background:#1e40af!important;-webkit-print-color-adjust:exact;print-color-adjust:exact }
+    div[style*="linear-gradient"] { -webkit-print-color-adjust:exact;print-color-adjust:exact }
+    div[style*="overflow-x:auto"] { overflow:visible!important;max-height:none!important }
     table { font-size:8px!important;page-break-inside:auto }
     tr { page-break-inside:avoid }
     th, td { padding:2px 1px!important }
     thead { display:table-header-group }
+    @page { margin:8mm; size:A4 landscape; }
   }
   .staff-emp-row:hover td { filter:brightness(.97) }
   </style>`
@@ -14145,6 +14186,9 @@ function renderMonthlyScheduleTab() {
                 return 8
               }
               let weeklyHoursMap2 = {}, maxWeeklyHoursFound = 0
+              // 경고 셀 추적용: 연속근무 초과 발생 날짜 Set, 주간 초과 주차 Set
+              const consecWarnDates2 = new Set()
+              const weekOverSet2 = new Set()
 
               const cells = Array.from({length:days},(_,i)=>{
                 const day = i+1
@@ -14166,12 +14210,16 @@ function renderMonthlyScheduleTab() {
                 if (code && code !== '-' && !REST_CODES2.has(code) && !ltype) {
                   curConsec2++
                   if (curConsec2 > maxConsecFound2) maxConsecFound2 = curConsec2
+                  // 연속근무 초과 시 해당 날짜 기록
+                  if (legalWarnEnabled2 && curConsec2 > maxConsec2) consecWarnDates2.add(dateStr)
                   const d2 = new Date(dateStr)
                   const startOfYear2 = new Date(d2.getFullYear(), 0, 1)
                   const weekNum2 = Math.ceil(((d2 - startOfYear2) / 86400000 + startOfYear2.getDay() + 1) / 7)
                   if (!weeklyHoursMap2[weekNum2]) weeklyHoursMap2[weekNum2] = 0
                   weeklyHoursMap2[weekNum2] += calcShiftHoursInner(code)
                   if (weeklyHoursMap2[weekNum2] > maxWeeklyHoursFound) maxWeeklyHoursFound = weeklyHoursMap2[weekNum2]
+                  // 주간 초과 시 해당 날짜 기록
+                  if (legalWarnEnabled2 && weeklyHoursMap2[weekNum2] > weeklyMaxHours2) weekOverSet2.add(dateStr)
                 } else { curConsec2 = 0 }
 
                 let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd2 ? 'background:#fffbeb;' : `background:${rowBg};`
@@ -14186,6 +14234,13 @@ function renderMonthlyScheduleTab() {
                 const extraIcon2 = otH2>0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH2}h</div>`
                   : isTempS2 ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
                   : isNightW2 ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
+                // 경고 배지: 연속근무 초과=빨간 i, 주간초과=주황 W
+                const isConsecWarn = consecWarnDates2.has(dateStr)
+                const isWeekWarn = weekOverSet2.has(dateStr)
+                const warnDot = (isConsecWarn || isWeekWarn) ? `<div style="display:flex;gap:1px;justify-content:center;margin-top:1px">
+                  ${isConsecWarn ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:900;line-height:1" title="연속근무 ${maxConsec2}일 초과">i</span>` : ''}
+                  ${isWeekWarn ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:50%;background:#f97316;color:white;font-size:7px;font-weight:900;line-height:1" title="주간 ${weeklyMaxHours2}h 초과">W</span>` : ''}
+                </div>` : ''
 
                 return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft2}cursor:pointer;position:relative;user-select:none"
                   onclick="schedCellClick(event,${emp.id},'${dateStr}',this)"
@@ -14201,6 +14256,7 @@ function renderMonthlyScheduleTab() {
                   <div style="display:inline-flex;flex-direction:column;align-items:center">
                     <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle2}">${spanText2}</span>
                     ${extraIcon2}
+                    ${warnDot}
                   </div>
                 </td>`
               }).join('')
@@ -15196,6 +15252,55 @@ function renderAnalysisTab() {
       </div>
     </div>` : ''}
   </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 직원 공유 뷰 전용 인쇄 함수
+// ════════════════════════════════════════════════════════════════
+window.printStaffView = function() {
+  // 직원 공유 뷰 컨테이너 찾기 (staff-emp-row를 포함한 최상위 div)
+  const staffTable = document.querySelector('.staff-emp-row')
+  if (!staffTable) {
+    alert('직원 공유 뷰가 현재 표시되어 있지 않습니다.')
+    return
+  }
+  // 직원 공유 뷰 wrapper (전체 카드)
+  const container = staffTable.closest('div[style*="border-radius:16px"]') ||
+                    staffTable.closest('div[style*="border-radius: 16px"]')
+  if (!container) { window.print(); return }
+
+  // 새 창으로 인쇄
+  const year = App.currentYear, month = App.currentMonth
+  const printWindow = window.open('', '_blank', 'width=1400,height=900')
+  printWindow.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${year}년 ${month}월 근무표 - 직원 공유용</title>
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:white; font-size:10px; }
+  @page { margin:6mm; size:A4 landscape; }
+  @media print {
+    body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    button { display:none!important; }
+  }
+  table { width:100%; border-collapse:collapse; font-size:9px; }
+  th, td { padding:2px 1px; }
+  div[style*="overflow-x:auto"] { overflow:visible!important; max-height:none!important; }
+</style>
+</head>
+<body>
+${container.outerHTML}
+<script>
+  // 버튼 숨기기
+  document.querySelectorAll('button').forEach(b => b.style.display='none');
+  window.onload = function() { window.print(); window.close(); }
+</script>
+</body>
+</html>`)
+  printWindow.document.close()
 }
 
 // ════════════════════════════════════════════════════════════════
