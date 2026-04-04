@@ -1748,9 +1748,29 @@ schedule.get('/off-grants', async (c) => {
               })
             }
           } else {
-            // cycle 모드: 공휴일 기본 처리 (holiday_policy 적용)
-            if (holidayPolicy === 'work_pay' || holidayPolicy === 'work_substitute') {
-              // work_pay / work_substitute: 근무 + 수당/대체
+            // cycle 모드: cycleHolidayPolicy 우선 적용, 없으면 holidayPolicy 적용
+            if (cycleHolidayPolicy === 'ignore') {
+              // ignore: 공휴일 무시 → 순환 패턴만 유지, 공휴일 휴무 미부여
+            } else if (cycleHolidayPolicy === 'pay') {
+              // pay: 공휴수당 지급, 휴무 없음
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: 'holiday',
+                label: `${holidayName} (공휴수당 지급)`,
+                is_auto: true, lock_flag: 0,
+                reason: 'cycle 공휴일 정책: pay (수당 지급)'
+              })
+            } else if (cycleHolidayPolicy === 'substitute') {
+              // substitute: 대체휴무 생성
+              grantedDays.push({
+                date: dateStr, day_of_week: dowLabel,
+                type: 'substitute',
+                label: `${holidayName} (대체휴무)`,
+                is_auto: true, lock_flag: 0,
+                reason: 'cycle 공휴일 정책: substitute (대체휴무)'
+              })
+            } else if (holidayPolicy === 'work_pay' || holidayPolicy === 'work_substitute') {
+              // holidayPolicy fallback: work_pay / work_substitute
               grantedDays.push({
                 date: dateStr, day_of_week: dowLabel,
                 type: holidayPolicy === 'work_substitute' ? 'substitute' : 'holiday',
@@ -1761,11 +1781,12 @@ schedule.get('/off-grants', async (c) => {
                 reason: `공휴일 정책(${holidayPolicy}) 적용`
               })
             } else {
-              // off (기본): 공휴일 = 휴무
+              // add 또는 off (기본): 공휴일 = 추가 휴무
               grantedDays.push({
                 date: dateStr, day_of_week: dowLabel,
                 type: 'holiday', label: holidayName,
-                is_auto: true, lock_flag: 0
+                is_auto: true, lock_flag: 0,
+                reason: 'cycle 공휴일 정책: add (추가 휴무)'
               })
             }
           }
