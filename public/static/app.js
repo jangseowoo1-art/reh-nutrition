@@ -12777,8 +12777,20 @@ function renderLeaveAlertBanner() {
 // ─── 근무조 설정 탭 ──────────────────────────────────────────
 function renderShiftsTab() {
   const shifts = scheduleShifts
+  // 외부인력 근무유형 커스텀 설정 로드
+  const extCfgRaw = localStorage.getItem('extShiftConfig')
+  let extCfg = null
+  try { extCfg = extCfgRaw ? JSON.parse(extCfgRaw) : null } catch(e) {}
+  const EXT_DEFAULTS = [
+    { key:'morning',  label:'오전',  color:'#c2410c', bg:'#fff7ed', enabled:true,  hours:'4', startTime:'07:00', endTime:'13:00' },
+    { key:'afternoon',label:'오후',  color:'#b45309', bg:'#fef3c7', enabled:true,  hours:'4', startTime:'13:00', endTime:'19:00' },
+    { key:'full_9h',  label:'9H',    color:'#ea580c', bg:'#ffedd5', enabled:true,  hours:'9', startTime:'07:00', endTime:'16:00' },
+    { key:'full_12h', label:'12H',   color:'#dc2626', bg:'#fee2e2', enabled:true,  hours:'12',startTime:'07:00', endTime:'19:00' },
+  ]
+  const extItems = extCfg || EXT_DEFAULTS
+
   return `
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
       <div>
         <h3 class="font-bold text-gray-800">근무조 설정</h3>
@@ -12838,6 +12850,70 @@ function renderShiftsTab() {
         </tbody>
       </table>
     </div>`}
+  </div>
+
+  <!-- ══ 파출/알바 근무유형 설정 ══ -->
+  <div class="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden">
+    <div class="px-5 py-4 border-b border-orange-100 flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-orange-800"><i class="fas fa-user-clock mr-2"></i>파출/알바 근무유형 설정</h3>
+        <p class="text-xs text-orange-400 mt-0.5">파출·알바 스케줄 표에서 사용할 근무유형을 커스터마이즈합니다</p>
+      </div>
+      <button onclick="saveExtShiftConfig()"
+        class="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-500 hover:bg-orange-600 text-white transition-colors">
+        <i class="fas fa-save mr-1"></i>저장
+      </button>
+    </div>
+    <div class="p-5">
+      <p class="text-xs text-gray-500 mb-4">
+        <i class="fas fa-info-circle mr-1 text-orange-400"></i>
+        활성화된 항목만 셀 클릭 시 순환됩니다. 이름·시간대·표시 레이블을 변경할 수 있습니다.
+      </p>
+      <div class="space-y-3" id="extShiftConfigRows">
+        ${extItems.map((item, idx) => `
+        <div class="flex items-center gap-3 p-3 rounded-xl border ${item.enabled ? 'border-orange-200 bg-orange-50' : 'border-gray-200 bg-gray-50'}" id="extShiftRow_${idx}">
+          <label class="flex items-center gap-1.5 cursor-pointer shrink-0">
+            <input type="checkbox" ${item.enabled ? 'checked' : ''}
+              onchange="toggleExtShiftRow(${idx}, this.checked)"
+              class="rounded border-orange-300 text-orange-500">
+            <span class="text-xs font-semibold ${item.enabled ? 'text-orange-700' : 'text-gray-400'}">사용</span>
+          </label>
+          <div class="w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0"
+            style="background:${item.bg||'#fff7ed'};color:${item.color||'#ea580c'}">
+            ${item.label}
+          </div>
+          <div class="grid grid-cols-2 gap-2 flex-1 min-w-0">
+            <div>
+              <label class="text-xs text-gray-500 block mb-0.5">표시 이름</label>
+              <input type="text" value="${item.label}" id="extLabel_${idx}"
+                class="w-full border border-gray-200 rounded px-2 py-1 text-xs"
+                placeholder="오전/오후/9H/12H">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 block mb-0.5">근무시간 (h)</label>
+              <input type="number" value="${item.hours||'8'}" id="extHours_${idx}" min="1" max="24"
+                class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 block mb-0.5">시작 시간</label>
+              <input type="time" value="${item.startTime||'07:00'}" id="extStart_${idx}"
+                class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 block mb-0.5">종료 시간</label>
+              <input type="time" value="${item.endTime||'19:00'}" id="extEnd_${idx}"
+                class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
+            </div>
+          </div>
+          <div class="shrink-0 text-xs text-gray-400 text-center" style="min-width:52px">
+            <div class="font-mono text-[10px] text-gray-400">${item.key}</div>
+          </div>
+        </div>`).join('')}
+      </div>
+      <div class="mt-4 p-3 bg-orange-50 rounded-xl text-xs text-orange-700">
+        <strong>입력 단축키:</strong> 오전(오/ㅇ/A), 오후(B), 9H(9), 12H(1/F) — 셀 선택 후 해당 키를 누르면 즉시 적용
+      </div>
+    </div>
   </div>`
 }
 
@@ -13373,7 +13449,14 @@ function renderMonthlyScheduleTab() {
               const canEdit = (App.role === 'admin' || App.role === 'hospital')
               if (extWorkers.length === 0 && !canEdit) return ''
 
-              const EXT_SHIFT_LABELS = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
+              const EXT_SHIFT_LABELS = (() => {
+                const def = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
+                try {
+                  const cfg = JSON.parse(localStorage.getItem('extShiftConfig') || '[]')
+                  cfg.forEach(c => { if (c.key && c.label) def[c.key] = c.label })
+                } catch(e) {}
+                return def
+              })()
               const EXT_SHIFT_COLORS = {
                 morning:  'background:#fff7ed;color:#c2410c',
                 afternoon:'background:#fef3c7;color:#b45309',
@@ -16478,115 +16561,630 @@ function initExtWorkerEvents() {
 
   // 이전 리스너 제거 후 재등록 (중복 방지)
   if (tc._extEvtBound) {
-    tc.removeEventListener('click', tc._extEvtHandler)
+    tc.removeEventListener('click',     tc._extEvtHandler)
+    tc.removeEventListener('mousedown', tc._extMdHandler)
+    tc.removeEventListener('mousemove', tc._extMmHandler)
+    tc.removeEventListener('mouseup',   tc._extMuHandler)
   }
 
   tc._extEvtHandler = function(e) {
     // 파출/알바 추가 버튼
     const addBtn = e.target.closest('.ext-add-btn')
     if (addBtn) {
-      e.preventDefault()
-      e.stopPropagation()
-      const stype = addBtn.dataset.stype || 'dispatch'
-      openAddExternalWorkerModal(stype)
+      e.preventDefault(); e.stopPropagation()
+      openAddExternalWorkerModal(addBtn.dataset.stype || 'dispatch')
       return
     }
-
     // 외부인력 삭제 버튼
     const delBtn = e.target.closest('.ext-del-btn')
     if (delBtn) {
-      e.preventDefault()
-      e.stopPropagation()
+      e.preventDefault(); e.stopPropagation()
       const wid = parseInt(delBtn.dataset.wid)
-      const wname = delBtn.dataset.wname || ''
-      if (wid) deleteExternalWorker(wid, wname)
+      if (wid) deleteExternalWorker(wid, delBtn.dataset.wname || '')
       return
     }
-
-    // 외부인력 셀 클릭
+    // 외부인력 셀 클릭 (단독 클릭 = 선택)
     const cell = e.target.closest('.ext-cell')
     if (cell) {
-      e.preventDefault()
-      e.stopPropagation()
-      const canEdit = (App.role === 'admin' || App.role === 'hospital')
-      if (!canEdit) return
-      const workerId = parseInt(cell.dataset.extid)
-      const dateStr  = cell.dataset.date
-      const workerType = cell.dataset.wtype
-      extWorkerCellClick(e, workerId, dateStr, workerType, cell)
+      e.preventDefault(); e.stopPropagation()
+      if (!(App.role === 'admin' || App.role === 'hospital')) return
+      _extHandleCellClick(e, cell)
       return
+    }
+    // 셀 바깥 클릭 → 선택 해제
+    if (!e.target.closest('#multiSelectBar') && !e.target.closest('.ext-cell')) {
+      _extClearSelection()
     }
   }
 
-  tc.addEventListener('click', tc._extEvtHandler)
+  // 마우스다운: 드래그 시작
+  tc._extMdHandler = function(e) {
+    if (e.button !== 0) return
+    const cell = e.target.closest('.ext-cell')
+    if (!cell) return
+    if (!(App.role === 'admin' || App.role === 'hospital')) return
+    // fill handle 드래그
+    if (e.target.classList.contains('ext-fill-handle')) {
+      e.preventDefault(); e.stopPropagation()
+      _extFillDragStart(cell)
+      return
+    }
+    // 일반 드래그 시작
+    e.preventDefault()
+    _extDragStart(cell, e)
+  }
+
+  tc._extMmHandler = function(e) {
+    const cell = e.target.closest('.ext-cell')
+    if (!cell) return
+    if (_extIsFillDrag) { _extFillDragMove(cell); return }
+    if (_extIsDragging)  { _extDragMove(cell) }
+  }
+
+  tc._extMuHandler = function(e) {
+    if (_extIsFillDrag) { _extFillDragEnd(); return }
+    if (_extIsDragging) { _extDragEnd() }
+  }
+
+  tc.addEventListener('click',     tc._extEvtHandler)
+  tc.addEventListener('mousedown', tc._extMdHandler)
+  tc.addEventListener('mousemove', tc._extMmHandler)
+  tc.addEventListener('mouseup',   tc._extMuHandler)
   tc._extEvtBound = true
 }
 
-const EXT_SHIFT_SEQUENCE = ['morning', 'afternoon', 'full_9h', 'full_12h', '']
-const EXT_SHIFT_LABEL_MAP = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H', '':'·' }
+// ══════════════════════════════════════════════════════════════
+//  외부인력(파출/알바) 엑셀 기능 구현
+// ══════════════════════════════════════════════════════════════
 
-window.extWorkerCellClick = async (e, workerId, dateStr, workerType, cell) => {
-  e.preventDefault()
-  e.stopPropagation()
-  
-  const currentShift = cell.dataset.extshift || ''
-  const curIdx = EXT_SHIFT_SEQUENCE.indexOf(currentShift)
-  const nextShift = EXT_SHIFT_SEQUENCE[(curIdx + 1) % EXT_SHIFT_SEQUENCE.length]
-  
-  // 즉시 UI 업데이트
-  const EXT_SHIFT_COLORS = {
-    morning: 'background:#fff7ed;color:#c2410c',
-    afternoon: 'background:#fef3c7;color:#b45309',
-    full_9h: 'background:#ffedd5;color:#ea580c',
-    full_12h: 'background:#fee2e2;color:#dc2626',
-    '': 'background:#f9fafb;color:#d1d5db'
+// 외부인력 EXT_SHIFT 설정 (로컬스토리지에서 커스터마이즈 가능)
+const EXT_SHIFT_SEQUENCE_DEFAULT = ['morning', 'afternoon', 'full_9h', 'full_12h', '']
+let _extShiftSequence = null  // null이면 DEFAULT 사용
+const EXT_SHIFT_COLORS = {
+  morning:  'background:#fff7ed;color:#c2410c',
+  afternoon:'background:#fef3c7;color:#b45309',
+  full_9h:  'background:#ffedd5;color:#ea580c',
+  full_12h: 'background:#fee2e2;color:#dc2626',
+  '':       'background:#f9fafb;color:#d1d5db'
+}
+const EXT_SHIFT_LABEL_MAP = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H', '':'·' }
+// 활성화된 EXT_SHIFT 순환 목록 (비활성 항목 제외)
+function getExtShiftSeq() {
+  const stored = localStorage.getItem('extShiftConfig')
+  if (stored) {
+    try {
+      const cfg = JSON.parse(stored)
+      const active = cfg.filter(s => s.enabled !== false).map(s => s.key)
+      if (active.length > 0) return [...active, '']
+    } catch(e) {}
   }
-  cell.dataset.extshift = nextShift
+  return EXT_SHIFT_SEQUENCE_DEFAULT
+}
+
+// ── 선택 상태 변수 ────────────────────────────────────────────
+let _extSelectedCells = new Set()   // 'workerId_date' 키
+let _extAnchorKey     = null
+let _extIsDragging    = false
+let _extDragStartKey  = null
+let _extIsFillDrag    = false
+let _extFillSrcKey    = null
+let _extCopiedData    = null        // { entries: [{workerId, date, shiftType}] }
+const EXT_UNDO_LIMIT  = 50
+window._extUndoStack  = []
+window._extRedoStack  = []
+
+// ── 셀 키 파싱 ────────────────────────────────────────────────
+function _extParseKey(key) {
+  const parts = key.split('_')
+  return { workerId: parseInt(parts[0]), date: parts.slice(1).join('_') }
+}
+function _extCellKey(cell) {
+  return `${cell.dataset.extid}_${cell.dataset.date}`
+}
+function _extGetCell(workerId, date) {
+  return document.querySelector(`.ext-cell[data-extid="${workerId}"][data-date="${date}"]`)
+}
+
+// ── DOM 즉시 반영 ─────────────────────────────────────────────
+function _extApplyDOM(workerId, date, cell, shiftType) {
+  if (!cell) cell = _extGetCell(workerId, date)
+  if (!cell) return
+  const key = `${workerId}_${date}`
+  const isEmpty = !shiftType
+  cell.dataset.extshift = shiftType || ''
   const span = cell.querySelector('span')
   if (span) {
-    span.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;${EXT_SHIFT_COLORS[nextShift]||EXT_SHIFT_COLORS['']}`
-    span.textContent = EXT_SHIFT_LABEL_MAP[nextShift] || '·'
+    span.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;${EXT_SHIFT_COLORS[shiftType]||EXT_SHIFT_COLORS['']}`
+    span.textContent = EXT_SHIFT_LABEL_MAP[shiftType] || '·'
   }
-  
-  // 전역 맵 업데이트
-  const key = `${workerId}_${dateStr}`
-  if (!nextShift) {
-    delete scheduleExtSchedMap[key]
-  } else {
-    scheduleExtSchedMap[key] = { ...(scheduleExtSchedMap[key]||{}), worker_id: workerId, work_date: dateStr, shift_type: nextShift }
+  // 인메모리 업데이트
+  if (!scheduleExtSchedMap) scheduleExtSchedMap = {}
+  if (isEmpty) delete scheduleExtSchedMap[key]
+  else scheduleExtSchedMap[key] = { ...(scheduleExtSchedMap[key]||{}), worker_id: workerId, work_date: date, shift_type: shiftType }
+  // 해당 행 근무일 수 재계산
+  _extRecalcRow(workerId)
+}
+
+// ── debounce 배치 저장 ────────────────────────────────────────
+let _extSaveTimer = null
+const _extSaveQueue = {}  // 'workerId_date' → shiftType
+function _extQueueSave(workerId, date, shiftType) {
+  _extSaveQueue[`${workerId}_${date}`] = { workerId, date, shiftType }
+  clearTimeout(_extSaveTimer)
+  _extSaveTimer = setTimeout(async () => {
+    const entries = Object.values(_extSaveQueue)
+    for (const k in _extSaveQueue) delete _extSaveQueue[k]
+    if (entries.length === 0) return
+    try {
+      await api('POST', '/api/schedule/external-schedules/save-batch', {
+        items: entries.map(e => ({ workerId: e.workerId, workDate: e.date, shiftType: e.shiftType || '' }))
+      })
+    } catch(err) { console.error('ext save error:', err) }
+  }, 400)
+}
+
+// ── 적용 (DOM + 인메모리 + 저장 큐) ──────────────────────────
+function _extApplyOne(workerId, date, cell, shiftType) {
+  _extApplyDOM(workerId, date, cell, shiftType)
+  _extQueueSave(workerId, date, shiftType)
+}
+
+// ── 배치 적용 ─────────────────────────────────────────────────
+function _extApplyBatch(items) {
+  const undoItems = [], affected = new Set()
+  for (const { workerId, date, shiftType } of items) {
+    const cell = _extGetCell(workerId, date)
+    if (!cell) continue
+    undoItems.push({ workerId, date, oldType: cell.dataset.extshift || '', newType: shiftType })
+    _extApplyDOM(workerId, date, cell, shiftType)
+    _extQueueSave(workerId, date, shiftType)
+    affected.add(workerId)
   }
-  
-  // 우측 근무일 수 업데이트
-  const row = cell.closest('tr')
-  const workDayCell = row?.querySelector('td:last-child, td[id^="workdays-"]')
-  // 현재 행의 workerId로 근무일 재계산
+  affected.forEach(id => _extRecalcRow(id))
+  _extPushUndo(undoItems)
+}
+
+// ── Undo/Redo ─────────────────────────────────────────────────
+function _extPushUndo(items) {
+  window._extUndoStack.push({ items })
+  if (window._extUndoStack.length > EXT_UNDO_LIMIT) window._extUndoStack.shift()
+  window._extRedoStack = []
+  _extSyncUndoBtns()
+}
+function _extSyncUndoBtns() {
+  // 외부인력은 직원 공용 undo 버튼 대신 별도 버튼 없음 → 그냥 유지
+}
+
+window.extUndo = () => {
+  if (!window._extUndoStack.length) { showToast('취소할 작업이 없습니다','info'); return }
+  const batch = window._extUndoStack.pop()
+  window._extRedoStack.push({ items: batch.items.map(i=>({...i, oldType:i.newType, newType:i.oldType})) })
+  const affected = new Set()
+  batch.items.forEach(({ workerId, date, oldType }) => {
+    _extApplyDOM(workerId, date, null, oldType)
+    _extQueueSave(workerId, date, oldType)
+    affected.add(workerId)
+  })
+  affected.forEach(id => _extRecalcRow(id))
+  showToast(`↩ ${batch.items.length}개 셀 실행취소`, 'info')
+  _extSyncUndoBtns()
+}
+
+window.extRedo = () => {
+  if (!window._extRedoStack.length) { showToast('다시실행할 작업이 없습니다','info'); return }
+  const batch = window._extRedoStack.pop()
+  window._extUndoStack.push({ items: batch.items.map(i=>({...i, oldType:i.newType, newType:i.oldType})) })
+  const affected = new Set()
+  batch.items.forEach(({ workerId, date, oldType }) => {
+    _extApplyDOM(workerId, date, null, oldType)
+    _extQueueSave(workerId, date, oldType)
+    affected.add(workerId)
+  })
+  affected.forEach(id => _extRecalcRow(id))
+  showToast(`↪ ${batch.items.length}개 셀 다시실행`, 'info')
+}
+
+// ── 근무일 수 재계산 ─────────────────────────────────────────
+function _extRecalcRow(workerId) {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
-  let wdCount = 0
+  let cnt = 0
   for (let d = 1; d <= days; d++) {
     const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-    if (scheduleExtSchedMap[`${workerId}_${ds}`]?.shift_type) wdCount++
+    if (scheduleExtSchedMap?.[`${workerId}_${ds}`]?.shift_type) cnt++
   }
-  // 두번째 td (근무일 수 표시) 업데이트
-  const tds = row?.querySelectorAll('td')
+  // 행 찾기
+  const anyCell = document.querySelector(`.ext-cell[data-extid="${workerId}"]`)
+  if (!anyCell) return
+  const row = anyCell.closest('tr')
+  if (!row) return
+  const tds = row.querySelectorAll('td')
   if (tds && tds.length >= 2) {
-    const wdTd = tds[1]
-    wdTd.textContent = wdCount + '일'
-    wdTd.style.cssText = 'text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px'
-  }
-  
-  // API 저장
-  try {
-    if (!nextShift) {
-      await api('DELETE', `/api/schedule/external-schedules/${workerId}/${dateStr}`)
-    } else {
-      await api('POST', '/api/schedule/external-schedules', {
-        workerId, workDate: dateStr, shiftType: nextShift, unitPrice: 0, note: ''
-      })
-    }
-  } catch(err) {
-    console.error('External schedule save error:', err)
+    tds[1].textContent = cnt + '일'
+    tds[1].style.cssText = 'text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px'
   }
 }
+
+// ── 선택 스타일 ───────────────────────────────────────────────
+function _extUpdateSelectStyle() {
+  document.querySelectorAll('.ext-cell').forEach(c => {
+    const k = _extCellKey(c)
+    if (_extSelectedCells.has(k)) {
+      c.style.outline = '2px solid #3b82f6'
+      c.style.outlineOffset = '-2px'
+      c.style.zIndex = '3'
+    } else {
+      c.style.outline = ''
+      c.style.outlineOffset = ''
+      c.style.zIndex = ''
+      c.classList.remove('ext-cell-fill-preview')
+    }
+  })
+  _extUpdateBar()
+}
+
+function _extClearSelection() {
+  _extSelectedCells.clear()
+  _extAnchorKey = null
+  _extUpdateSelectStyle()
+  // fill handle 제거
+  document.querySelectorAll('.ext-fill-handle').forEach(h => h.remove())
+  _extHideBar()
+}
+
+// ── 셀 클릭 처리 ─────────────────────────────────────────────
+function _extHandleCellClick(e, cell) {
+  const key = _extCellKey(cell)
+  if (e.ctrlKey || e.metaKey) {
+    // Ctrl+클릭: 토글 추가
+    if (_extSelectedCells.has(key)) _extSelectedCells.delete(key)
+    else _extSelectedCells.add(key)
+    _extAnchorKey = key
+  } else if (e.shiftKey && _extAnchorKey) {
+    // Shift+클릭: 범위 선택
+    _extSelectRange(_extAnchorKey, key)
+  } else {
+    // 단독 클릭: 단일 선택 or 직접 입력
+    if (_extSelectedCells.size === 1 && _extSelectedCells.has(key)) {
+      // 이미 선택된 셀 재클릭 → shift 순환
+      const wid  = parseInt(cell.dataset.extid)
+      const date = cell.dataset.date
+      const seq  = getExtShiftSeq()
+      const cur  = cell.dataset.extshift || ''
+      const idx  = seq.indexOf(cur)
+      const next = seq[(idx + 1) % seq.length]
+      _extPushUndo([{ workerId: wid, date, oldType: cur, newType: next }])
+      _extApplyOne(wid, date, cell, next)
+      return
+    }
+    _extSelectedCells.clear()
+    _extSelectedCells.add(key)
+    _extAnchorKey = key
+  }
+  _extUpdateSelectStyle()
+  _extShowFillHandle()
+}
+
+// ── 범위 선택 ─────────────────────────────────────────────────
+function _extSelectRange(fromKey, toKey) {
+  const { workerId: wid1, date: d1 } = _extParseKey(fromKey)
+  const { workerId: wid2, date: d2 } = _extParseKey(toKey)
+  _extSelectedCells.clear()
+  // 모든 ext-cell 순회하며 날짜 범위에 해당하는 항목 선택 (같은 worker or 전체)
+  const minDate = d1 < d2 ? d1 : d2
+  const maxDate = d1 < d2 ? d2 : d1
+  document.querySelectorAll('.ext-cell').forEach(c => {
+    if (c.dataset.date >= minDate && c.dataset.date <= maxDate) {
+      _extSelectedCells.add(_extCellKey(c))
+    }
+  })
+}
+
+// ── fill handle 표시 ──────────────────────────────────────────
+function _extShowFillHandle() {
+  document.querySelectorAll('.ext-fill-handle').forEach(h => h.remove())
+  if (_extSelectedCells.size === 0) return
+  const keys = Array.from(_extSelectedCells).sort()
+  const lastKey = keys[keys.length - 1]
+  const { workerId, date } = _extParseKey(lastKey)
+  const cell = _extGetCell(workerId, date)
+  if (!cell) return
+  const handle = document.createElement('div')
+  handle.className = 'ext-fill-handle'
+  handle.style.cssText = 'position:absolute;bottom:1px;right:1px;width:8px;height:8px;background:#3b82f6;cursor:crosshair;z-index:10;border-radius:1px'
+  cell.style.position = 'relative'
+  cell.appendChild(handle)
+}
+
+// ── 드래그 선택 ───────────────────────────────────────────────
+function _extDragStart(cell, e) {
+  if (e.ctrlKey || e.metaKey || e.shiftKey) return
+  _extIsDragging = true
+  _extDragStartKey = _extCellKey(cell)
+  _extSelectedCells.clear()
+  _extSelectedCells.add(_extDragStartKey)
+  _extAnchorKey = _extDragStartKey
+  _extUpdateSelectStyle()
+}
+function _extDragMove(cell) {
+  if (!_extIsDragging || !_extDragStartKey) return
+  const key = _extCellKey(cell)
+  _extSelectRange(_extDragStartKey, key)
+  _extUpdateSelectStyle()
+}
+function _extDragEnd() {
+  _extIsDragging = false
+  // 드래그 선택 후 같은 shift 있으면 일괄 적용 옵션 표시
+  _extShowFillHandle()
+  _extUpdateBar()
+}
+
+// ── Fill 드래그 ───────────────────────────────────────────────
+function _extFillDragStart(srcCell) {
+  _extIsFillDrag = true
+  _extFillSrcKey = _extCellKey(srcCell)
+  document.querySelectorAll('.ext-cell').forEach(c => c.classList.remove('ext-cell-fill-preview'))
+}
+function _extFillDragMove(cell) {
+  if (!_extIsFillDrag) return
+  const { workerId: srcWid, date: srcDate } = _extParseKey(_extFillSrcKey)
+  const targetWid = parseInt(cell.dataset.extid)
+  if (targetWid !== srcWid) return  // 같은 행만 드래그 Fill
+  const targetDate = cell.dataset.date
+
+  // 선택된 셀들의 날짜 범위와 srcDate 기준으로 Preview
+  const srcDates = Array.from(_extSelectedCells)
+    .filter(k => _extParseKey(k).workerId === srcWid)
+    .map(k => _extParseKey(k).date).sort()
+
+  const fillStart = srcDates[0] || srcDate
+  const fillEnd   = targetDate >= srcDate ? targetDate : srcDate
+
+  document.querySelectorAll(`.ext-cell[data-extid="${srcWid}"]`).forEach(c => {
+    if (c.dataset.date >= fillStart && c.dataset.date <= fillEnd) {
+      c.classList.add('ext-cell-fill-preview')
+    } else {
+      c.classList.remove('ext-cell-fill-preview')
+    }
+  })
+}
+function _extFillDragEnd() {
+  _extIsFillDrag = false
+  if (!_extFillSrcKey) return
+  const { workerId: srcWid } = _extParseKey(_extFillSrcKey)
+
+  // 소스 코드 가져오기 (선택 셀들에서)
+  const srcCodes = Array.from(_extSelectedCells)
+    .filter(k => _extParseKey(k).workerId === srcWid)
+    .sort()
+    .map(k => {
+      const { workerId, date } = _extParseKey(k)
+      const c = _extGetCell(workerId, date)
+      return c?.dataset.extshift || ''
+    })
+  if (srcCodes.length === 0) return
+
+  const previews = document.querySelectorAll(`.ext-cell[data-extid="${srcWid}"].ext-cell-fill-preview`)
+  const fillItems = []
+  previews.forEach((c, i) => {
+    const shiftType = srcCodes[i % srcCodes.length]
+    fillItems.push({ workerId: srcWid, date: c.dataset.date, shiftType })
+    c.classList.remove('ext-cell-fill-preview')
+  })
+  if (fillItems.length > 0) {
+    _extApplyBatch(fillItems)
+    showToast(`${fillItems.length}개 셀 자동채우기 완료`, 'success')
+  }
+  _extFillSrcKey = null
+}
+
+// ── 복사/붙여넣기 ────────────────────────────────────────────
+window.extCopyCells = () => {
+  if (_extSelectedCells.size === 0) return
+  const entries = Array.from(_extSelectedCells).sort().map(k => {
+    const { workerId, date } = _extParseKey(k)
+    const cell = _extGetCell(workerId, date)
+    return { workerId, date, shiftType: cell?.dataset?.extshift || '' }
+  })
+  _extCopiedData = { entries }
+  document.querySelectorAll('.ext-cell.ext-cell-copied').forEach(c => c.classList.remove('ext-cell-copied'))
+  entries.forEach(({ workerId, date }) => {
+    const c = _extGetCell(workerId, date)
+    if (c) { c.style.outline = '2px dashed #3b82f6'; c.style.outlineOffset = '-2px' }
+  })
+  showToast(`${entries.length}개 셀 복사 — Ctrl+V로 붙여넣기`, 'success')
+}
+
+window.extPasteCells = () => {
+  if (!_extCopiedData?.entries?.length) { showToast('복사된 셀이 없습니다', 'info'); return }
+  if (_extSelectedCells.size === 0) return
+  const targets = Array.from(_extSelectedCells).sort()
+  const src     = _extCopiedData.entries
+  const items   = []
+  if (src.length === 1) {
+    // 단일 소스 → 선택 전체에 붙여넣기
+    targets.forEach(k => {
+      const { workerId, date } = _extParseKey(k)
+      items.push({ workerId, date, shiftType: src[0].shiftType })
+    })
+  } else {
+    // 다중 소스 → 날짜 오프셋 기반
+    const srcDates = src.map(s => s.date).sort()
+    const tgtDates = targets.map(k => _extParseKey(k).date).sort()
+    tgtDates.forEach((tDate, i) => {
+      const s = src[i % src.length]
+      // 같은 workerId의 타겟에 붙여넣기
+      const tKey = targets.find(k => _extParseKey(k).date === tDate) || targets[i]
+      const { workerId } = _extParseKey(tKey)
+      items.push({ workerId, date: tDate, shiftType: s.shiftType })
+    })
+  }
+  _extApplyBatch(items)
+  showToast(`${items.length}개 셀 붙여넣기 완료 — 계속 Ctrl+V 가능`, 'success')
+}
+
+window.extDeleteCells = () => {
+  if (_extSelectedCells.size === 0) return
+  const items = Array.from(_extSelectedCells).map(k => {
+    const { workerId, date } = _extParseKey(k)
+    return { workerId, date, shiftType: '' }
+  })
+  _extApplyBatch(items)
+  showToast(`${items.length}개 셀 삭제`, 'info')
+  _extClearSelection()
+}
+
+// ── 방향키 이동 ───────────────────────────────────────────────
+function _extMoveSelection(dir) {
+  if (_extSelectedCells.size === 0) return
+  const keys = Array.from(_extSelectedCells).sort()
+  const anchor = _extAnchorKey || keys[0]
+  const { workerId, date } = _extParseKey(anchor)
+
+  const days = getDaysInMonth(App.currentYear, App.currentMonth)
+  const d = parseInt(date.slice(8))
+  const workers = scheduleExternalWorkers || []
+  const wIdx = workers.findIndex(w => w.id === workerId)
+
+  let newWorkerId = workerId, newDay = d
+  if (dir === 'right' && d < days) newDay = d + 1
+  else if (dir === 'left'  && d > 1) newDay = d - 1
+  else if (dir === 'down'  && wIdx < workers.length - 1) newWorkerId = workers[wIdx + 1].id
+  else if (dir === 'up'    && wIdx > 0)                  newWorkerId = workers[wIdx - 1].id
+  else return
+
+  const newDate = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(newDay).padStart(2,'0')}`
+  const newKey  = `${newWorkerId}_${newDate}`
+  _extSelectedCells.clear()
+  _extSelectedCells.add(newKey)
+  _extAnchorKey = newKey
+  _extUpdateSelectStyle()
+  _extShowFillHandle()
+  // 스크롤 into view
+  _extGetCell(newWorkerId, newDate)?.scrollIntoView({ block:'nearest', inline:'nearest' })
+}
+
+// ── 직접 타이핑 입력 ─────────────────────────────────────────
+function _extOpenInlineInput(workerId, date, cell, initChar) {
+  if (!cell) cell = _extGetCell(workerId, date)
+  if (!cell) return
+  const seq = getExtShiftSeq().filter(s => s !== '')
+  // 팝업 입력창 대신 select 드롭다운
+  const old = cell.querySelector('.ext-inline-select')
+  if (old) old.remove()
+  const sel = document.createElement('select')
+  sel.className = 'ext-inline-select'
+  sel.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;font-size:10px;border:2px solid #3b82f6;border-radius:3px;background:white;z-index:20;cursor:pointer'
+  sel.innerHTML = `<option value="">·</option>` + seq.map(s =>
+    `<option value="${s}" ${cell.dataset.extshift===s?'selected':''}>${EXT_SHIFT_LABEL_MAP[s]||s}</option>`
+  ).join('')
+  // 초기 문자로 미리 매핑
+  if (initChar) {
+    const labelMap = { '오':'morning', 'ㅇ':'morning', 'A':'morning', 'B':'afternoon',
+      '9':'full_9h', '1':'full_12h', 'F':'full_12h', 'f':'full_12h' }
+    const matched = labelMap[initChar.toUpperCase()]
+    if (matched && seq.includes(matched)) sel.value = matched
+  }
+  cell.style.position = 'relative'
+  cell.appendChild(sel)
+  sel.focus()
+  sel.onchange = () => {
+    const v = sel.value
+    const old = cell.dataset.extshift || ''
+    _extPushUndo([{ workerId, date, oldType: old, newType: v }])
+    _extApplyOne(workerId, date, cell, v)
+    sel.remove()
+    _extSelectedCells.clear()
+    _extSelectedCells.add(`${workerId}_${date}`)
+    _extAnchorKey = `${workerId}_${date}`
+    _extUpdateSelectStyle()
+  }
+  sel.onblur = () => { setTimeout(() => sel.remove(), 100) }
+  sel.onkeydown = (e) => {
+    if (e.key === 'Escape') { sel.remove(); e.preventDefault() }
+  }
+}
+
+// ── 하단 툴바 (외부인력 선택 시) ─────────────────────────────
+function _extUpdateBar() {
+  const enabled = localStorage.getItem('schedToolbarEnabled') !== '0'
+  if (!enabled || _extSelectedCells.size === 0) { _extHideBar(); return }
+  const bar = document.getElementById('multiSelectBar')
+  if (!bar) return
+  bar.classList.remove('hidden')
+
+  const countEl = document.getElementById('multiSelectCount')
+  if (countEl) countEl.textContent = `${_extSelectedCells.size}개 선택 (파출/알바)`
+
+  // 근무 코드 버튼을 외부인력용으로 교체
+  const btnsEl = document.getElementById('multiSelectCodeBtns')
+  if (btnsEl) {
+    const seq = getExtShiftSeq().filter(s => s !== '')
+    btnsEl.innerHTML = seq.map(s => {
+      const col = EXT_SHIFT_COLORS[s]?.match(/color:([^;]+)/)?.[1] || '#374151'
+      const bg  = EXT_SHIFT_COLORS[s]?.match(/background:([^;]+)/)?.[1] || '#f9fafb'
+      return `<button onclick="extApplyCodeInstant('${s}')" style="padding:3px 7px;border-radius:4px;font-size:11px;font-weight:700;background:${bg};color:${col};border:1px solid ${col}33;cursor:pointer">${EXT_SHIFT_LABEL_MAP[s]||s}</button>`
+    }).join('')
+  }
+}
+function _extHideBar() {
+  // 직원 셀이 선택된 상태면 숨기지 않음
+  if (_selectedCells && _selectedCells.size > 0) return
+  const bar = document.getElementById('multiSelectBar')
+  if (bar) bar.classList.add('hidden')
+}
+
+window.extApplyCodeInstant = (shiftType) => {
+  if (_extSelectedCells.size === 0) return
+  const items = Array.from(_extSelectedCells).map(k => {
+    const { workerId, date } = _extParseKey(k)
+    return { workerId, date, shiftType }
+  })
+  _extApplyBatch(items)
+  showToast(`${items.length}개 셀 → ${EXT_SHIFT_LABEL_MAP[shiftType]||shiftType} 적용`, 'success')
+}
+
+// ── 키보드 이벤트 (기존 keydown 핸들러에 ext 추가) ─────────────
+// 기존 scheduleTab 키다운 핸들러에서 ext 셀 선택 상태도 처리 (아래 _extHandleKeydown에서)
+window._extHandleKeydown = (e) => {
+  if (_extSelectedCells.size === 0) return false
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key === 'c' || e.key === 'C') { e.preventDefault(); extCopyCells(); return true }
+    if (e.key === 'v' || e.key === 'V') { e.preventDefault(); extPasteCells(); return true }
+    if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); extUndo(); return true }
+    if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); extRedo(); return true }
+    return false
+  }
+  if (e.key === 'ArrowRight') { e.preventDefault(); _extMoveSelection('right'); return true }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); _extMoveSelection('left');  return true }
+  if (e.key === 'ArrowDown')  { e.preventDefault(); _extMoveSelection('down');  return true }
+  if (e.key === 'ArrowUp')    { e.preventDefault(); _extMoveSelection('up');    return true }
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); extDeleteCells(); return true }
+  if (e.key === 'Escape') { _extClearSelection(); return true }
+  // 직접 타이핑
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+    const anchor = _extAnchorKey
+    if (!anchor) return false
+    const { workerId, date } = _extParseKey(anchor)
+    const cell = _extGetCell(workerId, date)
+    if (cell) { _extOpenInlineInput(workerId, date, cell, e.key); e.preventDefault(); return true }
+  }
+  return false
+}
+
+// ── CSS 주입 (ext 셀 fill preview 스타일) ─────────────────────
+;(() => {
+  if (document.getElementById('ext-cell-css')) return
+  const st = document.createElement('style')
+  st.id = 'ext-cell-css'
+  st.textContent = `
+    .ext-cell-fill-preview { outline: 2px dashed #f97316 !important; outline-offset: -2px !important; }
+    .ext-cell-copied       { outline: 2px dashed #3b82f6 !important; outline-offset: -2px !important; }
+    .ext-fill-handle:hover { background: #1d4ed8 !important; transform: scale(1.3); }
+  `
+  document.head.appendChild(st)
+})()
 
 // ── 외부인력 삭제 ─────────────────────────────────────────────
 window.deleteExternalWorker = async (workerId, workerName) => {
@@ -16673,6 +17271,48 @@ window.saveWorkSettings = async () => {
     if (content) renderScheduleTab(content)
   } else {
     showToast('저장 실패', 'error')
+  }
+}
+
+// ── 파출/알바 근무유형 설정 저장/토글 ──────────────────────────
+window.saveExtShiftConfig = () => {
+  const rows = document.querySelectorAll('#extShiftConfigRows > div[id^="extShiftRow_"]')
+  const EXT_KEYS = ['morning','afternoon','full_9h','full_12h']
+  const EXT_DEFAULTS_BG = { morning:'#fff7ed', afternoon:'#fef3c7', full_9h:'#ffedd5', full_12h:'#fee2e2' }
+  const EXT_DEFAULTS_COLOR = { morning:'#c2410c', afternoon:'#b45309', full_9h:'#ea580c', full_12h:'#dc2626' }
+  const cfg = []
+  rows.forEach((row, idx) => {
+    const key   = EXT_KEYS[idx] || `custom_${idx}`
+    const label = document.getElementById(`extLabel_${idx}`)?.value?.trim() || key
+    const hours = document.getElementById(`extHours_${idx}`)?.value || '8'
+    const start = document.getElementById(`extStart_${idx}`)?.value || '07:00'
+    const end   = document.getElementById(`extEnd_${idx}`)?.value || '19:00'
+    const chk   = row.querySelector('input[type="checkbox"]')?.checked ?? true
+    cfg.push({
+      key, label, hours, startTime: start, endTime: end,
+      enabled: chk,
+      bg:    EXT_DEFAULTS_BG[key]    || '#fff7ed',
+      color: EXT_DEFAULTS_COLOR[key] || '#ea580c'
+    })
+  })
+  localStorage.setItem('extShiftConfig', JSON.stringify(cfg))
+  showToast('파출/알바 근무유형 설정이 저장되었습니다', 'success')
+
+  // EXT_SHIFT_LABEL_MAP 동적 업데이트
+  cfg.forEach(c => { EXT_SHIFT_LABEL_MAP[c.key] = c.label })
+}
+
+window.toggleExtShiftRow = (idx, enabled) => {
+  const row = document.getElementById(`extShiftRow_${idx}`)
+  if (!row) return
+  row.classList.toggle('border-orange-200', enabled)
+  row.classList.toggle('bg-orange-50', enabled)
+  row.classList.toggle('border-gray-200', !enabled)
+  row.classList.toggle('bg-gray-50', !enabled)
+  const label = row.querySelector('span.text-xs.font-semibold')
+  if (label) {
+    label.classList.toggle('text-orange-700', enabled)
+    label.classList.toggle('text-gray-400', !enabled)
   }
 }
 
@@ -17786,10 +18426,14 @@ window.schedDragEnd = (event) => {
 let _copiedCellData = null   // { code, rows: [ [code,...], ... ] } 복사 버퍼
 
 document.addEventListener('keydown', (e) => {
-  const inInput = e.target.matches('input,textarea,select')
+  const inInput = e.target.matches('input,textarea,select') && !e.target.classList.contains('ext-inline-select')
 
   // ── 1순위: Ctrl+Z — 항상 최우선 처리 ──
   if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    // 외부인력 선택 중이면 extUndo 우선
+    if (_extSelectedCells && _extSelectedCells.size > 0 && window._extUndoStack?.length > 0) {
+      e.preventDefault(); e.stopPropagation(); window.extUndo(); return
+    }
     if (window._undoStack && window._undoStack.length > 0) {
       e.preventDefault(); e.stopPropagation()
       window.schedUndo()
@@ -17799,6 +18443,9 @@ document.addEventListener('keydown', (e) => {
 
   // ── Ctrl+Y / Ctrl+Shift+Z — Redo ──
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    if (_extSelectedCells && _extSelectedCells.size > 0 && window._extRedoStack?.length > 0) {
+      e.preventDefault(); e.stopPropagation(); window.extRedo(); return
+    }
     if (window._redoStack && window._redoStack.length > 0) {
       e.preventDefault(); e.stopPropagation()
       window.schedRedo()
@@ -17807,10 +18454,18 @@ document.addEventListener('keydown', (e) => {
   }
 
   // ESC: 선택 해제
-  if (e.key === 'Escape' && _selectedCells.size > 0) { clearMultiSelection(); return }
+  if (e.key === 'Escape') {
+    if (_extSelectedCells?.size > 0) { _extClearSelection(); return }
+    if (_selectedCells.size > 0) { clearMultiSelection(); return }
+  }
 
   // 스케줄 탭 외에서는 이하 단축키 동작 안 함
   if (scheduleTab !== 'schedule') return
+
+  // ── 외부인력 셀 선택 중 처리 ──────────────────────────────
+  if (_extSelectedCells?.size > 0) {
+    if (window._extHandleKeydown && window._extHandleKeydown(e)) return
+  }
 
   // input 안에 있으면 이하 스케줄 단축키 무시
   if (inInput) return
