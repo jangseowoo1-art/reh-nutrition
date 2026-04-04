@@ -1683,24 +1683,36 @@ schedule.get('/off-grants', async (c) => {
 
       if (isRestDay) {
         // ── 순환 휴무일 ────────────────────────────────────────
-        // Case A: 순환휴무일 + 공휴일 겹침 → 단일 'holiday' 처리 (중복 안 함)
-        const typeLabel = dow === 0 ? 'sunday'
+        // ignore 모드: 토/일/공휴일 여부와 관계없이 cycle_rest 단일 처리
+        // 그 외    : 일요일→sunday, 토요일→saturday, 공휴일→holiday, 나머지→cycle_rest
+        const isIgnore = cycleHolidayPolicy === 'ignore'
+        const typeLabel = isIgnore ? 'cycle_rest'
+          : dow === 0 ? 'sunday'
           : dow === 6 ? 'saturday'
-          : isHoliday  ? 'holiday'   // Case A: 공휴일이 있으면 holiday로
+          : isHoliday ? 'holiday'
           : 'cycle_rest'
-        const label = dow === 0 ? '일요일'
+        const label = isIgnore
+          ? `순환휴무 (${cycleWorkDays}일근무/${cycleRestDays}일휴무)`
+          : dow === 0 ? '일요일'
           : dow === 6 ? '토요일'
-          : isHoliday  ? holidayName
+          : isHoliday ? holidayName
           : `순환휴무 (${cycleWorkDays}일근무/${cycleRestDays}일휴무)`
         grantedDays.push({
           date: dateStr, day_of_week: dowLabel,
           type: typeLabel, label,
           is_auto: true, lock_flag: 0,
-          reason: isHoliday ? 'Case A: 순환휴무 + 공휴일 중복 → 공휴일 단일 처리' : undefined
+          reason: isIgnore && (dow === 0 || dow === 6 || isHoliday)
+            ? `ignore: 순환휴무일(${dow===0?'일':dow===6?'토':'공휴'}) → cycle_rest 유지`
+            : isHoliday && !isIgnore ? 'Case A: 순환휴무+공휴일 겹침 → holiday 단일처리'
+            : undefined
         })
       } else {
         // ── 순환 근무일 ────────────────────────────────────────
-        if (dow === 0) {
+        // ignore 모드: 순환 근무일에서는 토/일/공휴일 모두 추가 휴무 부여 안 함
+        // (패턴만 유지 — 근무일은 근무일)
+        if (cycleHolidayPolicy === 'ignore') {
+          // 아무것도 추가하지 않음 → 근무일 유지
+        } else if (dow === 0) {
           // 일요일이 근무일과 겹칠 경우 (순환이 일요일에 근무)
           grantedDays.push({
             date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일',

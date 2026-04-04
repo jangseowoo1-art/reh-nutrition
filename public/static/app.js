@@ -13208,7 +13208,7 @@ function renderOffGrantsPanel() {
         </div>` : `
         <div class="text-xs text-gray-400">개별 예외 설정된 직원 없음 — 전원 병원 기본값(${pLabel[hps.hospital_policy]||hps.hospital_policy}) 적용</div>`}
       </div>`
-      })()} : ''}
+      })() : ''} 
     </div>
   </div>
 
@@ -16694,9 +16694,14 @@ function renderWorkSettingsModal() {
           <div class="border-t border-gray-100"></div>
 
           <!-- ② 공휴일 처리 정책 (신규) -->
-          <div>
+          <div id="ws_holiday_policy_section">
             <h4 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-flag mr-1 text-red-500"></i>② 공휴일 처리 정책 <span class="text-xs text-gray-400 font-normal">— 병원 전체 기본값 (직원별 개별 예외 설정 가능)</span></h4>
-            <div class="space-y-2">
+            <!-- 순환근무 시 비활성화 안내 (cycle 선택 시 표시) -->
+            <div id="ws_holiday_policy_cycle_notice" class="hidden mb-2 p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-2">
+              <i class="fas fa-info-circle text-blue-500 mt-0.5 flex-shrink-0"></i>
+              <span class="text-xs text-blue-700"><strong>순환근무 모드</strong>에서는 아래 공휴일 설정이 적용되지 않습니다.<br>공휴일 처리는 아래 <strong>"순환·혼합형 공휴일 처리"</strong> 옵션을 사용하세요.</span>
+            </div>
+            <div id="ws_holiday_policy_radios" class="space-y-2">
               <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-red-50 transition-colors">
                 <input type="radio" name="ws_holiday_policy" id="ws_hp_off" value="off" class="w-4 h-4 text-red-600">
                 <div>
@@ -16722,11 +16727,11 @@ function renderWorkSettingsModal() {
 
             <!-- 순환/혼합형 공휴일 충돌 처리 (cycle/mixed 선택 시 표시) -->
             <div id="ws_cycle_holiday_options" class="hidden mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
-              <div class="text-xs font-bold text-amber-700 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>순환·혼합형 — 공휴일이 근무일과 겹칠 때 처리</div>
+              <div class="text-xs font-bold text-amber-700 mb-2"><i class="fas fa-sync-alt mr-1"></i>순환·혼합형 — 공휴일 처리 방식</div>
               <div class="space-y-1.5">
                 <label class="flex items-center gap-2 cursor-pointer">
                   <input type="radio" name="ws_cycle_holiday_policy" id="ws_chp_ignore" value="ignore" class="w-3.5 h-3.5 text-gray-600">
-                  <span class="text-xs text-gray-700"><strong>패턴 유지</strong> — 공휴일을 순환패턴 그대로 처리 (별도 처리 없음)</span>
+                  <span class="text-xs text-gray-700"><strong>⭕ 패턴만 유지</strong> — 공휴일 무시, 순환패턴 그대로 반복 <span class="text-blue-600 font-semibold">(권장)</span></span>
                 </label>
                 <label class="flex items-center gap-2 cursor-pointer">
                   <input type="radio" name="ws_cycle_holiday_policy" id="ws_chp_pay" value="pay" class="w-3.5 h-3.5 text-yellow-600">
@@ -16743,8 +16748,8 @@ function renderWorkSettingsModal() {
               </div>
               <div class="mt-2 p-2 bg-white border border-amber-200 rounded text-xs text-amber-700">
                 <i class="fas fa-info-circle mr-1"></i>
-                <strong>충돌 규칙:</strong> 공휴일이 순환 휴무일과 겹치면 holiday로 단일 처리 (중복 인정 안 함).
-                순환 <em>근무일</em>에 공휴일이 겹칠 때만 위 정책 적용.
+                <strong>패턴 유지 선택 시:</strong> 공휴일 여부와 관계없이 순환패턴(근무/휴무)만 적용됩니다.
+                위의 공휴일 처리 정책(②)은 순환근무에서 무시됩니다.
               </div>
             </div>
           </div>
@@ -19975,6 +19980,32 @@ window.wsToggleOffGrantType = (type) => {
   if (cycleHolOpts) {
     if (type === 'cycle' || type === 'mixed') cycleHolOpts.classList.remove('hidden')
     else cycleHolOpts.classList.add('hidden')
+  }
+
+  // ② 공휴일 처리 정책 비활성화: cycle 선택 시 라디오 비활성 + 안내 문구 표시
+  const hpNotice  = document.getElementById('ws_holiday_policy_cycle_notice')
+  const hpRadios  = document.getElementById('ws_holiday_policy_radios')
+  if (type === 'cycle') {
+    // cycle: holiday_policy 완전 무시 → 비활성화 + 안내 표시
+    if (hpNotice) hpNotice.classList.remove('hidden')
+    if (hpRadios) {
+      hpRadios.style.opacity = '0.35'
+      hpRadios.style.pointerEvents = 'none'
+      hpRadios.title = '순환근무 모드에서는 공휴일 처리 정책이 적용되지 않습니다'
+    }
+    // cycle_holiday_policy 기본값 ignore 자동 선택
+    const ignoreEl = document.getElementById('ws_chp_ignore')
+    if (ignoreEl && !document.querySelector('input[name="ws_cycle_holiday_policy"]:checked')) {
+      ignoreEl.checked = true
+    }
+  } else {
+    // 다른 모드: 활성화
+    if (hpNotice) hpNotice.classList.add('hidden')
+    if (hpRadios) {
+      hpRadios.style.opacity = ''
+      hpRadios.style.pointerEvents = ''
+      hpRadios.title = ''
+    }
   }
 
   wsUpdateCyclePreview()
