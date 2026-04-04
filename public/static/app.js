@@ -17106,8 +17106,7 @@ function _extOpenInlineInput(workerId, date, cell, initChar) {
 
 // ── 하단 툴바 (외부인력 선택 시) ─────────────────────────────
 function _extUpdateBar() {
-  const enabled = localStorage.getItem('schedToolbarEnabled') !== '0'
-  if (!enabled || _extSelectedCells.size === 0) { _extHideBar(); return }
+  if (!_toolbarEnabled || _extSelectedCells.size === 0) { _extHideBar(); return }
   const bar = document.getElementById('multiSelectBar')
   if (!bar) return
   bar.classList.remove('hidden')
@@ -17129,6 +17128,7 @@ function _extUpdateBar() {
 function _extHideBar() {
   // 직원 셀이 선택된 상태면 숨기지 않음
   if (_selectedCells && _selectedCells.size > 0) return
+  // 외부인력 셀도 없고 직원 셀도 없을 때만 숨김
   const bar = document.getElementById('multiSelectBar')
   if (bar) bar.classList.add('hidden')
 }
@@ -17671,7 +17671,7 @@ function schedShowFillHandle() {
 }
 
 // ── 선택 툴바 업데이트 ────────────────────────────────────────
-// 툴바 표시 여부 (사용자 설정, localStorage 저장)
+// 툴바 표시 여부 (사용자 설정, localStorage 저장) — 직원·파출·알바 통합
 let _toolbarEnabled = localStorage.getItem('schedToolbarEnabled') !== 'false'
 
 function _syncToolbarToggleBtn() {
@@ -17692,11 +17692,14 @@ window.toggleSchedToolbar = () => {
   _toolbarEnabled = !_toolbarEnabled
   localStorage.setItem('schedToolbarEnabled', _toolbarEnabled)
   _syncToolbarToggleBtn()
+  const bar = document.getElementById('multiSelectBar')
   if (!_toolbarEnabled) {
-    const bar = document.getElementById('multiSelectBar')
+    // OFF: 직원·파출·알바 모두 즉시 숨김
     if (bar) bar.classList.add('hidden')
   } else {
-    updateMultiSelectBar()
+    // ON: 현재 선택된 영역에 따라 툴바 복원
+    if (_extSelectedCells?.size > 0) _extUpdateBar()
+    else updateMultiSelectBar()
   }
 }
 
@@ -17705,7 +17708,7 @@ function updateMultiSelectBar() {
   const cnt = document.getElementById('multiSelectCount')
   if (!bar) return
   const n = _selectedCells.size
-  // 툴바 비활성화 설정이거나 선택 없으면 숨김
+  // 툴바 OFF이거나 선택 없으면 숨김
   if (n === 0 || !_toolbarEnabled) { bar.classList.add('hidden'); return }
   bar.classList.remove('hidden')
   const keys = Array.from(_selectedCells).sort()
