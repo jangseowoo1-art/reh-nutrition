@@ -18450,30 +18450,122 @@ window.deleteExternalWorker = async (workerId, workerName) => {
 
 // ── 운영진 뷰 전용 인쇄 함수 ─────────────────────────────────
 window.printExecutiveView = function() {
-  const execView = document.querySelector('[data-exec-view]') ||
-                   (() => {
-                     // 운영진 뷰 컨테이너 찾기 (헤더 텍스트로 식별)
-                     const allDivs = document.querySelectorAll('div')
-                     for (const div of allDivs) {
-                       const h3 = div.querySelector('h3')
-                       if (h3 && h3.textContent.includes('운영진 요약') && div.style.background && div.style.background.includes('white')) {
-                         return div
-                       }
-                     }
-                     return null
-                   })()
+  const execView = document.querySelector('[data-exec-view]')
+  if (!execView) { window.print(); return }
 
-  if (!execView) {
-    window.print()
-    return
-  }
-
-  const year = App.currentYear
+  const year  = App.currentYear
   const month = App.currentMonth
-  const printWin = window.open('', '_blank', 'width=1100,height=900')
+
+  // ── DOM에서 데이터 추출 ─────────────────────────────────────
+  // KPI 카드 수치 추출
+  const kpiCards = execView.querySelectorAll('div[style*="border-radius:12px"][style*="text-align:center"]')
+  const kpiData = []
+  kpiCards.forEach(card => {
+    const num   = card.querySelector('div[style*="font-size:26px"]')?.textContent?.trim() || ''
+    const label = card.querySelector('div[style*="font-size:10px"]')?.textContent?.trim() || ''
+    const bgStyle = card.getAttribute('style') || ''
+    const bgMatch = bgStyle.match(/background:([^;]+)/)
+    const bg = bgMatch ? bgMatch[1] : '#374151'
+    if (num) kpiData.push({ num, label, bg })
+  })
+
+  // 직원별 근무일수 바 차트 데이터 추출
+  const barRows = execView.querySelectorAll('div[style*="display:flex;align-items:center;gap:6px;margin-bottom:5px"]')
+  const barData = []
+  barRows.forEach(row => {
+    const name   = row.querySelector('div[style*="min-width:64px"]')?.textContent?.trim() || ''
+    const bar    = row.querySelector('div[style*="border-radius:4px;height:16px"]')
+    const days   = row.querySelector('span[style*="right:5px"]')?.textContent?.trim() || ''
+    const badge  = row.querySelector('span[style*="font-size:9px"]')?.textContent?.trim() || ''
+    const bgStyle = bar?.querySelector('div')?.getAttribute('style') || ''
+    const colorMatch = bgStyle.match(/background:([^;]+)/)
+    const color = colorMatch ? colorMatch[1] : '#2563eb'
+    const pctMatch  = bgStyle.match(/width:(\d+)%/)
+    const pct = pctMatch ? parseInt(pctMatch[1]) : 0
+    if (name) barData.push({ name, days, badge, color, pct })
+  })
+
+  // 주차별 막대 데이터 추출
+  const weekBarEls = execView.querySelectorAll('div[style*="flex-direction:column;align-items:center;flex:1"]')
+  const weekData = []
+  weekBarEls.forEach(el => {
+    const val  = el.querySelector('div[style*="font-size:10px;font-weight:700"]')?.textContent?.trim() || ''
+    const lbl  = el.querySelectorAll('div[style*="font-size:10px"]')
+    const week = lbl[lbl.length - 1]?.textContent?.trim() || ''
+    const bar  = el.querySelector('div[style*="border-radius:4px;height:60px"]')
+    const innerBar = bar?.querySelector('div')
+    const pctMatch = innerBar?.getAttribute('style')?.match(/height:(\d+)%/)
+    const pct = pctMatch ? parseInt(pctMatch[1]) : 0
+    if (week) weekData.push({ val, week, pct })
+  })
+
+  // 근무조별 집중도 카드 추출
+  const codeCardEls = execView.querySelectorAll('div[style*="display:flex;align-items:center;gap:8px;padding:7px"]')
+  const codeData = []
+  codeCardEls.forEach(el => {
+    const code  = el.querySelector('span[style*="border-radius:6px"]')?.textContent?.trim() || ''
+    const count = el.querySelector('div[style*="font-size:11px;font-weight:700"]')?.textContent?.trim() || ''
+    const pctEl = el.querySelector('span[style*="font-size:10px"]')
+    const pct   = pctEl?.textContent?.trim() || ''
+    const bg    = (el.getAttribute('style') || '').match(/background:([^;]+0e)/)?.[1] || '#f3f4f6'
+    const innerBar = el.querySelector('div[style*="border-radius:3px;height:4px"] > div')
+    const barBg = innerBar?.getAttribute('style')?.match(/background:([^;]+)/)?.[1] || '#6b7280'
+    const barW  = innerBar?.getAttribute('style')?.match(/width:([^;]+)/)?.[1] || '0%'
+    if (code) codeData.push({ code, count, pct, bg, barBg, barW })
+  })
+
+  // 경고 메시지 추출
+  const warnEls = execView.querySelectorAll('div[style*="border-radius:8px;padding:7px 12px;font-size:11px"]')
+  const warnHtml = Array.from(warnEls).map(el => el.outerHTML).join('')
+
+  // 균형 지표 추출
+  const balanceScore = execView.querySelector('span[style*="font-size:12px;font-weight:900"]')?.textContent?.trim() || ''
+  const balanceLabel = execView.querySelector('div[style*="font-size:13px;font-weight:800"]')?.textContent?.trim() || ''
+
+  // ── 인쇄용 HTML 생성 ───────────────────────────────────────
+  const kpiHtml = kpiData.map(k => `
+    <div style="background:${k.bg};color:white;border-radius:10px;padding:14px 10px;text-align:center;break-inside:avoid">
+      <div style="font-size:28px;font-weight:900;line-height:1">${k.num}</div>
+      <div style="font-size:11px;opacity:.9;margin-top:4px">${k.label}</div>
+    </div>`).join('')
+
+  const barHtml = barData.map(b => `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+      <div style="min-width:72px;font-size:12px;font-weight:600;color:#374151;text-align:right;white-space:nowrap">${b.name}</div>
+      <div style="flex:1;background:#e5e7eb;border-radius:4px;height:18px;position:relative">
+        <div style="width:${b.pct}%;background:${b.color};height:100%;border-radius:4px"></div>
+        <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:11px;font-weight:700;color:#1f2937">${b.days}</span>
+      </div>
+      ${b.badge ? `<span style="font-size:10px;font-weight:700;color:${b.color};min-width:36px">${b.badge}</span>` : '<span style="min-width:36px"></span>'}
+    </div>`).join('')
+
+  const weekHtml = weekData.length ? weekData.map(w => `
+    <div style="display:flex;flex-direction:column;align-items:center;flex:1;gap:3px">
+      <div style="font-size:11px;font-weight:700;color:#374151">${w.val}</div>
+      <div style="width:100%;background:#e5e7eb;border-radius:4px;height:70px;display:flex;align-items:flex-end">
+        <div style="width:100%;background:linear-gradient(180deg,#6366f1,#4338ca);height:${Math.max(w.pct,4)}%;border-radius:4px"></div>
+      </div>
+      <div style="font-size:11px;color:#6b7280">${w.week}</div>
+    </div>`).join('') : '<p style="color:#9ca3af;font-size:12px">데이터 없음</p>'
+
+  const codeHtml = codeData.length ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">
+      ${codeData.map(c => `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:${c.bg};border-radius:8px;border:1px solid ${c.barBg}40">
+        <span style="display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;border-radius:6px;background:${c.barBg}28;color:${c.barBg};font-weight:900;font-size:13px">${c.code}</span>
+        <div style="flex:1">
+          <div style="font-size:12px;font-weight:700;color:#374151">${c.count}</div>
+          <div style="background:#e5e7eb;border-radius:3px;height:4px;margin-top:3px">
+            <div style="width:${c.barW};background:${c.barBg};height:100%;border-radius:3px"></div>
+          </div>
+        </div>
+        <span style="font-size:11px;color:${c.barBg};font-weight:700">${c.pct}</span>
+      </div>`).join('')}
+    </div>` : ''
+
+  const printWin = window.open('', '_blank', 'width=900,height=1200')
   if (!printWin) { window.print(); return }
 
-  const html = execView.outerHTML
   printWin.document.write(`<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -18481,32 +18573,90 @@ window.printExecutiveView = function() {
   <title>${year}년 ${month}월 운영진 보고서</title>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif; padding: 20px; background: white; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic','Apple SD Gothic Neo',sans-serif;
+           background:white; color:#1f2937; }
+    .page { width:210mm; min-height:297mm; padding:16mm 14mm; margin:0 auto; background:white; }
+    h2 { font-size:20px; font-weight:900; }
+    section { margin-bottom:18px; break-inside:avoid; }
+    .section-title { font-size:13px; font-weight:700; color:#374151; margin-bottom:10px;
+                     padding-bottom:6px; border-bottom:2px solid #e5e7eb;
+                     display:flex; align-items:center; gap:6px; }
+    .kpi-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:8px; }
+    .warn-block { margin-bottom:6px; }
+    .week-chart { display:flex; gap:10px; align-items:flex-end; height:80px; padding:0 4px; }
     @media print {
-      body { padding: 10px; }
-      button { display: none !important; }
-      .no-print { display: none !important; }
-      div[style*="overflow-y:auto"] { overflow: visible !important; max-height: none !important; }
-      div[style*="overflow-y: auto"] { overflow: visible !important; max-height: none !important; }
+      body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+      .page { padding:10mm 10mm; }
+      .no-print { display:none!important; }
     }
-    button { display: none !important; }
   </style>
 </head>
 <body>
-  ${html}
-  <script>
-    // 버튼 제거
-    document.querySelectorAll('button').forEach(b => b.remove())
-    // overflow 제거
-    document.querySelectorAll('div').forEach(d => {
-      if (d.style.overflowY === 'auto' || d.style.overflow === 'auto') {
-        d.style.overflow = 'visible'
-        d.style.maxHeight = 'none'
-      }
-    })
-    window.onload = function() { window.print(); window.close(); }
-  <\/script>
+<div class="page">
+
+  <!-- 헤더 -->
+  <div style="background:linear-gradient(135deg,#4c1d95,#7c3aed);border-radius:12px;padding:16px 20px;margin-bottom:18px;color:white">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:11px;opacity:.7;letter-spacing:1px;margin-bottom:4px">HOSPITAL MEAL MANAGEMENT · 운영진 요약 보고서</div>
+        <h2>${year}년 ${month}월 운영진 요약</h2>
+        <div style="font-size:11px;opacity:.8;margin-top:3px">전체 인력 운영 현황 · 경영진 의사결정 지원</div>
+      </div>
+      <div style="text-align:right;font-size:11px;opacity:.8">
+        <div>출력일: ${new Date().toLocaleDateString('ko-KR')}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ① KPI 카드 -->
+  <section>
+    <div class="section-title"><i class="fas fa-chart-bar" style="color:#7c3aed"></i> 핵심 지표</div>
+    <div class="kpi-grid">${kpiHtml}</div>
+  </section>
+
+  <!-- ② 균형 지표 + 경고 -->
+  <section>
+    <div class="section-title"><i class="fas fa-bell" style="color:#f59e0b"></i> 운영 알림</div>
+    <div class="warn-block">${warnHtml || '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;font-size:12px;color:#166534"><i class="fas fa-check-circle" style="margin-right:6px"></i>근무 분포 이상 없음</div>'}</div>
+  </section>
+
+  <!-- ③ 직원별 근무일수 바차트 -->
+  <section>
+    <div class="section-title"><i class="fas fa-users" style="color:#2563eb"></i> 직원별 근무일수</div>
+    <div style="font-size:10px;color:#9ca3af;display:flex;gap:12px;margin-bottom:8px">
+      <span style="color:#2563eb">■ 정상</span>
+      <span style="color:#ef4444">■ 과중(130%+)</span>
+      <span style="color:#f59e0b">■ 부족(70%-)</span>
+    </div>
+    <div>${barHtml || '<p style="color:#9ca3af;font-size:12px">데이터 없음</p>'}</div>
+  </section>
+
+  <!-- ④ 주차별 근무 배치 -->
+  <section>
+    <div class="section-title"><i class="fas fa-calendar-week" style="color:#6366f1"></i> 주차별 근무 배치</div>
+    <div class="week-chart">${weekHtml}</div>
+  </section>
+
+  ${codeHtml ? `
+  <!-- ⑤ 근무조별 집중도 -->
+  <section>
+    <div class="section-title"><i class="fas fa-layer-group" style="color:#7c3aed"></i> 근무조별 집중도</div>
+    ${codeHtml}
+  </section>` : ''}
+
+  <!-- 푸터 -->
+  <div style="margin-top:24px;padding-top:10px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;font-size:10px;color:#9ca3af">
+    <span>Re&H Hospital Meal Management System</span>
+    <span>${year}년 ${month}월 운영진 보고서</span>
+  </div>
+
+</div>
+<script>
+  window.onload = function() {
+    setTimeout(function() { window.print(); }, 800)
+  }
+<\/script>
 </body>
 </html>`)
   printWin.document.close()
@@ -38622,17 +38772,7 @@ window.openExecutiveSummaryView = () => {
 // QR 코드 공유 관리 모달
 // ══════════════════════════════════════════════════════════════
 window.openQrManageModal = async () => {
-  // QR 라이브러리 동적 로드
-  if (!window.QRCode) {
-    await new Promise((res, rej) => {
-      const s = document.createElement('script')
-      s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
-      s.onload = res; s.onerror = rej
-      document.head.appendChild(s)
-    })
-  }
-
-  // 기존 모달 제거
+  // 즉시 모달 열기 (라이브러리 로드 전에 UI 먼저 표시)
   document.getElementById('qrManageModal')?.remove()
 
   const modal = document.createElement('div')
@@ -38660,6 +38800,18 @@ window.openQrManageModal = async () => {
     </div>`
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
   document.body.appendChild(modal)
+
+  // QR 라이브러리 로드 (타임아웃 5초, 실패해도 목록은 표시)
+  if (!window.QRCode) {
+    await new Promise((res) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
+      const timer = setTimeout(() => { res(); }, 5000) // 5초 타임아웃
+      s.onload = () => { clearTimeout(timer); res() }
+      s.onerror = () => { clearTimeout(timer); res() } // 실패해도 진행
+      document.head.appendChild(s)
+    })
+  }
 
   await qrLoadList()
 }
@@ -38726,15 +38878,30 @@ window.qrLoadList = async function qrLoadList() {
       </div>`
     }).join('')
 
-    // QR 캔버스 렌더링
-    tokens.forEach(t => {
+    // QR 캔버스 렌더링 (비동기, 하나씩 처리)
+    for (const t of tokens) {
       const canvas = document.getElementById(`qr_${t.employee_id}`)
-      if (canvas && window.QRCode) {
+      if (!canvas) continue
+      if (window.QRCode) {
         const url = `${location.origin}/my-schedule/${t.token}`
-        QRCode.toCanvas(canvas, url, { width: 72, margin: 1, color:{dark:'#166534',light:'#ffffff'} })
-          .catch(() => {})
+        try {
+          await QRCode.toCanvas(canvas, url, { width: 72, margin: 1, color:{dark:'#166534',light:'#ffffff'} })
+        } catch(e) {
+          // QR 렌더 실패시 링크 아이콘으로 대체
+          canvas.style.display = 'none'
+          const parent = canvas.parentElement
+          if (parent) {
+            const fallback = document.createElement('div')
+            fallback.style.cssText = 'width:72px;height:72px;background:#f0fdf4;border-radius:6px;display:flex;align-items:center;justify-content:center;border:1px solid #bbf7d0'
+            fallback.innerHTML = '<i class="fas fa-link" style="color:#166534;font-size:20px"></i>'
+            parent.insertBefore(fallback, canvas)
+          }
+        }
+      } else {
+        // QRCode 라이브러리 로드 실패 - 링크 표시
+        canvas.style.display = 'none'
       }
-    })
+    }
   } catch(e) {
     listEl.innerHTML = `<div style="color:#ef4444;padding:20px;text-align:center">오류: ${e.message}</div>`
   }
