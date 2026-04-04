@@ -13323,21 +13323,203 @@ function renderAdminSummaryPanel() {
   if(lowOffViolators.length) warnHtml+=`<div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;font-size:11px;color:#92400e"><i class="fas fa-calendar-minus" style="margin-right:5px"></i><strong>휴무 부족(3일 미만):</strong> ${lowOffViolators.map(e=>e.name).join(', ')} — 충분한 휴무 배정 권장</div>`
   if(!warnHtml) warnHtml=`<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:7px 12px;font-size:11px;color:#166534"><i class="fas fa-check-circle" style="margin-right:5px"></i>근무시간 및 연속근무 이상 없음</div>`
 
+  // ── 일별 인력 현황 계산 (기준인원 대비) ────────────────────────
+  const extWorkers2 = (md?.ext_workers || md?.external_workers) || []
+  const extSchedMap2 = scheduleExtSchedMap || {}
+  const requiredCount = parseInt(ws.required_staff_count || '0')
+  const REST_CODES2 = new Set(['연','휴','경조','병가'])
+
+  // 날짜별 정규/파출/알바 카운트
+  const dailyCounts = []
+  for(let d=1; d<=days; d++) {
+    const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    let regular=0, dispatch=0, parttime=0
+    // 정규 직원
+    for(const emp of emps) {
+      const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
+      if(code && code !== '-' && !REST_CODES2.has(code)) regular++
+    }
+    // 외부인력(파출/알바)
+    for(const w of extWorkers2) {
+      const entry = extSchedMap2[`${w.id}_${ds}`]
+      if(entry && (entry.shift_type || entry.shift_code)) {
+        if(w.worker_type === 'dispatch') dispatch++
+        else parttime++
+      }
+    }
+    const total = regular + dispatch + parttime
+    let status = 'normal', statusColor = '#6b7280', statusBg = '#f9fafb'
+    if(requiredCount > 0) {
+      const ratio = total / requiredCount
+      if(ratio < 0.9) { status='shortage'; statusColor='#dc2626'; statusBg='#fff1f2' }
+      else if(ratio > 1.1) { status='over'; statusColor='#2563eb'; statusBg='#eff6ff' }
+      else { status='normal'; statusColor='#16a34a'; statusBg='#f0fdf4' }
+    }
+    dailyCounts.push({ d, ds, regular, dispatch, parttime, total, status, statusColor, statusBg })
+  }
+
+  // 부족/과다/정상 일수
+  const shortageDays = dailyCounts.filter(dc => dc.status === 'shortage').length
+  const overDays     = dailyCounts.filter(dc => dc.status === 'over').length
+  const normalDays   = dailyCounts.filter(dc => dc.status === 'normal' && requiredCount > 0).length
+  const avgTotal     = dailyCounts.length ? (dailyCounts.reduce((a,dc)=>a+dc.total,0)/dailyCounts.length).toFixed(1) : '0'
+  const maxTotal     = Math.max(...dailyCounts.map(dc=>dc.total), 0)
+  const minTotal     = Math.min(...dailyCounts.map(dc=>dc.total), 0)
+
+  let dailyStaffHtml = ''
+  if(requiredCount > 0) {
+    // 날짜 셀 (가로 스크롤 테이블)
+    const dayHeaders = dailyCounts.map(dc => {
+      const dow = new Date(dc.ds).getDay()
+      const isSun = dow===0, isSat = dow===6
+      const hdrColor = isSun?'#dc2626':isSat?'#2563eb':'#374151'
+      return `<th style="padding:3px 4px;text-align:center;font-size:10px;color:${hdrColor};min-width:28px;white-space:nowrap">${dc.d}<br><span style="font-size:8px">${['일','월','화','수','목','금','토'][dow]}</span></th>`
+    }).join('')
+    const totalCells = dailyCounts.map(dc => {
+      const icon = dc.status==='shortage'?'▼':dc.status==='over'?'▲':''
+      return `<td style="padding:2px 3px;text-align:center;font-size:11px;font-weight:700;background:${dc.statusBg};color:${dc.statusColor}">${dc.total}${icon}</td>`
+    }).join('')
+    const regularCells = dailyCounts.map(dc =>
+      `<td style="padding:2px 3px;text-align:center;font-size:10px;color:#374151">${dc.regular}</td>`
+    ).join('')
+    const dispatchCells = dailyCounts.map(dc =>
+      `<td style="padding:2px 3px;text-align:center;font-size:10px;color:${dc.dispatch>0?'#ea580c':'#d1d5db'}">${dc.dispatch||'-'}</td>`
+    ).join('')
+    const parttimeCells = dailyCounts.map(dc =>
+      `<td style="padding:2px 3px;text-align:center;font-size:10px;color:${dc.parttime>0?'#db2777':'#d1d5db'}">${dc.parttime||'-'}</td>`
+    ).join('')
+    const diffCells = dailyCounts.map(dc => {
+      const diff = dc.total - requiredCount
+      const c = diff<0?'#dc2626':diff>0?'#2563eb':'#16a34a'
+      return `<td style="padding:2px 3px;text-align:center;font-size:10px;font-weight:600;color:${c}">${diff>0?'+'+diff:diff===0?'±0':diff}</td>`
+    }).join('')
+
+    dailyStaffHtml = `
+    <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+        <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-users" style="margin-right:5px;color:#16a34a"></i>일별 인력 현황 <span style="font-size:10px;color:#6b7280;font-weight:400">(기준: ${requiredCount}명)</span></div>
+        <div style="display:flex;gap:8px;font-size:10px">
+          <span style="color:#dc2626"><i class="fas fa-circle" style="font-size:7px;margin-right:3px"></i>부족 ${shortageDays}일</span>
+          <span style="color:#16a34a"><i class="fas fa-circle" style="font-size:7px;margin-right:3px"></i>정상 ${normalDays}일</span>
+          <span style="color:#2563eb"><i class="fas fa-circle" style="font-size:7px;margin-right:3px"></i>과다 ${overDays}일</span>
+        </div>
+      </div>
+      <div style="padding:8px 12px;background:#f8fafc;display:flex;gap:12px;font-size:10px;flex-wrap:wrap">
+        <span>평균 <strong style="color:#374151">${avgTotal}명</strong></span>
+        <span>최대 <strong style="color:#2563eb">${maxTotal}명</strong></span>
+        <span>최소 <strong style="color:#dc2626">${minTotal}명</strong></span>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#f1f5f9"><th style="padding:4px 8px;text-align:left;font-size:10px;color:#6b7280;white-space:nowrap;min-width:56px">구분</th>${dayHeaders}</tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:3px 8px;font-size:10px;font-weight:700;color:#374151;white-space:nowrap;background:#fafafa">합계</td>${totalCells}
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:3px 8px;font-size:10px;color:#374151;white-space:nowrap;background:#fafafa">기준대비</td>${diffCells}
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:3px 8px;font-size:10px;color:#374151;white-space:nowrap;background:#fafafa">정규</td>${regularCells}
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:3px 8px;font-size:10px;color:#ea580c;white-space:nowrap;background:#fafafa">파출</td>${dispatchCells}
+            </tr>
+            <tr>
+              <td style="padding:3px 8px;font-size:10px;color:#db2777;white-space:nowrap;background:#fafafa">알바</td>${parttimeCells}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`
+  } else {
+    dailyStaffHtml = `
+    <div style="background:#f8fafc;border-radius:12px;border:1px dashed #d1d5db;padding:12px;display:flex;align-items:center;gap:10px">
+      <i class="fas fa-users" style="color:#9ca3af;font-size:18px"></i>
+      <div>
+        <div style="font-size:12px;font-weight:600;color:#6b7280">일별 인력 현황 분석 비활성화</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px">근무설정에서 <strong>일일 기준(목표) 근무인원</strong>을 입력하면 날짜별 인력 현황 및 기준 대비 분석을 확인할 수 있습니다.</div>
+      </div>
+    </div>`
+  }
+
+  // ── 주별 인력 안정성 요약 ──────────────────────────────────────
+  const weekCount2 = Math.ceil(days/7)
+  const weeklyData = Array.from({length:weekCount2}, (_,wk) => {
+    const wkDays = dailyCounts.filter(dc => Math.floor((dc.d-1)/7) === wk)
+    const avg = wkDays.length ? (wkDays.reduce((a,dc)=>a+dc.total,0)/wkDays.length) : 0
+    const max = Math.max(...wkDays.map(dc=>dc.total), 0)
+    const min = Math.min(...wkDays.map(dc=>dc.total), 0)
+    const variance = wkDays.length ? wkDays.reduce((a,dc)=>a+Math.pow(dc.total-avg,2),0)/wkDays.length : 0
+    const dispatchSum = wkDays.reduce((a,dc)=>a+dc.dispatch,0)
+    const parttimeSum = wkDays.reduce((a,dc)=>a+dc.parttime,0)
+    const shortage = wkDays.filter(dc=>dc.status==='shortage').length
+    return { wk:wk+1, avg:avg.toFixed(1), max, min, stddev:Math.sqrt(variance).toFixed(1), dispatchSum, parttimeSum, shortage }
+  })
+
+  const weeklyTableRows = weeklyData.map(w => {
+    const shortageCell = w.shortage > 0
+      ? `<td style="padding:4px 6px;text-align:center;font-size:11px;color:#dc2626;font-weight:700">${w.shortage}일</td>`
+      : `<td style="padding:4px 6px;text-align:center;font-size:11px;color:#16a34a">없음</td>`
+    return `<tr style="border-bottom:1px solid #f3f4f6">
+      <td style="padding:4px 8px;font-size:11px;font-weight:600;color:#374151">${w.wk}주</td>
+      <td style="padding:4px 6px;text-align:center;font-size:11px;font-weight:700;color:#374151">${w.avg}</td>
+      <td style="padding:4px 6px;text-align:center;font-size:11px;color:#2563eb">${w.max}</td>
+      <td style="padding:4px 6px;text-align:center;font-size:11px;color:#dc2626">${w.min}</td>
+      <td style="padding:4px 6px;text-align:center;font-size:11px;color:#6b7280">${w.stddev}</td>
+      ${shortageCell}
+      <td style="padding:4px 6px;text-align:center;font-size:11px;color:${w.dispatchSum>0?'#ea580c':'#d1d5db'}">${w.dispatchSum||'-'}</td>
+      <td style="padding:4px 6px;text-align:center;font-size:11px;color:${w.parttimeSum>0?'#db2777':'#d1d5db'}">${w.parttimeSum||'-'}</td>
+    </tr>`
+  }).join('')
+
+  const weeklyStabilityHtml = `
+  <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
+    <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6">
+      <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-chart-line" style="margin-right:5px;color:#6366f1"></i>주별 인력 안정성 요약</div>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead>
+          <tr style="background:#f8fafc;border-bottom:1px solid #e5e7eb">
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#374151">주차</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#374151">평균</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#2563eb">최대</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#dc2626">최소</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#6b7280">편차</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#dc2626">부족일</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#ea580c">파출</th>
+            <th style="padding:4px 6px;text-align:center;font-size:10px;color:#db2777">알바</th>
+          </tr>
+        </thead>
+        <tbody>${weeklyTableRows}</tbody>
+      </table>
+    </div>
+  </div>`
+
   panel.innerHTML = `
-    <!-- 경고 -->
+    <!-- ① 일별 인력 현황 (기준인원 대비) -->
+    ${dailyStaffHtml}
+
+    <!-- ② 주별 인력 안정성 요약 -->
+    ${weeklyStabilityHtml}
+
+    <!-- ③ 경고 -->
     <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:12px">
       <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px"><i class="fas fa-exclamation-triangle" style="margin-right:5px;color:#f59e0b"></i>근무 경고 사항</div>
       <div style="display:flex;flex-direction:column;gap:5px">${warnHtml}</div>
     </div>
 
-    <!-- 주차별 근무시간 차트 -->
+    <!-- ④ 주차별 근무시간 차트 -->
     <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:12px">
       <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-calendar-week" style="margin-right:5px;color:#2563eb"></i>주차별 총 근무시간 합계 (전 직원)</div>
       <div style="display:flex;gap:8px;align-items:flex-end;height:70px;padding:0 4px">${wkBarHtml}</div>
       <div style="margin-top:6px;font-size:10px;color:#9ca3af;text-align:right">전체 총 근무시간: <strong style="color:#374151">${totalAllHrs.toFixed(1)}h</strong> · 평균: <strong style="color:#374151">${avgHrs}h</strong></div>
     </div>
 
-    <!-- 직원별 근무시간 분석 테이블 (예상급여는 운영진 전용 → 이 화면에서 제외) -->
+    <!-- ⑤ 직원별 근무시간 분석 테이블 (예상급여는 운영진 전용 → 이 화면에서 제외) -->
     <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
       <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6">
         <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-table" style="margin-right:5px;color:#166534"></i>직원별 근무시간 분석</div>
@@ -13699,6 +13881,85 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
   const riskColor = riskLevel==='high'?'#ef4444':riskLevel==='medium'?'#f59e0b':'#16a34a'
   const riskLabel = riskLevel==='high'?'⚠ 과부하 위험 높음':riskLevel==='medium'?'△ 주의 필요':'✔ 정상 범위'
 
+  // ── 기준인원 기반 인력 안정성 분석 ────────────────────────────
+  const ws_exec = scheduleWorkSettings || {}
+  const requiredExec = parseInt(ws_exec.required_staff_count || '0')
+  // 일별 총 근무인원 (정규+파출+알바)
+  const execDailyCounts = []
+  for(let d=1; d<=days; d++) {
+    const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    let regular=0, dispatch2=0, parttime2=0
+    for(const emp of emps) {
+      const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
+      if(code && code !== '-' && !REST_CODES.has(code)) regular++
+    }
+    for(const w of extWorkers) {
+      const entry2 = extSchedMap[`${w.id}_${ds}`]
+      if(entry2 && (entry2.shift_type || entry2.shift_code)) {
+        if(w.worker_type === 'dispatch') dispatch2++
+        else parttime2++
+      }
+    }
+    const total2 = regular + dispatch2 + parttime2
+    execDailyCounts.push({ d, ds, total: total2, regular, dispatch: dispatch2, parttime: parttime2 })
+  }
+  const execShortageDays = requiredExec > 0 ? execDailyCounts.filter(dc => dc.total < requiredExec * 0.9).length : 0
+  const execOverDays     = requiredExec > 0 ? execDailyCounts.filter(dc => dc.total > requiredExec * 1.1).length : 0
+  const execNormalDays   = requiredExec > 0 ? execDailyCounts.filter(dc => dc.total >= requiredExec*0.9 && dc.total <= requiredExec*1.1).length : 0
+  const execAvgTotal     = execDailyCounts.length ? execDailyCounts.reduce((a,dc)=>a+dc.total,0)/execDailyCounts.length : 0
+  const shortageDateList = requiredExec > 0
+    ? execDailyCounts.filter(dc => dc.total < requiredExec * 0.9).map(dc => {
+        const dow = new Date(dc.ds).getDay()
+        const diff = dc.total - requiredExec
+        return `<span style="display:inline-flex;align-items:center;gap:3px;background:#fff1f2;border:1px solid #fecaca;border-radius:5px;padding:2px 7px;font-size:10px;font-weight:600;color:#b91c1c">${month}/${dc.d}(${['일','월','화','수','목','금','토'][dow]}) ${diff}</span>`
+      }).join('')
+    : ''
+
+  // 인력 안정성 점수: 부족/과다일수 기반 (90~110%=안정=100점, 편차 5점씩 감점)
+  let stabilityScore = 100
+  let stabilityLabel = '안정', stabilityColor = '#16a34a', stabilityBg = 'linear-gradient(135deg,#166534,#15803d)'
+  if(requiredExec > 0) {
+    stabilityScore = Math.max(0, Math.round(100 - (execShortageDays * 6) - (execOverDays * 3)))
+    if(stabilityScore >= 90) { stabilityLabel='안정'; stabilityColor='#16a34a'; stabilityBg='linear-gradient(135deg,#166534,#15803d)' }
+    else if(stabilityScore >= 70) { stabilityLabel='주의'; stabilityColor='#f59e0b'; stabilityBg='linear-gradient(135deg,#92400e,#b45309)' }
+    else { stabilityLabel='위험'; stabilityColor='#ef4444'; stabilityBg='linear-gradient(135deg,#991b1b,#dc2626)' }
+  }
+
+  // 파출·알바 의존도 % (기준인원 대비)
+  const extDependencyPct = (requiredExec > 0 && days > 0)
+    ? ((dispatchDays + parttimeDays) / (requiredExec * days) * 100).toFixed(1)
+    : (totalWork > 0 ? ((extWorkDays / (totalWork + extWorkDays)) * 100).toFixed(1) : '0')
+
+  // ── 운영 평가 자동 생성 (룰 기반) ────────────────────────────
+  const evalItems = []
+  if(requiredExec > 0) {
+    if(execShortageDays === 0 && execOverDays === 0) {
+      evalItems.push({ type:'good', text:`전 기간 기준인원(${requiredExec}명) 충족 — 인력 운영 매우 안정적입니다.` })
+    } else {
+      if(execShortageDays > 0) evalItems.push({ type:'bad', text:`인력 부족일 ${execShortageDays}일 — 기준인원 90% 미달. 파출·알바 확충 또는 근무조 조정을 검토하세요.` })
+      if(execOverDays > 0)     evalItems.push({ type:'info', text:`인력 과다일 ${execOverDays}일 — 기준인원 110% 초과. 비용 효율성 개선 여지가 있습니다.` })
+    }
+  }
+  if(overloaded.length > 0) evalItems.push({ type:'bad', text:`과중 근무자 ${overloaded.length}명 (${overloaded.map(e=>e.name).join(', ')}) — 소진·이직 위험. 업무 재배분이 필요합니다.` })
+  if(underloaded.length > 0) evalItems.push({ type:'warn', text:`근무 부족 직원 ${underloaded.length}명 (${underloaded.map(e=>e.name).join(', ')}) — 급여 대비 활용도가 낮습니다.` })
+  if(extWorkDays > 0) {
+    const dep = parseFloat(extDependencyPct)
+    if(dep >= 20) evalItems.push({ type:'warn', text:`외부인력 의존도 ${extDependencyPct}% — 높은 편입니다. 정규직 충원을 검토하세요.` })
+    else evalItems.push({ type:'info', text:`외부인력 ${extDependencyPct}% 활용 — 적정 수준입니다.` })
+  }
+  if(empStats.some(e=>e.holidayWorkDays>2)) evalItems.push({ type:'warn', text:`공휴일 3일 이상 근무자 ${empStats.filter(e=>e.holidayWorkDays>2).map(e=>e.name).join(', ')} — 휴일수당 발생 여부를 확인하세요.` })
+  if(evalItems.length === 0) evalItems.push({ type:'good', text:'전반적으로 안정적인 인력 운영 상태입니다.' })
+
+  const evalHtml = evalItems.map(item => {
+    const bg = item.type==='good'?'#f0fdf4':item.type==='bad'?'#fff1f2':item.type==='warn'?'#fffbeb':'#eff6ff'
+    const border = item.type==='good'?'#bbf7d0':item.type==='bad'?'#fecaca':item.type==='warn'?'#fde68a':'#bfdbfe'
+    const color = item.type==='good'?'#166534':item.type==='bad'?'#b91c1c':item.type==='warn'?'#92400e':'#1e40af'
+    const icon = item.type==='good'?'fa-check-circle':item.type==='bad'?'fa-times-circle':item.type==='warn'?'fa-exclamation-triangle':'fa-info-circle'
+    return `<div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:8px 12px;font-size:11px;color:${color};display:flex;align-items:flex-start;gap:7px">
+      <i class="fas ${icon}" style="margin-top:1px;flex-shrink:0"></i><span>${item.text}</span>
+    </div>`
+  }).join('')
+
   // ── 직원별 근무일수 바 차트 ──────────────────────────────────
   const maxBarVal = Math.max(maxWork, 1)
   const empBars = empStats.sort((a,b)=>b.workDays-a.workDays).map(emp => {
@@ -13771,13 +14032,14 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
           <p style="font-size:10px;color:rgba(255,255,255,.75);margin:3px 0 0"><i class="fas fa-chart-bar" style="margin-right:4px"></i>전체 인력 운영 현황 · 경영진 의사결정 지원</p>
         </div>
         <button onclick="printExecutiveView()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>보고서 출력</button>
+        <button onclick="printMonthlyAnalysisReport()" style="padding:6px 12px;background:rgba(255,255,255,.15);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.25);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-file-alt" style="margin-right:4px"></i>월간 리포트</button>
       </div>
     </div>
 
     <div style="padding:14px;overflow-y:auto;max-height:72vh;display:flex;flex-direction:column;gap:12px">
 
       <!-- ① KPI 카드 행 -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px">
         <div style="background:linear-gradient(135deg,#166534,#15803d);color:white;border-radius:12px;padding:12px;text-align:center">
           <div style="font-size:26px;font-weight:900">${emps.length}</div>
           <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-users" style="margin-right:3px"></i>재직 직원</div>
@@ -13786,6 +14048,19 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
           <div style="font-size:26px;font-weight:900">${avgWorkStr}</div>
           <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-calendar-check" style="margin-right:3px"></i>평균 근무일</div>
         </div>
+        ${requiredExec > 0 ? `
+        <div style="background:${stabilityBg};color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:22px;font-weight:900">${stabilityScore}점</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-shield-alt" style="margin-right:3px"></i>인력 안정성<br><span style="font-weight:700">${stabilityLabel}</span></div>
+        </div>
+        <div style="background:linear-gradient(135deg,#dc2626,#ef4444);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${execShortageDays}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-arrow-down" style="margin-right:3px"></i>인력 부족일</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#1d4ed8,#3b82f6);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${execOverDays}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-arrow-up" style="margin-right:3px"></i>인력 과다일</div>
+        </div>` : `
         <div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:12px;padding:12px;text-align:center">
           <div style="font-size:26px;font-weight:900">${maxWork}</div>
           <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-arrow-up" style="margin-right:3px"></i>최대 근무일</div>
@@ -13793,14 +14068,14 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
         <div style="background:linear-gradient(135deg,#065f46,#047857);color:white;border-radius:12px;padding:12px;text-align:center">
           <div style="font-size:26px;font-weight:900">${minWork}</div>
           <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-arrow-down" style="margin-right:3px"></i>최소 근무일</div>
-        </div>
+        </div>`}
         <div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border-radius:12px;padding:12px;text-align:center">
           <div style="font-size:26px;font-weight:900">${extWorkers.length}</div>
           <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-user-tie" style="margin-right:3px"></i>외부인력</div>
         </div>
         <div style="background:linear-gradient(135deg,#9d174d,#be185d);color:white;border-radius:12px;padding:12px;text-align:center">
           <div style="font-size:26px;font-weight:900">${extWorkDays}</div>
-          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-briefcase" style="margin-right:3px"></i>외부 근무일수</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-briefcase" style="margin-right:3px"></i>외부 근무일수<br><span style="font-size:10px;font-weight:700">${extDependencyPct}%</span></div>
         </div>
       </div>
 
@@ -13830,13 +14105,26 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
         </div>
       </div>
 
-      <!-- ③ 경고 메시지 -->
+      <!-- ③ 인력 부족 발생일 목록 (기준인원 설정 시) -->
+      ${requiredExec > 0 && execShortageDays > 0 ? `
+      <div style="background:#fff8f8;border-radius:12px;padding:12px;border:1px solid #fecaca">
+        <div style="font-size:12px;font-weight:700;color:#b91c1c;margin-bottom:8px"><i class="fas fa-calendar-times" style="margin-right:5px"></i>인력 부족 발생일 (기준 ${requiredExec}명 대비 90% 미달)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${shortageDateList}</div>
+      </div>` : ''}
+
+      <!-- ④ 운영 평가 자동 생성 -->
+      <div style="background:#fafafa;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px"><i class="fas fa-clipboard-check" style="margin-right:5px;color:#7c3aed"></i>운영 평가 자동 생성</div>
+        <div style="display:flex;flex-direction:column;gap:5px">${evalHtml}</div>
+      </div>
+
+      <!-- ⑤ 경고 메시지 -->
       <div style="display:flex;flex-direction:column;gap:5px">
         <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:2px"><i class="fas fa-bell" style="margin-right:5px;color:#f59e0b"></i>운영 알림</div>
         ${warningHtml}
       </div>
 
-      <!-- ④ 직원별 근무일수 바 차트 -->
+      <!-- ⑥ 직원별 근무일수 바 차트 -->
       <div style="background:#f9fafb;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
         <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-users" style="margin-right:5px;color:#2563eb"></i>직원별 근무일수 (평균 ${avgWorkStr}일 기준)</div>
         <div style="position:relative">
@@ -13848,24 +14136,24 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
         </div>
       </div>
 
-      <!-- ⑤ 주차별 인력 분포 -->
+      <!-- ⑦ 주차별 인력 분포 -->
       <div style="background:#f9fafb;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
         <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-calendar-week" style="margin-right:5px;color:#6366f1"></i>주차별 근무 배치 (직원 총 근무일수 합계)</div>
         <div style="display:flex;gap:8px;align-items:flex-end;height:90px;padding:0 4px">${weekBars}</div>
       </div>
 
-      <!-- ⑥ 근무조 집중도 -->
+      <!-- ⑧ 근무조 집중도 -->
       ${topCodes.length ? `
       <div style="background:#f9fafb;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
         <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-layer-group" style="margin-right:5px;color:#7c3aed"></i>근무조별 집중도 (실근무 기준 ${totalShiftCount}회)</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px">${codeCards}</div>
       </div>` : ''}
 
-      <!-- ⑦ 파출/알바 사용 현황 -->
+      <!-- ⑨ 파출/알바 사용 현황 -->
       ${extWorkers.length ? `
       <div style="background:#fff7ed;border-radius:12px;padding:12px;border:1px solid #fed7aa">
         <div style="font-size:12px;font-weight:700;color:#9a3412;margin-bottom:8px"><i class="fas fa-people-carry" style="margin-right:5px"></i>외부 인력 사용 현황</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">
           <div style="text-align:center;padding:8px;background:white;border-radius:8px;border:1px solid #fed7aa">
             <div style="font-size:20px;font-weight:900;color:#ea580c">${dispatchWorkers.length}</div>
             <div style="font-size:10px;color:#9a3412">파출 인원</div>
@@ -13879,7 +14167,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
           <div style="text-align:center;padding:8px;background:white;border-radius:8px;border:1px solid #fde68a">
             <div style="font-size:20px;font-weight:900;color:#b45309">${extWorkDays}</div>
             <div style="font-size:10px;color:#92400e">총 외부 근무일</div>
-            <div style="font-size:11px;font-weight:700;color:#b45309">${totalWork>0?((extWorkDays/(totalWork+extWorkDays))*100).toFixed(0):0}% 비중</div>
+            <div style="font-size:11px;font-weight:700;color:#b45309">${extDependencyPct}% 의존도</div>
           </div>
         </div>
       </div>` : ''}
@@ -16084,6 +16372,24 @@ function renderWorkSettingsModal() {
                   <div class="text-xs text-gray-500">파출·알바 입력 및 비용 집계 활성화</div>
                 </div>
               </label>
+            </div>
+          </div>
+
+          <!-- 구분선 -->
+          <div class="border-t border-gray-100"></div>
+
+          <!-- 인력 운영 기준 -->
+          <div>
+            <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-users mr-1 text-green-600"></i>인력 운영 기준</h4>
+            <div class="p-3 bg-green-50 border border-green-100 rounded-xl space-y-3">
+              <div>
+                <label class="text-xs text-gray-600 font-medium">일일 기준(목표) 근무인원</label>
+                <div class="flex items-center gap-2 mt-1">
+                  <input type="number" id="ws_required_staff_count" class="form-input flex-1" min="0" max="200" placeholder="0 (미설정)">
+                  <span class="text-xs text-gray-500">명</span>
+                </div>
+                <p class="text-xs text-green-700 mt-1"><i class="fas fa-info-circle mr-1"></i>0 입력 시 기준인원 비교 기능이 비활성화됩니다. 영양사·운영진 뷰의 인력 현황 분석에 사용됩니다.</p>
+              </div>
             </div>
           </div>
         </div>
@@ -18662,6 +18968,325 @@ window.printExecutiveView = function() {
   printWin.document.close()
 }
 
+// ── 월간 분석 리포트 인쇄 (일별 인원표 + 안정성 + 파출/알바 분석 + 종합평가) ──
+window.printMonthlyAnalysisReport = function() {
+  const year  = App.currentYear
+  const month = App.currentMonth
+  const md    = scheduleMonthData
+  if (!md) { showToast('스케줄 데이터를 먼저 로드하세요', 'error'); return }
+
+  const sm         = md?.sched_map || {}
+  const emps       = scheduleEmployees || []
+  const shifts     = scheduleShifts || []
+  const extWorkers = (md?.ext_workers || md?.external_workers) || []
+  const extSchedMap= scheduleExtSchedMap || {}
+  const holidays   = md?.holidays || []
+  const ws_r       = scheduleWorkSettings || {}
+  const days       = new Date(year, month, 0).getDate()
+  const requiredR  = parseInt(ws_r.required_staff_count || '0')
+  const hospitalName = md?.hospital_name || ''
+  const REST_CODES_R = new Set(['연','휴','경조','병가'])
+  const DOW_LABELS = ['일','월','화','수','목','금','토']
+
+  // ── 일별 인원 집계 ──────────────────────────────────────────
+  const dailyReport = []
+  for(let d=1; d<=days; d++) {
+    const ds  = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    const dow = new Date(ds).getDay()
+    const isHol = (holidays || []).some(h => (h.date||h) === ds)
+    let regular=0, dispatch=0, parttime=0
+    for(const emp of emps) {
+      const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
+      if(code && code!=='-' && !REST_CODES_R.has(code)) regular++
+    }
+    for(const w of extWorkers) {
+      const entry = extSchedMap[`${w.id}_${ds}`]
+      if(entry && (entry.shift_type || entry.shift_code)) {
+        if(w.worker_type === 'dispatch') dispatch++
+        else parttime++
+      }
+    }
+    const total = regular + dispatch + parttime
+    let status = '', statusColor = '#374151'
+    if(requiredR > 0) {
+      const r = total / requiredR
+      if(r < 0.9) { status='부족'; statusColor='#dc2626' }
+      else if(r > 1.1) { status='과다'; statusColor='#2563eb' }
+      else { status='정상'; statusColor='#16a34a' }
+    }
+    dailyReport.push({ d, ds, dow, isHol, regular, dispatch, parttime, total, status, statusColor })
+  }
+
+  // ── 통계 집계 ───────────────────────────────────────────────
+  const totalArr  = dailyReport.map(r => r.total)
+  const avgTotal  = (totalArr.reduce((a,v)=>a+v,0)/days).toFixed(1)
+  const maxTotal  = Math.max(...totalArr)
+  const minTotal  = Math.min(...totalArr)
+  const variance2 = totalArr.reduce((a,v)=>a+Math.pow(v-parseFloat(avgTotal),2),0)/days
+  const stddev2   = Math.sqrt(variance2).toFixed(2)
+  const shortageDaysR = requiredR > 0 ? dailyReport.filter(r=>r.status==='부족').length : 0
+  const overDaysR     = requiredR > 0 ? dailyReport.filter(r=>r.status==='과다').length : 0
+
+  // ── 주별 외부인력 집계 ─────────────────────────────────────
+  const weekCount_r = Math.ceil(days/7)
+  const weeklyExt = Array.from({length:weekCount_r},(_,wk)=>{
+    const wkDays = dailyReport.filter(r=>Math.floor((r.d-1)/7)===wk)
+    return {
+      wk: wk+1,
+      dispatch: wkDays.reduce((a,r)=>a+r.dispatch,0),
+      parttime: wkDays.reduce((a,r)=>a+r.parttime,0),
+      avgTotal: wkDays.length ? (wkDays.reduce((a,r)=>a+r.total,0)/wkDays.length).toFixed(1) : '0'
+    }
+  })
+  const totalDispatchDays = dailyReport.reduce((a,r)=>a+r.dispatch,0)
+  const totalParttimeDays = dailyReport.reduce((a,r)=>a+r.parttime,0)
+  const totalExtDays      = totalDispatchDays + totalParttimeDays
+  const totalAllPersonDays= dailyReport.reduce((a,r)=>a+r.total,0)
+  const extPct = totalAllPersonDays > 0 ? ((totalExtDays/totalAllPersonDays)*100).toFixed(1) : '0'
+
+  // ── 인력 안정성 점수 ────────────────────────────────────────
+  let stabScore_r = 100
+  let stabLabel_r = '안정', stabColor_r = '#16a34a'
+  if(requiredR > 0) {
+    stabScore_r = Math.max(0, Math.round(100 - shortageDaysR*6 - overDaysR*3))
+    if(stabScore_r >= 90)      { stabLabel_r='안정'; stabColor_r='#16a34a' }
+    else if(stabScore_r >= 70) { stabLabel_r='주의'; stabColor_r='#f59e0b' }
+    else                       { stabLabel_r='위험'; stabColor_r='#ef4444' }
+  }
+
+  // ── 종합 평가 ───────────────────────────────────────────────
+  const evalR = []
+  if(requiredR > 0) {
+    if(shortageDaysR===0 && overDaysR===0) evalR.push({ t:'good', msg:`전 기간 기준인원(${requiredR}명) 충족 — 인력 운영 매우 안정적` })
+    else {
+      if(shortageDaysR>0) evalR.push({ t:'bad',  msg:`인력 부족 ${shortageDaysR}일 발생 — 기준인원 90% 미달. 파출·알바 확충 또는 근무조 조정 필요` })
+      if(overDaysR>0)     evalR.push({ t:'info', msg:`인력 과다 ${overDaysR}일 발생 — 기준인원 110% 초과. 비용 최적화 여지 있음` })
+    }
+  }
+  const dep_r = parseFloat(extPct)
+  if(dep_r >= 20)     evalR.push({ t:'warn', msg:`외부인력 의존도 ${extPct}% — 높은 편. 정규직 충원 검토 권장` })
+  else if(dep_r > 0)  evalR.push({ t:'good', msg:`외부인력 의존도 ${extPct}% — 적정 수준` })
+  if(evalR.length===0) evalR.push({ t:'good', msg:'전반적으로 안정적인 인력 운영 상태' })
+
+  // ── HTML 생성 ───────────────────────────────────────────────
+  // 일별 인원표 행
+  const dailyTableRows = dailyReport.map(r => {
+    const rowBg = r.dow===0||r.isHol ? '#fff8f8' : r.dow===6 ? '#f0f4ff' : (r.d%2===0?'#f9fafb':'white')
+    const dowColor = r.dow===0||r.isHol?'#dc2626':r.dow===6?'#2563eb':'#374151'
+    const totalCell = requiredR>0
+      ? `<td style="padding:3px 6px;text-align:center;font-size:11px;font-weight:700;color:${r.statusColor}">${r.total} <span style="font-size:9px">(${r.status})</span></td>`
+      : `<td style="padding:3px 6px;text-align:center;font-size:11px;font-weight:700;color:#374151">${r.total}</td>`
+    const diffCell = requiredR > 0
+      ? (() => { const diff=r.total-requiredR; const c=diff<0?'#dc2626':diff>0?'#2563eb':'#16a34a'; return `<td style="padding:3px 6px;text-align:center;font-size:11px;font-weight:600;color:${c}">${diff>0?'+'+diff:diff===0?'±0':diff}</td>` })()
+      : ''
+    return `<tr style="background:${rowBg};border-bottom:1px solid #e5e7eb">
+      <td style="padding:3px 6px;text-align:center;font-size:11px;font-weight:600;color:${dowColor}">${month}/${r.d}(${DOW_LABELS[r.dow]})</td>
+      ${totalCell}
+      ${diffCell}
+      <td style="padding:3px 6px;text-align:center;font-size:11px;color:#374151">${r.regular}</td>
+      <td style="padding:3px 6px;text-align:center;font-size:11px;color:${r.dispatch>0?'#ea580c':'#d1d5db'}">${r.dispatch||'-'}</td>
+      <td style="padding:3px 6px;text-align:center;font-size:11px;color:${r.parttime>0?'#db2777':'#d1d5db'}">${r.parttime||'-'}</td>
+    </tr>`
+  }).join('')
+
+  // 주별 외부인력 표 행
+  const weekExtRows = weeklyExt.map(w => `
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:4px 8px;font-size:11px;font-weight:600;color:#374151">${w.wk}주차</td>
+      <td style="padding:4px 8px;text-align:center;font-size:11px;font-weight:700;color:#374151">${w.avgTotal}명</td>
+      <td style="padding:4px 8px;text-align:center;font-size:11px;color:${w.dispatch>0?'#ea580c':'#d1d5db'}">${w.dispatch||'-'}</td>
+      <td style="padding:4px 8px;text-align:center;font-size:11px;color:${w.parttime>0?'#db2777':'#d1d5db'}">${w.parttime||'-'}</td>
+      <td style="padding:4px 8px;text-align:center;font-size:11px;color:#374151">${w.dispatch+w.parttime||'-'}</td>
+    </tr>`).join('')
+
+  // 종합평가 항목
+  const evalHtmlR = evalR.map(e => {
+    const bg=e.t==='good'?'#f0fdf4':e.t==='bad'?'#fff1f2':e.t==='warn'?'#fffbeb':'#eff6ff'
+    const border=e.t==='good'?'#bbf7d0':e.t==='bad'?'#fecaca':e.t==='warn'?'#fde68a':'#bfdbfe'
+    const color=e.t==='good'?'#166534':e.t==='bad'?'#b91c1c':e.t==='warn'?'#92400e':'#1e40af'
+    const icon=e.t==='good'?'✔':e.t==='bad'?'✖':e.t==='warn'?'△':'ℹ'
+    return `<div style="background:${bg};border:1px solid ${border};border-radius:7px;padding:8px 12px;font-size:11px;color:${color};margin-bottom:5px;display:flex;gap:7px">
+      <span style="flex-shrink:0;font-weight:700">${icon}</span><span>${e.msg}</span>
+    </div>`
+  }).join('')
+
+  // 일별 흐름 미니 막대차트 (CSS)
+  const maxBar = Math.max(...totalArr, 1)
+  const flowBars = dailyReport.map(r => {
+    const h = Math.round((r.total/maxBar)*60)
+    const c = r.status==='부족'?'#ef4444':r.status==='과다'?'#3b82f6':'#22c55e'
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;flex:1;min-width:0">
+      <div style="width:100%;background:#e5e7eb;border-radius:2px;height:60px;display:flex;align-items:flex-end">
+        <div style="width:100%;background:${c};height:${Math.max(h,2)}px;border-radius:2px"></div>
+      </div>
+      <div style="font-size:6px;color:#9ca3af;transform:rotate(-60deg);transform-origin:top;margin-top:2px;white-space:nowrap">${r.d}</div>
+    </div>`
+  }).join('')
+
+  const printWin2 = window.open('', '_blank', 'width=1000,height=1400')
+  if (!printWin2) { showToast('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요', 'error'); return }
+
+  printWin2.document.write(`<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${year}년 ${month}월 월간 인력 분석 리포트</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic','Apple SD Gothic Neo',sans-serif;background:white;color:#1f2937;font-size:12px}
+    .page{width:210mm;min-height:297mm;padding:14mm 12mm;margin:0 auto;background:white}
+    h2{font-size:18px;font-weight:900}
+    section{margin-bottom:16px;break-inside:avoid}
+    .section-title{font-size:12px;font-weight:700;color:#374151;margin-bottom:8px;padding-bottom:5px;border-bottom:2px solid #e5e7eb;display:flex;align-items:center;gap:5px}
+    table{width:100%;border-collapse:collapse}
+    th{background:#f1f5f9;padding:5px 6px;font-size:10px;color:#374151;font-weight:700;text-align:center}
+    td{padding:3px 5px;border-bottom:1px solid #f3f4f6;font-size:11px}
+    .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+    .stat-card{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center}
+    .stat-num{font-size:22px;font-weight:900}
+    .stat-lbl{font-size:10px;color:#6b7280;margin-top:2px}
+    .no-print{display:none!important}
+    @media print{
+      body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .page{padding:8mm 8mm}
+      .no-print{display:none!important}
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- 헤더 -->
+  <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);border-radius:12px;padding:14px 18px;margin-bottom:16px;color:white">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between">
+      <div>
+        <div style="font-size:10px;opacity:.7;letter-spacing:1px;margin-bottom:3px">STAFFING ANALYSIS REPORT</div>
+        <h2>${year}년 ${month}월 월간 인력 분석 리포트</h2>
+        ${hospitalName ? `<div style="font-size:11px;opacity:.8;margin-top:3px">${hospitalName}</div>` : ''}
+      </div>
+      <div style="text-align:right;font-size:11px;opacity:.8">
+        <div>출력일: ${new Date().toLocaleDateString('ko-KR')}</div>
+        ${requiredR > 0 ? `<div style="margin-top:3px">기준인원: <strong>${requiredR}명</strong></div>` : ''}
+      </div>
+    </div>
+  </div>
+
+  <!-- ① 핵심 통계 요약 -->
+  <section>
+    <div class="section-title">① 핵심 통계 요약</div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-num" style="color:#2563eb">${avgTotal}</div>
+        <div class="stat-lbl">일평균 근무인원</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:#2563eb">${maxTotal}</div>
+        <div class="stat-lbl">최대 인원</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:#dc2626">${minTotal}</div>
+        <div class="stat-lbl">최소 인원</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:#6b7280">${stddev2}</div>
+        <div class="stat-lbl">일별 표준편차</div>
+      </div>
+      ${requiredR > 0 ? `
+      <div class="stat-card">
+        <div class="stat-num" style="color:${stabColor_r}">${stabScore_r}점</div>
+        <div class="stat-lbl">인력 안정성 점수 (${stabLabel_r})</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:#dc2626">${shortageDaysR}</div>
+        <div class="stat-lbl">인력 부족일 수</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:#2563eb">${overDaysR}</div>
+        <div class="stat-lbl">인력 과다일 수</div>
+      </div>` : ''}
+      <div class="stat-card">
+        <div class="stat-num" style="color:#ea580c">${extPct}%</div>
+        <div class="stat-lbl">외부인력 의존도</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ② 일별 인원 흐름 차트 -->
+  <section>
+    <div class="section-title">② 일별 인원 흐름</div>
+    ${requiredR > 0 ? `<div style="font-size:10px;color:#6b7280;margin-bottom:5px;display:flex;gap:10px">
+      <span style="color:#ef4444">■ 부족(&lt;기준 90%)</span>
+      <span style="color:#22c55e">■ 정상</span>
+      <span style="color:#3b82f6">■ 과다(&gt;기준 110%)</span>
+      ${requiredR>0?`<span style="color:#374151">기준: ${requiredR}명</span>`:''}
+    </div>` : ''}
+    <div style="display:flex;gap:2px;align-items:flex-end;padding:4px 0 8px">${flowBars}</div>
+  </section>
+
+  <!-- ③ 일별 인원 상세 표 -->
+  <section style="break-before:auto">
+    <div class="section-title">③ 일별 인원 상세 표</div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>날짜</th>
+            <th>합계</th>
+            ${requiredR>0?`<th>기준대비</th>`:''}
+            <th>정규</th>
+            <th style="color:#ea580c">파출</th>
+            <th style="color:#db2777">알바</th>
+          </tr>
+        </thead>
+        <tbody>${dailyTableRows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ④ 외부인력 분석 -->
+  <section>
+    <div class="section-title">④ 외부인력(파출·알바) 분석</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:5px">월간 외부인력 사용 요약</div>
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;color:#9a3412">파출 총 사용일</span><strong style="color:#ea580c">${totalDispatchDays}일</strong></div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;color:#9a3412">알바 총 사용일</span><strong style="color:#db2777">${totalParttimeDays}일</strong></div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;color:#9a3412">외부인력 총 합계</span><strong style="color:#b45309">${totalExtDays}일</strong></div>
+          <div style="display:flex;justify-content:space-between"><span style="font-size:11px;color:#9a3412">전체 대비 비중</span><strong style="color:#b45309">${extPct}%</strong></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:5px">주별 외부인력 현황</div>
+        <table>
+          <thead><tr><th>주차</th><th>평균인원</th><th style="color:#ea580c">파출</th><th style="color:#db2777">알바</th><th>소계</th></tr></thead>
+          <tbody>${weekExtRows}</tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ⑤ 종합 평가 -->
+  <section>
+    <div class="section-title">⑤ 종합 평가 및 개선 제안</div>
+    ${evalHtmlR}
+  </section>
+
+  <!-- 푸터 -->
+  <div style="margin-top:20px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;font-size:10px;color:#9ca3af">
+    <span>Re&H Hospital Meal Management System</span>
+    <span>${year}년 ${month}월 월간 인력 분석 리포트</span>
+  </div>
+
+</div>
+<script>
+  window.onload = function() { setTimeout(function() { window.print(); }, 800) }
+<\/script>
+</body>
+</html>`)
+  printWin2.document.close()
+}
+
 // ── 파출/알바 근무유형 행 삭제 ────────────────────────────────
 window.deleteExtShiftRow = (idx) => {
   const row = document.getElementById(`extShiftRow_${idx}`)
@@ -18745,6 +19370,7 @@ window.openWorkSettingsModal = async () => {
   setVal('ws_weekly_max_hours',        ws.weekly_max_hours        ?? '52')
   setVal('ws_consecutive_max_days',    ws.consecutive_max_days    ?? '6')
   setVal('ws_leave_cluster_threshold', ws.leave_cluster_threshold ?? '3')
+  setVal('ws_required_staff_count',    ws.required_staff_count    ?? '0')
   setChk('ws_legal_warning_enabled',   ws.legal_warning_enabled   ?? '1')
   setChk('ws_ot_cost_enabled',         ws.ot_cost_enabled         ?? '1')
   setChk('ws_dispatch_enabled',        ws.dispatch_enabled        ?? '1')
@@ -18768,6 +19394,7 @@ window.saveWorkSettings = async () => {
     weekly_max_hours:        getVal('ws_weekly_max_hours'),
     consecutive_max_days:    getVal('ws_consecutive_max_days'),
     leave_cluster_threshold: getVal('ws_leave_cluster_threshold'),
+    required_staff_count:    getVal('ws_required_staff_count') || '0',
     legal_warning_enabled:   getChk('ws_legal_warning_enabled'),
     ot_cost_enabled:         getChk('ws_ot_cost_enabled'),
     dispatch_enabled:        getChk('ws_dispatch_enabled'),
@@ -19686,6 +20313,13 @@ async function _flushSave() {
         }).catch(()=>null)
       : Promise.resolve()
   ])
+  // 저장 완료 후 관리자 패널 자동 재계산 (일별 인력 현황 즉시 반영)
+  if (_schedViewMode === 'admin') {
+    clearTimeout(window._adminPanelReloadTimer)
+    window._adminPanelReloadTimer = setTimeout(() => {
+      try { renderAdminSummaryPanel() } catch(e) { console.warn('[_flushSave] adminPanel 재계산 오류:', e) }
+    }, 400)
+  }
 }
 
 // ── 내부용: undo 스택에 push하지 않는 순수 적용 ──────────────

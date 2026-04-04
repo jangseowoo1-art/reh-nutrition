@@ -2142,6 +2142,8 @@ const DEFAULT_WORK_SETTINGS: Record<string, string> = {
   legal_warning_enabled:    '1',
   ot_cost_enabled:          '1',
   dispatch_enabled:         '1',
+  // 인력 운영 기준
+  required_staff_count:     '0',   // 일일 기준(목표) 근무인원 (0=미설정)
   // 휴무 부여 방식: 'weekly5' (주5일제, 기본) | 'cycle' (순환근무) | 'custom' (수동)
   off_grant_type:           'weekly5',
   // 순환근무 패턴 (off_grant_type='cycle' 일 때 사용)
