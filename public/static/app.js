@@ -859,6 +859,7 @@ async function renderDashboard() {
       class="text-sm border border-blue-200 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-blue-300 focus:outline-none">
       ${App._adminHospitals.map(h => `<option value="${h.id}" ${h.id==App.adminHospitalId?'selected':''}>${h.name}</option>`).join('')}
     </select>
+  </div>` : ''
 
   content.innerHTML = `
   ${adminHospitalBar}
