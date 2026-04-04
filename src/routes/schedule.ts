@@ -771,9 +771,14 @@ schedule.get('/team-public/:token', async (c) => {
   const lastDay  = new Date(year, month, 0).getDate()
   const toDate   = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`
 
-  // 활성 직원 목록
+  // 활성 직원 목록 (position_name 포함)
   const empRows = await c.env.DB.prepare(
-    `SELECT id, name, position, team FROM employees WHERE hospital_id=? AND is_active=1 ORDER BY team, sort_order, name`
+    `SELECT e.id, e.name, e.position, e.team,
+            COALESCE(p.name, e.position) as position_name
+     FROM employees e
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE e.hospital_id=? AND e.is_active=1
+     ORDER BY e.team, COALESCE(p.sort_order,999), e.hire_date, e.name`
   ).bind(hid).all<any>()
   const employees = empRows.results || []
 
@@ -784,6 +789,7 @@ schedule.get('/team-public/:token', async (c) => {
      WHERE ds.hospital_id=? AND ds.work_date>=? AND ds.work_date<=?`
   ).bind(hid, fromDate, toDate).all<any>()
 
+  // schedMap: { empId: { 'YYYY-MM-DD': shiftCode } }
   const schedMap: Record<string, Record<string, string>> = {}
   ;(schedRows.results || []).forEach((r: any) => {
     if (!schedMap[r.employee_id]) schedMap[r.employee_id] = {}
@@ -792,8 +798,13 @@ schedule.get('/team-public/:token', async (c) => {
 
   // 근무조 색상
   const shifts = await c.env.DB.prepare(
-    `SELECT shift_code, shift_name, color FROM schedule_shifts WHERE hospital_id=? AND is_active=1`
+    `SELECT shift_code, shift_name, color FROM schedule_shifts WHERE hospital_id=? AND is_active=1 ORDER BY sort_order`
   ).bind(hid).all<any>()
+
+  // 공휴일
+  const holRows = await c.env.DB.prepare(
+    `SELECT holiday_date as date, name FROM holidays WHERE holiday_date LIKE ? ORDER BY holiday_date`
+  ).bind(`${year}-${mm}-%`).all<any>()
 
   return c.json({
     hospital: { name: tokenRow.hospital_name },
@@ -801,6 +812,7 @@ schedule.get('/team-public/:token', async (c) => {
     employees,
     schedMap,
     shifts: shifts.results || [],
+    holidays: holRows.results || [],
   })
 })
 

@@ -621,7 +621,7 @@ load()
 </html>`
 }
 
-// ── 전체 팀 스케줄 공유 페이지 (직원 공유 뷰) ─────────────────
+// ── 전체 팀 스케줄 공유 페이지 (직원 공유 뷰 완전 동일) ─────
 function getTeamSchedulePage(token: string): string {
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -633,85 +633,85 @@ function getTeamSchedulePage(token: string): string {
 <link href="/static/fontawesome.min.css" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f4ff;font-size:12px;}
-.page-header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;padding:12px 16px;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.2);}
-.page-header h1{font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;}
-.page-header .sub{font-size:11px;opacity:.75;margin-top:3px;display:flex;align-items:center;gap:12px;}
-.month-bar{display:flex;align-items:center;gap:8px;background:white;padding:8px 14px;border-bottom:2px solid #e5e7eb;}
-.month-bar button.nav-btn{width:28px;height:28px;border:1px solid #d1d5db;border-radius:6px;background:white;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;}
-.month-bar button.nav-btn:hover{background:#f3f4f6;}
-.month-label{flex:1;text-align:center;font-weight:800;font-size:14px;color:#1e3a8a;}
-.btn-print{padding:5px 12px;background:#1e3a8a;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:5px;}
-.btn-print:hover{background:#1e40af;}
-.legend-bar{display:flex;flex-wrap:wrap;gap:6px;padding:7px 14px;background:white;border-bottom:1px solid #e5e7eb;font-size:10px;}
-.leg{display:flex;align-items:center;gap:3px;}
-.leg-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0;}
-.scroll-wrap{overflow-x:auto;overflow-y:visible;padding-bottom:32px;}
-/* 팀 섹션 */
-.team-section{margin:10px 10px 0;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);}
-.team-header{padding:8px 12px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:8px;}
-.team-badge-label{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:800;}
-.team-count{font-size:10px;opacity:.7;font-weight:500;}
-/* 테이블 */
-table{border-collapse:collapse;font-size:10.5px;width:100%;}
-th.name-th,td.name-td{position:sticky;left:0;z-index:20;min-width:88px;max-width:110px;background:white;border-right:2px solid #d1d5db;padding:0 8px;white-space:nowrap;}
-th.name-th{z-index:30;color:white;text-align:left;padding:5px 8px;}
-td.name-td{font-weight:700;color:#1e293b;vertical-align:middle;}
-td.name-td .emp-name{font-size:11px;font-weight:800;display:block;}
-td.name-td .emp-pos{font-size:9px;color:#94a3b8;font-weight:400;display:block;margin-top:1px;}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;font-size:12px;}
+.page-wrap{max-width:1600px;margin:0 auto;padding:14px 14px 32px;}
+/* 헤더 */
+.pg-header{background:linear-gradient(135deg,#1e40af,#2563eb);border-radius:16px 16px 0 0;padding:14px 18px 10px;}
+.pg-header h1{font-size:17px;font-weight:900;color:white;margin:0;}
+.pg-header .sub{font-size:10px;color:rgba(255,255,255,.75);margin:3px 0 0;}
+.pg-header .actions{display:flex;gap:6px;margin-top:10px;}
+.pg-header .actions button{padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;}
+.pg-header .actions button:hover{background:rgba(255,255,255,.3);}
+/* 범례 */
+.legend-box{padding:8px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;}
+.legend-inner{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.leg-tag{font-size:10px;font-weight:700;color:#374151;margin-right:2px;}
+.leg-badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:18px;border-radius:4px;font-size:9px;font-weight:800;}
+.leg-item{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#374151;}
+/* 테이블 영역 */
+.tbl-scroll{overflow-x:auto;max-height:68vh;}
+table.sched-tbl{width:100%;border-collapse:collapse;font-size:11px;}
+/* 이름 고정 셀 */
+.name-td{padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;z-index:5;border-right:4px solid var(--gc,#2563eb);}
+.name-td .emp-name{font-size:12px;font-weight:800;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.name-td .emp-pos{font-size:9px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* 날짜 헤더 */
+th.date-th{padding:2px 0;min-width:26px;text-align:center;font-size:9px;border-left:1px solid #e2e8f0;font-weight:800;}
+th.date-th .dn{font-size:10px;font-weight:800;}
+th.date-th .dd{font-size:9px;}
+/* 통계 헤더 */
+th.stat-hd{padding:3px 4px;min-width:34px;text-align:center;font-size:9px;color:#64748b;border-left:2px solid #e2e8f0;background:#f8fafc;}
+th.stat-hd.sum-hd{min-width:80px;text-align:left;padding:3px 6px;border-left:1px solid #e2e8f0;}
+/* 직원 행 날짜 셀 */
+td.day-td{padding:2px 1px;text-align:center;min-width:26px;vertical-align:middle;}
+/* 통계 셀 */
+td.work-td{padding:3px 4px;text-align:center;min-width:34px;border-left:2px solid #e2e8f0;background:#f8fafc;white-space:nowrap;}
+td.off-td{padding:3px 4px;text-align:center;min-width:34px;border-left:1px solid #e2e8f0;background:#f8fafc;white-space:nowrap;}
+td.sum-td{padding:3px 6px;min-width:80px;border-left:1px solid #e2e8f0;background:#f9fafb;}
+/* 그룹 헤더 */
+tr.grp-hdr td{padding:0;}
+.grp-title{border-top:3px solid var(--gc,#2563eb);border-bottom:1px solid #e2e8f0;padding:5px 14px;display:flex;align-items:center;gap:8px;background:white;}
 /* 날짜 헤더 행 */
-tr.date-hdr-row th{background:#334155;color:white;padding:4px 2px;text-align:center;font-size:10px;font-weight:700;min-width:28px;border-right:1px solid rgba(255,255,255,.1);}
-tr.date-hdr-row th.sun-h{background:#991b1b;}
-tr.date-hdr-row th.sat-h{background:#1d4ed8;}
-tr.date-hdr-row th.hol-h{background:#991b1b;}
-tr.date-hdr-row th.today-h{background:#d97706;}
-tr.date-hdr-row th.stat-th{background:#1e293b;min-width:38px;font-size:9px;}
+tr.date-hdr-row{background:#f8fafc;border-top:2px solid var(--gc,#2563eb);}
+tr.date-hdr-row th.name-th{padding:5px 10px;text-align:left;min-width:90px;position:sticky;left:0;background:#f8fafc;z-index:15;font-size:11px;font-weight:800;border-right:4px solid var(--gc,#2563eb);}
 /* 직원 행 */
-tr.emp-row{border-bottom:1px solid #f1f5f9;}
-tr.emp-row:hover{background:#f0f9ff;}
-tr.emp-row td{padding:3px 2px;text-align:center;border-right:1px solid #f1f5f9;vertical-align:middle;height:32px;}
-tr.emp-row td.sun-cell{background:#fff8f8;}
-tr.emp-row td.today-cell{background:#fffbeb;}
-/* 뱃지 */
-.badge{display:inline-flex;align-items:center;justify-content:center;width:26px;height:20px;border-radius:4px;font-size:9px;font-weight:800;line-height:1;}
-.badge-empty{color:#e2e8f0;}
-.badge-sun{color:#fca5a5;font-size:8px;}
-/* 통계 */
-td.stat-td{font-weight:700;font-size:10px;color:#374151;background:#f8fafc;border-left:1px solid #e2e8f0;padding:2px 4px;vertical-align:middle;}
-td.stat-td .sv{font-size:12px;font-weight:800;color:#1e3a8a;display:block;text-align:center;}
-td.stat-td .sl{font-size:8px;color:#94a3b8;display:block;text-align:center;}
-td.stat-td .code-chips{display:flex;flex-wrap:wrap;gap:2px;justify-content:center;}
-td.stat-td .chip{font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700;}
+tr.emp-row{border-bottom:1px solid #e2e8f0;}
+tr.emp-row:hover td{filter:brightness(.97);}
+/* 하단 안내 */
+.footer-note{padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:10px;color:#64748b;display:flex;align-items:center;gap:6px;border-radius:0 0 16px 16px;}
 /* 로딩/에러 */
 .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;}
 .spinner{width:40px;height:40px;border:4px solid #dbeafe;border-top-color:#2563eb;border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .error-box{margin:20px;padding:20px;background:#fff1f2;border-radius:12px;text-align:center;color:#b91c1c;}
+/* 월 네비 */
+.month-nav-bar{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.15);border-radius:10px;padding:5px 10px;margin-top:8px;}
+.month-nav-bar button{width:24px;height:24px;border:1px solid rgba(255,255,255,.4);border-radius:6px;background:rgba(255,255,255,.15);color:white;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;}
+.month-nav-bar button:hover{background:rgba(255,255,255,.3);}
+.month-nav-bar .mlabel{flex:1;text-align:center;font-weight:800;font-size:13px;color:white;}
+/* 인쇄 */
 @media print{
-  .month-bar button,.btn-print{display:none!important;}
-  .page-header,.team-header{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-  tr.date-hdr-row th{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .pg-header .actions,.month-nav-bar{display:none!important;}
+  .pg-header{-webkit-print-color-adjust:exact;print-color-adjust:exact;border-radius:0;}
+  .grp-title,.tbl-scroll{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   body{background:white;}
-  .scroll-wrap{overflow:visible;}
-  .team-section{box-shadow:none;border:1px solid #e5e7eb;}
+  .tbl-scroll{overflow:visible;max-height:none;}
+  table.sched-tbl{font-size:8px;}
+  th,td{padding:2px 1px!important;}
+  @page{margin:8mm;size:A4 landscape;}
 }
+.emp-row:hover td{filter:brightness(.97);}
 </style>
 </head>
 <body>
-<div id="app">
-  <div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">근무표 불러오는 중...</p></div>
+<div class="page-wrap">
+  <div id="app">
+    <div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">근무표 불러오는 중...</p></div>
+  </div>
 </div>
 <script>
 const TOKEN = '${token}'
 let curY = new Date().getFullYear(), curM = new Date().getMonth()+1
-
-const KR_HOLIDAYS = {
-  '01-01':1,'03-01':1,'05-05':1,'06-06':1,'08-15':1,
-  '10-03':1,'10-09':1,'12-25':1
-}
-function isHol(m, d) {
-  return !!KR_HOLIDAYS[String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0')]
-}
 
 async function load() {
   document.getElementById('app').innerHTML = '<div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">불러오는 중...</p></div>'
@@ -724,164 +724,199 @@ async function load() {
   }
 }
 
-function shiftSt(code, shifts) {
-  if (!code) return null
-  const sf = shifts.find(s => s.shift_code === code)
-  if (sf && sf.color) return {bg:sf.color+'22',color:sf.color}
-  const m = {
-    '연':{bg:'#fef9c3',color:'#92400e'},
-    '휴':{bg:'#fee2e2',color:'#b91c1c'},
-    '경조':{bg:'#fce7f3',color:'#9d174d'},
-    'OT':{bg:'#ecfdf5',color:'#065f46'}
-  }
-  return m[code] || {bg:'#f3f4f6',color:'#374151'}
-}
+const REST_CODES = new Set(['연','휴','경조','병가'])
+const FIXED_LEGEND = [
+  {code:'연',label:'연차',color:'#f59e0b'},
+  {code:'휴',label:'휴무',color:'#ef4444'},
+  {code:'경조',label:'경조사',color:'#a855f7'},
+  {code:'OT',label:'초과근무',color:'#059669'}
+]
+const STAFF_GROUPS = [
+  {key:'nutritionist',label:'영양사',     icon:'fa-heartbeat', color:'#9d174d', filter:e=>e.team==='nutrition'||(e.position_name||e.position||'').includes('영양')},
+  {key:'chef',        label:'조리장/셰프',icon:'fa-crown',     color:'#92400e', filter:e=>e.team!=='nutrition'&&/(장|셰프|chef|수석|책임)/i.test(e.position_name||e.position||'')},
+  {key:'cook',        label:'조리사',     icon:'fa-utensils',  color:'#166534', filter:e=>e.team!=='nutrition'&&/(조리사)/.test(e.position_name||e.position||'')},
+  {key:'assistant',   label:'조리원',     icon:'fa-user-cog',  color:'#1e40af', filter:e=>e.team!=='nutrition'&&/(조리원)/.test(e.position_name||e.position||'')},
+  {key:'manager',     label:'매니저',     icon:'fa-user-tie',  color:'#5b21b6', filter:e=>e.team!=='nutrition'&&/(매니저|manager)/i.test(e.position_name||e.position||'')},
+  {key:'parttime',    label:'파트타이머', icon:'fa-user-clock',color:'#0e7490', filter:e=>e.team!=='nutrition'&&/(파트|part)/i.test(e.position_name||e.position||'')},
+  {key:'other',       label:'기타',       icon:'fa-users',     color:'#374151', filter:null}
+]
 
-const TEAM_CFG = {
-  'nutrition_manager':{label:'영양사',icon:'fa-star',color:'#b45309',bg:'#fef3c7',border:'#f59e0b'},
-  'cook':             {label:'조리/셰프',icon:'fa-crown',color:'#6d28d9',bg:'#ede9fe',border:'#8b5cf6'},
-  'assistant_cook':   {label:'조리사',icon:'fa-utensils',color:'#0369a1',bg:'#e0f2fe',border:'#0ea5e9'},
-  'helper':           {label:'조리원',icon:'fa-hands-helping',color:'#065f46',bg:'#d1fae5',border:'#10b981'},
-  'manager':          {label:'매니저',icon:'fa-user-tie',color:'#4338ca',bg:'#e0e7ff',border:'#6366f1'},
-  'default':          {label:'기타',icon:'fa-user',color:'#374151',bg:'#f3f4f6',border:'#9ca3af'}
+function getCodeBadge(code, isSun, isSat, isHoliday, shiftColorMap) {
+  if (!code || code==='-') return ''
+  let bg, fg
+  if (shiftColorMap[code]) {
+    bg = shiftColorMap[code]+'18'; fg = shiftColorMap[code]
+  } else {
+    const dm = {'연':'#854d0e,#fefce8','휴':'#991b1b,#fef2f2','경조':'#6b21a8,#fdf4ff','병가':'#3730a3,#eef2ff','OT':'#14532d,#f0fdf4'}
+    const parts = (dm[code]||'#1e293b,#f8fafc').split(',')
+    fg=parts[0]; bg=parts[1]
+  }
+  const isOff = REST_CODES.has(code)
+  const border = isHoliday&&!isOff ? 'border:1.5px solid '+fg+'66;' : ''
+  return '<span style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border-radius:5px;font-size:11px;font-weight:800;background:'+bg+';color:'+fg+';'+border+'">'+code+'</span>'
 }
-const TEAM_ORDER = ['nutrition_manager','cook','assistant_cook','helper','manager','default']
 
 function render(d) {
-  const {hospital, year, month, totalDays, employees, schedMap, shifts} = d
+  const {hospital, year, month, totalDays, employees, schedMap, shifts, holidays} = d
   document.title = hospital.name + ' ' + year + '년 ' + month + '월 전체 근무표'
 
-  const today = new Date()
-  const todayStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0')
+  const shiftColorMap = {}
+  shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
 
-  // 날짜 목록
-  const days = []
-  for(let day=1; day<=totalDays; day++){
-    const dow = new Date(year, month-1, day).getDay()
-    const hol = isHol(month, day)
-    const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
-    days.push({day, dow, hol, ds})
-  }
+  const holSet = new Set((holidays||[]).map(h => h.date||h))
+  const dayNames = ['일','월','화','수','목','금','토']
 
   // 팀별 그룹핑
-  const teamMap = {}
-  employees.forEach(emp => {
-    const pos = (emp.position||'').toLowerCase()
-    let team = 'default'
-    if (pos.includes('영양')) team = 'nutrition_manager'
-    else if (pos.includes('셰프')||pos.includes('책임')) team = 'cook'
-    else if (pos.includes('조리사')) team = 'assistant_cook'
-    else if (pos.includes('조리원')) team = 'helper'
-    else if (pos.includes('매니저')) team = 'manager'
-    else if (emp.team && emp.team in TEAM_CFG) team = emp.team
-    if (!teamMap[team]) teamMap[team] = []
-    teamMap[team].push(emp)
+  const assignedIds = new Set()
+  const staffGroups = []
+  STAFF_GROUPS.forEach(grp => {
+    const members = grp.filter
+      ? employees.filter(e => !assignedIds.has(e.id) && grp.filter(e))
+      : employees.filter(e => !assignedIds.has(e.id))
+    members.forEach(e => assignedIds.add(e.id))
+    if (members.length > 0) staffGroups.push({...grp, members})
   })
 
-  // 범례
-  const legend = shifts.filter(s=>s.shift_code).map(s=>{
-    const st = shiftSt(s.shift_code, shifts)
-    return '<div class="leg"><div class="leg-dot" style="background:'+st.bg+';border:1.5px solid '+st.color+'"></div><span>'+s.shift_code+(s.shift_name&&s.shift_name!==s.shift_code?' ('+s.shift_name+')':'')+'</span></div>'
-  }).join('')+
-    '<div class="leg"><div class="leg-dot" style="background:#fef9c3;border:1.5px solid #92400e"></div><span>연</span></div>'+
-    '<div class="leg"><div class="leg-dot" style="background:#fee2e2;border:1.5px solid #b91c1c"></div><span>휴</span></div>'+
-    '<div class="leg"><div class="leg-dot" style="background:#fce7f3;border:1.5px solid #9d174d"></div><span>경조</span></div>'
+  // 날짜 헤더 빌더
+  function buildDateHeader(grpColor) {
+    const ths = Array.from({length: totalDays}, (_, i) => {
+      const day = i+1
+      const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
+      const dow = new Date(year, month-1, day).getDay()
+      const isSun=dow===0, isSat=dow===6, isHol=holSet.has(ds)
+      const bg = isHol||isSun ? '#fce7f3' : isSat ? '#eff6ff' : '#f8fafc'
+      const tc = isHol||isSun ? '#9d174d' : isSat ? '#1e40af' : '#334155'
+      return '<th class="date-th" style="background:'+bg+';color:'+tc+'">'+
+        '<div class="dn">'+day+'</div>'+
+        '<div class="dd">'+dayNames[dow]+'</div>'+
+        (isHol ? '<div style="font-size:6px;color:#be185d">★</div>' : '')+
+        '</th>'
+    }).join('')
+    return '<tr class="date-hdr-row" style="--gc:'+grpColor+'">'+
+      '<th class="name-th" style="color:'+grpColor+'">이름/직위</th>'+
+      ths+
+      '<th class="stat-hd">근무</th>'+
+      '<th class="stat-hd">휴무</th>'+
+      '<th class="stat-hd sum-hd">유형요약</th>'+
+      '</tr>'
+  }
 
-  // 날짜 헤더 셀 (팀별 공통)
-  const thDays = days.map(({day, dow, hol, ds}) => {
-    const isToday = ds === todayStr
-    const cls = isToday?'today-h':(dow===0||hol)?'sun-h':dow===6?'sat-h':''
-    const dowStr = ['일','월','화','수','목','금','토'][dow]
-    return '<th class="'+cls+'">'+day+'<br><span style="font-size:7.5px;opacity:.85;font-weight:500">'+dowStr+'</span></th>'
-  }).join('')
-  const thStat = '<th class="stat-th">근무</th><th class="stat-th">휴가</th><th class="stat-th" style="min-width:52px">코드</th>'
+  // 직원 행 빌더
+  function buildEmpRow(emp, empIdx, grpColor) {
+    const empSched = schedMap[emp.id] || {}
+    let workCount=0, offCount=0
+    const codeCounts = {}
 
-  // 팀 섹션 HTML 생성
-  let sectionsHtml = ''
-  TEAM_ORDER.forEach(teamKey => {
-    const emps = teamMap[teamKey]
-    if (!emps || emps.length === 0) return
-    const tc = TEAM_CFG[teamKey]
+    const cells = Array.from({length: totalDays}, (_, i) => {
+      const day = i+1
+      const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
+      const dow = new Date(year, month-1, day).getDay()
+      const isSun=dow===0, isSat=dow===6, isHol=holSet.has(ds)
+      const code = empSched[ds] || ''
+      const isOff = REST_CODES.has(code)
+      if (code && !isOff && code!=='-') { workCount++; codeCounts[code]=(codeCounts[code]||0)+1 }
+      if (isOff) offCount++
+      const cellBg = isOff ? (code==='연'?'#fefce8':(code==='경조'?'#fdf4ff':'#fef2f2'))
+                   : isHol ? '#fdf2f8'
+                   : isSun ? '#fdf2f8'
+                   : isSat ? '#f0f4ff'
+                   : (empIdx%2===0 ? '#fff' : '#f9fafb')
+      const borderCol = isHol ? '#f9a8d4' : isSun ? '#fce7f3' : isSat ? '#e0e7ff' : '#e2e8f0'
+      const badge = getCodeBadge(code, isSun, isSat, isHol, shiftColorMap)
+      const hDot = isHol&&!code ? '<span style="display:block;width:5px;height:5px;border-radius:50%;background:#be185d;margin:2px auto 0"></span>' : ''
+      return '<td class="day-td" style="border-left:1px solid '+borderCol+';background:'+cellBg+'">'+badge+hDot+'</td>'
+    }).join('')
 
-    // 팀 헤더
-    let html = '<div class="team-section" style="border:1.5px solid '+tc.border+'">'
-    html += '<div class="team-header" style="background:'+tc.bg+';">'
-    html += '<span class="team-badge-label" style="background:white;color:'+tc.color+';border:1.5px solid '+tc.border+'"><i class="fas '+tc.icon+'"></i>'+tc.label+'</span>'
-    html += '<span class="team-count" style="color:'+tc.color+'">'+emps.length+'명</span>'
-    html += '</div>'
+    const summaryItems = Object.entries(codeCounts).sort((a,b)=>b[1]-a[1]).map(([c,cnt]) => {
+      const fg = shiftColorMap[c] || '#6b7280'
+      return '<span style="display:inline-flex;align-items:center;gap:2px;font-size:9px;background:'+fg+'18;color:'+fg+';border-radius:4px;padding:1px 5px;font-weight:700">'+c+' <span style="opacity:.7">'+cnt+'</span></span>'
+    }).join('')
 
-    // 테이블
-    html += '<div class="scroll-wrap"><table>'
-    // 날짜 헤더행
-    html += '<thead><tr class="date-hdr-row">'
-    html += '<th class="name-th" style="background:'+tc.color+';text-align:left;font-size:10px">이름/직위</th>'
-    html += thDays + thStat
-    html += '</tr></thead><tbody>'
+    const rowBg = empIdx%2===0 ? '#fff' : '#f9fafb'
+    return '<tr class="emp-row">'+
+      '<td class="name-td" style="background:'+rowBg+';--gc:'+grpColor+'">'+
+        '<div class="emp-name">'+emp.name+'</div>'+
+        '<div class="emp-pos">'+(emp.position_name||emp.position||'')+'</div>'+
+      '</td>'+
+      cells+
+      '<td class="work-td"><div style="font-size:13px;font-weight:900;color:#166534">'+workCount+'</div><div style="font-size:8px;color:#86efac">근무</div></td>'+
+      '<td class="off-td"><div style="font-size:13px;font-weight:900;color:#b45309">'+offCount+'</div><div style="font-size:8px;color:#fbbf24">휴무</div></td>'+
+      '<td class="sum-td"><div style="display:flex;flex-wrap:wrap;gap:2px">'+summaryItems+'</div></td>'+
+      '</tr>'
+  }
 
-    // 직원 행
-    emps.forEach(emp => {
-      const sm = schedMap[emp.id] || {}
-      let workDays = 0, offDays = 0
-      const codeCnt = {}
-
-      const cells = days.map(({day, dow, hol, ds}) => {
-        const code = sm[ds] || ''
-        const isToday = ds === todayStr
-        const isSunOrHol = dow === 0 || hol
-
-        if (code === '연' || code === '휴' || code === '경조') offDays++
-        else if (code) { workDays++; codeCnt[code] = (codeCnt[code]||0)+1 }
-
-        const st = shiftSt(code, shifts)
-        let badgeHtml = ''
-        if (code) {
-          badgeHtml = '<span class="badge" style="background:'+st.bg+';color:'+st.color+'">'+code+'</span>'
-        } else if (isSunOrHol) {
-          badgeHtml = '<span class="badge badge-sun">휴</span>'
-        } else {
-          badgeHtml = '<span class="badge badge-empty">-</span>'
-        }
-
-        const tdCls = isToday ? 'today-cell' : isSunOrHol && !code ? 'sun-cell' : ''
-        return '<td class="'+tdCls+'">'+badgeHtml+'</td>'
-      }).join('')
-
-      const chips = Object.entries(codeCnt).map(([k,v]) => {
-        const st = shiftSt(k, shifts)
-        return '<span class="chip" style="background:'+(st?st.bg:'#e0e7ff')+';color:'+(st?st.color:'#3730a3')+'">'+k+' '+v+'</span>'
-      }).join('')
-
-      html += '<tr class="emp-row">'
-      html += '<td class="name-td" style="background:white"><span class="emp-name">'+emp.name+'</span><span class="emp-pos">'+(emp.position||'')+'</span></td>'
-      html += cells
-      html += '<td class="stat-td"><span class="sv">'+workDays+'</span><span class="sl">일</span></td>'
-      html += '<td class="stat-td"><span class="sv">'+offDays+'</span><span class="sl">일</span></td>'
-      html += '<td class="stat-td"><div class="code-chips">'+chips+'</div></td>'
-      html += '</tr>'
-    })
-
-    html += '</tbody></table></div></div>'
-    sectionsHtml += html
+  // 그룹 rows 조립
+  let allGroupRows = ''
+  staffGroups.forEach(grp => {
+    allGroupRows += '<tr class="grp-hdr"><td colspan="'+(totalDays+4)+'">'+
+      '<div class="grp-title" style="--gc:'+grp.color+'">'+
+        '<i class="fas '+grp.icon+'" style="color:'+grp.color+';font-size:12px"></i>'+
+        '<span style="font-size:12px;font-weight:800;color:'+grp.color+'">'+grp.label+'</span>'+
+        '<span style="font-size:10px;color:#94a3b8">('+grp.members.length+'명)</span>'+
+      '</div>'+
+    '</td></tr>'
+    allGroupRows += buildDateHeader(grp.color)
+    grp.members.forEach((emp, idx) => { allGroupRows += buildEmpRow(emp, idx, grp.color) })
   })
+
+  // 범례 HTML
+  const legendShifts = shifts.filter(s=>s.shift_code).map(s =>
+    '<span class="leg-item">'+
+      '<span class="leg-badge" style="background:'+s.color+'28;color:'+s.color+';border:1px solid '+s.color+'44">'+s.shift_code+'</span>'+
+      (s.shift_name||s.shift_code)+
+    '</span>'
+  ).join('')
+  const fixedLegend = FIXED_LEGEND.map(l =>
+    '<span class="leg-item">'+
+      '<span class="leg-badge" style="background:'+l.color+'18;color:'+l.color+';border:1px solid '+l.color+'44">'+l.code+'</span>'+
+      l.label+
+    '</span>'
+  ).join('')
+  const holListHtml = (holidays||[]).length
+    ? (holidays||[]).map(h => {
+        const hd = typeof h==='string'?h:(h?.date||'')
+        if (!hd) return ''
+        return '<span style="font-size:10px;color:#b91c1c;background:#fff1f2;border:1px solid #fecaca;border-radius:5px;padding:2px 7px">'+hd.substring(5)+' '+(h?.name||'')+'</span>'
+      }).filter(Boolean).join('')
+    : '<span style="font-size:10px;color:#9ca3af">공휴일 없음</span>'
 
   document.getElementById('app').innerHTML =
-    '<div class="page-header">'+
-      '<h1><i class="fas fa-hospital" style="font-size:13px"></i>'+hospital.name+'</h1>'+
-      '<div class="sub">'+
-        '<span><i class="fas fa-calendar-alt"></i>'+year+'년 '+month+'월 전체 근무표</span>'+
-        '<span><i class="fas fa-users"></i>총 '+employees.length+'명</span>'+
-        '<span style="opacity:.6;font-size:10px"><i class="fas fa-share-alt"></i>직원 공유 뷰</span>'+
+    '<div style="background:white;border-radius:16px;border:1px solid #e5e7eb;overflow:hidden">'+
+    '<div class="pg-header">'+
+      '<div class="month-nav-bar">'+
+        '<button onclick="prev()"><i class="fas fa-chevron-left"></i></button>'+
+        '<div class="mlabel">'+year+'년 '+month+'월</div>'+
+        '<button onclick="next()"><i class="fas fa-chevron-right"></i></button>'+
+      '</div>'+
+      '<div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px">'+
+        '<div>'+
+          '<h1>'+hospital.name+'</h1>'+
+          '<p class="sub"><i class="fas fa-shield-alt" style="margin-right:4px"></i>'+year+'년 '+month+'월 전체 근무표 · 직원 공유용</p>'+
+        '</div>'+
+        '<div class="actions">'+
+          '<button onclick="window.print()"><i class="fas fa-print" style="margin-right:4px"></i>인쇄/PDF</button>'+
+        '</div>'+
       '</div>'+
     '</div>'+
-    '<div class="month-bar">'+
-      '<button class="nav-btn" onclick="prev()"><i class="fas fa-chevron-left"></i></button>'+
-      '<div class="month-label">'+year+'년 '+month+'월</div>'+
-      '<button class="nav-btn" onclick="next()"><i class="fas fa-chevron-right"></i></button>'+
-      '<button class="btn-print" onclick="window.print()"><i class="fas fa-print"></i>인쇄/PDF</button>'+
+    '<div class="legend-box">'+
+      '<div class="legend-inner">'+
+        '<span class="leg-tag"><i class="fas fa-tag" style="margin-right:3px;color:#2563eb"></i>근무조</span>'+
+        legendShifts+fixedLegend+
+      '</div>'+
+      ((holidays||[]).length ?
+        '<div class="legend-inner">'+
+          '<span class="leg-tag" style="color:#b91c1c"><i class="fas fa-calendar-times" style="margin-right:3px"></i>공휴일</span>'+
+          holListHtml+
+        '</div>' : '')+
     '</div>'+
-    '<div class="legend-bar">'+legend+'</div>'+
-    sectionsHtml +
-    '<div style="height:20px"></div>'
+    '<div class="tbl-scroll">'+
+      '<table class="sched-tbl"><tbody>'+allGroupRows+'</tbody></table>'+
+    '</div>'+
+    '<div class="footer-note">'+
+      '<i class="fas fa-info-circle" style="color:#94a3b8"></i>'+
+      '<span>★ 표시는 공휴일 · 분홍 배경은 일요일/공휴일 · 파랑 배경은 토요일</span>'+
+    '</div>'+
+    '</div>'
 }
 
 function prev(){curM--;if(curM<1){curM=12;curY--}load()}
