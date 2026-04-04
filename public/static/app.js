@@ -13144,17 +13144,29 @@ async function deleteSubstituteOff(id) {
 // ─── 스케줄 뷰 모드 ('admin' | 'staff' | 'executive') ────────
 let _schedViewMode = 'admin'
 window.switchSchedView = function(mode) {
-  _schedViewMode = mode
-  const tc = document.getElementById('schedTabContent')
-  if (tc) tc.innerHTML = renderMonthlyScheduleTab()
-  setTimeout(() => { initExtWorkerEvents(); _syncToolbarToggleBtn() }, 100)
+  try {
+    _schedViewMode = mode
+    const tc = document.getElementById('scheduleTabContent')
+    if (!tc) { console.warn('[switchSchedView] scheduleTabContent 컨테이너를 찾을 수 없음'); return }
+    tc.innerHTML = renderMonthlyScheduleTab()
+    setTimeout(() => { 
+      try { initExtWorkerEvents() } catch(e) { console.warn('[switchSchedView] initExtWorkerEvents 오류:', e) }
+      try { _syncToolbarToggleBtn() } catch(e) {}
+    }, 100)
+  } catch(e) {
+    console.error('[switchSchedView] 오류:', e)
+    showToast('뷰 전환 중 오류가 발생했습니다: ' + e.message, 'error')
+  }
 }
 
 // ── 직원 공유 뷰 렌더 함수 ────────────────────────────────────
 function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSet, offLabelMap, getShiftStyle, viewTabsHtml }) {
+  try {
   const year = App.currentYear, month = App.currentMonth
   const shiftColorMap = {}
   shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
+  // allOffSet 방어
+  const _offSet = (allOffSet instanceof Set) ? allOffSet : new Set()
 
   function getCodeStyle(code) {
     if (!code || code === '-') return 'background:#f9fafb;color:#9ca3af'
@@ -13186,7 +13198,7 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
       const isOff = code==='연'||code==='휴'
       const isSun = dow===0, isSat = dow===6
       if (code && !isOff && code!=='-') workCount++
-      const bgDay = isOff ? '#fff1f2' : allOffSet.has(ds) ? '#fffbeb' : isSun ? '#fff5f5' : isSat ? '#eff6ff' : 'white'
+      const bgDay = isOff ? '#fff1f2' : _offSet.has(ds) ? '#fffbeb' : isSun ? '#fff5f5' : isSat ? '#eff6ff' : 'white'
       const codeSt = code ? getCodeStyle(code) : ''
       return `<td style="padding:1px;text-align:center;min-width:28px;border-left:1px solid ${isSun?'#fca5a5':isSat?'#93c5fd':'#e5e7eb'};background:${bgDay}">
         ${code ? `<span style="${codeSt};padding:1px 4px;border-radius:3px;font-size:10px;font-weight:700;display:block;text-align:center">${code}</span>` : ''}
@@ -13258,10 +13270,15 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     th, td { padding:2px!important }
   }
   </style>`
+  } catch(e) {
+    console.error('[renderSchedStaffView] 오류:', e)
+    return `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px">${viewTabsHtml}<p>직원 공유 뷰 렌더 오류: ${e.message}</p></div>`
+  }
 }
 
 // ── 운영진 요약 뷰 렌더 함수 ──────────────────────────────────
 function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allOffSet, viewTabsHtml }) {
+  try {
   const year = App.currentYear, month = App.currentMonth
   const md = scheduleMonthData
   const sm = md?.sched_map || {}
@@ -13414,6 +13431,10 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     .bg-white { box-shadow:none!important }
   }
   </style>`
+  } catch(e) {
+    console.error('[renderSchedExecutiveView] 오류:', e)
+    return `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px">${viewTabsHtml}<p>운영진 뷰 렌더 오류: ${e.message}</p></div>`
+  }
 }
 
 // ─── 월간 스케줄 탭 ──────────────────────────────────────────
@@ -13466,12 +13487,14 @@ function renderMonthlyScheduleTab() {
   const leaveMap  = md?.leave_map  || {}   // { empId: { annual:{total,used}, ... } }
 
   // ── 뷰 모드별 탭 버튼 헤더 공통 ──────────────────────────────
-  const viewTabsHtml = `
-  <div style="display:flex;gap:4px;margin-bottom:12px;padding:4px;background:#f9fafb;border-radius:12px;width:fit-content">
-    <button onclick="switchSchedView('admin')" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;${_schedViewMode==='admin'?'background:#166534;color:white;box-shadow:0 2px 8px rgba(22,101,52,.3)':'background:transparent;color:#6b7280'}" title="입력·분석 전용 (관리자)"><i class="fas fa-table" style="margin-right:5px"></i>관리자 뷰</button>
-    <button onclick="switchSchedView('staff')" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;${_schedViewMode==='staff'?'background:#2563eb;color:white;box-shadow:0 2px 8px rgba(37,99,235,.3)':'background:transparent;color:#6b7280'}" title="직원 공유용 (급여 제외)"><i class="fas fa-user" style="margin-right:5px"></i>직원 공유 뷰</button>
-    <button onclick="switchSchedView('executive')" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;${_schedViewMode==='executive'?'background:#7c3aed;color:white;box-shadow:0 2px 8px rgba(124,58,237,.3)':'background:transparent;color:#6b7280'}" title="경영진 요약 (그래프·지표)"><i class="fas fa-chart-bar" style="margin-right:5px"></i>운영진 뷰</button>
-  </div>`
+  const _vAdmin = _schedViewMode === 'admin'
+  const _vStaff = _schedViewMode === 'staff'
+  const _vExec  = _schedViewMode === 'executive'
+  const viewTabsHtml = '<div style="display:flex;gap:4px;margin-bottom:12px;padding:4px;background:#f9fafb;border-radius:12px;width:fit-content">' +
+    '<button onclick="window.switchSchedView(&apos;admin&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vAdmin ? 'background:#166534;color:white;box-shadow:0 2px 8px rgba(22,101,52,.3)' : 'background:transparent;color:#6b7280') + '" title="입력·분석 전용 (관리자)"><i class="fas fa-table" style="margin-right:5px"></i>관리자 뷰</button>' +
+    '<button onclick="window.switchSchedView(&apos;staff&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vStaff ? 'background:#2563eb;color:white;box-shadow:0 2px 8px rgba(37,99,235,.3)' : 'background:transparent;color:#6b7280') + '" title="직원 공유용 (급여 제외)"><i class="fas fa-user" style="margin-right:5px"></i>직원 공유 뷰</button>' +
+    '<button onclick="window.switchSchedView(&apos;executive&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vExec ? 'background:#7c3aed;color:white;box-shadow:0 2px 8px rgba(124,58,237,.3)' : 'background:transparent;color:#6b7280') + '" title="경영진 요약 (그래프·지표)"><i class="fas fa-chart-bar" style="margin-right:5px"></i>운영진 뷰</button>' +
+    '</div>'
 
   // ── 직원 공유 뷰 렌더 ──────────────────────────────────────
   if (_schedViewMode === 'staff') {
@@ -37790,7 +37813,7 @@ window.openQrManageModal = async () => {
   await qrLoadList()
 }
 
-async function qrLoadList() {
+window.qrLoadList = async function qrLoadList() {
   const listEl = document.getElementById('qrEmployeeList')
   if (!listEl) return
   try {
