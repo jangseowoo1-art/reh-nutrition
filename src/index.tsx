@@ -621,7 +621,7 @@ load()
 </html>`
 }
 
-// ── 전체 팀 스케줄 공유 페이지 ────────────────────────────────
+// ── 전체 팀 스케줄 공유 페이지 (직원 공유 뷰) ─────────────────
 function getTeamSchedulePage(token: string): string {
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -633,33 +633,68 @@ function getTeamSchedulePage(token: string): string {
 <link href="/static/fontawesome.min.css" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;}
-.header{background:linear-gradient(135deg,#166534,#15803d);color:white;padding:14px 16px;position:sticky;top:0;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.15);}
-.header h1{font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;}
-.header .sub{font-size:11px;opacity:.8;margin-top:3px;}
-.month-nav{display:flex;align-items:center;gap:8px;background:white;padding:10px 16px;border-bottom:1px solid #e5e7eb;}
-.month-nav button{width:32px;height:32px;border:1px solid #d1d5db;border-radius:8px;background:white;cursor:pointer;font-size:14px;}
-.month-label{flex:1;text-align:center;font-weight:700;font-size:15px;color:#166534;}
-.wrap{padding:12px 16px 24px;overflow-x:auto;}
-table{width:100%;border-collapse:collapse;min-width:600px;font-size:11px;}
-thead th{background:#166534;color:white;padding:7px 4px;text-align:center;font-weight:700;position:sticky;top:0;}
-thead th.sun{background:#b91c1c;}
-thead th.sat{background:#1d4ed8;}
-tbody tr:nth-child(even){background:#f9fafb;}
-tbody tr:hover{background:#f0fdf4;}
-td{padding:5px 3px;text-align:center;border:1px solid #f1f5f9;vertical-align:middle;}
-td.name-cell{text-align:left;padding:5px 8px;font-weight:700;white-space:nowrap;background:white;position:sticky;left:0;z-index:1;border-right:2px solid #e5e7eb;}
-td.name-cell .pos{font-size:9px;color:#9ca3af;font-weight:400;}
-.badge{display:inline-block;padding:2px 5px;border-radius:4px;font-size:9px;font-weight:700;width:100%;max-width:32px;}
-.team-divider td{background:#f0fdf4;font-size:10px;font-weight:700;color:#166534;padding:4px 8px;}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f4ff;font-size:12px;}
+.page-header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;padding:12px 16px;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.2);}
+.page-header h1{font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;}
+.page-header .sub{font-size:11px;opacity:.75;margin-top:3px;display:flex;align-items:center;gap:12px;}
+.month-bar{display:flex;align-items:center;gap:8px;background:white;padding:8px 14px;border-bottom:2px solid #e5e7eb;}
+.month-bar button.nav-btn{width:28px;height:28px;border:1px solid #d1d5db;border-radius:6px;background:white;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;}
+.month-bar button.nav-btn:hover{background:#f3f4f6;}
+.month-label{flex:1;text-align:center;font-weight:800;font-size:14px;color:#1e3a8a;}
+.btn-print{padding:5px 12px;background:#1e3a8a;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:5px;}
+.btn-print:hover{background:#1e40af;}
+.legend-bar{display:flex;flex-wrap:wrap;gap:6px;padding:7px 14px;background:white;border-bottom:1px solid #e5e7eb;font-size:10px;}
+.leg{display:flex;align-items:center;gap:3px;}
+.leg-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0;}
+.scroll-wrap{overflow-x:auto;overflow-y:visible;padding-bottom:32px;}
+/* 팀 섹션 */
+.team-section{margin:10px 10px 0;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);}
+.team-header{padding:8px 12px;font-size:12px;font-weight:800;display:flex;align-items:center;gap:8px;}
+.team-badge-label{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:800;}
+.team-count{font-size:10px;opacity:.7;font-weight:500;}
+/* 테이블 */
+table{border-collapse:collapse;font-size:10.5px;width:100%;}
+th.name-th,td.name-td{position:sticky;left:0;z-index:20;min-width:88px;max-width:110px;background:white;border-right:2px solid #d1d5db;padding:0 8px;white-space:nowrap;}
+th.name-th{z-index:30;color:white;text-align:left;padding:5px 8px;}
+td.name-td{font-weight:700;color:#1e293b;vertical-align:middle;}
+td.name-td .emp-name{font-size:11px;font-weight:800;display:block;}
+td.name-td .emp-pos{font-size:9px;color:#94a3b8;font-weight:400;display:block;margin-top:1px;}
+/* 날짜 헤더 행 */
+tr.date-hdr-row th{background:#334155;color:white;padding:4px 2px;text-align:center;font-size:10px;font-weight:700;min-width:28px;border-right:1px solid rgba(255,255,255,.1);}
+tr.date-hdr-row th.sun-h{background:#991b1b;}
+tr.date-hdr-row th.sat-h{background:#1d4ed8;}
+tr.date-hdr-row th.hol-h{background:#991b1b;}
+tr.date-hdr-row th.today-h{background:#d97706;}
+tr.date-hdr-row th.stat-th{background:#1e293b;min-width:38px;font-size:9px;}
+/* 직원 행 */
+tr.emp-row{border-bottom:1px solid #f1f5f9;}
+tr.emp-row:hover{background:#f0f9ff;}
+tr.emp-row td{padding:3px 2px;text-align:center;border-right:1px solid #f1f5f9;vertical-align:middle;height:32px;}
+tr.emp-row td.sun-cell{background:#fff8f8;}
+tr.emp-row td.today-cell{background:#fffbeb;}
+/* 뱃지 */
+.badge{display:inline-flex;align-items:center;justify-content:center;width:26px;height:20px;border-radius:4px;font-size:9px;font-weight:800;line-height:1;}
+.badge-empty{color:#e2e8f0;}
+.badge-sun{color:#fca5a5;font-size:8px;}
+/* 통계 */
+td.stat-td{font-weight:700;font-size:10px;color:#374151;background:#f8fafc;border-left:1px solid #e2e8f0;padding:2px 4px;vertical-align:middle;}
+td.stat-td .sv{font-size:12px;font-weight:800;color:#1e3a8a;display:block;text-align:center;}
+td.stat-td .sl{font-size:8px;color:#94a3b8;display:block;text-align:center;}
+td.stat-td .code-chips{display:flex;flex-wrap:wrap;gap:2px;justify-content:center;}
+td.stat-td .chip{font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700;}
+/* 로딩/에러 */
 .loading{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;}
-.spinner{width:36px;height:36px;border:4px solid #d1fae5;border-top-color:#166534;border-radius:50%;animation:spin .8s linear infinite;}
+.spinner{width:40px;height:40px;border:4px solid #dbeafe;border-top-color:#2563eb;border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .error-box{margin:20px;padding:20px;background:#fff1f2;border-radius:12px;text-align:center;color:#b91c1c;}
-.legend{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;background:white;border-bottom:1px solid #e5e7eb;}
-.legend-item{display:flex;align-items:center;gap:4px;font-size:10px;}
-.legend-dot{width:10px;height:10px;border-radius:3px;}
-@media print{.month-nav button{display:none!important;} body{background:white;} .header{background:#166534!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+@media print{
+  .month-bar button,.btn-print{display:none!important;}
+  .page-header,.team-header{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  tr.date-hdr-row th{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  body{background:white;}
+  .scroll-wrap{overflow:visible;}
+  .team-section{box-shadow:none;border:1px solid #e5e7eb;}
+}
 </style>
 </head>
 <body>
@@ -669,6 +704,14 @@ td.name-cell .pos{font-size:9px;color:#9ca3af;font-weight:400;}
 <script>
 const TOKEN = '${token}'
 let curY = new Date().getFullYear(), curM = new Date().getMonth()+1
+
+const KR_HOLIDAYS = {
+  '01-01':1,'03-01':1,'05-05':1,'06-06':1,'08-15':1,
+  '10-03':1,'10-09':1,'12-25':1
+}
+function isHol(m, d) {
+  return !!KR_HOLIDAYS[String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0')]
+}
 
 async function load() {
   document.getElementById('app').innerHTML = '<div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">불러오는 중...</p></div>'
@@ -681,65 +724,164 @@ async function load() {
   }
 }
 
-function shiftStyle(code, shifts) {
-  if (!code) return ''
+function shiftSt(code, shifts) {
+  if (!code) return null
   const sf = shifts.find(s => s.shift_code === code)
-  if (sf && sf.color) return 'background:'+sf.color+'22;color:'+sf.color
-  const m = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c','경조':'background:#fce7f3;color:#9d174d'}
-  return m[code] || 'background:#f3f4f6;color:#374151'
+  if (sf && sf.color) return {bg:sf.color+'22',color:sf.color}
+  const m = {
+    '연':{bg:'#fef9c3',color:'#92400e'},
+    '휴':{bg:'#fee2e2',color:'#b91c1c'},
+    '경조':{bg:'#fce7f3',color:'#9d174d'},
+    'OT':{bg:'#ecfdf5',color:'#065f46'}
+  }
+  return m[code] || {bg:'#f3f4f6',color:'#374151'}
 }
+
+const TEAM_CFG = {
+  'nutrition_manager':{label:'영양사',icon:'fa-star',color:'#b45309',bg:'#fef3c7',border:'#f59e0b'},
+  'cook':             {label:'조리/셰프',icon:'fa-crown',color:'#6d28d9',bg:'#ede9fe',border:'#8b5cf6'},
+  'assistant_cook':   {label:'조리사',icon:'fa-utensils',color:'#0369a1',bg:'#e0f2fe',border:'#0ea5e9'},
+  'helper':           {label:'조리원',icon:'fa-hands-helping',color:'#065f46',bg:'#d1fae5',border:'#10b981'},
+  'manager':          {label:'매니저',icon:'fa-user-tie',color:'#4338ca',bg:'#e0e7ff',border:'#6366f1'},
+  'default':          {label:'기타',icon:'fa-user',color:'#374151',bg:'#f3f4f6',border:'#9ca3af'}
+}
+const TEAM_ORDER = ['nutrition_manager','cook','assistant_cook','helper','manager','default']
 
 function render(d) {
   const {hospital, year, month, totalDays, employees, schedMap, shifts} = d
-  document.title = hospital.name + ' 전체 근무표'
+  document.title = hospital.name + ' ' + year + '년 ' + month + '월 전체 근무표'
 
-  // 요일 헤더
+  const today = new Date()
+  const todayStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0')
+
+  // 날짜 목록
   const days = []
-  for(let day=1;day<=totalDays;day++){
-    const dow = new Date(year,month-1,day).getDay()
-    days.push({day,dow})
+  for(let day=1; day<=totalDays; day++){
+    const dow = new Date(year, month-1, day).getDay()
+    const hol = isHol(month, day)
+    const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
+    days.push({day, dow, hol, ds})
   }
 
-  const thCells = days.map(({day,dow})=>{
-    const cls = dow===0?'sun':dow===6?'sat':''
-    return '<th class="'+cls+'">'+day+'<br><span style="font-size:8px;font-weight:400">'+['일','월','화','수','목','금','토'][dow]+'</span></th>'
+  // 팀별 그룹핑
+  const teamMap = {}
+  employees.forEach(emp => {
+    const pos = (emp.position||'').toLowerCase()
+    let team = 'default'
+    if (pos.includes('영양')) team = 'nutrition_manager'
+    else if (pos.includes('셰프')||pos.includes('책임')) team = 'cook'
+    else if (pos.includes('조리사')) team = 'assistant_cook'
+    else if (pos.includes('조리원')) team = 'helper'
+    else if (pos.includes('매니저')) team = 'manager'
+    else if (emp.team && emp.team in TEAM_CFG) team = emp.team
+    if (!teamMap[team]) teamMap[team] = []
+    teamMap[team].push(emp)
+  })
+
+  // 범례
+  const legend = shifts.filter(s=>s.shift_code).map(s=>{
+    const st = shiftSt(s.shift_code, shifts)
+    return '<div class="leg"><div class="leg-dot" style="background:'+st.bg+';border:1.5px solid '+st.color+'"></div><span>'+s.shift_code+(s.shift_name&&s.shift_name!==s.shift_code?' ('+s.shift_name+')':'')+'</span></div>'
+  }).join('')+
+    '<div class="leg"><div class="leg-dot" style="background:#fef9c3;border:1.5px solid #92400e"></div><span>연</span></div>'+
+    '<div class="leg"><div class="leg-dot" style="background:#fee2e2;border:1.5px solid #b91c1c"></div><span>휴</span></div>'+
+    '<div class="leg"><div class="leg-dot" style="background:#fce7f3;border:1.5px solid #9d174d"></div><span>경조</span></div>'
+
+  // 날짜 헤더 셀 (팀별 공통)
+  const thDays = days.map(({day, dow, hol, ds}) => {
+    const isToday = ds === todayStr
+    const cls = isToday?'today-h':(dow===0||hol)?'sun-h':dow===6?'sat-h':''
+    const dowStr = ['일','월','화','수','목','금','토'][dow]
+    return '<th class="'+cls+'">'+day+'<br><span style="font-size:7.5px;opacity:.85;font-weight:500">'+dowStr+'</span></th>'
   }).join('')
+  const thStat = '<th class="stat-th">근무</th><th class="stat-th">휴가</th><th class="stat-th" style="min-width:52px">코드</th>'
 
-  // 팀 구분
-  const cookTeam = employees.filter(e=>e.team==='cook')
-  const nutriTeam = employees.filter(e=>e.team!=='cook')
+  // 팀 섹션 HTML 생성
+  let sectionsHtml = ''
+  TEAM_ORDER.forEach(teamKey => {
+    const emps = teamMap[teamKey]
+    if (!emps || emps.length === 0) return
+    const tc = TEAM_CFG[teamKey]
 
-  function empRows(emps) {
-    return emps.map(emp=>{
+    // 팀 헤더
+    let html = '<div class="team-section" style="border:1.5px solid '+tc.border+'">'
+    html += '<div class="team-header" style="background:'+tc.bg+';">'
+    html += '<span class="team-badge-label" style="background:white;color:'+tc.color+';border:1.5px solid '+tc.border+'"><i class="fas '+tc.icon+'"></i>'+tc.label+'</span>'
+    html += '<span class="team-count" style="color:'+tc.color+'">'+emps.length+'명</span>'
+    html += '</div>'
+
+    // 테이블
+    html += '<div class="scroll-wrap"><table>'
+    // 날짜 헤더행
+    html += '<thead><tr class="date-hdr-row">'
+    html += '<th class="name-th" style="background:'+tc.color+';text-align:left;font-size:10px">이름/직위</th>'
+    html += thDays + thStat
+    html += '</tr></thead><tbody>'
+
+    // 직원 행
+    emps.forEach(emp => {
       const sm = schedMap[emp.id] || {}
-      const cells = days.map(({day,dow})=>{
-        const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
-        const code = sm[ds] || ''
-        const st = shiftStyle(code, shifts)
-        const isOff = code==='연'||code==='휴'
-        const isSun = dow===0
-        const bg = isSun&&!code ? 'background:#fff1f2;' : ''
-        return '<td style="'+bg+'"><span class="badge" style="'+st+'">'+(code||(isSun?'휴':'-'))+'</span></td>'
-      }).join('')
-      return '<tr><td class="name-cell">'+emp.name+'<br><span class="pos">'+(emp.position||'')+'</span></td>'+cells+'</tr>'
-    }).join('')
-  }
+      let workDays = 0, offDays = 0
+      const codeCnt = {}
 
-  const legend = shifts.filter(s=>s.shift_code).map(s=>
-    '<div class="legend-item"><div class="legend-dot" style="background:'+s.color+'33;border:1.5px solid '+s.color+'"></div><span>'+s.shift_code+(s.shift_name&&s.shift_name!==s.shift_code?' ('+s.shift_name+')':'')+'</span></div>'
-  ).join('')+'<div class="legend-item"><div class="legend-dot" style="background:#fef9c3;border:1.5px solid #92400e"></div><span>연</span></div><div class="legend-item"><div class="legend-dot" style="background:#fee2e2;border:1.5px solid #b91c1c"></div><span>휴</span></div>'
+      const cells = days.map(({day, dow, hol, ds}) => {
+        const code = sm[ds] || ''
+        const isToday = ds === todayStr
+        const isSunOrHol = dow === 0 || hol
+
+        if (code === '연' || code === '휴' || code === '경조') offDays++
+        else if (code) { workDays++; codeCnt[code] = (codeCnt[code]||0)+1 }
+
+        const st = shiftSt(code, shifts)
+        let badgeHtml = ''
+        if (code) {
+          badgeHtml = '<span class="badge" style="background:'+st.bg+';color:'+st.color+'">'+code+'</span>'
+        } else if (isSunOrHol) {
+          badgeHtml = '<span class="badge badge-sun">휴</span>'
+        } else {
+          badgeHtml = '<span class="badge badge-empty">-</span>'
+        }
+
+        const tdCls = isToday ? 'today-cell' : isSunOrHol && !code ? 'sun-cell' : ''
+        return '<td class="'+tdCls+'">'+badgeHtml+'</td>'
+      }).join('')
+
+      const chips = Object.entries(codeCnt).map(([k,v]) => {
+        const st = shiftSt(k, shifts)
+        return '<span class="chip" style="background:'+(st?st.bg:'#e0e7ff')+';color:'+(st?st.color:'#3730a3')+'">'+k+' '+v+'</span>'
+      }).join('')
+
+      html += '<tr class="emp-row">'
+      html += '<td class="name-td" style="background:white"><span class="emp-name">'+emp.name+'</span><span class="emp-pos">'+(emp.position||'')+'</span></td>'
+      html += cells
+      html += '<td class="stat-td"><span class="sv">'+workDays+'</span><span class="sl">일</span></td>'
+      html += '<td class="stat-td"><span class="sv">'+offDays+'</span><span class="sl">일</span></td>'
+      html += '<td class="stat-td"><div class="code-chips">'+chips+'</div></td>'
+      html += '</tr>'
+    })
+
+    html += '</tbody></table></div></div>'
+    sectionsHtml += html
+  })
 
   document.getElementById('app').innerHTML =
-    '<div class="header"><h1><i class="fas fa-users" style="font-size:14px"></i>'+hospital.name+'</h1><div class="sub"><i class="fas fa-calendar-alt" style="margin-right:4px"></i>'+year+'년 '+month+'월 전체 근무표</div></div>'+
-    '<div class="month-nav"><button onclick="prev()"><i class="fas fa-chevron-left"></i></button><div class="month-label">'+year+'년 '+month+'월</div><button onclick="next()"><i class="fas fa-chevron-right"></i></button></div>'+
-    '<div class="legend">'+legend+'</div>'+
-    '<div class="wrap"><table>'+
-      '<thead><tr><th style="min-width:72px;text-align:left;padding-left:8px">이름</th>'+thCells+'</tr></thead>'+
-      '<tbody>'+
-      (cookTeam.length>0?'<tr class="team-divider"><td colspan="'+(totalDays+1)+'"><i class="fas fa-utensils" style="margin-right:4px"></i>조리팀</td></tr>'+empRows(cookTeam):'')+
-      (nutriTeam.length>0?'<tr class="team-divider"><td colspan="'+(totalDays+1)+'"><i class="fas fa-apple-alt" style="margin-right:4px"></i>영양팀</td></tr>'+empRows(nutriTeam):'')+
-      '</tbody></table></div>'+
-    '<div style="text-align:center;padding:16px;"><button onclick="window.print()" style="padding:10px 24px;background:#166534;color:white;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:6px"></i>인쇄 / PDF 저장</button></div>'
+    '<div class="page-header">'+
+      '<h1><i class="fas fa-hospital" style="font-size:13px"></i>'+hospital.name+'</h1>'+
+      '<div class="sub">'+
+        '<span><i class="fas fa-calendar-alt"></i>'+year+'년 '+month+'월 전체 근무표</span>'+
+        '<span><i class="fas fa-users"></i>총 '+employees.length+'명</span>'+
+        '<span style="opacity:.6;font-size:10px"><i class="fas fa-share-alt"></i>직원 공유 뷰</span>'+
+      '</div>'+
+    '</div>'+
+    '<div class="month-bar">'+
+      '<button class="nav-btn" onclick="prev()"><i class="fas fa-chevron-left"></i></button>'+
+      '<div class="month-label">'+year+'년 '+month+'월</div>'+
+      '<button class="nav-btn" onclick="next()"><i class="fas fa-chevron-right"></i></button>'+
+      '<button class="btn-print" onclick="window.print()"><i class="fas fa-print"></i>인쇄/PDF</button>'+
+    '</div>'+
+    '<div class="legend-bar">'+legend+'</div>'+
+    sectionsHtml +
+    '<div style="height:20px"></div>'
 }
 
 function prev(){curM--;if(curM<1){curM=12;curY--}load()}
