@@ -12249,6 +12249,8 @@ let scheduleLeaveAlerts = []
 let scheduleOffGrants = null   // { granted_days, substitute_days, summary }
 // 월간 스케줄 데이터 (API 응답 전체)
 let scheduleMonthData = null   // { employees, sched_map, shifts, holidays, leave_map, substitute_days }
+// Phase D: 병원 공휴일 정책 요약
+let scheduleHolidayPolicySummary = null
 
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
@@ -12258,7 +12260,7 @@ async function renderSchedule() {
   scheduleTab = 'schedule'
 
   // 모든 데이터 병렬 로드
-  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData] = await Promise.all([
+  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData, holidayPolicySummaryData] = await Promise.all([
     api('GET', '/api/schedule/employees').catch(() => []),
     api('GET', '/api/schedule/shifts').catch(() => []),
     api('GET', '/api/schedule/positions').catch(() => []),
@@ -12268,7 +12270,8 @@ async function renderSchedule() {
     api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => []),
     api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null),
     api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', '/api/schedule/work-settings').catch(() => null)
+    api('GET', '/api/schedule/work-settings').catch(() => null),
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
   ])
 
   scheduleEmployees = empData || []
@@ -12283,6 +12286,7 @@ async function renderSchedule() {
   scheduleAnalysisData = analysisData || null
   scheduleMealStats = mealStats || null
   scheduleWorkSettings = workSettingsData || null
+  scheduleHolidayPolicySummary = holidayPolicySummaryData || null
 
   renderScheduleTab(content)
 }
@@ -12294,12 +12298,13 @@ async function reloadScheduleMonth() {
   const tc = document.getElementById('scheduleTabContent')
   if (tc) tc.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
 
-  const [offGrants, monthData, leaveAlerts, analysisData, mealStats] = await Promise.all([
+  const [offGrants, monthData, leaveAlerts, analysisData, mealStats, holidayPolicySum] = await Promise.all([
     api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null),
     api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null),
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}`).catch(() => []),
     api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null),
-    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}`).catch(() => null),
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
   ])
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
@@ -12308,6 +12313,7 @@ async function reloadScheduleMonth() {
   scheduleLeaveAlerts = leaveAlerts || []
   scheduleAnalysisData = analysisData || null
   scheduleMealStats = mealStats || null
+  scheduleHolidayPolicySummary = holidayPolicySum || null
   if (tc) {
     if (scheduleTab === 'schedule') {
       tc.innerHTML = renderMonthlyScheduleTab()
@@ -12572,7 +12578,8 @@ function renderEmployeeTab() {
                     const scolors = {monthly:'bg-blue-50 text-blue-700',hourly:'bg-purple-50 text-purple-700',annual:'bg-green-50 text-green-700'}
                     return `<span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${scolors[st]||'bg-gray-100 text-gray-600'}">${slabels[st]||st}</span>
                     ${emp.ot_enabled ? '<span class="ml-1 text-xs text-green-600" title="OT수당">OT</span>' : ''}
-                    ${emp.night_allowance_enabled ? '<span class="ml-0.5 text-xs text-purple-600" title="야간수당">야</span>' : ''}`
+                    ${emp.night_allowance_enabled ? '<span class="ml-0.5 text-xs text-purple-600" title="야간수당">야</span>' : ''}
+                    ${emp.holiday_policy_override ? `<span class="ml-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700" title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'}"><i class="fas fa-user-cog" style="font-size:8px"></i>${emp.holiday_policy_override==='off'?'공휴휴무':emp.holiday_policy_override==='work_pay'?'공휴수당':'공휴대체'}</span>` : ''}`
                   })()}
                 </td>
                 <td class="px-4 py-3 text-gray-600 text-sm">${emp.hire_date || '-'}</td>
@@ -13133,6 +13140,40 @@ function renderOffGrantsPanel() {
       <div class="text-xs text-gray-400">
         대체휴무 없음 ${isAdm ? '· <button onclick="openSubstituteOffModal()" class="text-orange-500 hover:underline">추가하기</button>' : ''}
       </div>`}
+
+      <!-- Phase D: 직원별 공휴일 정책 현황 (관리자 전용) -->
+      ${isAdm && scheduleHolidayPolicySummary ? (()=>{
+        const hps = scheduleHolidayPolicySummary
+        const pLabel = { off:'공휴=휴무', work_pay:'공휴=수당', work_substitute:'공휴=대체' }
+        const pColor = { off:'text-gray-600', work_pay:'text-yellow-700', work_substitute:'text-green-700' }
+        const pBg    = { off:'bg-gray-50 border-gray-200', work_pay:'bg-yellow-50 border-yellow-200', work_substitute:'bg-green-50 border-green-200' }
+        const overrides = (hps.employees||[]).filter(e=>e.override)
+        return `
+      <div class="mt-3 pt-3 border-t border-gray-100">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-xs font-bold text-gray-500">
+            <i class="fas fa-users-cog text-amber-500 mr-1"></i>공휴일 정책 현황
+          </div>
+          <div class="text-xs text-gray-400">
+            병원기본: <strong class="text-gray-600">${pLabel[hps.hospital_policy]||hps.hospital_policy}</strong>
+            ${hps.override_count>0 ? `· 개별설정 <strong class="text-amber-600">${hps.override_count}명</strong>` : ''}
+          </div>
+        </div>
+        ${overrides.length > 0 ? `
+        <div class="flex flex-wrap gap-1.5">
+          ${overrides.map(e=>`
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs border ${pBg[e.override]||'bg-gray-50 border-gray-200'} cursor-pointer"
+              title="클릭: ${e.name} 공휴일 정책 수정"
+              onclick="openEmpCardModal(${e.id})">
+              <i class="fas fa-user-cog text-amber-500" style="font-size:9px"></i>
+              <span class="font-medium text-gray-700">${e.name}</span>
+              <span class="${pColor[e.override]||'text-gray-500'} font-semibold">${pLabel[e.override]||e.override}</span>
+            </span>
+          `).join('')}
+        </div>` : `
+        <div class="text-xs text-gray-400">개별 예외 설정된 직원 없음 — 전원 병원 기본값(${pLabel[hps.hospital_policy]||hps.hospital_policy}) 적용</div>`}
+      </div>`
+      })()} : ''}
     </div>
   </div>
 
@@ -14021,7 +14062,11 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     if(dep >= 20) evalItems.push({ type:'warn', text:`외부인력 의존도 ${extDependencyPct}% — 높은 편입니다. 정규직 충원을 검토하세요.` })
     else evalItems.push({ type:'info', text:`외부인력 ${extDependencyPct}% 활용 — 적정 수준입니다.` })
   }
-  if(empStats.some(e=>e.holidayWorkDays>2)) evalItems.push({ type:'warn', text:`공휴일 3일 이상 근무자 ${empStats.filter(e=>e.holidayWorkDays>2).map(e=>e.name).join(', ')} — 휴일수당 발생 여부를 확인하세요.` })
+  if(empStats.some(e=>e.holidayWorkDays>2)) {
+    const hospitalPolicy = scheduleHolidayPolicySummary?.hospital_policy || scheduleWorkSettings?.holiday_policy || 'off'
+    const policyCtx = hospitalPolicy==='work_pay' ? ' (병원정책: 공휴수당 지급)' : hospitalPolicy==='work_substitute' ? ' (병원정책: 대체휴무 생성)' : ''
+    evalItems.push({ type:'warn', text:`공휴일 3일 이상 근무자 ${empStats.filter(e=>e.holidayWorkDays>2).map(e=>e.name).join(', ')} — 휴일수당 발생 여부를 확인하세요.${policyCtx}` })
+  }
 
   // min_guarantee 정책 검토 신호 (off-grants 요약에서 가져옴)
   const ogSummary = scheduleOffGrants?.summary || {}
@@ -14669,6 +14714,7 @@ function renderMonthlyScheduleTab() {
                     <i class="fas fa-chart-line" style="font-size:9px;color:#94a3b8;margin-left:2px"></i>
                     ${consecWarn2?`<span title="연속${maxConsecFound2}일 근무 초과" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:800;margin-left:2px">!</span>`:''}
                     ${weekWarn2?`<span title="주 최대 ${Math.round(maxWeeklyHoursFound)}h 초과" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px">W</span>`:''}
+                    ${emp.holiday_policy_override?`<span title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'}" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f59e0b;color:white;font-size:8px;font-weight:800;margin-left:2px">H</span>`:''}
                   </div>
                   <div id="namecell-pos-${emp.id}" style="font-size:10px;color:#94a3b8">${emp.position_name||emp.position||''}</div>
                 </td>
@@ -15097,6 +15143,29 @@ function renderEmployeeModal() {
                 <span class="text-sm text-gray-700">휴일근무 수당 계산</span>
               </label>
             </div>
+          </div>
+
+          <!-- Phase D: 공휴일 정책 개별 예외 설정 -->
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700 block mb-1">
+              <i class="fas fa-calendar-times text-red-400 mr-1"></i>공휴일 처리 정책 (개별 예외)
+            </label>
+            <div class="flex items-center gap-2 flex-wrap">
+              <select id="ei_holidayPolicyOverride" class="form-input w-auto text-sm">
+                <option value="" ${(!isEdit||emp?.holiday_policy_override==null)?'selected':''}>병원 기본값 사용 (상속)</option>
+                <option value="off" ${(isEdit&&emp?.holiday_policy_override==='off')?'selected':''}>공휴일 = 휴무</option>
+                <option value="work_pay" ${(isEdit&&emp?.holiday_policy_override==='work_pay')?'selected':''}>공휴일 = 근무 + 공휴수당</option>
+                <option value="work_substitute" ${(isEdit&&emp?.holiday_policy_override==='work_substitute')?'selected':''}>공휴일 = 근무 + 대체휴무</option>
+              </select>
+              <span class="text-xs text-gray-400">※ 병원 기본값 사용 시 근무설정의 공휴일 정책을 따릅니다</span>
+            </div>
+            ${isEdit && emp?.holiday_policy_override ? `
+            <div class="mt-1.5 inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs bg-amber-50 border border-amber-200 text-amber-700">
+              <i class="fas fa-user-cog"></i> 개별 오버라이드 적용 중: <strong>${
+                emp.holiday_policy_override==='off'?'휴무':
+                emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'
+              }</strong>
+            </div>` : ''}
           </div>
 
           <!-- 메모 -->
@@ -19803,7 +19872,9 @@ window.saveEmployeeCard = async (empId) => {
     baseSalary: parseFloat(document.getElementById('ei_baseSalary')?.value || '0'),
     otEnabled: document.getElementById('ei_otEnabled')?.checked ? 1 : 0,
     nightEnabled: document.getElementById('ei_nightEnabled')?.checked ? 1 : 0,
-    holidayEnabled: document.getElementById('ei_holidayEnabled')?.checked ? 1 : 0
+    holidayEnabled: document.getElementById('ei_holidayEnabled')?.checked ? 1 : 0,
+    // Phase D: 공휴일 정책 오버라이드 (빈 문자열 = 병원 기본값 상속)
+    holidayPolicyOverride: document.getElementById('ei_holidayPolicyOverride')?.value || null
   }
 
   let res

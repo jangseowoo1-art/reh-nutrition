@@ -367,7 +367,8 @@ schedule.put('/employees/:id', async (c) => {
     name, team, positionId, position, empNumber, birthDate, hireDate, resignDate,
     employmentType, workParts, phone, email, address, emergencyContact, note,
     healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder, isActive,
-    salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled
+    salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled,
+    holidayPolicyOverride  // Phase D: 직원별 공휴일 정책 예외 ('off'|'work_pay'|'work_substitute'|null)
   } = body
 
   await c.env.DB.prepare(
@@ -380,6 +381,7 @@ schedule.put('/employees/:id', async (c) => {
        annual_leave_total = ?, sort_order = ?, is_active = ?,
        salary_type = ?, base_salary = ?, ot_enabled = ?,
        night_allowance_enabled = ?, holiday_allowance_enabled = ?,
+       holiday_policy_override = ?,
        updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
@@ -410,6 +412,10 @@ schedule.put('/employees/:id', async (c) => {
     otEnabled !== undefined ? (otEnabled ? 1 : 0) : (existing.ot_enabled ?? 0),
     nightEnabled !== undefined ? (nightEnabled ? 1 : 0) : (existing.night_allowance_enabled ?? 0),
     holidayEnabled !== undefined ? (holidayEnabled ? 1 : 0) : (existing.holiday_allowance_enabled ?? 0),
+    // Phase D: holiday_policy_override — 명시적으로 null 전달 시 병원 기본값 상속으로 초기화
+    holidayPolicyOverride !== undefined
+      ? (holidayPolicyOverride === '' ? null : (holidayPolicyOverride ?? null))
+      : (existing.holiday_policy_override ?? null),
     c.req.param('id')
   ).run()
   return c.json({ success: true })
@@ -1737,22 +1743,46 @@ schedule.get('/off-grants', async (c) => {
       }
     }
   } else {
-    // ── 주5일제 기본 (토·일·공휴일) ─────────────────────────────
+    // ── 주5일제 기본 (토·일·공휴일) + holiday_policy 적용 ──────────
     for (let d = 1; d <= daysInMonth; d++) {
       const dateObj = new Date(year, month - 1, d)
       const dow     = dateObj.getDay()
       const dateStr = `${year}-${monthStr}-${String(d).padStart(2, '0')}`
       const isNationalHoliday = nationalHolidayDates.has(dateStr)
+      const hName = holidayNameMap.get(dateStr) || '공휴일'
 
       if (dow === 0) {
-        grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일' })
+        grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일', is_auto: true, lock_flag: 0 })
       } else if (dow === 6) {
-        grantedDays.push({ date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일' })
+        grantedDays.push({ date: dateStr, day_of_week: '토', type: 'saturday', label: '토요일', is_auto: true, lock_flag: 0 })
       } else if (isNationalHoliday) {
-        grantedDays.push({
-          date: dateStr, day_of_week: DOW_LABEL[dow],
-          type: 'holiday', label: holidayNameMap.get(dateStr) || '공휴일'
-        })
+        // ── holiday_policy 병원 기본값 적용 ─────────────────
+        if (holidayPolicy === 'work_pay') {
+          // 근무 + 공휴수당 → 휴무 부여하지 않음. 분석용으로만 기록
+          grantedDays.push({
+            date: dateStr, day_of_week: DOW_LABEL[dow],
+            type: 'holiday',
+            label: `${hName} (공휴수당 지급)`,
+            is_auto: true, lock_flag: 0,
+            reason: '병원정책: 공휴일 근무 + 수당 지급'
+          })
+        } else if (holidayPolicy === 'work_substitute') {
+          // 근무 + 대체휴무 자동 생성
+          grantedDays.push({
+            date: dateStr, day_of_week: DOW_LABEL[dow],
+            type: 'substitute',
+            label: `${hName} (대체휴무 생성)`,
+            is_auto: true, lock_flag: 0,
+            reason: '병원정책: 공휴일 근무 + 대체휴무 생성'
+          })
+        } else {
+          // off (기본): 공휴일 = 휴무
+          grantedDays.push({
+            date: dateStr, day_of_week: DOW_LABEL[dow],
+            type: 'holiday', label: hName,
+            is_auto: true, lock_flag: 0
+          })
+        }
       }
     }
   }
@@ -1987,6 +2017,226 @@ schedule.delete('/off-grants/substitute/:id', async (c) => {
   await c.env.DB.prepare(`DELETE FROM substitute_off_days WHERE id = ?`)
     .bind(c.req.param('id')).run()
   return c.json({ success: true })
+})
+
+// ════════════════════════════════════════════════════════════════
+// Phase D: 직원별 공휴일 정책 예외 API
+// ════════════════════════════════════════════════════════════════
+
+// ── 직원별 공휴일 정책 조회 ───────────────────────────────────
+// GET /api/schedule/employees/:id/holiday-policy
+schedule.get('/employees/:id/holiday-policy', async (c) => {
+  const user = c.get('user')
+  const empId = parseInt(c.req.param('id'))
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== (user as any).hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  // 병원 기본값 조회
+  const wsRows = await c.env.DB.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(emp.hospital_id).all<any>()
+  const wsMap: Record<string,string> = {}
+  for (const r of (wsRows.results || [])) wsMap[r.setting_key] = r.setting_value
+  const hospitalPolicy = wsMap.holiday_policy || 'off'
+
+  // 직원 오버라이드 (null이면 병원 기본값 상속)
+  const override  = emp.holiday_policy_override ?? null
+  const effective = override ?? hospitalPolicy
+
+  return c.json({
+    employee_id:      empId,
+    employee_name:    emp.name,
+    hospital_policy:  hospitalPolicy,     // 병원 기본값
+    override:         override,           // null=상속, 또는 'off'|'work_pay'|'work_substitute'
+    effective_policy: effective,          // 실제 적용값
+    source:           override ? 'override' : 'hospital'
+  })
+})
+
+// ── 직원별 공휴일 정책 오버라이드 설정 ───────────────────────
+// PUT /api/schedule/employees/:id/holiday-policy
+// body: { override: 'off'|'work_pay'|'work_substitute'|null }
+schedule.put('/employees/:id/holiday-policy', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
+
+  const empId = parseInt(c.req.param('id'))
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== (user as any).hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const body = await c.req.json()
+  const override = body.override === '' ? null : (body.override ?? null)  // 빈 문자열도 null 처리
+  const validPolicies = [null, 'off', 'work_pay', 'work_substitute']
+  if (!validPolicies.includes(override)) {
+    return c.json({ error: '유효한 정책값이 아닙니다 (off|work_pay|work_substitute|null)' }, 400)
+  }
+
+  const changedBy = (user as any)?.username || (user as any)?.name || 'system'
+  const prevOverride = emp.holiday_policy_override ?? null
+
+  await c.env.DB.prepare(
+    `UPDATE employees SET holiday_policy_override=?, updated_at=datetime('now') WHERE id=?`
+  ).bind(override, empId).run()
+
+  // 변경 이력 기록
+  if (prevOverride !== override) {
+    await c.env.DB.prepare(
+      `INSERT INTO work_settings_history
+         (hospital_id, setting_key, prev_value, new_value, changed_by, change_type)
+       VALUES (?, ?, ?, ?, ?, 'manual')`
+    ).bind(
+      emp.hospital_id,
+      `employee_${empId}_holiday_policy_override`,
+      prevOverride ?? '(병원기본값 상속)',
+      override ?? '(병원기본값 상속)',
+      changedBy
+    ).run()
+  }
+
+  return c.json({
+    success: true,
+    employee_id: empId,
+    prev_override: prevOverride,
+    new_override:  override,
+    message: override ? `공휴일 정책 개별 설정: ${override}` : '병원 기본값 상속으로 초기화'
+  })
+})
+
+// ── 직원별 공휴일 예외 처리 기록 (특정 날짜) ─────────────────
+// POST /api/schedule/employees/:id/holiday-exceptions
+// body: { holidayDate, holidayName?, appliedPolicy, allowancePaid?, substituteDate?, note? }
+schedule.post('/employees/:id/holiday-exceptions', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
+
+  const empId = parseInt(c.req.param('id'))
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+
+  const body = await c.req.json()
+  const { holidayDate, holidayName, appliedPolicy, allowancePaid, substituteDate, note } = body
+  if (!holidayDate || !appliedPolicy) return c.json({ error: 'holidayDate, appliedPolicy는 필수입니다' }, 400)
+
+  const changedBy = (user as any)?.username || (user as any)?.name || 'system'
+
+  // 직원의 실제 적용 정책 확인 (병원기본 vs 오버라이드)
+  const wsRows = await c.env.DB.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(emp.hospital_id).all<any>()
+  const wsMap: Record<string,string> = {}
+  for (const r of (wsRows.results || [])) wsMap[r.setting_key] = r.setting_value
+  const hospitalPolicy = wsMap.holiday_policy || 'off'
+  const override = emp.holiday_policy_override ?? null
+  const policySource = override && override !== hospitalPolicy ? 'override' : 'hospital'
+
+  await c.env.DB.prepare(
+    `INSERT INTO employee_holiday_exceptions
+       (hospital_id, employee_id, holiday_date, holiday_name,
+        applied_policy, allowance_paid, substitute_date,
+        policy_source, note, created_by, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(hospital_id, employee_id, holiday_date) DO UPDATE SET
+       applied_policy  = excluded.applied_policy,
+       allowance_paid  = excluded.allowance_paid,
+       substitute_date = excluded.substitute_date,
+       policy_source   = excluded.policy_source,
+       note            = excluded.note,
+       created_by      = excluded.created_by,
+       updated_at      = datetime('now')`
+  ).bind(
+    emp.hospital_id, empId, holidayDate, holidayName || '',
+    appliedPolicy,
+    allowancePaid ? 1 : 0,
+    substituteDate || null,
+    policySource,
+    note || '', changedBy
+  ).run()
+
+  return c.json({ success: true, policy_source: policySource, applied_policy: appliedPolicy })
+})
+
+// ── 직원별 공휴일 예외 처리 목록 조회 ──────────────────────────
+// GET /api/schedule/employees/:id/holiday-exceptions?year=&month=
+schedule.get('/employees/:id/holiday-exceptions', async (c) => {
+  const user = c.get('user')
+  const empId = parseInt(c.req.param('id'))
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== (user as any).hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const year  = c.req.query('year')  || new Date().getFullYear().toString()
+  const month = c.req.query('month')
+  const prefix = month ? `${year}-${String(month).padStart(2,'0')}` : year
+
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM employee_holiday_exceptions
+     WHERE hospital_id=? AND employee_id=? AND holiday_date LIKE ?
+     ORDER BY holiday_date`
+  ).bind(emp.hospital_id, empId, `${prefix}%`).all<any>()
+
+  return c.json({ employee_id: empId, exceptions: rows.results || [] })
+})
+
+// ── 병원 전체 공휴일 예외 처리 현황 조회 (관리자용) ─────────────
+// GET /api/schedule/holiday-policy-summary?year=&month=&hospitalId=
+schedule.get('/holiday-policy-summary', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year  = c.req.query('year')  || new Date().getFullYear().toString()
+  const month = c.req.query('month')
+  const prefix = month ? `${year}-${String(month).padStart(2,'0')}` : year
+
+  // 병원 기본 공휴일 정책
+  const wsRows = await c.env.DB.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(hospitalId).all<any>()
+  const wsMap: Record<string,string> = {}
+  for (const r of (wsRows.results || [])) wsMap[r.setting_key] = r.setting_value
+  const hospitalPolicy     = wsMap.holiday_policy      || 'off'
+  const cycleHolidayPolicy = wsMap.cycle_holiday_policy || 'add'
+
+  // 직원별 오버라이드 목록
+  const empRows = await c.env.DB.prepare(
+    `SELECT id, name, team, holiday_policy_override
+     FROM employees
+     WHERE hospital_id=? AND is_active=1
+     ORDER BY sort_order`
+  ).bind(hospitalId).all<any>()
+
+  const employees = (empRows.results || []).map((e: any) => ({
+    id:               e.id,
+    name:             e.name,
+    team:             e.team,
+    override:         e.holiday_policy_override ?? null,
+    effective_policy: e.holiday_policy_override ?? hospitalPolicy,
+    source:           e.holiday_policy_override ? 'override' : 'hospital',
+  }))
+
+  // 예외 처리 이력 집계
+  const excRows = await c.env.DB.prepare(
+    `SELECT employee_id, applied_policy, policy_source, allowance_paid, substitute_date
+     FROM employee_holiday_exceptions
+     WHERE hospital_id=? AND holiday_date LIKE ?`
+  ).bind(hospitalId, `${prefix}%`).all<any>()
+
+  const excMap: Record<number, any[]> = {}
+  for (const r of (excRows.results || [])) {
+    if (!excMap[r.employee_id]) excMap[r.employee_id] = []
+    excMap[r.employee_id].push(r)
+  }
+
+  return c.json({
+    hospital_id:          hospitalId,
+    hospital_policy:      hospitalPolicy,
+    cycle_holiday_policy: cycleHolidayPolicy,
+    period:               prefix,
+    employees,
+    exceptions_by_employee: excMap,
+    override_count:       employees.filter((e: any) => e.override !== null).length,
+    total_employees:      employees.length,
+  })
 })
 
 // ════════════════════════════════════════════════════════════════
