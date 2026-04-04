@@ -13329,10 +13329,16 @@ function renderMonthlyScheduleTab() {
                 html += `<tr style="border-bottom:1px solid #e2e8f0"
                   onmouseover="this.style.background='#f0fdf4'"
                   onmouseout="this.style.background='${rowBg}'">
-                  <td style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:100px;cursor:pointer"
+                  <td id="namecell-${emp.id}" style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:100px;cursor:pointer"
                     onclick="openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}')"
-                    title="클릭: 개인 근무상세">
-                    <div style="font-weight:600;color:#1f2937;font-size:12px">
+                    title="클릭: 개인 근무상세"
+                    data-name="${emp.name.replace(/"/g,'&quot;')}"
+                    data-pos="${(emp.position_name || emp.position || '').replace(/"/g,'&quot;')}"
+                    data-consec-max="${maxConsec}"
+                    data-weekly-max="${weeklyMaxHours}"
+                    data-legal="${legalWarnEnabled ? '1' : '0'}"
+                    data-rowbg="${rowBg}">
+                    <div id="namecell-name-${emp.id}" style="font-weight:600;color:#1f2937;font-size:12px">
                       ${emp.name}
                       <i class="fas fa-chart-line" style="font-size:9px;color:#94a3b8;margin-left:2px"></i>
                       ${legalWarnEnabled && maxConsecFound > maxConsec
@@ -13342,7 +13348,7 @@ function renderMonthlyScheduleTab() {
                         ? `<span title="주 최대 ${Math.round(maxWeeklyHours)}h 초과 (기준:${weeklyMaxHours}h)" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px">W</span>`
                         : ''}
                     </div>
-                    <div style="font-size:10px;color:#94a3b8">${emp.position_name || emp.position || ''}
+                    <div id="namecell-pos-${emp.id}" style="font-size:10px;color:#94a3b8">${emp.position_name || emp.position || ''}
                       ${legalWarnEnabled && maxConsecFound > maxConsec ? `<span style="color:#ef4444;font-weight:600"> 연속${maxConsecFound}일</span>` : ''}
                       ${legalWarnEnabled && maxWeeklyHours > weeklyMaxHours ? `<span style="color:#f97316;font-weight:600"> 주${Math.round(maxWeeklyHours)}h</span>` : ''}
                     </div>
@@ -17412,12 +17418,15 @@ window.schedUndo = () => {
   window._redoStack.push({ items: batch.items.map(i => ({ empId: i.empId, date: i.date, oldCode: i.newCode, newCode: i.oldCode })) })
   if (window._redoStack.length > UNDO_LIMIT) window._redoStack.shift()
   _syncUndoBtn()
+  const affectedEmps = new Set()
   for (const { empId, date, oldCode } of batch.items) {
     const cell = _getCellEl(empId, date)
     if (!cell) continue
     _applyCodeDOM(empId, date, cell, oldCode || '-')
     _queueSave(empId, date, oldCode || '-')
+    affectedEmps.add(empId)
   }
+  affectedEmps.forEach(eid => schedRecalcRow(Number(eid)))
   showToast(`↩ ${batch.items.length}개 셀 실행취소`, 'info')
   clearMultiSelection()
   batch.items.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
@@ -17434,12 +17443,15 @@ window.schedRedo = () => {
   window._undoStack.push({ items: batch.items.map(i => ({ empId: i.empId, date: i.date, oldCode: i.newCode, newCode: i.oldCode })) })
   if (window._undoStack.length > UNDO_LIMIT) window._undoStack.shift()
   _syncUndoBtn()
+  const affectedEmps2 = new Set()
   for (const { empId, date, oldCode } of batch.items) {
     const cell = _getCellEl(empId, date)
     if (!cell) continue
     _applyCodeDOM(empId, date, cell, oldCode || '-')
     _queueSave(empId, date, oldCode || '-')
+    affectedEmps2.add(empId)
   }
+  affectedEmps2.forEach(eid => schedRecalcRow(Number(eid)))
   showToast(`↪ ${batch.items.length}개 셀 다시실행`, 'info')
   clearMultiSelection()
   batch.items.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
@@ -17466,7 +17478,7 @@ function _applyCodeDOM(empId, date, cell, code) {
   const k = `${empId}_${date}`
   if (isEmpty) delete scheduleMonthData.sched_map[k]
   else scheduleMonthData.sched_map[k] = { ...(scheduleMonthData.sched_map[k]||{}), shift_code: code }
-  schedRecalcRow(empId)
+  // schedRecalcRow는 호출자(_applyCodeNoPush / schedApplyBatch)에서 배치 처리 후 1회만 호출
 }
 
 // ── DB 배치 저장 (debounce) ───────────────────────────────────
@@ -17499,6 +17511,7 @@ async function _flushSave() {
 function _applyCodeNoPush(empId, date, cell, code) {
   _applyCodeDOM(empId, date, cell, code)
   _queueSave(empId, date, code)
+  schedRecalcRow(empId)
 }
 
 // ── 공개용: undo 스택에 단일 항목 push 후 적용 ───────────────
@@ -17512,13 +17525,17 @@ function schedApplyCodeToCell(empId, date, cell, code) {
 function schedApplyBatch(items) {
   // items: [{empId, date, code}, ...]
   const undoItems = []
+  const affectedEmps = new Set()
   for (const { empId, date, code } of items) {
     const cell = _getCellEl(empId, date)
     if (!cell) continue
     undoItems.push({ empId: String(empId), date, oldCode: cell.dataset.shift || '', newCode: code })
     _applyCodeDOM(empId, date, cell, code)
     _queueSave(empId, date, code)
+    affectedEmps.add(empId)
   }
+  // 영향받은 직원별 요약 한 번씩만 재계산
+  affectedEmps.forEach(eid => schedRecalcRow(Number(eid)))
   _undoPushBatch(undoItems)
 }
 
@@ -17892,6 +17909,8 @@ window.schedCycleShift = (empId, date, cell, codesJson) => {
   _undoPushBatch([{ empId: String(empId), date, oldCode, newCode: nextShift }])
   // 3. 배치 저장 큐
   _queueSave(empId, date, nextShift)
+  // 4. 요약 재계산
+  schedRecalcRow(empId)
 }
 
 // 해당 직원 행의 근무일수·연차 집계 재계산
@@ -17901,41 +17920,96 @@ function schedRecalcRow(empId) {
   const sm  = scheduleMonthData?.sched_map || {}
   const lm  = scheduleMonthData?.leave_map || {}
   const og  = scheduleOffGrants
-  const allOff = new Set([
-    ...(og?.granted_days    || []).map(d => d.date),
-    ...(og?.substitute_days || []).map(d => d.date)
-  ])
+  const ws  = scheduleWorkSettings || {}
 
   let workDayCount = 0, annualUsed = 0
+  let maxConsecFound = 0, curConsec = 0
+  let weeklyHoursMap = {}, maxWeeklyHours = 0
+
+  // 근무조 시간 계산 헬퍼
+  function calcShiftHrs(code) {
+    if (!code || code === '-') return 0
+    if (REST_CODES.has(code)) return 0
+    const sf = (scheduleShifts||[]).find(s => s.shift_code === code)
+    if (sf?.start_time && sf?.end_time) {
+      const [sh, sm2] = sf.start_time.split(':').map(Number)
+      const [eh, em]  = sf.end_time.split(':').map(Number)
+      let hrs = (eh * 60 + em - sh * 60 - sm2) / 60
+      if (hrs < 0) hrs += 24
+      return Math.max(0, hrs - 1)
+    }
+    return 8
+  }
 
   for (let d = 1; d <= days; d++) {
     const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-    const isOff   = allOff.has(dateStr)
     const sched   = sm[`${empId}_${dateStr}`]
     const code    = sched?.shift_code || ''
-    if (!code || code === '-') continue
-    if (code === '연' || sched?.leave_type === 'annual') annualUsed += 1
-    else if (!REST_CODES.has(code) && !sched?.leave_type) workDayCount += 1
+    const ltype   = sched?.leave_type || ''
+    if (!code || code === '-') { curConsec = 0; continue }
+    if (code === '연' || ltype === 'annual') { annualUsed += 1; curConsec = 0 }
+    else if (REST_CODES.has(code) || ltype) { curConsec = 0 }
+    else {
+      workDayCount += 1
+      curConsec++
+      if (curConsec > maxConsecFound) maxConsecFound = curConsec
+      // 주간 근무시간 집계
+      const dt = new Date(dateStr)
+      const startOfYear = new Date(dt.getFullYear(), 0, 1)
+      const weekNum = Math.ceil(((dt - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7)
+      if (!weeklyHoursMap[weekNum]) weeklyHoursMap[weekNum] = 0
+      weeklyHoursMap[weekNum] += calcShiftHrs(code)
+      if (weeklyHoursMap[weekNum] > maxWeeklyHours) maxWeeklyHours = weeklyHoursMap[weekNum]
+    }
   }
 
-  // 근무일 셀 업데이트
+  // ── 우측 근무일 셀 업데이트 ────────────────────────────
   const wdEl = document.getElementById(`workdays-${empId}`)
   if (wdEl) {
     wdEl.innerHTML = `<div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div><div style="font-size:9px;color:#4ade80;opacity:0.8">근무</div>`
   }
 
-  // 연차 셀 업데이트
+  // ── 우측 연차 셀 업데이트 ─────────────────────────────
   const anEl = document.getElementById(`annual-${empId}`)
   if (anEl) {
     const empLeave     = lm[empId] || {}
     const annualTot    = empLeave.annual?.total ?? null
-    const annualRemain = annualTot !== null ? (annualTot - (empLeave.annual?.used ?? 0)) : null
-    if (annualTot !== null) {
-      anEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일</div>`
+    const annualCarried = empLeave.annual?.allowance_paid ? 0 : (empLeave.annual?.carried_over_days ?? 0)
+    const annualEffective = annualTot !== null ? annualTot + annualCarried : null
+    const annualRemain = annualEffective !== null ? (annualEffective - (empLeave.annual?.used ?? 0)) : null
+    if (annualEffective !== null) {
+      anEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일${annualCarried > 0 ? `<span style="color:#d97706;font-size:7px">(+${annualCarried})</span>` : ''}</div>`
     } else {
       anEl.innerHTML = `<div style="font-size:10px;color:#d1d5db">-</div>`
     }
   }
+
+  // ── 좌측 이름 셀 경고 배지 실시간 업데이트 ─────────────
+  const nameEl = document.getElementById(`namecell-name-${empId}`)
+  const posEl  = document.getElementById(`namecell-pos-${empId}`)
+  const nameCellEl = document.getElementById(`namecell-${empId}`)
+  if (!nameEl || !posEl || !nameCellEl) return
+
+  const maxConsec     = parseInt(ws.consecutive_max_days || '6')
+  const weeklyMax     = parseFloat(ws.weekly_max_hours || '52')
+  const legalEnabled  = (ws.legal_warning_enabled ?? '1') === '1'
+  const empName       = nameCellEl.dataset.name || ''
+  const empPos        = nameCellEl.dataset.pos  || ''
+
+  const consecBadge = (legalEnabled && maxConsecFound > maxConsec)
+    ? `<span title="연속${maxConsecFound}일 근무 초과 (기준:${maxConsec}일)" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:800;margin-left:2px">!</span>`
+    : ''
+  const weeklyBadge = (legalEnabled && maxWeeklyHours > weeklyMax)
+    ? `<span title="주 최대 ${Math.round(maxWeeklyHours)}h 초과 (기준:${weeklyMax}h)" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px">W</span>`
+    : ''
+
+  nameEl.innerHTML = `${empName}<i class="fas fa-chart-line" style="font-size:9px;color:#94a3b8;margin-left:2px"></i>${consecBadge}${weeklyBadge}`
+
+  const consecTxt = (legalEnabled && maxConsecFound > maxConsec)
+    ? `<span style="color:#ef4444;font-weight:600"> 연속${maxConsecFound}일</span>` : ''
+  const weeklyTxt = (legalEnabled && maxWeeklyHours > weeklyMax)
+    ? `<span style="color:#f97316;font-weight:600"> 주${Math.round(maxWeeklyHours)}h</span>` : ''
+  posEl.innerHTML = `${empPos}${consecTxt}${weeklyTxt}`
 }
 
 
