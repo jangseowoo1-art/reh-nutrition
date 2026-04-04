@@ -17198,7 +17198,7 @@ function _extOpenInlineInput(workerId, date, cell, initChar) {
   const sel = document.createElement('select')
   sel.className = 'ext-inline-select'
   sel.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;font-size:10px;border:2px solid #3b82f6;border-radius:3px;background:white;z-index:20;cursor:pointer'
-  sel.innerHTML = `<option value="">· 비우기</option>` + seq.map(s => {
+  sel.innerHTML = seq.map(s => {
     const cfg = _getExtShiftCfg(s)
     const label = cfg?.label || EXT_SHIFT_LABEL_MAP[s] || s
     return `<option value="${s}" ${cell.dataset.extshift===s?'selected':''}>${label}</option>`
