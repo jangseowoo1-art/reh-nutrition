@@ -37,7 +37,9 @@ if [ -z "$DB_FILE" ] || [ ! -s "$DB_FILE" ]; then
   npx wrangler d1 migrations apply hospital-meal-production --local --persist-to .wrangler/state 2>&1 | grep -E "✅|🕒|Applied|complete" || true
   echo "마이그레이션 완료!"
 else
-  echo "DB 파일 존재함, 스킵"
+  echo "DB 파일 존재함, 마이그레이션 확인 중..."
+  # DB가 있어도 새 마이그레이션이 있으면 적용
+  npx wrangler d1 migrations apply hospital-meal-production --local --persist-to .wrangler/state 2>&1 | grep -E "✅|🕒|Applied|complete|No migrations" || true
 fi
 
 # 본 서버 실행
