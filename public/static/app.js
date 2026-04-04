@@ -12928,8 +12928,22 @@ function renderShiftsTab() {
           </div>
           <div class="shrink-0 text-xs text-gray-400 text-center" style="min-width:52px">
             <div class="font-mono text-[10px] text-gray-400">${item.key}</div>
+            <button onclick="deleteExtShiftRow(${idx})" title="이 근무유형 삭제"
+              class="mt-1 w-full px-1 py-0.5 rounded text-[10px] bg-red-50 hover:bg-red-100 text-red-400 hover:text-red-600 border border-red-200 transition-colors">
+              <i class="fas fa-trash"></i> 삭제
+            </button>
           </div>
         </div>`).join('')}
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button onclick="addExtShiftRow()"
+          class="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-100 hover:bg-orange-200 text-orange-700 border border-orange-200 transition-colors">
+          <i class="fas fa-plus mr-1"></i>근무유형 추가
+        </button>
+        <button onclick="resetExtShiftConfig()"
+          class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-600 border border-gray-200 transition-colors">
+          <i class="fas fa-undo mr-1"></i>기본값 초기화
+        </button>
       </div>
       <div class="mt-4 p-3 bg-orange-50 rounded-xl text-xs text-orange-700">
         <strong>입력 단축키:</strong> 오전(오/ㅇ/A), 오후(B), 9H(9), 12H(1/F) — 셀 선택 후 해당 키를 누르면 즉시 적용
@@ -13747,7 +13761,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     : `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:7px 12px;font-size:11px;color:#166534"><i class="fas fa-check-circle" style="margin-right:5px"></i>근무 분포 이상 없음 — 모든 직원 정상 범위</div>`
 
   return `
-  <div style="background:white;border-radius:16px;border:1px solid #e5e7eb;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
+  <div data-exec-view="1" style="background:white;border-radius:16px;border:1px solid #e5e7eb;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
     <!-- 헤더 -->
     <div style="background:linear-gradient(135deg,#4c1d95,#7c3aed);padding:14px 18px 10px">
       ${viewTabsHtml}
@@ -13756,7 +13770,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
           <h3 style="font-size:17px;font-weight:900;color:white;margin:0">${year}년 ${month}월 운영진 요약</h3>
           <p style="font-size:10px;color:rgba(255,255,255,.75);margin:3px 0 0"><i class="fas fa-chart-bar" style="margin-right:4px"></i>전체 인력 운영 현황 · 경영진 의사결정 지원</p>
         </div>
-        <button onclick="window.print()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>보고서 출력</button>
+        <button onclick="printExecutiveView()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>보고서 출력</button>
       </div>
     </div>
 
@@ -18434,6 +18448,138 @@ window.deleteExternalWorker = async (workerId, workerName) => {
   }
 }
 
+// ── 운영진 뷰 전용 인쇄 함수 ─────────────────────────────────
+window.printExecutiveView = function() {
+  const execView = document.querySelector('[data-exec-view]') ||
+                   (() => {
+                     // 운영진 뷰 컨테이너 찾기 (헤더 텍스트로 식별)
+                     const allDivs = document.querySelectorAll('div')
+                     for (const div of allDivs) {
+                       const h3 = div.querySelector('h3')
+                       if (h3 && h3.textContent.includes('운영진 요약') && div.style.background && div.style.background.includes('white')) {
+                         return div
+                       }
+                     }
+                     return null
+                   })()
+
+  if (!execView) {
+    window.print()
+    return
+  }
+
+  const year = App.currentYear
+  const month = App.currentMonth
+  const printWin = window.open('', '_blank', 'width=1100,height=900')
+  if (!printWin) { window.print(); return }
+
+  const html = execView.outerHTML
+  printWin.document.write(`<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${year}년 ${month}월 운영진 보고서</title>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif; padding: 20px; background: white; }
+    @media print {
+      body { padding: 10px; }
+      button { display: none !important; }
+      .no-print { display: none !important; }
+      div[style*="overflow-y:auto"] { overflow: visible !important; max-height: none !important; }
+      div[style*="overflow-y: auto"] { overflow: visible !important; max-height: none !important; }
+    }
+    button { display: none !important; }
+  </style>
+</head>
+<body>
+  ${html}
+  <script>
+    // 버튼 제거
+    document.querySelectorAll('button').forEach(b => b.remove())
+    // overflow 제거
+    document.querySelectorAll('div').forEach(d => {
+      if (d.style.overflowY === 'auto' || d.style.overflow === 'auto') {
+        d.style.overflow = 'visible'
+        d.style.maxHeight = 'none'
+      }
+    })
+    window.onload = function() { window.print(); window.close(); }
+  <\/script>
+</body>
+</html>`)
+  printWin.document.close()
+}
+
+// ── 파출/알바 근무유형 행 삭제 ────────────────────────────────
+window.deleteExtShiftRow = (idx) => {
+  const row = document.getElementById(`extShiftRow_${idx}`)
+  if (!row) return
+  const label = document.getElementById(`extLabel_${idx}`)?.value || `항목 ${idx+1}`
+  if (!confirm(`"${label}" 근무유형을 삭제하시겠습니까?`)) return
+  row.remove()
+  showToast('삭제되었습니다. 저장 버튼을 눌러 적용하세요.', 'info')
+}
+
+// ── 파출/알바 근무유형 행 추가 ────────────────────────────────
+window.addExtShiftRow = () => {
+  const container = document.getElementById('extShiftConfigRows')
+  if (!container) return
+  const existing = container.querySelectorAll('div[id^="extShiftRow_"]')
+  const idx = existing.length
+  const newKey = `custom_${Date.now()}`
+  const div = document.createElement('div')
+  div.className = 'flex items-center gap-3 p-3 rounded-xl border border-orange-200 bg-orange-50'
+  div.id = `extShiftRow_${idx}`
+  div.innerHTML = `
+    <label class="flex items-center gap-1.5 cursor-pointer shrink-0">
+      <input type="checkbox" checked onchange="toggleExtShiftRow(${idx}, this.checked)"
+        class="rounded border-orange-300 text-orange-500">
+      <span class="text-xs font-semibold text-orange-700">사용</span>
+    </label>
+    <div class="w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0"
+      style="background:#fff7ed;color:#ea580c">신규</div>
+    <div class="grid grid-cols-2 gap-2 flex-1 min-w-0">
+      <div>
+        <label class="text-xs text-gray-500 block mb-0.5">표시 이름</label>
+        <input type="text" value="" id="extLabel_${idx}" class="w-full border border-gray-200 rounded px-2 py-1 text-xs" placeholder="근무유형 이름">
+      </div>
+      <div>
+        <label class="text-xs text-gray-500 block mb-0.5">근무시간 (h)</label>
+        <input type="number" value="8" id="extHours_${idx}" min="1" max="24" class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
+      </div>
+      <div>
+        <label class="text-xs text-gray-500 block mb-0.5">시작 시간</label>
+        <input type="time" value="07:00" id="extStart_${idx}" class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
+      </div>
+      <div>
+        <label class="text-xs text-gray-500 block mb-0.5">종료 시간</label>
+        <input type="time" value="19:00" id="extEnd_${idx}" class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
+      </div>
+    </div>
+    <div class="shrink-0 text-xs text-gray-400 text-center" style="min-width:52px">
+      <div class="font-mono text-[10px] text-gray-400">${newKey}</div>
+      <button onclick="deleteExtShiftRow(${idx})" title="이 근무유형 삭제"
+        class="mt-1 w-full px-1 py-0.5 rounded text-[10px] bg-red-50 hover:bg-red-100 text-red-400 hover:text-red-600 border border-red-200 transition-colors">
+        <i class="fas fa-trash"></i> 삭제
+      </button>
+    </div>
+  `
+  container.appendChild(div)
+  showToast('항목이 추가되었습니다. 이름 입력 후 저장하세요.', 'info')
+}
+
+// ── 파출/알바 근무유형 기본값 초기화 ─────────────────────────
+window.resetExtShiftConfig = () => {
+  if (!confirm('파출/알바 근무유형을 기본값(오전/오후/9H/12H)으로 초기화하시겠습니까?')) return
+  localStorage.removeItem('extShiftConfig')
+  showToast('기본값으로 초기화되었습니다', 'success')
+  // 근무조 탭 재렌더링
+  const content = document.getElementById('pageContent')
+  if (content) renderScheduleTab(content)
+}
+
 // ── 법정근무시간 설정 모달 열기/저장 ──────────────────────────
 window.openWorkSettingsModal = async () => {
   const modal = document.getElementById('workSettingsModal')
@@ -18503,13 +18649,21 @@ window.saveExtShiftConfig = () => {
   const EXT_DEFAULTS_BG = { morning:'#fff7ed', afternoon:'#fef3c7', full_9h:'#ffedd5', full_12h:'#fee2e2' }
   const EXT_DEFAULTS_COLOR = { morning:'#c2410c', afternoon:'#b45309', full_9h:'#ea580c', full_12h:'#dc2626' }
   const cfg = []
-  rows.forEach((row, idx) => {
-    const key   = EXT_KEYS[idx] || `custom_${idx}`
+  rows.forEach((row, pos) => {
+    // 실제 row id에서 인덱스 추출 (삭제 후 id가 불연속적일 수 있음)
+    const rowIdMatch = row.id.match(/extShiftRow_(\d+)/)
+    const idx = rowIdMatch ? parseInt(rowIdMatch[1]) : pos
+    const defaultKey = EXT_KEYS[pos] // 저장 위치 기준으로 키 재배정
+    // 기존 키 정보는 font-mono div에서 읽기
+    const keyEl = row.querySelector('.font-mono')
+    const storedKey = keyEl?.textContent?.trim() || ''
+    const key = EXT_KEYS.indexOf(storedKey) >= 0 ? storedKey : (EXT_KEYS[pos] || `custom_${pos}`)
     const label = document.getElementById(`extLabel_${idx}`)?.value?.trim() || key
     const hours = document.getElementById(`extHours_${idx}`)?.value || '8'
     const start = document.getElementById(`extStart_${idx}`)?.value || '07:00'
     const end   = document.getElementById(`extEnd_${idx}`)?.value || '19:00'
     const chk   = row.querySelector('input[type="checkbox"]')?.checked ?? true
+    if (!label) return // 이름 없는 항목은 저장 제외
     cfg.push({
       key, label, hours, startTime: start, endTime: end,
       enabled: chk,
@@ -38514,11 +38668,31 @@ window.qrLoadList = async function qrLoadList() {
   const listEl = document.getElementById('qrEmployeeList')
   if (!listEl) return
   try {
-    const data = await api('GET', '/api/schedule/share-tokens')
+    const [data, empData] = await Promise.all([
+      api('GET', '/api/schedule/share-tokens'),
+      (scheduleEmployees && scheduleEmployees.length > 0)
+        ? Promise.resolve(scheduleEmployees)
+        : api('GET', '/api/schedule/employees').catch(() => [])
+    ])
     const tokens = data.tokens || []
-    const employees = (scheduleEmployees || []).filter(e => e.is_active !== 0)
+    const employees = (Array.isArray(empData) ? empData : (empData?.employees || empData || [])).filter(e => e.is_active !== 0)
+
+    // scheduleEmployees 업데이트 (비어있었을 경우)
+    if ((!scheduleEmployees || scheduleEmployees.length === 0) && employees.length > 0) {
+      scheduleEmployees = employees
+    }
+
     const tokenMap = {}
     tokens.forEach(t => { tokenMap[t.employee_id] = t.token })
+
+    if (employees.length === 0) {
+      listEl.innerHTML = `<div style="text-align:center;padding:30px;color:#9ca3af">
+        <i class="fas fa-users" style="font-size:24px;margin-bottom:8px;display:block"></i>
+        <p style="font-size:13px">등록된 직원이 없습니다.</p>
+        <p style="font-size:11px;margin-top:4px">근무 스케줄 탭에서 직원을 먼저 등록하세요.</p>
+      </div>`
+      return
+    }
 
     listEl.innerHTML = employees.map(emp => {
       const token = tokenMap[emp.id]
