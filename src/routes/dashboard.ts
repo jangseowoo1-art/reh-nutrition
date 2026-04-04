@@ -1670,12 +1670,18 @@ dashboard.get('/staff-labor/:year/:month', async (c) => {
     else parttimeCost += price
   })
 
-  // 6. 기본급 합계
-  const salaryRow = await c.env.DB.prepare(
-    `SELECT COALESCE(SUM(base_salary),0) as total FROM employees WHERE hospital_id=? AND is_active=1`
-  ).bind(hospitalId).first<any>()
+  // 6. 기본급 합계 (salary_type 반영: annual=연봉÷12, monthly=월급, hourly=별도)
+  const salaryRows = await c.env.DB.prepare(
+    `SELECT base_salary, salary_type FROM employees WHERE hospital_id=? AND is_active=1`
+  ).bind(hospitalId).all<any>()
 
-  const baseSalary = salaryRow?.total || 0
+  let baseSalary = 0
+  ;(salaryRows.results || []).forEach((r: any) => {
+    const sal = r.base_salary || 0
+    if (r.salary_type === 'annual') baseSalary += Math.round(sal / 12)
+    else if (r.salary_type === 'monthly') baseSalary += sal
+    // hourly: 기본급 0으로 처리 (시간 기록 기반 별도 계산 필요)
+  })
   const totalLaborCost = baseSalary + dispatchCost + parttimeCost
 
   return c.json({

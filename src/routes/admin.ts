@@ -2353,10 +2353,20 @@ adminRouter.get('/staff-labor/:year/:month', async (c) => {
     // 직원 수
     const empRow = await c.env.DB.prepare(
       `SELECT COUNT(*) as total,
-              SUM(CASE WHEN employment_type='full' THEN 1 ELSE 0 END) as full_time,
-              COALESCE(SUM(base_salary),0) as base_salary_total
+              SUM(CASE WHEN employment_type='full' THEN 1 ELSE 0 END) as full_time
        FROM employees WHERE hospital_id=? AND is_active=1`
     ).bind(hid).first<any>()
+
+    // 기본급 합계 (salary_type 반영)
+    const salaryRows = await c.env.DB.prepare(
+      `SELECT base_salary, salary_type FROM employees WHERE hospital_id=? AND is_active=1`
+    ).bind(hid).all<any>()
+    let baseSalary = 0
+    ;(salaryRows.results || []).forEach((r: any) => {
+      const sal = r.base_salary || 0
+      if (r.salary_type === 'annual') baseSalary += Math.round(sal / 12)
+      else if (r.salary_type === 'monthly') baseSalary += sal
+    })
 
     // OT / 출근
     const schedRow = await c.env.DB.prepare(
@@ -2408,7 +2418,6 @@ adminRouter.get('/staff-labor/:year/:month', async (c) => {
       else parttimeCost += price
     })
 
-    const baseSalary = empRow?.base_salary_total || 0
     const totalLaborCost = baseSalary + dispatchCost + parttimeCost
 
     return {

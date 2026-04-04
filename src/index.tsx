@@ -34,7 +34,10 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }))
 
 // ── 인증 미들웨어 (API) ──────────────────────────────────────────
 app.use('/api/*', async (c, next) => {
+  // 인증 불필요 경로
   if (c.req.path === '/api/auth/login') return next()
+  // QR 공유 페이지용 public 라우트 (토큰 자체가 인증 수단)
+  if (c.req.path.startsWith('/api/schedule/public/')) return next()
   
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token) return c.json({ error: 'Unauthorized' }, 401)

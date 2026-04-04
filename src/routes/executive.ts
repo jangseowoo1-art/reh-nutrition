@@ -393,7 +393,7 @@ executive.get('/staff-labor/:year/:month', async (c) => {
 
   // ── 1. 정규/계약 직원 현황 ────────────────────────────────────
   const employees = await c.env.DB.prepare(
-    `SELECT id, name, employment_type, section, base_salary, ot_enabled
+    `SELECT id, name, employment_type, section, base_salary, salary_type, ot_enabled
      FROM employees
      WHERE hospital_id = ? AND is_active = 1`
   ).bind(hospitalId).all<any>()
@@ -488,8 +488,13 @@ executive.get('/staff-labor/:year/:month', async (c) => {
     parttimeCost += price
   })
 
-  // ── 6. 정규 인건비 (기본급 합계) ──────────────────────────────
-  const baseSalaryTotal = empList.reduce((s: number, e: any) => s + (e.base_salary || 0), 0)
+  // ── 6. 정규 인건비 (기본급 합계, salary_type 반영) ────────────
+  const baseSalaryTotal = empList.reduce((s: number, e: any) => {
+    const sal = e.base_salary || 0
+    if (e.salary_type === 'annual') return s + Math.round(sal / 12)
+    if (e.salary_type === 'monthly') return s + sal
+    return s // hourly: 별도 계산
+  }, 0)
 
   // OT 비용: employee_ot_settings 에서 hourly_wage × ot_rate 로 계산
   const otSettingsRows = await c.env.DB.prepare(

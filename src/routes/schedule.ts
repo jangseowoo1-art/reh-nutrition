@@ -677,6 +677,66 @@ schedule.get('/leaves/all', async (c) => {
   return c.json(rows.results || [])
 })
 
+// 공개 API: 토큰으로 직원 스케줄 조회 (인증 불필요) ── /:year/:month 보다 먼저 등록
+schedule.get('/public/:token', async (c) => {
+  const token = c.req.param('token')
+  const yearParam  = c.req.query('year')
+  const monthParam = c.req.query('month')
+
+  const tokenRow = await c.env.DB.prepare(`
+    SELECT t.*, e.name as emp_name, e.position, e.hospital_id,
+           h.name as hospital_name
+    FROM schedule_share_tokens t
+    JOIN employees e ON e.id = t.employee_id
+    JOIN hospitals h ON h.id = t.hospital_id
+    WHERE t.token = ? AND t.is_active = 1
+  `).bind(token).first<any>()
+
+  if (!tokenRow) return c.json({ error: 'Invalid or expired token' }, 404)
+
+  const now = new Date()
+  const year  = yearParam  ? parseInt(yearParam)  : now.getFullYear()
+  const month = monthParam ? parseInt(monthParam) : now.getMonth() + 1
+  const mm = String(month).padStart(2, '0')
+  const fromDate = `${year}-${mm}-01`
+  const lastDay  = new Date(year, month, 0).getDate()
+  const toDate   = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`
+
+  const schedRows = await c.env.DB.prepare(`
+    SELECT ds.work_date, ds.shift_code, ds.leave_type,
+           ss.shift_name, ss.start_time, ss.end_time, ss.color
+    FROM daily_schedules ds
+    LEFT JOIN schedule_shifts ss ON ss.hospital_id = ? AND ss.shift_code = ds.shift_code
+    WHERE ds.hospital_id = ? AND ds.employee_id = ?
+      AND ds.work_date >= ? AND ds.work_date <= ?
+    ORDER BY ds.work_date
+  `).bind(tokenRow.hospital_id, tokenRow.hospital_id, tokenRow.employee_id, fromDate, toDate).all<any>()
+
+  const schedMap: Record<string, any> = {}
+  const codeCount: Record<string, number> = {}
+  let workDays = 0
+  for (const r of (schedRows.results || [])) {
+    schedMap[r.work_date] = r
+    if (r.shift_code && r.shift_code !== '연' && r.shift_code !== '휴') {
+      workDays++
+      codeCount[r.shift_code] = (codeCount[r.shift_code] || 0) + 1
+    }
+  }
+
+  const shifts = await c.env.DB.prepare(`
+    SELECT shift_code, shift_name, start_time, end_time, color
+    FROM schedule_shifts WHERE hospital_id=? AND is_active=1 ORDER BY sort_order
+  `).bind(tokenRow.hospital_id).all<any>()
+
+  return c.json({
+    employee: { id: tokenRow.employee_id, name: tokenRow.emp_name, position: tokenRow.position },
+    hospital: { name: tokenRow.hospital_name },
+    year, month, schedMap, workDays, codeCount,
+    shifts: shifts.results || [],
+    totalDays: lastDay,
+  })
+})
+
 // 월별 스케줄 조회 (직위 포함, 정렬: 팀→직위순→입사일→이름)
 schedule.get('/:year/:month', async (c) => {
   const user = c.get('user')
@@ -2568,76 +2628,6 @@ schedule.post('/share-tokens/bulk', async (c) => {
   }
 
   return c.json({ created: results.length, tokens: results })
-})
-
-// 공개 API: 토큰으로 직원 스케줄 조회 (인증 불필요)
-schedule.get('/public/:token', async (c) => {
-  const token = c.req.param('token')
-  const yearParam  = c.req.query('year')
-  const monthParam = c.req.query('month')
-
-  const tokenRow = await c.env.DB.prepare(`
-    SELECT t.*, e.name as emp_name, e.position, e.hospital_id,
-           h.name as hospital_name
-    FROM schedule_share_tokens t
-    JOIN employees e ON e.id = t.employee_id
-    JOIN hospitals h ON h.id = t.hospital_id
-    WHERE t.token = ? AND t.is_active = 1
-  `).bind(token).first<any>()
-
-  if (!tokenRow) return c.json({ error: 'Invalid or expired token' }, 404)
-
-  const now = new Date()
-  const year  = yearParam  ? parseInt(yearParam)  : now.getFullYear()
-  const month = monthParam ? parseInt(monthParam) : now.getMonth() + 1
-  const mm = String(month).padStart(2, '0')
-  const fromDate = `${year}-${mm}-01`
-  const lastDay  = new Date(year, month, 0).getDate()
-  const toDate   = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`
-
-  // 근무 기록 조회
-  const schedRows = await c.env.DB.prepare(`
-    SELECT ds.work_date, ds.shift_code, ds.leave_type,
-           ss.shift_name, ss.start_time, ss.end_time, ss.color
-    FROM daily_schedules ds
-    LEFT JOIN schedule_shifts ss ON ss.hospital_id = ? AND ss.shift_code = ds.shift_code
-    WHERE ds.hospital_id = ? AND ds.employee_id = ?
-      AND ds.work_date >= ? AND ds.work_date <= ?
-    ORDER BY ds.work_date
-  `).bind(tokenRow.hospital_id, tokenRow.hospital_id, tokenRow.employee_id, fromDate, toDate).all<any>()
-
-  // 근무 집계
-  const schedMap: Record<string, any> = {}
-  const codeCount: Record<string, number> = {}
-  let workDays = 0
-  for (const r of (schedRows.results || [])) {
-    schedMap[r.work_date] = r
-    if (r.shift_code && r.shift_code !== '연' && r.shift_code !== '휴') {
-      workDays++
-      codeCount[r.shift_code] = (codeCount[r.shift_code] || 0) + 1
-    }
-  }
-
-  // 근무조 정보
-  const shifts = await c.env.DB.prepare(`
-    SELECT shift_code, shift_name, start_time, end_time, color
-    FROM schedule_shifts WHERE hospital_id=? AND is_active=1 ORDER BY sort_order
-  `).bind(tokenRow.hospital_id).all<any>()
-
-  return c.json({
-    employee: {
-      id: tokenRow.employee_id,
-      name: tokenRow.emp_name,
-      position: tokenRow.position,
-    },
-    hospital: { name: tokenRow.hospital_name },
-    year, month,
-    schedMap,
-    workDays,
-    codeCount,
-    shifts: shifts.results || [],
-    totalDays: lastDay,
-  })
 })
 
 export default schedule

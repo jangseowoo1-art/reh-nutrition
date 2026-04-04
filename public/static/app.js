@@ -12695,7 +12695,7 @@ function renderDashLeaveAlertBanner(alerts) {
   }).join('')
 
   return `
-  <div style="background:white;border-radius:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);border:1px solid #f1f5f9;overflow:hidden;margin-top:16px">
+  <div id="dashLeaveAlertBanner" style="background:white;border-radius:16px;box-shadow:0 1px 4px rgba(0,0,0,0.08);border:1px solid #f1f5f9;overflow:hidden;margin-top:16px">
     <div style="padding:14px 18px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:18px">${cfg.icon}</span>
@@ -12704,7 +12704,7 @@ function renderDashLeaveAlertBanner(alerts) {
           <span style="font-size:12px;color:#6b7280;margin-left:8px">${App.currentYear}년 기준 · ${alerts.length}명</span>
         </div>
       </div>
-      <button onclick="this.closest('[style*=border-radius]').remove()"
+      <button onclick="document.getElementById('dashLeaveAlertBanner').remove()"
         style="font-size:12px;color:#9ca3af;border:none;background:none;cursor:pointer;padding:4px 8px;border-radius:6px"
         onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">닫기 ✕</button>
     </div>
