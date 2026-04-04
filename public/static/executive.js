@@ -119,10 +119,11 @@ window.loadExecData = async function() {
   try {
     const yStr = String(State.year)
     const mStr = String(State.month).padStart(2,'0')
-    const [summary, annual, staffLabor] = await Promise.all([
+    const [summary, annual, staffLabor, scheduleMonth] = await Promise.all([
       api('GET', `/api/executive/summary/${yStr}/${mStr}`),
       api('GET', `/api/executive/annual/${yStr}`),
-      api('GET', `/api/executive/staff-labor/${yStr}/${mStr}`).catch(() => null)
+      api('GET', `/api/executive/staff-labor/${yStr}/${mStr}`).catch(() => null),
+      api('GET', `/api/schedule/${yStr}/${mStr}`).catch(() => null)
     ])
 
     if (icon) icon.classList.remove('loading-spin')
@@ -141,6 +142,7 @@ window.loadExecData = async function() {
     State.data = summary
     State.annualData = annual
     State.staffLabor = staffLabor
+    State.scheduleMonth = scheduleMonth
 
     // 병원명 업데이트
     const hospName = summary.hospital?.name || State.hospitalName || '운영 현황'
@@ -216,9 +218,9 @@ function renderAll() {
     <!-- 탭 네비게이션 -->
     <div class="exec-card p-0 overflow-hidden">
       <div class="flex border-b border-gray-100 overflow-x-auto" id="execTabBar">
-        ${['overview','vendors','meals','card','transactions','schedule'].map((t,i) => {
-          const labels = ['종합 현황','업체별 발주','식수 현황','법인카드','지출결의서','납품 스케줄']
-          const icons = ['fa-chart-pie','fa-truck','fa-utensils','fa-credit-card','fa-file-invoice','fa-calendar-alt']
+        ${['overview','vendors','meals','card','transactions','schedule','staffsched'].map((t,i) => {
+          const labels = ['종합 현황','업체별 발주','식수 현황','법인카드','지출결의서','납품 스케줄','인력 근무현황']
+          const icons = ['fa-chart-pie','fa-truck','fa-utensils','fa-credit-card','fa-file-invoice','fa-calendar-alt','fa-users']
           return `<button onclick="execSwitchTab('${t}')" id="execTab-${t}"
             class="flex-shrink-0 flex items-center gap-1.5 px-4 py-3 text-sm font-medium transition whitespace-nowrap ${State.activeTab===t ? 'tab-active' : 'text-gray-500 hover:text-gray-800'}">
             <i class="fas ${icons[i]} text-xs"></i>${labels[i]}
@@ -345,6 +347,10 @@ window.execSwitchTab = function(tab) {
     d.mealFieldBreakdown||[], d.prevMonth||{})
   // 차트 재초기화
   if (tab === 'vendors') setTimeout(() => initVendorChart(d.vendorOrders||[]), 100)
+  // 인력 근무현황 탭 렌더링
+  if (tab === 'staffsched') {
+    content.innerHTML = renderExecStaffScheduleTab()
+  }
 }
 
 function renderTabContent(tab, vendorOrders, mealStats, cardExpenses, transactions, schedules, catOrders, budget, mealFieldBreakdown, prevMonthData) {
@@ -355,6 +361,7 @@ function renderTabContent(tab, vendorOrders, mealStats, cardExpenses, transactio
     case 'card': return renderCardTab(cardExpenses)
     case 'transactions': return renderTransactionsTab(transactions)
     case 'schedule': return renderScheduleTab(schedules)
+    case 'staffsched': return renderExecStaffScheduleTab()
     default: return ''
   }
 }
@@ -1130,6 +1137,330 @@ function renderExecStaffLaborSection(d) {
       </div>
     </div>
   </div>`
+}
+
+// ── 운영진 전용 인력 근무현황 탭 ─────────────────────────────────
+function renderExecStaffScheduleTab() {
+  try {
+    const md = State.scheduleMonth
+    const sl = State.staffLabor
+    const year = State.year
+    const month = State.month
+    if (!md) return `<div style="text-align:center;padding:40px;color:#9ca3af"><i class="fas fa-spinner fa-spin" style="font-size:24px;margin-bottom:12px;display:block"></i>근무 데이터 로딩 중...</div>`
+
+    const emps = md.employees || []
+    const sm = md.sched_map || {}
+    const shifts = md.shifts || []
+    const holidays = md.holidays || []
+    const extWorkers = md.external_workers || []
+    const extMap = md.ext_sched_map || {}
+    const holidaySet = new Set(holidays.map(h=>h.date||h))
+    const REST_CODES = new Set(['연','휴','경조','병가'])
+    const days = new Date(year, month, 0).getDate()
+    const dayNames = ['일','월','화','수','목','금','토']
+
+    const shiftColorMap = {}
+    shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
+
+    function getCodeBg(code) {
+      if (!code || code==='-') return {bg:'#f3f4f6',fg:'#9ca3af'}
+      if (shiftColorMap[code]) { const h=shiftColorMap[code]; return {bg:h+'28',fg:h} }
+      const dm = {'연':'#fef3c7,#92400e','휴':'#fee2e2,#b91c1c','경조':'#fdf4ff,#9333ea','OT':'#dcfce7,#16a34a'}
+      const p=(dm[code]||'#f3f4f6,#374151').split(',')
+      return {bg:p[0],fg:p[1]}
+    }
+
+    // ── 직원별 통계 계산 ──
+    const empStats = emps.map(emp => {
+      let workDays=0, offDays=0, totalHrs=0
+      const codeCounts={}
+      let curConsec=0, maxConsec=0
+      for (let d=1;d<=days;d++) {
+        const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+        const entry=(sm[`${emp.id}_${ds}`])||{}
+        const code=entry.shift_code||''
+        if(!code||code==='-'){curConsec=0;continue}
+        codeCounts[code]=(codeCounts[code]||0)+1
+        if(REST_CODES.has(code)){offDays++;curConsec=0;continue}
+        workDays++; curConsec++
+        if(curConsec>maxConsec)maxConsec=curConsec
+        // 근무시간
+        const sf=shifts.find(s=>s.shift_code===code)
+        if(sf?.start_time&&sf?.end_time){
+          const[sh,sm2]=sf.start_time.split(':').map(Number)
+          const[eh,em]=sf.end_time.split(':').map(Number)
+          let h=(eh*60+em-sh*60-sm2)/60; if(h<0)h+=24
+          totalHrs+=Math.max(0,h-1)
+        } else totalHrs+=8
+      }
+      // 예상급여 계산
+      let estimatedSalary=null
+      const sal=parseFloat(emp.base_salary||0)
+      if(sal>0){
+        if(emp.salary_type==='hourly') estimatedSalary=Math.round(totalHrs*sal)
+        else if(emp.salary_type==='annual') estimatedSalary=Math.round(sal/12)
+        else estimatedSalary=sal // monthly
+      }
+      return {...emp,workDays,offDays,totalHrs,codeCounts,maxConsec,estimatedSalary}
+    })
+
+    const avgWork = empStats.length ? (empStats.reduce((a,e)=>a+e.workDays,0)/empStats.length) : 0
+    const totalSalary = empStats.reduce((a,e)=>a+(e.estimatedSalary||0),0)
+
+    // 외부인력 집계
+    let extWorkDays=0, dispatchDays=0, parttimeDays=0
+    extWorkers.forEach(w=>{
+      for(let d=1;d<=days;d++){
+        const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+        if(extMap[`${w.id}_${ds}`]?.shift_type||extMap[`${w.id}_${ds}`]?.shift_code){
+          extWorkDays++
+          if(w.worker_type==='dispatch')dispatchDays++
+          else parttimeDays++
+        }
+      }
+    })
+
+    // 날짜 헤더 - 일자 행 + 요일 행 분리
+    const dateRow = Array.from({length:days},(_,i)=>{
+      const day=i+1
+      const dow=new Date(year,month-1,day).getDay()
+      const ds=`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+      const isHol=holidaySet.has(ds)
+      const isSun=dow===0, isSat=dow===6
+      const bg=isHol?'#b91c1c':isSun?'#dc2626':isSat?'#1d4ed8':'#166534'
+      return `<th style="padding:3px 0;min-width:24px;text-align:center;font-size:10px;font-weight:800;background:${bg};color:white;border-left:1px solid rgba(255,255,255,.2)">${day}</th>`
+    }).join('')
+    const dowRow = Array.from({length:days},(_,i)=>{
+      const day=i+1
+      const dow=new Date(year,month-1,day).getDay()
+      const ds=`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+      const isHol=holidaySet.has(ds)
+      const isSun=dow===0, isSat=dow===6
+      const bg=isHol?'#ef4444':isSun?'#ef4444':isSat?'#3b82f6':'#1e8a4a'
+      return `<th style="padding:2px 0;min-width:24px;text-align:center;font-size:9px;background:${bg};color:white;border-left:1px solid rgba(255,255,255,.2);opacity:.85">${dayNames[dow]}${isHol?'★':''}</th>`
+    }).join('')
+
+    // 직위별 그룹 분류
+    const POSITION_GROUPS = [
+      {key:'nutritionist', label:'영양사', icon:'fa-heartbeat', color:'#be185d', bg:'#fdf2f8', border:'#f9a8d4',
+       filter: e => e.team==='nutrition'},
+      {key:'chef', label:'조리장/셰프', icon:'fa-hat-chef', color:'#92400e', bg:'#fffbeb', border:'#fde68a',
+       filter: e => e.team!=='nutrition' && /(장|셰프|chef|수석)/i.test(e.position_name||e.position||'')},
+      {key:'cook', label:'조리사', icon:'fa-utensils', color:'#166534', bg:'#f0fdf4', border:'#bbf7d0',
+       filter: e => e.team!=='nutrition' && /(조리사)/i.test(e.position_name||e.position||'')},
+      {key:'assistant', label:'조리원', icon:'fa-user-chef', color:'#1d4ed8', bg:'#eff6ff', border:'#bfdbfe',
+       filter: e => e.team!=='nutrition' && /(조리원)/i.test(e.position_name||e.position||'')},
+      {key:'manager', label:'매니저', icon:'fa-user-tie', color:'#6d28d9', bg:'#f5f3ff', border:'#ddd6fe',
+       filter: e => e.team!=='nutrition' && /(매니저|manager)/i.test(e.position_name||e.position||'')},
+      {key:'parttime', label:'파트타이머', icon:'fa-user-clock', color:'#0891b2', bg:'#ecfeff', border:'#a5f3fc',
+       filter: e => e.team!=='nutrition' && /(파트|파트타이|part)/i.test(e.position_name||e.position||'')},
+      {key:'other', label:'기타', icon:'fa-user', color:'#374151', bg:'#f9fafb', border:'#e5e7eb',
+       filter: null} // 나머지
+    ]
+
+    // 그룹 배정
+    const assigned = new Set()
+    const grouped = []
+    POSITION_GROUPS.forEach((grp,gi) => {
+      let members
+      if (grp.filter) {
+        members = empStats.filter(e => !assigned.has(e.id) && grp.filter(e))
+      } else {
+        members = empStats.filter(e => !assigned.has(e.id))
+      }
+      members.forEach(e=>assigned.add(e.id))
+      if (members.length > 0) grouped.push({...grp, members})
+    })
+
+    // 직원 테이블 HTML 생성
+    function buildGroupRows(grp) {
+      const headerBg = grp.bg
+      let html = ''
+      // 그룹 구분 헤더 행 (분리 칸)
+      html += `<tr>
+        <td colspan="${days+4}" style="padding:0">
+          <div style="background:${grp.bg};border-top:3px solid ${grp.color};border-bottom:1px solid ${grp.border};padding:5px 12px;display:flex;align-items:center;gap:7px">
+            <i class="fas ${grp.icon}" style="color:${grp.color};font-size:12px"></i>
+            <span style="font-size:12px;font-weight:800;color:${grp.color}">${grp.label}</span>
+            <span style="font-size:10px;color:${grp.color};opacity:.7">(${grp.members.length}명)</span>
+          </div>
+        </td>
+      </tr>`
+      // 날짜 헤더 (일자 + 요일 2행, 그룹마다 반복)
+      html += `<tr style="background:${grp.color}dd">
+        <th style="padding:4px 8px;text-align:left;min-width:80px;position:sticky;left:0;background:${grp.color};z-index:5;color:white;font-size:11px;border-right:2px solid rgba(255,255,255,.3)">이름</th>
+        ${dateRow}
+        <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:2px solid rgba(255,255,255,.3)">근무</th>
+        <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white">휴무</th>
+        <th style="padding:3px 4px;min-width:70px;text-align:right;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.3)">예상급여</th>
+      </tr>
+      <tr style="background:${grp.color}cc">
+        <th style="padding:2px 8px;position:sticky;left:0;background:${grp.color}dd;z-index:5;color:rgba(255,255,255,.8);font-size:9px;border-right:2px solid rgba(255,255,255,.3)">직위</th>
+        ${dowRow}
+        <th colspan="3" style="border-left:2px solid rgba(255,255,255,.3)"></th>
+      </tr>`
+
+      // 직원 행
+      grp.members.forEach((emp, idx) => {
+        const rowBg = idx%2===0 ? '#fff' : grp.bg
+        const cells = Array.from({length:days},(_,i)=>{
+          const day=i+1
+          const ds=`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+          const dow=new Date(year,month-1,day).getDay()
+          const isHol=holidaySet.has(ds), isSun=dow===0, isSat=dow===6
+          const entry=(sm[`${emp.id}_${ds}`])||{}
+          const code=entry.shift_code||''
+          const isOff=REST_CODES.has(code)
+          const cellBg=isOff?(code==='연'?'#fef3c7':code==='경조'?'#fdf4ff':'#fee2e2'):isHol?'#fff1f2':isSun?'#fff5f5':isSat?'#eff6ff':rowBg
+          const bc=isHol?'#fca5a5':isSun?'#fecaca':isSat?'#bfdbfe':'#e5e7eb'
+          const {bg,fg}=getCodeBg(code)
+          const badge=code?`<span style="display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:4px;background:${bg};color:${fg};font-size:10px;font-weight:800;${isHol&&!isOff?'border:1.5px solid #ef4444':''}">${code}</span>`:''
+          return `<td style="padding:1px;text-align:center;background:${cellBg};border-left:1px solid ${bc};vertical-align:middle">${badge}</td>`
+        }).join('')
+
+        const salStr = emp.estimatedSalary!=null ? `<span style="font-size:10px;font-weight:700;color:${grp.color}">${emp.estimatedSalary.toLocaleString()}원</span>` : '<span style="font-size:10px;color:#d1d5db">-</span>'
+        const salTypeLabel = {monthly:'월급',hourly:'시급',annual:'연봉'}[emp.salary_type||'monthly']||''
+
+        html += `<tr style="border-bottom:1px solid ${grp.border}">
+          <td style="padding:4px 8px;min-width:80px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:2px solid ${grp.border}">
+            <div style="font-size:11px;font-weight:700;color:#1f2937;white-space:nowrap">${emp.name}</div>
+            <div style="font-size:9px;color:${grp.color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72px">${emp.position_name||emp.position||''}</div>
+          </td>
+          ${cells}
+          <td style="padding:2px 3px;text-align:center;background:#f0fdf4;border-left:2px solid #d1fae5">
+            <div style="font-size:12px;font-weight:900;color:#166534">${emp.workDays}</div>
+          </td>
+          <td style="padding:2px 3px;text-align:center;background:#fffbeb;border-left:1px solid #fde68a">
+            <div style="font-size:12px;font-weight:900;color:#b45309">${emp.offDays}</div>
+          </td>
+          <td style="padding:3px 8px;text-align:right;background:#fafafa;border-left:1px solid #e5e7eb">
+            ${salStr}
+            <div style="font-size:8px;color:#9ca3af">${salTypeLabel}</div>
+          </td>
+        </tr>`
+      })
+      return html
+    }
+
+    const tableRows = grouped.map(g=>buildGroupRows(g)).join('')
+
+    // 외부인력 섹션
+    let extSection = ''
+    if (extWorkers.length > 0) {
+      const extRows = extWorkers.map((w,i)=>{
+        const rowBg=i%2===0?'#fff':'#fff7ed'
+        const cells=Array.from({length:days},(_,d2)=>{
+          const day=d2+1
+          const ds=`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+          const entry=extMap[`${w.id}_${ds}`]||{}
+          const st=entry.shift_type||''
+          const stLabel={morning:'오전',afternoon:'오후',full_9h:'9H',full_12h:'12H'}[st]||st
+          const stBg=st?'#fff7ed':'transparent'
+          const stFg=st?'#c2410c':'transparent'
+          return `<td style="padding:1px;text-align:center;background:${rowBg};border-left:1px solid #e5e7eb">${st?`<span style="display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:4px;background:${stBg};color:${stFg};font-size:9px;font-weight:800">${stLabel}</span>`:''}</td>`
+        }).join('')
+        const typeLabel=w.worker_type==='dispatch'?'파출':'알바'
+        const typeColor=w.worker_type==='dispatch'?'#ea580c':'#db2777'
+        return `<tr style="border-bottom:1px solid #fed7aa">
+          <td style="padding:4px 8px;min-width:80px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:2px solid #fed7aa">
+            <div style="font-size:11px;font-weight:700;color:#1f2937">${w.name}</div>
+            <div style="font-size:9px;color:${typeColor};font-weight:600">${typeLabel}</div>
+          </td>
+          ${cells}
+          <td colspan="3" style="padding:2px 8px;background:#fff7ed;border-left:2px solid #fed7aa">
+            <span style="font-size:10px;color:${typeColor};font-weight:700">${typeLabel}</span>
+          </td>
+        </tr>`
+      }).join('')
+      extSection = `
+        <div style="margin-top:2px">
+          <div style="background:#fff7ed;border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa;padding:5px 12px;display:flex;align-items:center;gap:7px">
+            <i class="fas fa-people-carry" style="color:#ea580c;font-size:12px"></i>
+            <span style="font-size:12px;font-weight:800;color:#ea580c">파출 / 알바 외부인력</span>
+            <span style="font-size:10px;color:#ea580c;opacity:.7">(${extWorkers.length}명 · 총 ${extWorkDays}일)</span>
+          </div>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:11px">
+              <thead>
+                <tr style="background:#ea580c">
+                  <th style="padding:4px 8px;text-align:left;min-width:80px;position:sticky;left:0;background:#ea580c;z-index:5;color:white;font-size:11px;border-right:2px solid rgba(255,255,255,.3)">이름</th>
+                  ${dateRow}
+                  <th colspan="3" style="padding:3px 4px;text-align:center;font-size:9px;color:white;border-left:2px solid rgba(255,255,255,.3)">유형</th>
+                </tr>
+              </thead>
+              <tbody>${extRows}</tbody>
+            </table>
+          </div>
+        </div>`
+    }
+
+    // 예상급여 요약
+    const salaryRows = empStats.filter(e=>e.estimatedSalary!=null).map(e=>{
+      const typeLabel={monthly:'월급',hourly:'시급',annual:'연봉'}[e.salary_type||'monthly']||'월급'
+      const grp=grouped.find(g=>g.members.some(m=>m.id===e.id))
+      const color=grp?.color||'#374151'
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #f3f4f6">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>
+          <span style="font-size:12px;color:#374151">${e.name}</span>
+          <span style="font-size:10px;color:#9ca3af">${e.position_name||e.position||''}</span>
+        </div>
+        <div style="text-align:right">
+          <span style="font-size:12px;font-weight:700;color:#92400e">${e.estimatedSalary.toLocaleString()}원</span>
+          <span style="font-size:9px;color:#b45309;margin-left:4px">${typeLabel}</span>
+        </div>
+      </div>`
+    }).join('')
+
+    return `
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <!-- 요약 KPI -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px">
+        <div style="background:linear-gradient(135deg,#166534,#15803d);color:white;border-radius:10px;padding:10px;text-align:center">
+          <div style="font-size:22px;font-weight:900">${emps.length}</div><div style="font-size:9px;opacity:.85">전체 직원</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:white;border-radius:10px;padding:10px;text-align:center">
+          <div style="font-size:22px;font-weight:900">${avgWork.toFixed(1)}</div><div style="font-size:9px;opacity:.85">평균 근무일</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border-radius:10px;padding:10px;text-align:center">
+          <div style="font-size:22px;font-weight:900">${extWorkers.length}</div><div style="font-size:9px;opacity:.85">외부인력</div>
+        </div>
+        ${totalSalary>0?`<div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:10px;padding:10px;text-align:center">
+          <div style="font-size:16px;font-weight:900">${Math.round(totalSalary/10000)}만</div><div style="font-size:9px;opacity:.85">총 예상급여</div>
+        </div>`:''}
+      </div>
+
+      <!-- 근무표 (직위별 분리) -->
+      <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:13px;font-weight:700;color:#1f2937"><i class="fas fa-table" style="margin-right:6px;color:#166534"></i>${year}년 ${month}월 직위별 근무현황</div>
+          <button onclick="window.print()" style="padding:5px 10px;background:#166534;color:white;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:3px"></i>출력</button>
+        </div>
+        <div style="overflow-x:auto;max-height:65vh">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+        ${extSection}
+      </div>
+
+      <!-- 예상 급여 상세 (운영진 전용) -->
+      ${salaryRows?`
+      <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:14px">
+        <div style="font-size:13px;font-weight:700;color:#1f2937;margin-bottom:10px"><i class="fas fa-won-sign" style="margin-right:6px;color:#92400e"></i>직원별 예상 급여 (운영진 전용)</div>
+        ${salaryRows}
+        ${totalSalary>0?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0 4px;margin-top:4px;border-top:2px solid #e5e7eb">
+          <span style="font-size:13px;font-weight:800;color:#374151">총 예상 급여</span>
+          <span style="font-size:14px;font-weight:900;color:#92400e">${totalSalary.toLocaleString()}원</span>
+        </div>`:''}
+        <div style="margin-top:8px;padding:8px 12px;background:#fffbeb;border-radius:8px;font-size:10px;color:#92400e"><i class="fas fa-info-circle" style="margin-right:4px"></i>급여는 기본급(월급/시급/연봉 기준)만 산출한 예상치입니다. 수당·공제·세금 별도.</div>
+      </div>`:''}
+    </div>
+    <style>@media print{nav,button{display:none!important}body{background:white!important}div[style*="linear-gradient"]{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style>`
+  } catch(e) {
+    console.error('[renderExecStaffScheduleTab]', e)
+    return `<div style="padding:20px;color:#b91c1c">인력 근무현황 렌더 오류: ${e.message}</div>`
+  }
 }
 
 })()

@@ -13259,13 +13259,15 @@ function renderAdminSummaryPanel() {
   const weekTotalHrs = Array.from({length:weekCount},(_,wk)=>empData.reduce((a,e)=>a+(e.weeklyHrs[wk]||0),0))
   const weekMaxHrs = Math.max(...weekTotalHrs, 1)
 
-  // 총 예상급여
+  // 총 예상급여 (admin 역할 숨김 - 영양사는 급여 미열람)
+  const isAdminRole = (typeof App !== 'undefined' && App.role === 'admin')
+  const showSalary = !isAdminRole // admin(슈퍼관리자)만 숨기고, hospital(영양사)도 숨김
+  // 실제로 영양사(hospital)와 슈퍼관리자(admin) 모두 숨기고 운영진(executive)만 볼 수 있음
+  // 현재 페이지는 hospital(영양사) 페이지이므로 항상 숨김
   const totalSalary = empData.reduce((a,e)=>a+(e.estimatedSalary||0),0)
 
   // 근무시간 행
   const empRows = empData.map(e=>{
-    const salaryStr = e.estimatedSalary!=null ? `${e.estimatedSalary.toLocaleString()}원` : '-'
-    const salaryTypeLabel = {monthly:'월급',hourly:'시급',annual:'연봉'}[e.salaryType]||''
     const consecWarn = e.legalWarn&&e.maxConsec>e.maxConsecSet
     const weekWarn = e.legalWarn&&e.maxWeeklyHrs>e.weeklyMaxSet
     const wkCells = Array.from({length:weekCount},(_,wk)=>{
@@ -13282,7 +13284,6 @@ function renderAdminSummaryPanel() {
       <td style="padding:3px 5px;text-align:center;font-size:12px;font-weight:700;color:#166534">${e.workDays}일</td>
       <td style="padding:3px 5px;text-align:center;font-size:12px;font-weight:700;color:#2563eb">${e.totalHrs.toFixed(1)}h</td>
       ${wkCells}
-      <td style="padding:3px 8px;text-align:right;font-size:11px;font-weight:700;color:#92400e;white-space:nowrap">${salaryStr}<span style="font-size:9px;color:#b45309;margin-left:2px">${salaryTypeLabel}</span></td>
     </tr>`
   }).join('')
 
@@ -13322,11 +13323,11 @@ function renderAdminSummaryPanel() {
       <div style="margin-top:6px;font-size:10px;color:#9ca3af;text-align:right">전체 총 근무시간: <strong style="color:#374151">${totalAllHrs.toFixed(1)}h</strong> · 평균: <strong style="color:#374151">${avgHrs}h</strong></div>
     </div>
 
-    <!-- 직원별 근무시간 + 예상 급여 테이블 -->
+    <!-- 직원별 근무시간 분석 테이블 (예상급여는 운영진 전용 → 이 화면에서 제외) -->
     <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
-      <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
-        <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-table" style="margin-right:5px;color:#166534"></i>직원별 근무시간 분석 · 예상 급여</div>
-        ${totalSalary>0?`<div style="font-size:11px;color:#92400e;font-weight:700"><i class="fas fa-won-sign" style="margin-right:3px"></i>총 예상 급여: ${totalSalary.toLocaleString()}원</div>`:''}
+      <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6">
+        <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-table" style="margin-right:5px;color:#166534"></i>직원별 근무시간 분석</div>
+        <div style="font-size:10px;color:#9ca3af;margin-top:2px"><i class="fas fa-lock" style="margin-right:3px"></i>예상 급여는 운영진(병원장) 전용 화면에서 확인하세요</div>
       </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:11px">
@@ -13336,14 +13337,10 @@ function renderAdminSummaryPanel() {
               <th style="padding:4px 5px;text-align:center;font-size:10px;color:#374151">근무일</th>
               <th style="padding:4px 5px;text-align:center;font-size:10px;color:#374151">총 시간</th>
               ${wkHeaders}
-              <th style="padding:4px 8px;text-align:right;font-size:10px;color:#374151">예상 급여</th>
             </tr>
           </thead>
           <tbody>${empRows}</tbody>
         </table>
-      </div>
-      <div style="padding:8px 12px;background:#f8fafc;border-top:1px solid #e5e7eb;font-size:10px;color:#6b7280">
-        <i class="fas fa-info-circle" style="margin-right:3px"></i>예상 급여는 월급/시급/연봉 기준 산출 (수당·공제 별도). 인사카드에서 급여 설정 가능.
       </div>
     </div>
   `
@@ -14048,325 +14045,230 @@ function renderMonthlyScheduleTab() {
             직원을 먼저 등록하세요 (인사카드 탭)
           </td></tr>
           ` : (() => {
-            // 팀 구분선 포함 렌더링
-            const rows = []
-            const cookEmps = emps.filter(e => e.team === 'cook' || !e.team)
-            const nutriEmps = emps.filter(e => e.team === 'nutrition')
-            
-            function renderEmpRows(teamEmps, teamKey) {
-              if (teamEmps.length === 0) return ''
-              const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
-              let html = `<tr><td colspan="${days+3}" style="background:#f8fafc;padding:4px 12px;border-bottom:1px solid #e2e8f0">
-                <span style="font-size:11px;font-weight:700;color:#64748b">
-                  <i class="fas ${tl.icon}" style="margin-right:4px"></i>${tl.label} (${teamEmps.length}명)
-                </span>
-              </td></tr>`
-              teamEmps.forEach((emp, empIdx) => {
-                const rowBg = empIdx % 2 === 0 ? 'white' : '#fafafa'
+            // ── 직위별 그룹 분리 렌더링 ──────────────────────────────
+            // 직위 그룹 정의 (영양사 → 셰프/조리장 → 조리사 → 조리원 → 매니저 → 파트타이머 → 기타)
+            const POSITION_GROUPS_SCHED = [
+              { key:'nutritionist', label:'영양사', icon:'fa-heartbeat',  headerColor:'#be185d', headerBg:'#fdf2f8', border:'#f9a8d4',
+                filter: e => e.team === 'nutrition' },
+              { key:'chef',         label:'조리장 / 셰프', icon:'fa-crown', headerColor:'#92400e', headerBg:'#fffbeb', border:'#fde68a',
+                filter: e => e.team !== 'nutrition' && /(장|셰프|chef|수석)/i.test(e.position_name||e.position||'') },
+              { key:'cook',         label:'조리사', icon:'fa-utensils',   headerColor:'#166534', headerBg:'#f0fdf4', border:'#bbf7d0',
+                filter: e => e.team !== 'nutrition' && /(조리사)/.test(e.position_name||e.position||'') },
+              { key:'assistant',    label:'조리원', icon:'fa-user-cog',   headerColor:'#1d4ed8', headerBg:'#eff6ff', border:'#bfdbfe',
+                filter: e => e.team !== 'nutrition' && /(조리원)/.test(e.position_name||e.position||'') },
+              { key:'manager',      label:'매니저', icon:'fa-user-tie',   headerColor:'#6d28d9', headerBg:'#f5f3ff', border:'#ddd6fe',
+                filter: e => e.team !== 'nutrition' && /(매니저|manager)/i.test(e.position_name||e.position||'') },
+              { key:'parttime',     label:'파트타이머', icon:'fa-user-clock', headerColor:'#0891b2', headerBg:'#ecfeff', border:'#a5f3fc',
+                filter: e => e.team !== 'nutrition' && /(파트|파트타이|part)/i.test(e.position_name||e.position||'') },
+              { key:'other',        label:'조리팀 기타', icon:'fa-users', headerColor:'#374151', headerBg:'#f9fafb', border:'#e5e7eb',
+                filter: null }
+            ]
 
-                // ── 이 직원의 해당 월 스케줄 집계 ──────────────────
-                let workDayCount = 0   // 실 근무일 (휴·연·경조 제외)
-                let annualUsed   = 0   // 연차 사용일 (이 달)
-                let leaveUsed    = 0   // 기타 휴가 사용일 (이 달)
-                const REST_CODES = new Set(['휴','연','경조','병가'])
-                // 법정근무 설정
-                const ws = scheduleWorkSettings || {}
-                const maxConsec = parseInt(ws.consecutive_max_days || '6')
-                const weeklyMaxHours = parseFloat(ws.weekly_max_hours || '52')
-                const legalWarnEnabled = (ws.legal_warning_enabled ?? '1') === '1'
-                let maxConsecFound = 0
-                let curConsec = 0
-                // 주간 최대 근무시간 계산 (근무조 start/end time 기반)
-                function calcShiftHours(code) {
-                  if (!code || code === '-') return 0
-                  const restCodes = new Set(['휴','연','경조','병가'])
-                  if (restCodes.has(code)) return 0
-                  const sf = scheduleShifts.find(s => s.shift_code === code)
-                  if (sf?.start_time && sf?.end_time) {
-                    const [sh, sm] = sf.start_time.split(':').map(Number)
-                    const [eh, em] = sf.end_time.split(':').map(Number)
-                    let hrs = (eh * 60 + em - sh * 60 - sm) / 60
-                    if (hrs < 0) hrs += 24
-                    return Math.max(0, hrs - 1) // 1시간 휴게 제외
-                  }
-                  return 8 // 기본 8시간
+            // 그룹 배정 (중복 방지)
+            const assignedInSched = new Set()
+            const schedGroups = []
+            POSITION_GROUPS_SCHED.forEach(grp => {
+              let members
+              if (grp.filter) {
+                members = emps.filter(e => !assignedInSched.has(e.id) && grp.filter(e))
+              } else {
+                members = emps.filter(e => !assignedInSched.has(e.id))
+              }
+              members.forEach(e => assignedInSched.add(e.id))
+              if (members.length > 0) schedGroups.push({ ...grp, members })
+            })
+
+            // 날짜 헤더 행 (일자) - 그룹별 공유
+            function buildDateHeaderRow(hColor, hBg) {
+              let dayThs = Array.from({length:days},(_,i)=>{
+                const day=i+1
+                const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                const dow2=getDayOfWeek(App.currentYear,App.currentMonth,day)
+                const isSun2=dow2==='일', isSat2=dow2==='토'
+                const isHol2=allOffSet.has(dateStr)
+                const bg=isSun2?'#b91c1c':isSat2?'#1d4ed8':hColor
+                const border=`border-left:1px solid rgba(255,255,255,.2);`
+                return `<th style="padding:2px 0;min-width:26px;text-align:center;font-size:11px;font-weight:800;background:${bg};color:white;${border}">${day}</th>`
+              }).join('')
+              return `<tr style="background:${hColor}">
+                <th style="padding:5px 10px;text-align:left;min-width:100px;position:sticky;left:0;background:${hColor};z-index:15;color:white;font-size:11px;font-weight:700;border-right:2px solid rgba(255,255,255,.3)">이름/직위</th>
+                ${dayThs}
+                <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:2px solid rgba(255,255,255,.3)">근무</th>
+                <th style="padding:3px 4px;min-width:36px;text-align:center;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.2)">연차</th>
+              </tr>`
+            }
+
+            // 요일 헤더 행
+            function buildDowHeaderRow(hColor) {
+              const KDAYS=['일','월','화','수','목','금','토']
+              let dowThs = Array.from({length:days},(_,i)=>{
+                const day=i+1
+                const dateStr=`${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                const dow2=new Date(App.currentYear,App.currentMonth-1,day).getDay()
+                const isSun=dow2===0, isSat=dow2===6
+                const isHol=allOffSet.has(dateStr)
+                const bg=isSun?'#ef4444cc':isSat?'#3b82f6cc':`${hColor}bb`
+                return `<th style="padding:1px 0;min-width:26px;text-align:center;font-size:9px;background:${bg};color:white;border-left:1px solid rgba(255,255,255,.15);opacity:.9">${KDAYS[dow2]}</th>`
+              }).join('')
+              return `<tr>
+                <th style="padding:2px 10px;position:sticky;left:0;background:${hColor}bb;z-index:15;color:rgba(255,255,255,.8);font-size:9px;border-right:2px solid rgba(255,255,255,.2)">요일</th>
+                ${dowThs}
+                <th colspan="2" style="border-left:2px solid rgba(255,255,255,.2);background:${hColor}bb"></th>
+              </tr>`
+            }
+
+            // 직원 행 렌더러 (기존 로직 재사용)
+            function renderEmpRowInGroup(emp, empIdx, grp) {
+              const rowBg = empIdx % 2 === 0 ? 'white' : grp.headerBg
+              let workDayCount = 0, annualUsed = 0, leaveUsed = 0
+              const REST_CODES2 = new Set(['휴','연','경조','병가'])
+              const ws2 = scheduleWorkSettings || {}
+              const maxConsec2 = parseInt(ws2.consecutive_max_days || '6')
+              const weeklyMaxHours2 = parseFloat(ws2.weekly_max_hours || '52')
+              const legalWarnEnabled2 = (ws2.legal_warning_enabled ?? '1') === '1'
+              let maxConsecFound2 = 0, curConsec2 = 0
+              function calcShiftHoursInner(code2) {
+                if (!code2 || code2 === '-') return 0
+                if (REST_CODES2.has(code2)) return 0
+                const sf2 = scheduleShifts.find(s => s.shift_code === code2)
+                if (sf2?.start_time && sf2?.end_time) {
+                  const [sh2, sm2t] = sf2.start_time.split(':').map(Number)
+                  const [eh2, em2] = sf2.end_time.split(':').map(Number)
+                  let hrs2 = (eh2*60+em2-sh2*60-sm2t)/60
+                  if (hrs2 < 0) hrs2 += 24
+                  return Math.max(0, hrs2 - 1)
                 }
-                let weeklyHoursMap = {} // weekNum → hours
-                let maxWeeklyHours = 0
+                return 8
+              }
+              let weeklyHoursMap2 = {}, maxWeeklyHoursFound = 0
 
-                const cells = Array.from({length:days},(_,i)=>{
-                  const day     = i+1
-                  const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-                  const isWknd  = isWeekend(App.currentYear,App.currentMonth,day)
-                  const dow2    = getDayOfWeek(App.currentYear,App.currentMonth,day)
-                  const isSun2  = dow2==='일'
-                  const isOff2  = allOffSet.has(dateStr)
+              const cells = Array.from({length:days},(_,i)=>{
+                const day = i+1
+                const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                const isWknd2 = isWeekend(App.currentYear,App.currentMonth,day)
+                const dow2 = getDayOfWeek(App.currentYear,App.currentMonth,day)
+                const isSun2 = dow2==='일'
+                const isOff2 = allOffSet.has(dateStr)
+                const key = `${emp.id}_${dateStr}`
+                const sched = schedMap[key]
+                const code = sched?.shift_code || ''
+                const ltype = sched?.leave_type || ''
 
-                  // 기존 스케줄 데이터
-                  const key     = `${emp.id}_${dateStr}`
-                  const sched   = schedMap[key]
-                  const code    = sched?.shift_code || ''
-                  const ltype   = sched?.leave_type || ''
+                if (code && code !== '-') {
+                  if (code === '연' || ltype === 'annual') annualUsed++
+                  else if (REST_CODES2.has(code) || ltype) leaveUsed++
+                  else workDayCount++
+                }
+                if (code && code !== '-' && !REST_CODES2.has(code) && !ltype) {
+                  curConsec2++
+                  if (curConsec2 > maxConsecFound2) maxConsecFound2 = curConsec2
+                  const d2 = new Date(dateStr)
+                  const startOfYear2 = new Date(d2.getFullYear(), 0, 1)
+                  const weekNum2 = Math.ceil(((d2 - startOfYear2) / 86400000 + startOfYear2.getDay() + 1) / 7)
+                  if (!weeklyHoursMap2[weekNum2]) weeklyHoursMap2[weekNum2] = 0
+                  weeklyHoursMap2[weekNum2] += calcShiftHoursInner(code)
+                  if (weeklyHoursMap2[weekNum2] > maxWeeklyHoursFound) maxWeeklyHoursFound = weeklyHoursMap2[weekNum2]
+                } else { curConsec2 = 0 }
 
-                  // 집계
-                  if (code && code !== '-') {
-                    if (code === '연' || ltype === 'annual') annualUsed += 1
-                    else if (REST_CODES.has(code) || ltype) leaveUsed += 1
-                    else workDayCount += 1
-                  } else if (code === '' && !isOff2) {
-                    // 미입력이지만 평일이면 근무일로 간주하지 않음 (입력 안 됨)
-                  }
-                  // 연속근무일 계산
-                  if (code && code !== '-' && !REST_CODES.has(code) && !ltype) {
-                    curConsec++
-                    if (curConsec > maxConsecFound) maxConsecFound = curConsec
-                  } else {
-                    curConsec = 0
-                  }
-                  // 주간 근무시간 집계
-                  if (code && code !== '-' && !REST_CODES.has(code) && !ltype) {
-                    const d = new Date(dateStr)
-                    // ISO 주차 계산
-                    const startOfYear = new Date(d.getFullYear(), 0, 1)
-                    const weekNum = Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7)
-                    if (!weeklyHoursMap[weekNum]) weeklyHoursMap[weekNum] = 0
-                    weeklyHoursMap[weekNum] += calcShiftHours(code)
-                    if (weeklyHoursMap[weekNum] > maxWeeklyHours) maxWeeklyHours = weeklyHoursMap[weekNum]
-                  }
+                let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd2 ? 'background:#fffbeb;' : `background:${rowBg};`
+                if (isOff2 && !code) cellBg = isSun2 ? 'background:#fff1f2;' : 'background:#fffde7;'
+                const borderLeft2 = `border-left:1px solid ${isSun2?'#fecaca':isWknd2?'#fde68a':'#e5e7eb'};`
+                let spanStyle2, spanText2
+                if (code && code !== '-') { spanStyle2 = getShiftStyle(code); spanText2 = code }
+                else { spanStyle2 = 'background:#f9fafb;color:#d1d5db'; spanText2 = '·' }
+                const otH2 = sched?.overtime_hours || 0
+                const isNightW2 = sched?.is_night_work || false
+                const isTempS2 = sched?.is_temp_staff || false
+                const extraIcon2 = otH2>0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH2}h</div>`
+                  : isTempS2 ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
+                  : isNightW2 ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
 
-                  // 셀 배경
-                  let cellBg    = isSun2 ? 'background:#fff1f2;' : isWknd ? 'background:#fffbeb;' : `background:${rowBg};`
-                  if (isOff2 && !code) cellBg = isSun2 ? 'background:#fff1f2;' : 'background:#fffde7;'
-                  const borderLeft = `border-left:1px solid ${isSun2?'#fecaca':isWknd?'#fde68a':'#e5e7eb'};`
+                return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft2}cursor:pointer;position:relative;user-select:none"
+                  onclick="schedCellClick(event,${emp.id},'${dateStr}',this)"
+                  ondblclick="schedCellDblClick(event,${emp.id},'${dateStr}',this)"
+                  onmousedown="schedDragStart(event,${emp.id},'${dateStr}',this)"
+                  onmousemove="schedDragMove(event,${emp.id},'${dateStr}',this)"
+                  onmouseup="schedDragEnd(event)"
+                  oncontextmenu="event.preventDefault();openSchedDetailModal(${emp.id},'${dateStr}','${emp.name.replace(/'/g,'')}',this)"
+                  data-shift="${code}" data-ot="${otH2}" data-night="${isNightW2?1:0}"
+                  data-temp="${isTempS2?1:0}" data-temptype="${sched?.temp_type||''}"
+                  data-temphours="${sched?.temp_hours||0}"
+                  data-empid="${emp.id}" data-date="${dateStr}">
+                  <div style="display:inline-flex;flex-direction:column;align-items:center">
+                    <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle2}">${spanText2}</span>
+                    ${extraIcon2}
+                  </div>
+                </td>`
+              }).join('')
 
-                  // 셀 내 스팬 스타일
-                  let spanStyle, spanText
-                  if (code && code !== '-') {
-                    spanStyle = getShiftStyle(code)
-                    spanText  = code
-                  } else {
-                    spanStyle = 'background:#f9fafb;color:#d1d5db'
-                    spanText  = '·'
-                  }
+              const empLeave2 = leaveMap[emp.id] || {}
+              const annualTot2 = empLeave2.annual?.total ?? null
+              const annualCarried2 = empLeave2.annual?.allowance_paid ? 0 : (empLeave2.annual?.carried_over_days ?? 0)
+              const annualEffective2 = annualTot2 !== null ? annualTot2 + annualCarried2 : null
+              const annualRemain2 = annualEffective2 !== null ? (annualEffective2 - (empLeave2.annual?.used ?? 0)) : null
+              const annualCell2 = annualEffective2 !== null
+                ? `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
+                : `<div style="font-size:10px;color:#d1d5db">-</div>`
 
-                  // OT/파출/알바 여부 아이콘
-                  const otH = sched?.overtime_hours || 0
-                  const isNightW = sched?.is_night_work || false
-                  const isTempS  = sched?.is_temp_staff  || false
-                  const extraIcon = otH > 0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH}h</div>`
-                    : isTempS ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
-                    : isNightW ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>`
-                    : ''
+              const consecWarn2 = legalWarnEnabled2 && maxConsecFound2 > maxConsec2
+              const weekWarn2 = legalWarnEnabled2 && maxWeeklyHoursFound > weeklyMaxHours2
+              const leftBorderColor = grp.border
 
-                  return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft}cursor:pointer;position:relative;user-select:none"
-                    onclick="schedCellClick(event,${emp.id},'${dateStr}',this)"
-                    ondblclick="schedCellDblClick(event,${emp.id},'${dateStr}',this)"
-                    onmousedown="schedDragStart(event,${emp.id},'${dateStr}',this)"
-                    onmousemove="schedDragMove(event,${emp.id},'${dateStr}',this)"
-                    onmouseup="schedDragEnd(event)"
-                    oncontextmenu="event.preventDefault();openSchedDetailModal(${emp.id},'${dateStr}','${emp.name.replace(/'/g,'')}',this)"
-                    data-shift="${code}"
-                    data-ot="${otH}"
-                    data-night="${isNightW?1:0}"
-                    data-temp="${isTempS?1:0}"
-                    data-temptype="${sched?.temp_type||''}"
-                    data-temphours="${sched?.temp_hours||0}"
-                    data-empid="${emp.id}" data-date="${dateStr}">
-                    <div style="display:inline-flex;flex-direction:column;align-items:center">
-                      <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle}">${spanText}</span>
-                      ${extraIcon}
-                    </div>
-                  </td>`
-                  /* 채우기 핸들은 JS로 동적으로 붙임 (schedShowFillHandle) */
-                }).join('')
+              return `<tr style="border-bottom:1px solid ${leftBorderColor}"
+                onmouseover="this.style.background='${grp.headerBg}'"
+                onmouseout="this.style.background='${rowBg}'">
+                <td id="namecell-${emp.id}" style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid ${leftBorderColor};min-width:100px;cursor:pointer"
+                  onclick="openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}')"
+                  title="클릭: 개인 근무상세"
+                  data-name="${emp.name.replace(/"/g,'&quot;')}"
+                  data-pos="${(emp.position_name||emp.position||'').replace(/"/g,'&quot;')}"
+                  data-consec-max="${maxConsec2}"
+                  data-weekly-max="${weeklyMaxHours2}"
+                  data-legal="${legalWarnEnabled2?'1':'0'}"
+                  data-rowbg="${rowBg}">
+                  <div id="namecell-name-${emp.id}" style="font-weight:600;color:#1f2937;font-size:12px">
+                    ${emp.name}
+                    <i class="fas fa-chart-line" style="font-size:9px;color:#94a3b8;margin-left:2px"></i>
+                    ${consecWarn2?`<span title="연속${maxConsecFound2}일 근무 초과" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:800;margin-left:2px">!</span>`:''}
+                    ${weekWarn2?`<span title="주 최대 ${Math.round(maxWeeklyHoursFound)}h 초과" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px">W</span>`:''}
+                  </div>
+                  <div id="namecell-pos-${emp.id}" style="font-size:10px;color:#94a3b8">${emp.position_name||emp.position||''}</div>
+                </td>
+                ${cells}
+                <td id="workdays-${emp.id}" style="padding:4px 3px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;min-width:38px">
+                  <div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div>
+                  <div style="font-size:9px;color:#4ade80;opacity:.8">근무</div>
+                </td>
+                <td id="annual-${emp.id}" style="padding:4px 3px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;min-width:40px">
+                  ${annualCell2}
+                </td>
+              </tr>`
+            }
 
-                // ── 우측 집계: 연차 잔여 ─────────────────────────
-                const empLeave  = leaveMap[emp.id] || {}
-                const annualTot = empLeave.annual?.total ?? null
-                // 이월연차 합산 (수당지급 완료 시 0)
-                const annualCarried = empLeave.annual?.allowance_paid ? 0 : (empLeave.annual?.carried_over_days ?? 0)
-                const annualEffective = annualTot !== null ? annualTot + annualCarried : null
-                const annualRemain = annualEffective !== null ? (annualEffective - (empLeave.annual?.used ?? 0)) : null
-                // 이번 달 연차 사용일 표시 (used는 연간 누적, 이달 사용은 annualUsed)
-                const annualCell = annualEffective !== null
-                  ? `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일${annualCarried > 0 ? `<span style="color:#d97706;font-size:7px">(+${annualCarried})</span>` : ''}</div>`
-                  : `<div style="font-size:10px;color:#d1d5db">-</div>`
-
-                html += `<tr style="border-bottom:1px solid #e2e8f0"
-                  onmouseover="this.style.background='#f0fdf4'"
-                  onmouseout="this.style.background='${rowBg}'">
-                  <td id="namecell-${emp.id}" style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:3px solid #d1fae5;min-width:100px;cursor:pointer"
-                    onclick="openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}')"
-                    title="클릭: 개인 근무상세"
-                    data-name="${emp.name.replace(/"/g,'&quot;')}"
-                    data-pos="${(emp.position_name || emp.position || '').replace(/"/g,'&quot;')}"
-                    data-consec-max="${maxConsec}"
-                    data-weekly-max="${weeklyMaxHours}"
-                    data-legal="${legalWarnEnabled ? '1' : '0'}"
-                    data-rowbg="${rowBg}">
-                    <div id="namecell-name-${emp.id}" style="font-weight:600;color:#1f2937;font-size:12px">
-                      ${emp.name}
-                      <i class="fas fa-chart-line" style="font-size:9px;color:#94a3b8;margin-left:2px"></i>
-                      ${legalWarnEnabled && maxConsecFound > maxConsec
-                        ? `<span title="연속${maxConsecFound}일 근무 초과 (기준:${maxConsec}일)" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:800;margin-left:2px">!</span>`
-                        : ''}
-                      ${legalWarnEnabled && maxWeeklyHours > weeklyMaxHours
-                        ? `<span title="주 최대 ${Math.round(maxWeeklyHours)}h 초과 (기준:${weeklyMaxHours}h)" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px">W</span>`
-                        : ''}
-                    </div>
-                    <div id="namecell-pos-${emp.id}" style="font-size:10px;color:#94a3b8">${emp.position_name || emp.position || ''}
-                      ${legalWarnEnabled && maxConsecFound > maxConsec ? `<span style="color:#ef4444;font-weight:600"> 연속${maxConsecFound}일</span>` : ''}
-                      ${legalWarnEnabled && maxWeeklyHours > weeklyMaxHours ? `<span style="color:#f97316;font-weight:600"> 주${Math.round(maxWeeklyHours)}h</span>` : ''}
-                    </div>
-                  </td>
-                  ${cells}
-                  <td id="workdays-${emp.id}" style="padding:4px 3px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;min-width:38px">
-                    <div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div>
-                    <div style="font-size:9px;color:#4ade80;opacity:0.8">근무</div>
-                  </td>
-                  <td id="annual-${emp.id}" style="padding:4px 3px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;min-width:40px">
-                    ${annualCell}
-                  </td>
-                </tr>`
+            // 전체 그룹 HTML 조합
+            let allGroupHtml = ''
+            schedGroups.forEach(grp => {
+              // 그룹 구분 헤더 (큰 섹션 분리)
+              allGroupHtml += `<tr>
+                <td colspan="${days+3}" style="padding:0">
+                  <div style="background:${grp.headerBg};border-top:3px solid ${grp.headerColor};border-bottom:1px solid ${grp.border};padding:6px 14px;display:flex;align-items:center;gap:8px">
+                    <i class="fas ${grp.icon}" style="color:${grp.headerColor};font-size:13px"></i>
+                    <span style="font-size:13px;font-weight:800;color:${grp.headerColor}">${grp.label}</span>
+                    <span style="font-size:10px;color:${grp.headerColor};opacity:.7">(${grp.members.length}명)</span>
+                  </div>
+                </td>
+              </tr>`
+              // 일자 헤더 행
+              allGroupHtml += buildDateHeaderRow(grp.headerColor, grp.headerBg)
+              // 요일 헤더 행
+              allGroupHtml += buildDowHeaderRow(grp.headerColor)
+              // 직원 행
+              grp.members.forEach((emp, empIdx) => {
+                allGroupHtml += renderEmpRowInGroup(emp, empIdx, grp)
               })
-              return html
-            }
+            })
 
-            // 외부인력 섹션 렌더링 (문자열 연결 방식으로 따옴표 충돌 방지)
-            function renderExternalSection() {
-              const extWorkers = scheduleExternalWorkers || []
-              const extMap = scheduleExtSchedMap || {}
-              const canEdit = (App.role === 'admin' || App.role === 'hospital')
-              if (extWorkers.length === 0 && !canEdit) return ''
-
-              const EXT_SHIFT_LABELS = (() => {
-                const def = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
-                try {
-                  const cfg = JSON.parse(localStorage.getItem('extShiftConfig') || '[]')
-                  cfg.forEach(c => { if (c.key && c.label) def[c.key] = c.label })
-                } catch(e) {}
-                return def
-              })()
-              const EXT_SHIFT_COLORS = {
-                morning:  'background:#fff7ed;color:#c2410c',
-                afternoon:'background:#fef3c7;color:#b45309',
-                full_9h:  'background:#ffedd5;color:#ea580c',
-                full_12h: 'background:#fee2e2;color:#dc2626'
-              }
-              const dispatchWorkers = extWorkers.filter(function(w){ return w.worker_type === 'dispatch' })
-              const parttimeWorkers = extWorkers.filter(function(w){ return w.worker_type === 'parttime' })
-
-              function buildSectionRows(workers, sType) {
-                const lbl   = sType === 'dispatch' ? '파출' : '알바'
-                const color = sType === 'dispatch' ? '#ea580c' : '#db2777'
-                const bg    = sType === 'dispatch' ? '#fff7ed' : '#fdf2f8'
-                const icon  = sType === 'dispatch' ? 'fa-people-carry' : 'fa-user-clock'
-                const colspan = days + 3
-
-                // 헤더 행 - data-stype 속성으로 따옴표 충돌 방지
-                let out = '<tr>'
-                out += '<td colspan="' + colspan + '" style="background:' + bg + ';padding:4px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid ' + color + '33">'
-                out += '<span style="font-size:11px;font-weight:700;color:' + color + '">'
-                out += '<i class="fas ' + icon + '" style="margin-right:4px"></i>' + lbl + ' 외부인력 (' + workers.length + '명)</span>'
-                if (canEdit) {
-                  out += ' <button class="ext-add-btn" data-stype="' + sType + '"'
-                  out += ' style="float:right;padding:2px 8px;border-radius:4px;background:' + color + ';color:white;font-size:10px;border:none;cursor:pointer">'
-                  out += '<i class="fas fa-plus" style="margin-right:2px"></i>' + lbl + ' 추가</button>'
-                }
-                out += '</td></tr>'
-
-                workers.forEach(function(worker, widx) {
-                  const rowBg = widx % 2 === 0 ? '#fffaf5' : '#fff5ee'
-                  let cells = ''
-
-                  for (let i = 0; i < days; i++) {
-                    const day = i + 1
-                    const mm  = String(App.currentMonth).padStart(2,'0')
-                    const dd  = String(day).padStart(2,'0')
-                    const dateStr = App.currentYear + '-' + mm + '-' + dd
-                    const isWknd = isWeekend(App.currentYear, App.currentMonth, day)
-                    const dow2   = getDayOfWeek(App.currentYear, App.currentMonth, day)
-                    const isSun2 = dow2 === '일'
-                    const sched  = extMap[worker.id + '_' + dateStr]
-                    const shiftType = (sched && sched.shift_type) ? sched.shift_type : ''
-
-                    const cellBgVal   = isSun2 ? '#fff1f2' : (isWknd ? '#fffbeb' : rowBg)
-                    const borderColor = isSun2 ? '#fecaca' : (isWknd ? '#fde68a' : '#e5e7eb')
-                    const spanStyle   = EXT_SHIFT_COLORS[shiftType] || 'background:#f9fafb;color:#d1d5db'
-                    const spanText    = EXT_SHIFT_LABELS[shiftType] || '·'
-
-                    cells += '<td class="ext-cell"'
-                    cells += ' data-extshift="' + shiftType + '"'
-                    cells += ' data-extid="' + worker.id + '"'
-                    cells += ' data-date="' + dateStr + '"'
-                    cells += ' data-wtype="' + worker.worker_type + '"'
-                    cells += ' style="padding:2px;text-align:center;background:' + cellBgVal + ';border-left:1px solid ' + borderColor + ';' + (canEdit ? 'cursor:pointer;' : '') + 'position:relative;">'
-                    cells += '<div style="display:inline-flex;flex-direction:column;align-items:center">'
-                    cells += '<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;' + spanStyle + '">' + spanText + '</span>'
-                    cells += '</div></td>'
-                  }
-
-                  // 근무일 수
-                  let wdCount = 0
-                  for (let d = 1; d <= days; d++) {
-                    const ds = App.currentYear + '-' + String(App.currentMonth).padStart(2,'0') + '-' + String(d).padStart(2,'0')
-                    if (extMap[worker.id + '_' + ds] && extMap[worker.id + '_' + ds].shift_type) wdCount++
-                  }
-
-                  const typeColor = worker.worker_type === 'dispatch' ? '#ea580c' : '#db2777'
-                  const typeLbl   = worker.worker_type === 'dispatch' ? '파출' : '알바'
-
-                  out += '<tr style="border-bottom:1px solid #e2e8f0">'
-                  out += '<td style="padding:5px 10px;position:sticky;left:0;background:' + rowBg + ';z-index:2;min-width:110px;border-right:1px solid #e2e8f0">'
-                  out += '<div style="display:flex;align-items:center;gap:4px">'
-                  out += '<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:' + typeColor + '22;color:' + typeColor + ';font-weight:700">' + typeLbl + '</span>'
-                  out += '<span style="font-size:11px;font-weight:600;color:#374151">' + worker.name + '</span>'
-                  if (canEdit) {
-                    out += '<button class="ext-del-btn" data-wid="' + worker.id + '" data-wname="' + worker.name + '"'
-                    out += ' style="margin-left:auto;background:none;border:none;cursor:pointer;color:#ef4444;font-size:10px;padding:0 2px" title="삭제">'
-                    out += '<i class="fas fa-times"></i></button>'
-                  }
-                  out += '</div></td>'
-                  out += '<td style="text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px">' + wdCount + '일</td>'
-                  out += '<td style="text-align:center;font-size:10px;color:#6b7280;padding:2px"></td>'
-                  out += cells
-                  out += '</tr>'
-                })
-
-                return out
-              }
-
-              // 외부인력이 없을 때 placeholder 행
-              function buildEmptyRow() {
-                if (!canEdit) return ''
-                const colspan = days + 3
-                let html = '<tr>'
-                html += '<td colspan="' + colspan + '" style="background:#f9fafb;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid #e5e7eb22;text-align:center">'
-                html += '<span style="font-size:11px;color:#9ca3af">외부인력(파출/알바) 없음 &nbsp;</span>'
-                html += '<button class="ext-add-btn" data-stype="dispatch" style="padding:2px 8px;border-radius:4px;background:#ea580c;color:white;font-size:10px;border:none;cursor:pointer;margin-right:4px">'
-                html += '<i class="fas fa-plus" style="margin-right:2px"></i>파출 추가</button>'
-                html += '<button class="ext-add-btn" data-stype="parttime" style="padding:2px 8px;border-radius:4px;background:#db2777;color:white;font-size:10px;border:none;cursor:pointer">'
-                html += '<i class="fas fa-plus" style="margin-right:2px"></i>알바 추가</button>'
-                html += '</td></tr>'
-                return html
-              }
-
-              if (dispatchWorkers.length === 0 && parttimeWorkers.length === 0) {
-                return buildEmptyRow()
-              }
-
-              let html = ''
-              if (dispatchWorkers.length > 0 || canEdit) {
-                html += buildSectionRows(dispatchWorkers, 'dispatch')
-              }
-              if (parttimeWorkers.length > 0 || canEdit) {
-                html += buildSectionRows(parttimeWorkers, 'parttime')
-              }
-              return html
-            }
-
-            
-            return renderEmpRows(cookEmps, 'cook') + renderEmpRows(nutriEmps, 'nutrition') + renderExternalSection()
+            return allGroupHtml + renderExternalSection()
           })()}
         </tbody>
       </table>
