@@ -38862,7 +38862,6 @@ window.openExecutiveSummaryView = () => {
 // QR 코드 공유 관리 모달
 // ══════════════════════════════════════════════════════════════
 window.openQrManageModal = async () => {
-  // 즉시 모달 열기 (라이브러리 로드 전에 UI 먼저 표시)
   document.getElementById('qrManageModal')?.remove()
 
   const modal = document.createElement('div')
@@ -38870,22 +38869,42 @@ window.openQrManageModal = async () => {
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9000;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto'
   modal.innerHTML = `
     <div style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.2);width:100%;max-width:700px;max-height:90vh;display:flex;flex-direction:column">
-      <div style="background:linear-gradient(135deg,#ea580c,#f97316);padding:16px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0">
+      <div style="background:linear-gradient(135deg,#166534,#15803d);padding:16px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0">
         <i class="fas fa-qrcode" style="color:white;font-size:20px"></i>
         <div>
           <h2 style="color:white;font-size:16px;font-weight:800;margin:0">QR 코드 공유 관리</h2>
-          <p style="color:rgba(255,255,255,.8);font-size:11px;margin:3px 0 0">직원별 개인 근무표 QR코드를 생성하고 공유하세요</p>
+          <p style="color:rgba(255,255,255,.8);font-size:11px;margin:3px 0 0">직원 개인 / 전체 근무표 QR 생성 및 공유</p>
         </div>
         <button onclick="document.getElementById('qrManageModal').remove()" style="margin-left:auto;padding:6px 10px;background:rgba(255,255,255,.2);color:white;border:none;border-radius:6px;cursor:pointer">닫기</button>
       </div>
-      <div style="padding:14px 16px;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;gap:8px;flex-shrink:0">
-        <button onclick="qrBulkGenerate()" style="padding:8px 16px;background:#ea580c;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
-          <i class="fas fa-magic" style="margin-right:6px"></i>전체 QR 일괄 생성
+      <!-- 탭 -->
+      <div style="display:flex;border-bottom:2px solid #e5e7eb;background:#f9fafb;flex-shrink:0">
+        <button id="qrTab_personal" onclick="qrSwitchTab('personal')"
+          style="flex:1;padding:11px;font-size:12px;font-weight:700;border:none;background:#166534;color:white;cursor:pointer;border-bottom:3px solid #166534">
+          <i class="fas fa-user" style="margin-right:5px"></i>개인 근무표 QR
         </button>
-        <span style="font-size:11px;color:#9a3412;align-self:center">· QR 스캔 시 본인 근무표만 확인 (급여 제외)</span>
+        <button id="qrTab_team" onclick="qrSwitchTab('team')"
+          style="flex:1;padding:11px;font-size:12px;font-weight:700;border:none;background:transparent;color:#6b7280;cursor:pointer;border-bottom:3px solid transparent">
+          <i class="fas fa-users" style="margin-right:5px"></i>전체 근무표 QR
+        </button>
       </div>
-      <div id="qrEmployeeList" style="overflow-y:auto;padding:12px 16px;flex:1">
-        <div style="text-align:center;padding:30px;color:#9ca3af"><i class="fas fa-circle-notch fa-spin"></i> 불러오는 중...</div>
+      <!-- 개인 탭 패널 -->
+      <div id="qrPanel_personal" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+        <div style="padding:12px 16px;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;gap:8px;align-items:center;flex-shrink:0">
+          <button onclick="qrBulkGenerate()" style="padding:7px 14px;background:#ea580c;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+            <i class="fas fa-magic" style="margin-right:5px"></i>전체 QR 일괄 생성
+          </button>
+          <span style="font-size:11px;color:#9a3412">📱 QR 스캔 시 본인 근무표만 확인 가능</span>
+        </div>
+        <div id="qrEmployeeList" style="overflow-y:auto;padding:12px 16px;flex:1">
+          <div style="text-align:center;padding:30px;color:#9ca3af"><i class="fas fa-circle-notch fa-spin"></i> 불러오는 중...</div>
+        </div>
+      </div>
+      <!-- 전체 탭 패널 -->
+      <div id="qrPanel_team" style="display:none;flex-direction:column;flex:1;overflow:hidden">
+        <div id="qrTeamContent" style="overflow-y:auto;padding:20px;flex:1">
+          <div style="text-align:center;padding:30px;color:#9ca3af"><i class="fas fa-circle-notch fa-spin"></i> 불러오는 중...</div>
+        </div>
       </div>
     </div>`
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
@@ -38897,7 +38916,6 @@ window.openQrManageModal = async () => {
       const s = document.createElement('script')
       s.src = '/static/qrcode.min.js'
       const timer = setTimeout(() => {
-        // 로컬 실패 시 CDN 폴백
         const s2 = document.createElement('script')
         s2.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js'
         s2.onload = () => res()
@@ -38918,6 +38936,140 @@ window.openQrManageModal = async () => {
   }
 
   await qrLoadList()
+  qrLoadTeamPanel()
+}
+
+// 탭 전환
+window.qrSwitchTab = (tab) => {
+  document.getElementById('qrPanel_personal').style.display = tab === 'personal' ? 'flex' : 'none'
+  document.getElementById('qrPanel_team').style.display    = tab === 'team'     ? 'flex' : 'none'
+  const pBtn = document.getElementById('qrTab_personal')
+  const tBtn = document.getElementById('qrTab_team')
+  if (!pBtn || !tBtn) return
+  if (tab === 'personal') {
+    pBtn.style.background = '#166534'; pBtn.style.color = 'white'; pBtn.style.borderBottom = '3px solid #166534'
+    tBtn.style.background = 'transparent'; tBtn.style.color = '#6b7280'; tBtn.style.borderBottom = '3px solid transparent'
+  } else {
+    tBtn.style.background = '#166534'; tBtn.style.color = 'white'; tBtn.style.borderBottom = '3px solid #166534'
+    pBtn.style.background = 'transparent'; pBtn.style.color = '#6b7280'; pBtn.style.borderBottom = '3px solid transparent'
+  }
+}
+
+// 전체 근무표 QR 패널 로드
+window.qrLoadTeamPanel = async () => {
+  const el = document.getElementById('qrTeamContent')
+  if (!el) return
+  try {
+    const data = await api('GET', '/api/schedule/team-token')
+    const token = data.token
+    const teamUrl = token ? `${location.origin}/team-schedule/${token}` : ''
+    const hospitalName = window._currentHospitalName || App?.hospitalName || '병원'
+    const now = new Date()
+    const month = now.getMonth() + 1
+
+    el.innerHTML = `
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="display:inline-flex;align-items:center;justify-content:center;width:60px;height:60px;background:#f0fdf4;border-radius:14px;margin-bottom:12px">
+        <i class="fas fa-users" style="font-size:24px;color:#166534"></i>
+      </div>
+      <h3 style="font-size:15px;font-weight:800;color:#111827">전체 근무표 QR</h3>
+      <p style="font-size:12px;color:#6b7280;margin-top:4px">스캔 시 병원 전체 직원의 이번 달 근무표를 확인할 수 있습니다</p>
+    </div>
+
+    ${token ? `
+    <div style="display:flex;justify-content:center;margin-bottom:16px">
+      <div style="background:#f0fdf4;border-radius:12px;padding:12px;border:2px solid #bbf7d0;display:inline-block">
+        <canvas id="qrTeamCanvas" style="display:block;border-radius:6px"></canvas>
+      </div>
+    </div>
+    <div style="background:#f9fafb;border-radius:8px;padding:10px 12px;margin-bottom:16px;word-break:break-all;font-size:11px;color:#374151;border:1px solid #e5e7eb">
+      <i class="fas fa-link" style="color:#9ca3af;margin-right:4px"></i>${teamUrl}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:16px">
+      <button onclick="qrTeamCopyKakao('${teamUrl}','${hospitalName}',${month})" style="padding:9px 16px;background:#FEE500;color:#3C1E1E;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+        <i class="fas fa-comment" style="margin-right:5px"></i>카톡 전송용 복사
+      </button>
+      <button onclick="qrTeamCopyLink('${teamUrl}')" style="padding:9px 16px;background:#166534;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+        <i class="fas fa-copy" style="margin-right:5px"></i>링크 복사
+      </button>
+      <button onclick="qrTeamOpen('${teamUrl}')" style="padding:9px 16px;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+        <i class="fas fa-eye" style="margin-right:5px"></i>미리보기
+      </button>
+      <button onclick="qrTeamDownload()" style="padding:9px 16px;background:#7c3aed;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">
+        <i class="fas fa-download" style="margin-right:5px"></i>QR 저장
+      </button>
+    </div>
+    <div style="border-top:1px solid #e5e7eb;padding-top:12px;text-align:center">
+      <button onclick="qrTeamRegen()" style="padding:7px 14px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
+        <i class="fas fa-redo" style="margin-right:4px"></i>QR 재생성 (기존 링크 무효화)
+      </button>
+    </div>` : `
+    <div style="text-align:center">
+      <p style="font-size:12px;color:#6b7280;margin-bottom:16px">아직 전체 근무표 QR이 생성되지 않았습니다</p>
+      <button onclick="qrTeamGenerate()" style="padding:12px 28px;background:#166534;color:white;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">
+        <i class="fas fa-qrcode" style="margin-right:6px"></i>전체 근무표 QR 생성
+      </button>
+    </div>`}
+    <div style="margin-top:16px;padding:10px 12px;background:#eff6ff;border-radius:8px;font-size:11px;color:#1e40af">
+      <i class="fas fa-info-circle" style="margin-right:4px"></i>
+      <strong>전체 공유 QR</strong>은 누구나 열람 가능합니다. 외부 공개가 우려되면 재생성하세요.
+    </div>`
+
+    // QR 렌더링
+    if (token && window.QRCode) {
+      setTimeout(async () => {
+        const canvas = document.getElementById('qrTeamCanvas')
+        if (canvas) {
+          try {
+            await QRCode.toCanvas(canvas, teamUrl, { width: 160, margin: 1, color:{dark:'#166534',light:'#ffffff'} })
+          } catch(e) {}
+        }
+      }, 100)
+    }
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px">오류: ${e.message}</div>`
+  }
+}
+
+window.qrTeamGenerate = async () => {
+  try {
+    await api('POST', '/api/schedule/team-token')
+    await qrLoadTeamPanel()
+    showToast('전체 근무표 QR이 생성됐습니다!', 'success')
+  } catch(e) { showToast('생성 실패: ' + e.message, 'error') }
+}
+
+window.qrTeamRegen = async () => {
+  if (!confirm('QR을 재생성하면 기존 링크가 무효화됩니다. 계속하시겠습니까?')) return
+  try {
+    await api('POST', '/api/schedule/team-token')
+    await qrLoadTeamPanel()
+    showToast('전체 근무표 QR이 재생성됐습니다', 'success')
+  } catch(e) { showToast('재생성 실패', 'error') }
+}
+
+window.qrTeamCopyLink = (url) => {
+  if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => showToast('링크가 복사됐습니다', 'success'))
+  else prompt('링크를 복사하세요:', url)
+}
+
+window.qrTeamCopyKakao = (url, hospitalName, month) => {
+  const msg = `[${hospitalName}] ${month}월 전체 근무표 📋\n\n아래 링크에서 전체 직원 근무표를 확인하세요 👇\n${url}`
+  if (navigator.clipboard) navigator.clipboard.writeText(msg).then(() => showToast('카카오톡 메시지가 복사됐어요! 카톡에 붙여넣기 하세요 😊', 'success'))
+  else prompt('메시지를 복사하세요:', msg)
+}
+
+window.qrTeamOpen = (url) => { window.open(url, '_blank') }
+
+window.qrTeamDownload = () => {
+  const canvas = document.getElementById('qrTeamCanvas')
+  if (!canvas) { showToast('QR 코드를 먼저 생성해주세요', 'error'); return }
+  const hospitalName = window._currentHospitalName || App?.hospitalName || '병원'
+  const link = document.createElement('a')
+  link.download = `${hospitalName}_전체근무표_QR.png`
+  link.href = canvas.toDataURL('image/png')
+  link.click()
+  showToast('전체 근무표 QR 다운로드 완료!', 'success')
 }
 
 window.qrLoadList = async function qrLoadList() {
@@ -38977,11 +39129,17 @@ window.qrLoadList = async function qrLoadList() {
               <i class="fas fa-link" style="color:#9ca3af;margin-right:4px"></i>${url}
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button onclick="qrCopyKakao('${emp.name}', '${url}')" style="padding:6px 12px;background:#FEE500;color:#3C1E1E;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer">
+                <i class="fas fa-comment" style="margin-right:4px"></i>카톡 전송용
+              </button>
               <button onclick="qrCopyLink('${url}')" style="padding:6px 12px;background:#166534;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
                 <i class="fas fa-copy" style="margin-right:4px"></i>링크 복사
               </button>
               <button onclick="qrOpenLink('${url}')" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
                 <i class="fas fa-eye" style="margin-right:4px"></i>미리보기
+              </button>
+              <button onclick="qrDownload(${emp.id}, '${emp.name}')" style="padding:6px 12px;background:#7c3aed;color:white;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer">
+                <i class="fas fa-download" style="margin-right:4px"></i>QR저장
               </button>
               <button onclick="qrRegen(${emp.id})" style="padding:6px 12px;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:7px;font-size:11px;cursor:pointer">
                 <i class="fas fa-redo" style="margin-right:4px"></i>재생성
@@ -39055,6 +39213,30 @@ window.qrCopyLink = (url) => {
   } else {
     prompt('아래 링크를 복사하세요:', url)
   }
+}
+
+// 카카오톡용 메시지 복사 (이름+병원+월+링크)
+window.qrCopyKakao = (name, url) => {
+  const now = new Date()
+  const month = now.getMonth() + 1
+  const hospitalName = window._currentHospitalName || App?.hospitalName || '병원'
+  const msg = `[${hospitalName}] ${name} 님의 ${month}월 근무표 📅\n\n아래 링크를 눌러 확인하세요 👇\n${url}\n\n※ 본인 근무표만 확인 가능합니다`
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(msg).then(() => showToast('카카오톡 메시지가 복사됐어요! 카톡에 붙여넣기 하세요 😊', 'success'))
+  } else {
+    prompt('아래 메시지를 복사하세요:', msg)
+  }
+}
+
+// QR 이미지 다운로드 (PNG)
+window.qrDownload = (empId, name) => {
+  const canvas = document.getElementById(`qr_${empId}`)
+  if (!canvas) { showToast('QR 코드를 먼저 생성해주세요', 'error'); return }
+  const link = document.createElement('a')
+  link.download = `${name}_근무표_QR.png`
+  link.href = canvas.toDataURL('image/png')
+  link.click()
+  showToast(`${name} 님 QR 다운로드 완료!`, 'success')
 }
 
 window.qrOpenLink = (url) => { window.open(url, '_blank') }

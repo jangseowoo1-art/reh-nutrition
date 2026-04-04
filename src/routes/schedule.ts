@@ -737,6 +737,63 @@ schedule.get('/public/:token', async (c) => {
   })
 })
 
+// 공개 API: 팀 전체 스케줄 조회 (인증 불필요) ── /:year/:month 보다 먼저 등록
+schedule.get('/team-public/:token', async (c) => {
+  const token = c.req.param('token')
+  const yearParam  = c.req.query('year')
+  const monthParam = c.req.query('month')
+
+  const tokenRow = await c.env.DB.prepare(
+    `SELECT t.hospital_id, h.name as hospital_name
+     FROM team_share_tokens t
+     JOIN hospitals h ON h.id = t.hospital_id
+     WHERE t.token=? AND t.is_active=1`
+  ).bind(token).first<any>()
+
+  if (!tokenRow) return c.json({ error: 'Invalid or expired token' }, 404)
+
+  const hid = tokenRow.hospital_id
+  const now  = new Date()
+  const year  = yearParam  ? parseInt(yearParam)  : now.getFullYear()
+  const month = monthParam ? parseInt(monthParam) : now.getMonth() + 1
+  const mm = String(month).padStart(2, '0')
+  const fromDate = `${year}-${mm}-01`
+  const lastDay  = new Date(year, month, 0).getDate()
+  const toDate   = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`
+
+  // 활성 직원 목록
+  const empRows = await c.env.DB.prepare(
+    `SELECT id, name, position, team FROM employees WHERE hospital_id=? AND is_active=1 ORDER BY team, sort_order, name`
+  ).bind(hid).all<any>()
+  const employees = empRows.results || []
+
+  // 이번 달 전체 스케줄
+  const schedRows = await c.env.DB.prepare(
+    `SELECT ds.employee_id, ds.work_date, ds.shift_code
+     FROM daily_schedules ds
+     WHERE ds.hospital_id=? AND ds.work_date>=? AND ds.work_date<=?`
+  ).bind(hid, fromDate, toDate).all<any>()
+
+  const schedMap: Record<string, Record<string, string>> = {}
+  ;(schedRows.results || []).forEach((r: any) => {
+    if (!schedMap[r.employee_id]) schedMap[r.employee_id] = {}
+    schedMap[r.employee_id][r.work_date] = r.shift_code
+  })
+
+  // 근무조 색상
+  const shifts = await c.env.DB.prepare(
+    `SELECT shift_code, shift_name, color FROM schedule_shifts WHERE hospital_id=? AND is_active=1`
+  ).bind(hid).all<any>()
+
+  return c.json({
+    hospital: { name: tokenRow.hospital_name },
+    year, month, totalDays: lastDay,
+    employees,
+    schedMap,
+    shifts: shifts.results || [],
+  })
+})
+
 // 월별 스케줄 조회 (직위 포함, 정렬: 팀→직위순→입사일→이름)
 schedule.get('/:year/:month', async (c) => {
   const user = c.get('user')
@@ -2628,6 +2685,40 @@ schedule.post('/share-tokens/bulk', async (c) => {
   }
 
   return c.json({ created: results.length, tokens: results })
+})
+
+// ══════════════════════════════════════════════════════════════
+// 전체 팀 스케줄 공유 (QR 스캔 → 전체 근무표 공개 페이지)
+// ══════════════════════════════════════════════════════════════
+
+// 팀 공유 토큰 조회
+schedule.get('/team-token', async (c) => {
+  const user = c.get('user' as any) as any
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const row = await c.env.DB.prepare(
+    `SELECT token FROM team_share_tokens WHERE hospital_id=? AND is_active=1`
+  ).bind(hospitalId).first<any>()
+
+  return c.json({ token: row?.token || null })
+})
+
+// 팀 공유 토큰 생성/재생성
+schedule.post('/team-token', async (c) => {
+  const user = c.get('user' as any) as any
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const token = crypto.randomUUID().replace(/-/g, '')
+  // UPSERT: 기존 레코드가 있으면 토큰 갱신, 없으면 신규 삽입
+  await c.env.DB.prepare(
+    `INSERT INTO team_share_tokens (hospital_id, token, is_active)
+     VALUES (?,?,1)
+     ON CONFLICT(hospital_id) DO UPDATE SET token=excluded.token, is_active=1`
+  ).bind(hospitalId, token).run()
+
+  return c.json({ token })
 })
 
 export default schedule

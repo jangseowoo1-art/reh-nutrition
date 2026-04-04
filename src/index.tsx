@@ -38,6 +38,8 @@ app.use('/api/*', async (c, next) => {
   if (c.req.path === '/api/auth/login') return next()
   // QR 공유 페이지용 public 라우트 (토큰 자체가 인증 수단)
   if (c.req.path.startsWith('/api/schedule/public/')) return next()
+  // 팀 전체 스케줄 공개 라우트
+  if (c.req.path.startsWith('/api/schedule/team-public/')) return next()
   
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
@@ -94,6 +96,13 @@ app.get('/my-schedule/:token', (c) => {
   c.header('Cache-Control', 'no-store')
   const token = c.req.param('token')
   return c.html(getMySchedulePage(token))
+})
+
+// ── 팀 전체 스케줄 공유 페이지 ─────────────────────────────────
+app.get('/team-schedule/:token', (c) => {
+  c.header('Cache-Control', 'no-store')
+  const token = c.req.param('token')
+  return c.html(getTeamSchedulePage(token))
 })
 
 // ── 전역 notFound / onError 핸들러 (500 방지) ────────────────────
@@ -534,6 +543,9 @@ function render(d) {
   const {employee:emp, hospital, year, month, schedMap, workDays, codeCount, shifts, totalDays} = d
   const td = new Date(), todayStr = td.getFullYear()+'-'+String(td.getMonth()+1).padStart(2,'0')+'-'+String(td.getDate()).padStart(2,'0')
 
+  // 페이지 타이틀 업데이트
+  document.title = emp.name + ' 님의 근무표 | ' + hospital.name
+
   const legend = shifts.filter(s=>s.shift_code).map(s=>'<div class="legend-item"><div class="legend-dot" style="background:'+s.color+'33;border:1.5px solid '+s.color+'"></div><span>'+s.shift_code+(s.shift_name&&s.shift_name!==s.shift_code?' ('+s.shift_name+')':'')+'</span></div>').join('')+
     ['연','휴'].map(c=>{const s=style(c,[]);const bg=s.match(/background:([^;]+)/);return '<div class="legend-item"><div class="legend-dot" style="background:'+(bg?bg[1]:'#eee')+'"></div><span>'+c+'</span></div>'}).join('')
 
@@ -553,7 +565,7 @@ function render(d) {
   }
 
   document.getElementById('app').innerHTML =
-    '<div class="header"><h1><i class="fas fa-calendar-alt" style="margin-right:6px"></i>'+emp.name+' 님의 근무표</h1><div class="sub">'+hospital.name+' · '+(emp.position||'')+'</div></div>'+
+    '<div class="header"><div style="display:flex;align-items:center;gap:10px"><div style="width:40px;height:40px;background:rgba(255,255,255,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-user" style="font-size:16px"></i></div><div><h1 style="font-size:17px;font-weight:800"><span style="opacity:.9;font-weight:500;font-size:14px">'+emp.name+'</span> 님의 근무표</h1><div class="sub">'+hospital.name+(emp.position?' · '+emp.position:'')+'</div></div></div></div>'+
     '<div class="month-nav"><button onclick="prev()"><i class="fas fa-chevron-left"></i></button><div class="month-label">'+year+'년 '+month+'월</div><button onclick="next()"><i class="fas fa-chevron-right"></i></button></div>'+
     '<div class="stats"><div class="stat-card"><div class="val">'+workDays+'</div><div class="lbl">근무일수</div></div>'+statsItems+'</div>'+
     '<div class="code-legend">'+legend+'</div>'+
@@ -564,6 +576,135 @@ function render(d) {
 function prev(){curM--;if(curM<1){curM=12;curY--}load()}
 function next(){curM++;if(curM>12){curM=1;curY++}load()}
 function share(){const u=location.href;if(navigator.share)navigator.share({title:'내 근무표',url:u});else if(navigator.clipboard)navigator.clipboard.writeText(u).then(()=>alert('링크가 복사되었습니다'))}
+load()
+</script>
+</body>
+</html>`
+}
+
+// ── 전체 팀 스케줄 공유 페이지 ────────────────────────────────
+function getTeamSchedulePage(token: string): string {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>전체 근무표</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<link href="/static/fontawesome.min.css" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;}
+.header{background:linear-gradient(135deg,#166534,#15803d);color:white;padding:14px 16px;position:sticky;top:0;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.15);}
+.header h1{font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;}
+.header .sub{font-size:11px;opacity:.8;margin-top:3px;}
+.month-nav{display:flex;align-items:center;gap:8px;background:white;padding:10px 16px;border-bottom:1px solid #e5e7eb;}
+.month-nav button{width:32px;height:32px;border:1px solid #d1d5db;border-radius:8px;background:white;cursor:pointer;font-size:14px;}
+.month-label{flex:1;text-align:center;font-weight:700;font-size:15px;color:#166534;}
+.wrap{padding:12px 16px 24px;overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:600px;font-size:11px;}
+thead th{background:#166534;color:white;padding:7px 4px;text-align:center;font-weight:700;position:sticky;top:0;}
+thead th.sun{background:#b91c1c;}
+thead th.sat{background:#1d4ed8;}
+tbody tr:nth-child(even){background:#f9fafb;}
+tbody tr:hover{background:#f0fdf4;}
+td{padding:5px 3px;text-align:center;border:1px solid #f1f5f9;vertical-align:middle;}
+td.name-cell{text-align:left;padding:5px 8px;font-weight:700;white-space:nowrap;background:white;position:sticky;left:0;z-index:1;border-right:2px solid #e5e7eb;}
+td.name-cell .pos{font-size:9px;color:#9ca3af;font-weight:400;}
+.badge{display:inline-block;padding:2px 5px;border-radius:4px;font-size:9px;font-weight:700;width:100%;max-width:32px;}
+.team-divider td{background:#f0fdf4;font-size:10px;font-weight:700;color:#166534;padding:4px 8px;}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;}
+.spinner{width:36px;height:36px;border:4px solid #d1fae5;border-top-color:#166534;border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.error-box{margin:20px;padding:20px;background:#fff1f2;border-radius:12px;text-align:center;color:#b91c1c;}
+.legend{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;background:white;border-bottom:1px solid #e5e7eb;}
+.legend-item{display:flex;align-items:center;gap:4px;font-size:10px;}
+.legend-dot{width:10px;height:10px;border-radius:3px;}
+@media print{.month-nav button{display:none!important;} body{background:white;} .header{background:#166534!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">근무표 불러오는 중...</p></div>
+</div>
+<script>
+const TOKEN = '${token}'
+let curY = new Date().getFullYear(), curM = new Date().getMonth()+1
+
+async function load() {
+  document.getElementById('app').innerHTML = '<div class="loading"><div class="spinner"></div><p style="color:#6b7280;font-size:13px;">불러오는 중...</p></div>'
+  try {
+    const r = await fetch('/api/schedule/team-public/'+TOKEN+'?year='+curY+'&month='+curM)
+    if (!r.ok) throw new Error('유효하지 않은 링크입니다')
+    render(await r.json())
+  } catch(e) {
+    document.getElementById('app').innerHTML = '<div class="error-box"><i class="fas fa-exclamation-triangle" style="font-size:24px;margin-bottom:8px;display:block"></i><b>오류</b><p style="margin-top:6px;font-size:13px;">'+e.message+'</p></div>'
+  }
+}
+
+function shiftStyle(code, shifts) {
+  if (!code) return ''
+  const sf = shifts.find(s => s.shift_code === code)
+  if (sf && sf.color) return 'background:'+sf.color+'22;color:'+sf.color
+  const m = {'연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c','경조':'background:#fce7f3;color:#9d174d'}
+  return m[code] || 'background:#f3f4f6;color:#374151'
+}
+
+function render(d) {
+  const {hospital, year, month, totalDays, employees, schedMap, shifts} = d
+  document.title = hospital.name + ' 전체 근무표'
+
+  // 요일 헤더
+  const days = []
+  for(let day=1;day<=totalDays;day++){
+    const dow = new Date(year,month-1,day).getDay()
+    days.push({day,dow})
+  }
+
+  const thCells = days.map(({day,dow})=>{
+    const cls = dow===0?'sun':dow===6?'sat':''
+    return '<th class="'+cls+'">'+day+'<br><span style="font-size:8px;font-weight:400">'+['일','월','화','수','목','금','토'][dow]+'</span></th>'
+  }).join('')
+
+  // 팀 구분
+  const cookTeam = employees.filter(e=>e.team==='cook')
+  const nutriTeam = employees.filter(e=>e.team!=='cook')
+
+  function empRows(emps) {
+    return emps.map(emp=>{
+      const sm = schedMap[emp.id] || {}
+      const cells = days.map(({day,dow})=>{
+        const ds = year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')
+        const code = sm[ds] || ''
+        const st = shiftStyle(code, shifts)
+        const isOff = code==='연'||code==='휴'
+        const isSun = dow===0
+        const bg = isSun&&!code ? 'background:#fff1f2;' : ''
+        return '<td style="'+bg+'"><span class="badge" style="'+st+'">'+(code||(isSun?'휴':'-'))+'</span></td>'
+      }).join('')
+      return '<tr><td class="name-cell">'+emp.name+'<br><span class="pos">'+(emp.position||'')+'</span></td>'+cells+'</tr>'
+    }).join('')
+  }
+
+  const legend = shifts.filter(s=>s.shift_code).map(s=>
+    '<div class="legend-item"><div class="legend-dot" style="background:'+s.color+'33;border:1.5px solid '+s.color+'"></div><span>'+s.shift_code+(s.shift_name&&s.shift_name!==s.shift_code?' ('+s.shift_name+')':'')+'</span></div>'
+  ).join('')+'<div class="legend-item"><div class="legend-dot" style="background:#fef9c3;border:1.5px solid #92400e"></div><span>연</span></div><div class="legend-item"><div class="legend-dot" style="background:#fee2e2;border:1.5px solid #b91c1c"></div><span>휴</span></div>'
+
+  document.getElementById('app').innerHTML =
+    '<div class="header"><h1><i class="fas fa-users" style="font-size:14px"></i>'+hospital.name+'</h1><div class="sub"><i class="fas fa-calendar-alt" style="margin-right:4px"></i>'+year+'년 '+month+'월 전체 근무표</div></div>'+
+    '<div class="month-nav"><button onclick="prev()"><i class="fas fa-chevron-left"></i></button><div class="month-label">'+year+'년 '+month+'월</div><button onclick="next()"><i class="fas fa-chevron-right"></i></button></div>'+
+    '<div class="legend">'+legend+'</div>'+
+    '<div class="wrap"><table>'+
+      '<thead><tr><th style="min-width:72px;text-align:left;padding-left:8px">이름</th>'+thCells+'</tr></thead>'+
+      '<tbody>'+
+      (cookTeam.length>0?'<tr class="team-divider"><td colspan="'+(totalDays+1)+'"><i class="fas fa-utensils" style="margin-right:4px"></i>조리팀</td></tr>'+empRows(cookTeam):'')+
+      (nutriTeam.length>0?'<tr class="team-divider"><td colspan="'+(totalDays+1)+'"><i class="fas fa-apple-alt" style="margin-right:4px"></i>영양팀</td></tr>'+empRows(nutriTeam):'')+
+      '</tbody></table></div>'+
+    '<div style="text-align:center;padding:16px;"><button onclick="window.print()" style="padding:10px 24px;background:#166534;color:white;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:6px"></i>인쇄 / PDF 저장</button></div>'
+}
+
+function prev(){curM--;if(curM<1){curM=12;curY--}load()}
+function next(){curM++;if(curM>12){curM=1;curY++}load()}
 load()
 </script>
 </body>
