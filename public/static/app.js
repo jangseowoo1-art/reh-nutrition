@@ -12996,9 +12996,12 @@ function renderOffGrantsPanel() {
                   : isMixed      ? 'text-teal-600 font-medium'
                   : 'text-gray-400'
 
-  // monthly_fixed 배치 결과 분석
+  // monthly_fixed 배치 결과 분석 (Phase E: lock 통계 확장)
   const autoCount      = gd.filter(d => d.type === 'monthly_fixed' && d.lock_flag !== 1).length
   const manualCount    = gd.filter(d => d.lock_flag === 1).length
+  const lockedMF       = sm.locked_monthly_fixed || gd.filter(d => d.lock_flag===1 && d.type==='monthly_fixed').length
+  const lockedMG       = sm.locked_min_guarantee || gd.filter(d => d.lock_flag===1 && d.type==='min_guarantee').length
+  const lockedCR       = sm.locked_cycle_rest    || gd.filter(d => d.lock_flag===1 && d.type==='cycle_rest').length
   const minGuaranteeN  = sm.min_guarantee_days || 0
   const policyReview   = sm.policy_review_signal === true
 
@@ -13013,10 +13016,17 @@ function renderOffGrantsPanel() {
         </div>
       </div>
       ${isAdm ? `
-      <button onclick="openSubstituteOffModal()"
-        class="btn btn-sm bg-orange-500 hover:bg-orange-600 text-white">
-        <i class="fas fa-plus mr-1"></i>대체휴무 추가
-      </button>` : ''}
+      <div class="flex items-center gap-2 flex-wrap">
+        ${(isMonthlyFix || isCycle || isMixed) ? `
+        <button onclick="openForceRecalcModal()"
+          class="btn btn-sm bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300">
+          <i class="fas fa-redo-alt mr-1 text-xs"></i>재계산
+        </button>` : ''}
+        <button onclick="openSubstituteOffModal()"
+          class="btn btn-sm bg-orange-500 hover:bg-orange-600 text-white">
+          <i class="fas fa-plus mr-1"></i>대체휴무 추가
+        </button>
+      </div>` : ''}
     </div>
 
     <!-- 요약 카드 -->
@@ -13062,21 +13072,37 @@ function renderOffGrantsPanel() {
         </div>
       </div>
 
-      <!-- 월 고정 휴무제: 자동배치 vs 수동수정 현황 배너 -->
+      <!-- 월 고정 휴무제: 자동배치 vs 수동수정 현황 배너 (Phase E: 타입별 lock 통계) -->
       ${isMonthlyFix ? `
       <div class="mb-3 p-3 rounded-xl border flex items-center gap-3 flex-wrap ${manualCount > 0 ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-100'}">
         <div class="flex items-center gap-1.5 text-xs">
           <span class="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"></span>
           <span class="text-blue-700 font-medium">자동배치 ${autoCount}일</span>
         </div>
-        ${manualCount > 0 ? `
+        ${lockedMF > 0 ? `
         <div class="flex items-center gap-1.5 text-xs">
           <span class="w-2.5 h-2.5 rounded-full bg-orange-500 inline-block"></span>
-          <span class="text-orange-700 font-medium">수동수정(잠금) ${manualCount}일</span>
-          <span class="text-gray-400">— 재계산 시 보호됨</span>
+          <span class="text-orange-700 font-medium"><i class="fas fa-lock text-xs mr-0.5"></i>월고정 수동잠금 ${lockedMF}일</span>
         </div>` : ''}
+        ${lockedMG > 0 ? `
+        <div class="flex items-center gap-1.5 text-xs">
+          <span class="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block"></span>
+          <span class="text-violet-700 font-medium"><i class="fas fa-lock text-xs mr-0.5"></i>최소보장 잠금 ${lockedMG}일</span>
+        </div>` : ''}
+        ${manualCount > 0 ? `<span class="text-xs text-gray-400 ml-1">— 재계산 시 보호됨</span>` : ''}
         <div class="ml-auto text-xs text-gray-500">
           기준인원: <strong>${sm.required_staff||0}명</strong>
+        </div>
+      </div>` : ''}
+
+      ${(isCycle || isMixed) && manualCount > 0 ? `
+      <div class="mb-3 p-3 rounded-xl border bg-amber-50 border-amber-200 flex items-center gap-3 flex-wrap">
+        <i class="fas fa-lock text-amber-500 text-xs"></i>
+        <div class="text-xs text-amber-700">
+          <strong>수동 잠금 ${manualCount}일</strong>
+          ${lockedCR > 0 ? `· 순환휴무 ${lockedCR}일` : ''}
+          ${lockedMG > 0 ? `· 최소보장 ${lockedMG}일` : ''}
+          <span class="text-gray-400 ml-1">— 재계산 시 보호됨</span>
         </div>
       </div>` : ''}
 
@@ -13094,32 +13120,41 @@ function renderOffGrantsPanel() {
       <!-- 부여휴무 날짜 목록 -->
       ${gd.length > 0 ? `
       <div class="mb-3">
-        <div class="text-xs font-bold text-gray-500 mb-2">
-          📅 부여휴무 일정
-          ${isMonthlyFix ? `<span class="ml-1 text-blue-500">(월고정제 — 파란색:자동 / 주황색:수동 / 보라색:최소보장)</span>` : isCycle ? '(순환근무제)' : isMixed ? '(혼합형)' : '(토·일·공휴일)'}
+        <div class="text-xs font-bold text-gray-500 mb-2 flex items-center gap-2">
+          <span>📅 부여휴무 일정</span>
+          <span class="font-normal opacity-70">${isMonthlyFix ? '파란색:자동 / 주황색:수동잠금 / 보라색:최소보장' : isCycle||isMixed ? '순환근무 — 클릭: 잠금/해제' : '토·일·공휴일'}</span>
+          ${isAdm && (isMonthlyFix||isCycle||isMixed) ? `<span class="ml-auto text-gray-400 font-normal text-xs"><i class="fas fa-info-circle mr-1"></i>날짜 클릭 → 잠금/해제</span>` : ''}
         </div>
         <div class="flex flex-wrap gap-1.5">
           ${gd.map(d => {
-            const isManual = d.lock_flag === 1
-            const cfg = isManual
+            const isLocked = d.lock_flag === 1
+            // 잠금 가능한 타입: monthly_fixed, min_guarantee, cycle_rest, manual
+            const isLockable = isAdm && ['monthly_fixed','min_guarantee','cycle_rest','manual','holiday','substitute'].includes(d.type)
+            const cfg = isLocked
               ? { bg: '#fff7ed', color: '#c2410c' }
               : (DOW_COLORS[d.type] || { bg: '#f3f4f6', color: '#374151' })
-            const lockIcon = isManual ? '<i class="fas fa-lock text-orange-400" style="font-size:8px"></i>' : ''
-            const reasonTip = d.reason ? ` title="${d.reason}"` : ''
-            return `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border cursor-default"
-              style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33"${reasonTip}>
+            const lockIcon = isLocked
+              ? '<i class="fas fa-lock" style="font-size:8px;margin-right:2px;color:#c2410c"></i>'
+              : (isLockable ? '<i class="fas fa-lock-open" style="font-size:8px;margin-right:2px;opacity:0.3"></i>' : '')
+            const reasonTip = d.reason ? d.reason.replace(/"/g,"'") : ''
+            const clickAttr = isLockable
+              ? ` onclick="toggleOffGrantLock('${d.date}','${d.type}',${isLocked?1:0},'${(d.base_off_type||d.type).replace(/'/g,'')}')" style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33;cursor:pointer" title="${isLocked?'🔒 잠금 해제 클릭':'🔓 잠금 설정 클릭'}${reasonTip?' — '+reasonTip:''}"`
+              : ` style="background:${cfg.bg};color:${cfg.color};border-color:${cfg.color}33;cursor:default" title="${reasonTip}"`
+            return `<span class="inline-flex items-center gap-0.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-opacity hover:opacity-80"${clickAttr}>
               ${lockIcon}
               <span>${d.date.slice(5)}</span>
               <span class="opacity-60">${d.day_of_week}</span>
               ${d.type === 'holiday' ? `<span class="font-semibold">${d.label.length > 8 ? '공휴' : d.label}</span>`
-                : d.type === 'cycle_rest' ? `<span class="font-semibold">순환휴</span>`
-                : d.type === 'monthly_fixed' ? `<span class="font-semibold text-blue-600">${isManual ? '수동' : '자동'}</span>`
-                : d.type === 'min_guarantee' ? `<span class="font-semibold text-violet-600">최소보장</span>`
+                : d.type === 'cycle_rest' ? `<span class="font-semibold">${isLocked?'순환(잠금)':'순환휴'}</span>`
+                : d.type === 'monthly_fixed' ? `<span class="font-semibold">${isLocked ? '수동' : '자동'}</span>`
+                : d.type === 'min_guarantee' ? `<span class="font-semibold">${isLocked?'최소(잠금)':'최소보장'}</span>`
                 : d.type === 'substitute' ? `<span class="font-semibold text-amber-600">대체</span>`
                 : ''}
             </span>`
           }).join('')}
         </div>
+        ${isAdm && (isMonthlyFix||isCycle||isMixed) ? `
+        <div class="mt-1.5 text-xs text-gray-400"><i class="fas fa-info-circle mr-1"></i>잠금된 날짜는 재계산 시에도 변경되지 않습니다. 잠금 해제 후 재계산하려면 [재계산] 버튼을 사용하세요.</div>` : ''}
       </div>` : '<div class="text-xs text-gray-400 mb-3">이 달 공휴일 정보가 없습니다 (관리자 → 공휴일 관리에서 등록)</div>'}
 
       <!-- 대체휴무 목록 -->
@@ -13220,6 +13255,60 @@ function renderOffGrantsPanel() {
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Phase E: 재계산(force-recalc) 확인 모달 -->
+  <div id="forceRecalcModal" class="hidden modal-overlay" style="z-index:1150">
+    <div class="modal-box max-w-sm p-0 overflow-hidden">
+      <div class="bg-gray-700 text-white px-5 py-4 flex items-center justify-between">
+        <span class="font-bold"><i class="fas fa-redo-alt mr-2"></i>재계산 설정</span>
+        <button onclick="closeForceRecalcModal()" class="text-white/70 hover:text-white">✕</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
+          <i class="fas fa-exclamation-triangle mr-1 text-yellow-600"></i>
+          <strong>잠금 해제 후 재계산</strong> — 선택한 타입의 수동 잠금이 해제되어 다음 조회 시 자동으로 재배치됩니다.
+          <br><span class="text-yellow-600 mt-1 block">※ 체크하지 않은 타입은 잠금이 유지됩니다.</span>
+        </div>
+        <div>
+          <div class="text-xs font-semibold text-gray-700 mb-2">해제할 잠금 타입 선택</div>
+          <div class="space-y-2">
+            <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg hover:bg-gray-50">
+              <input type="checkbox" id="fr_monthly_fixed" value="monthly_fixed" class="w-4 h-4 text-blue-600">
+              <span class="w-3 h-3 rounded-full bg-blue-500 inline-block"></span>
+              <span>월고정 자동배치 잠금 해제</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg hover:bg-gray-50">
+              <input type="checkbox" id="fr_min_guarantee" value="min_guarantee" class="w-4 h-4 text-violet-600">
+              <span class="w-3 h-3 rounded-full bg-violet-500 inline-block"></span>
+              <span>최소보장 잠금 해제</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg hover:bg-gray-50">
+              <input type="checkbox" id="fr_cycle_rest" value="cycle_rest" class="w-4 h-4 text-purple-600">
+              <span class="w-3 h-3 rounded-full bg-purple-500 inline-block"></span>
+              <span>순환휴무 잠금 해제</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm cursor-pointer p-2 rounded-lg hover:bg-gray-50">
+              <input type="checkbox" id="fr_manual" value="manual" class="w-4 h-4 text-orange-600">
+              <span class="w-3 h-3 rounded-full bg-orange-500 inline-block"></span>
+              <span>수동지정 잠금 해제</span>
+            </label>
+          </div>
+        </div>
+        <div class="border-t pt-3">
+          <label class="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" id="fr_all" class="w-4 h-4" onchange="toggleForceRecalcAll(this)">
+            <span class="font-semibold text-gray-700">전체 잠금 해제 (위 선택 무시)</span>
+          </label>
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button onclick="closeForceRecalcModal()" class="btn btn-secondary flex-1">취소</button>
+          <button onclick="executeForceRecalc()" class="btn flex-1 bg-gray-700 hover:bg-gray-800 text-white border-gray-700">
+            <i class="fas fa-redo-alt mr-1"></i>잠금 해제 및 재계산
+          </button>
+        </div>
+      </div>
+    </div>
   </div>`
 }
 
@@ -13268,6 +13357,99 @@ async function deleteSubstituteOff(id) {
     scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
     const tc = document.getElementById('scheduleTabContent')
     if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  }
+}
+
+// ── Phase E: 부여휴무 날짜 잠금/해제 토글 ─────────────────────────────────
+window.toggleOffGrantLock = async function(date, offType, currentLockFlag, baseOffType) {
+  const newLockFlag = currentLockFlag === 1 ? 0 : 1
+  const msg = newLockFlag === 1
+    ? `📅 ${date.slice(5)} (${offType}) 날짜를 수동 잠금 설정하시겠습니까?\n재계산 시에도 이 날짜는 변경되지 않습니다.`
+    : `🔓 ${date.slice(5)} (${offType}) 잠금을 해제하시겠습니까?\n이후 재계산 시 자동으로 재배치될 수 있습니다.`
+  if (!confirm(msg)) return
+
+  const body = { date, off_type: offType, lock_flag: newLockFlag, base_off_type: baseOffType || offType }
+  const res = await api('POST', '/api/schedule/off-grants/lock', body).catch(e => ({ error: e.message }))
+  if (res?.success) {
+    showToast(res.message || (newLockFlag===1?'잠금 설정됨':'잠금 해제됨'), 'success')
+    scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  } else {
+    showToast(res?.error || '처리 실패', 'error')
+  }
+}
+
+// ── Phase E: force-recalc 모달 ─────────────────────────────────────────────
+function openForceRecalcModal() {
+  // 현재 잠금 통계에 따라 체크박스 초기화
+  const sm = scheduleOffGrants?.summary || {}
+  const el = id => document.getElementById(id)
+
+  // 모달 열기
+  document.getElementById('forceRecalcModal')?.classList.remove('hidden')
+
+  // 전체 해제 체크 초기화
+  const frAll = el('fr_all')
+  if (frAll) frAll.checked = false
+
+  // 현재 잠긴 타입이 있는 경우만 체크 활성화 표시
+  const mf = el('fr_monthly_fixed')
+  const mg = el('fr_min_guarantee')
+  const cr = el('fr_cycle_rest')
+  const mn = el('fr_manual')
+  if (mf) { mf.checked = (sm.locked_monthly_fixed||0) > 0 }
+  if (mg) { mg.checked = (sm.locked_min_guarantee||0) > 0 }
+  if (cr) { cr.checked = (sm.locked_cycle_rest||0) > 0 }
+  if (mn) { mn.checked = (sm.locked_manual||0) > 0 }
+}
+
+function closeForceRecalcModal() {
+  document.getElementById('forceRecalcModal')?.classList.add('hidden')
+}
+
+function toggleForceRecalcAll(checkbox) {
+  const checked = checkbox.checked
+  ;['fr_monthly_fixed','fr_min_guarantee','fr_cycle_rest','fr_manual'].forEach(id => {
+    const el = document.getElementById(id)
+    if (el) el.checked = checked
+  })
+}
+
+async function executeForceRecalc() {
+  const allCheck = document.getElementById('fr_all')?.checked
+
+  let offTypes = null
+  if (!allCheck) {
+    offTypes = []
+    ;['fr_monthly_fixed','fr_min_guarantee','fr_cycle_rest','fr_manual'].forEach(id => {
+      const el = document.getElementById(id)
+      if (el?.checked) offTypes.push(el.value)
+    })
+    if (offTypes.length === 0) {
+      showToast('해제할 잠금 타입을 하나 이상 선택하세요', 'warn')
+      return
+    }
+  }
+
+  const typeDesc = allCheck ? '전체' : offTypes.join(', ')
+  if (!confirm(`[${typeDesc}] 타입의 잠금을 해제하고 재계산을 진행하시겠습니까?`)) return
+
+  const body = {
+    year:  App.currentYear,
+    month: App.currentMonth,
+    ...(offTypes ? { off_types: offTypes } : {})
+  }
+  const res = await api('POST', '/api/schedule/off-grants/force-recalc', body).catch(e => ({ error: e.message }))
+
+  if (res?.success) {
+    closeForceRecalcModal()
+    showToast(res.message || `재계산 완료 (${res.unlocked_count}일 잠금 해제)`, 'success')
+    scheduleOffGrants = await api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}`).catch(() => null)
+    const tc = document.getElementById('scheduleTabContent')
+    if (tc) tc.innerHTML = renderMonthlyScheduleTab()
+  } else {
+    showToast(res?.error || '처리 실패', 'error')
   }
 }
 
@@ -14074,6 +14256,17 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     evalItems.push({ type:'warn', text:`월 최소 휴무 보장 자동 추가 ${ogSummary.min_guarantee_days||0}일 발생 — 기본 근무 배정만으로는 최소 기준(${ogSummary.monthly_min_off_target||0}일) 미달. 근무 정책 검토를 권장합니다.` })
   }
 
+  // Phase E: 수동 잠금 현황 정보 (lock이 있는 경우 안내)
+  const totalLocked = ogSummary.total_locked || 0
+  if (totalLocked > 0) {
+    const lockDetails = []
+    if (ogSummary.locked_monthly_fixed > 0) lockDetails.push(`월고정 ${ogSummary.locked_monthly_fixed}일`)
+    if (ogSummary.locked_min_guarantee > 0) lockDetails.push(`최소보장 ${ogSummary.locked_min_guarantee}일`)
+    if (ogSummary.locked_cycle_rest > 0) lockDetails.push(`순환휴무 ${ogSummary.locked_cycle_rest}일`)
+    if (ogSummary.locked_manual > 0) lockDetails.push(`수동지정 ${ogSummary.locked_manual}일`)
+    evalItems.push({ type:'info', text:`수동 잠금 ${totalLocked}일 적용 중 (${lockDetails.join(', ')}) — 재계산 시 이 날짜들은 변경되지 않습니다.` })
+  }
+
   // 공휴일 많은 달 외부인력 동반 증가 연관 추이 참고 (안전한 표현)
   const natHolidays = ogSummary.national_holidays || 0
   if (natHolidays >= 3 && extWorkDays > 0) {
@@ -14502,11 +14695,20 @@ function renderMonthlyScheduleTab() {
               // granted_days의 type 확인
               const grantedEntry = (scheduleOffGrants?.granted_days||[]).find(d=>d.date===dateStr)
               const isCycleRestType = grantedEntry?.type === 'cycle_rest'
+              const isGLocked = grantedEntry?.lock_flag === 1  // Phase E: 잠금 여부
               let cellBg = 'transparent', cellIcon = '', cellTitle = ''
               if (isSub) { cellBg='#ea580c'; cellIcon='대'; cellTitle=offLabelMap[dateStr]||'대체휴무' }
-              else if (grantedEntry?.type === 'min_guarantee') { cellBg='#7c3aed'; cellIcon='보'; cellTitle=grantedEntry?.reason||'최소휴무 보장' }
-              else if (grantedEntry?.type === 'monthly_fixed') { cellBg=grantedEntry?.lock_flag===1?'#c2410c':'#1d4ed8'; cellIcon=grantedEntry?.lock_flag===1?'수':'고'; cellTitle=grantedEntry?.reason||grantedEntry?.label||'월고정 자동배치' }
-              else if (isCycleRestType) { cellBg='#7c3aed'; cellIcon='순'; cellTitle=grantedEntry?.label||'순환휴무' }
+              else if (grantedEntry?.type === 'min_guarantee') {
+                // Phase E: min_guarantee 잠금 시 더 진한 보라
+                cellBg=isGLocked?'#5b21b6':'#7c3aed'; cellIcon=isGLocked?'보🔒':'보'; cellTitle=(isGLocked?'[잠금] ':'')+( grantedEntry?.reason||'최소휴무 보장')
+              }
+              else if (grantedEntry?.type === 'monthly_fixed') {
+                cellBg=isGLocked?'#c2410c':'#1d4ed8'; cellIcon=isGLocked?'수':'고'; cellTitle=(isGLocked?'[수동잠금] ':'')+(grantedEntry?.reason||grantedEntry?.label||'월고정 자동배치')
+              }
+              else if (isCycleRestType) {
+                // Phase E: cycle_rest 잠금 시 진한 보라
+                cellBg=isGLocked?'#4c1d95':'#7c3aed'; cellIcon=isGLocked?'순🔒':'순'; cellTitle=(isGLocked?'[잠금] ':'')+( grantedEntry?.label||'순환휴무')
+              }
               else if (isHoliday || (grantedEntry?.type==='holiday')) { cellBg='#d97706'; cellIcon='공'; cellTitle=offLabelMap[dateStr]||grantedEntry?.label||'공휴일' }
               else if (grantedEntry?.type==='substitute') { cellBg='#a16207'; cellIcon='대'; cellTitle=grantedEntry?.label||'대체휴무' }
               else if (isSun2) { cellBg='#dc2626'; cellIcon='휴'; cellTitle='일요일' }

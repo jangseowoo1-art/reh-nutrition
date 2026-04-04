@@ -1595,25 +1595,36 @@ schedule.get('/off-grants', async (c) => {
     c.env.DB, hospitalId, year, month, REST_CODES_OG
   )
 
+  // ── Phase E: 공통 수동 잠금 이력 로드 (모든 근무제 유형 공통) ──────────
+  // off_grant_history에서 날짜별 최신 이력을 가져와 현재 lock 상태를 판단
+  // (force_recalc로 lock=0이 된 날짜는 잠금 해제 상태로 처리)
+  const allLockRows = await c.env.DB.prepare(
+    `SELECT target_date, new_off_type, new_lock_flag, base_off_type
+     FROM off_grant_history
+     WHERE hospital_id=?
+       AND target_date LIKE ?
+     ORDER BY changed_at DESC`
+  ).bind(hospitalId, `${prefix}-%`).all<any>()
+
+  const lockedDates = new Set<string>()
+  const lockedTypes = new Map<string, string>()        // date → new_off_type
+  const lockedBaseTypes = new Map<string, string>()    // date → base_off_type
+  const seenHistoryDates = new Set<string>()
+  for (const r of (allLockRows.results || [])) {
+    // 날짜별 최신 이력만 사용 (ORDER BY changed_at DESC 첫 번째)
+    if (seenHistoryDates.has(r.target_date)) continue
+    seenHistoryDates.add(r.target_date)
+    // 최신 이력의 new_lock_flag=1인 경우만 잠금으로 처리
+    if (r.new_lock_flag === 1) {
+      lockedDates.add(r.target_date)
+      lockedTypes.set(r.target_date, r.new_off_type || 'monthly_fixed')
+      lockedBaseTypes.set(r.target_date, r.base_off_type || r.new_off_type || 'monthly_fixed')
+    }
+  }
+
   if (offGrantType === 'monthly_fixed') {
     // ── 월 고정 휴무제 ────────────────────────────────────────
-    // 수동 잠금 날짜 조회 (off_grant_history 에서 lock=1인 날짜)
-    const lockRows = await c.env.DB.prepare(
-      `SELECT target_date, new_off_type
-       FROM off_grant_history
-       WHERE hospital_id=? AND new_lock_flag=1
-         AND target_date LIKE ?
-       ORDER BY changed_at DESC`
-    ).bind(hospitalId, `${prefix}-%`).all<any>()
-
-    const lockedDates = new Set<string>()
-    const lockedTypes = new Map<string, string>()
-    for (const r of (lockRows.results || [])) {
-      if (!lockedDates.has(r.target_date)) {
-        lockedDates.add(r.target_date)
-        lockedTypes.set(r.target_date, r.new_off_type || 'manual')
-      }
-    }
+    // 수동 잠금 날짜는 위에서 공통 로드한 lockedDates/lockedTypes 사용
 
     grantedDays = computeMonthlyFixedOff(
       monthlyFixedDays,
@@ -1645,6 +1656,25 @@ schedule.get('/off-grants', async (c) => {
       const dowLabel = DOW_LABEL[dow]
       const isHoliday = nationalHolidayDates.has(dateStr)
       const holidayName = holidayNameMap.get(dateStr) || '공휴일'
+
+      // Phase E: 수동 잠금 날짜 처리 (cycle/mixed 포함)
+      if (lockedDates.has(dateStr)) {
+        const lockedType = lockedTypes.get(dateStr) || 'cycle_rest'
+        const lockedBase = lockedBaseTypes.get(dateStr) || lockedType
+        const lockedLabel = lockedType === 'cycle_rest' ? `순환휴무 (수동수정)`
+          : lockedType === 'holiday' ? (holidayNameMap.get(dateStr) || '공휴일')
+          : lockedType === 'monthly_fixed' ? '월고정(수동수정)'
+          : lockedType === 'min_guarantee' ? '최소보장(수동수정)'
+          : '수동지정'
+        grantedDays.push({
+          date: dateStr, day_of_week: dowLabel,
+          type: lockedType, label: lockedLabel,
+          is_auto: false, lock_flag: 1,
+          base_off_type: lockedBase,
+          reason: '관리자 수동 수정 (잠금)'
+        })
+        continue
+      }
 
       const diffMs   = dateObj.getTime() - baseTime
       const diffDays = Math.floor(diffMs / 86400000)
@@ -1751,6 +1781,24 @@ schedule.get('/off-grants', async (c) => {
       const isNationalHoliday = nationalHolidayDates.has(dateStr)
       const hName = holidayNameMap.get(dateStr) || '공휴일'
 
+      // Phase E: 수동 잠금 처리 (weekly5 모드 포함)
+      if (lockedDates.has(dateStr)) {
+        const lockedType = lockedTypes.get(dateStr) || 'manual'
+        const lockedBase = lockedBaseTypes.get(dateStr) || lockedType
+        const lockedLabel = lockedType === 'holiday' ? (holidayNameMap.get(dateStr) || '공휴일')
+          : lockedType === 'min_guarantee' ? '최소보장(수동수정)'
+          : lockedType === 'monthly_fixed' ? '월고정(수동수정)'
+          : '수동지정'
+        grantedDays.push({
+          date: dateStr, day_of_week: DOW_LABEL[dow],
+          type: lockedType, label: lockedLabel,
+          is_auto: false, lock_flag: 1,
+          base_off_type: lockedBase,
+          reason: '관리자 수동 수정 (잠금)'
+        })
+        continue
+      }
+
       if (dow === 0) {
         grantedDays.push({ date: dateStr, day_of_week: '일', type: 'sunday', label: '일요일', is_auto: true, lock_flag: 0 })
       } else if (dow === 6) {
@@ -1788,14 +1836,19 @@ schedule.get('/off-grants', async (c) => {
   }
 
   // ─── monthly_min_off_days: 최소 휴무 보장 (min_guarantee 자동 삽입) ───
+  // Phase E: 잠긴 min_guarantee 날짜는 이미 grantedDays에 포함됨 (lockedDates로 처리)
   // 대체휴무는 아래에서 조회되므로 여기선 grantedDays 기준으로만 계산
   if (monthlyMinOff > 0) {
+    // Phase E: 현재 잠긴 min_guarantee 날짜를 현재 총계에 포함
     const currentTotal = grantedDays.length
     const deficit = monthlyMinOff - currentTotal
 
     if (deficit > 0) {
       // 이미 휴무인 날짜 집합
       const offDateSet = new Set<string>(grantedDays.map(d => d.date))
+
+      // Phase E: 잠긴 날짜 중 min_guarantee 타입도 후보에서 제외
+      for (const ld of lockedDates) offDateSet.add(ld)
 
       // 최소 보장 추가 후보: 평일 중 아직 휴무가 아닌 날
       const minCandidates: { ds: string; dow: number; workCount: number }[] = []
@@ -1847,6 +1900,13 @@ schedule.get('/off-grants', async (c) => {
 
   // ─── 요약 집계 (월 고정 휴무제 항목 포함 확장) ──────────────
   const minGuaranteeCount = grantedDays.filter(d => d.type === 'min_guarantee').length
+  // Phase E: lock 통계 분리 — 타입별 잠금 수
+  const totalLocked         = grantedDays.filter(d => d.lock_flag === 1).length
+  const lockedMonthlyFixed  = grantedDays.filter(d => d.lock_flag === 1 && d.type === 'monthly_fixed').length
+  const lockedMinGuarantee  = grantedDays.filter(d => d.lock_flag === 1 && d.type === 'min_guarantee').length
+  const lockedCycleRest     = grantedDays.filter(d => d.lock_flag === 1 && d.type === 'cycle_rest').length
+  const lockedManual        = grantedDays.filter(d => d.lock_flag === 1 && (d.type === 'manual' || !['monthly_fixed','min_guarantee','cycle_rest'].includes(d.type))).length
+
   const summary = {
     total_granted:           grantedDays.length,
     sundays:                 grantedDays.filter(d => d.type === 'sunday').length,
@@ -1854,9 +1914,15 @@ schedule.get('/off-grants', async (c) => {
     national_holidays:       grantedDays.filter(d => d.type === 'holiday').length,
     cycle_rest_days:         grantedDays.filter(d => d.type === 'cycle_rest').length,
     monthly_fixed_days:      grantedDays.filter(d => d.type === 'monthly_fixed').length,
-    monthly_fixed_auto:      grantedDays.filter(d => d.type === 'monthly_fixed' && d.is_auto !== false).length,
-    monthly_fixed_manual:    grantedDays.filter(d => d.lock_flag === 1).length,
+    monthly_fixed_auto:      grantedDays.filter(d => d.type === 'monthly_fixed' && d.lock_flag !== 1).length,
+    monthly_fixed_manual:    lockedMonthlyFixed,
     min_guarantee_days:      minGuaranteeCount,
+    // Phase E: 확장된 lock 통계
+    total_locked:            totalLocked,
+    locked_monthly_fixed:    lockedMonthlyFixed,
+    locked_min_guarantee:    lockedMinGuarantee,
+    locked_cycle_rest:       lockedCycleRest,
+    locked_manual:           lockedManual,
     substitute_type_days:    grantedDays.filter(d => d.type === 'substitute').length,
     substitute_count:        substituteDays.length,
     grand_total:             grantedDays.length + substituteDays.length,
@@ -1935,7 +2001,11 @@ schedule.post('/off-grants/lock', async (c) => {
 
 // ── 월 고정 휴무 강제 재계산 (잠금 해제) API ──────────────────────────────
 // POST /api/schedule/off-grants/force-recalc
-// body: { year, month, hospitalId? }
+// body: { year, month, hospitalId?, off_types?: string[] }
+// off_types: 해제할 타입 필터 (미지정 시 전체 해제)
+// 예: { off_types: ['monthly_fixed'] } → monthly_fixed 잠금만 해제
+//     { off_types: ['monthly_fixed', 'min_guarantee'] } → 두 타입 잠금 해제
+//     {} → 전체 잠금 해제
 schedule.post('/off-grants/force-recalc', async (c) => {
   const user = c.get('user')
   if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한이 없습니다' }, 403)
@@ -1951,21 +2021,33 @@ schedule.post('/off-grants/force-recalc', async (c) => {
   const monthStr = String(month).padStart(2, '0')
   const prefix   = `${year}-${monthStr}`
 
+  // Phase E: 해제할 off_types 필터 (기본: 전체)
+  const offTypesFilter: string[] | null = Array.isArray(body.off_types) && body.off_types.length > 0
+    ? body.off_types
+    : null
+
   const changedBy = (user as any)?.username || (user as any)?.name || 'system'
 
-  // 해당 월 잠금된 이력 조회 후 모두 잠금 해제
+  // 해당 월 잠금된 이력 조회 후 필터에 따라 잠금 해제
   const lockRows = await c.env.DB.prepare(
-    `SELECT target_date, new_off_type FROM off_grant_history
+    `SELECT target_date, new_off_type, base_off_type FROM off_grant_history
      WHERE hospital_id=? AND new_lock_flag=1 AND target_date LIKE ?
      ORDER BY changed_at DESC`
   ).bind(hospitalId, `${prefix}-%`).all<any>()
 
   const seenDates = new Set<string>()
   let unlockedCount = 0
+  let skippedCount = 0
 
   for (const r of (lockRows.results || [])) {
     if (seenDates.has(r.target_date)) continue
     seenDates.add(r.target_date)
+
+    // Phase E: off_types 필터 적용 — 해당 타입만 해제
+    if (offTypesFilter && !offTypesFilter.includes(r.new_off_type)) {
+      skippedCount++
+      continue  // 이 타입은 잠금 유지
+    }
 
     await c.env.DB.prepare(
       `INSERT INTO off_grant_history
@@ -1976,16 +2058,20 @@ schedule.post('/off-grants/force-recalc', async (c) => {
     ).bind(
       hospitalId, r.target_date,
       r.new_off_type, r.new_off_type,
-      r.new_off_type, changedBy
+      r.base_off_type || r.new_off_type, changedBy
     ).run()
     unlockedCount++
   }
+
+  const filterDesc = offTypesFilter ? `(${offTypesFilter.join(', ')} 타입)` : '(전체)'
 
   return c.json({
     success: true,
     year, month,
     unlocked_count: unlockedCount,
-    message: `${unlockedCount}개 날짜의 잠금을 해제했습니다. 다음 off-grants 조회 시 자동 재계산됩니다.`
+    skipped_count:  skippedCount,
+    filter_applied: offTypesFilter,
+    message: `${unlockedCount}개 날짜 ${filterDesc} 잠금 해제됨. 다음 off-grants 조회 시 자동 재계산됩니다.`
   })
 })
 
