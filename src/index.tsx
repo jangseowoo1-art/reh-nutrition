@@ -592,7 +592,7 @@ function render(d) {
         '</div>'
     }).join('')
     changeHtml = '<div class="change-log">'+
-      '<div class="change-log-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">'+
+      '<div class="change-log-header" onclick="toggleChangeLog(this)">'+
       '<i class="fas fa-history" style="color:#166534;font-size:13px"></i>'+
       '<span>최근 스케줄 변경 이력 ('+logs.length+'건)</span>'+
       '<i class="fas fa-chevron-down" style="color:#9ca3af;font-size:11px"></i>'+
@@ -614,6 +614,7 @@ function render(d) {
 function prev(){curM--;if(curM<1){curM=12;curY--}load()}
 function next(){curM++;if(curM>12){curM=1;curY++}load()}
 function share(){const u=location.href;if(navigator.share)navigator.share({title:'내 근무표',url:u});else if(navigator.clipboard)navigator.clipboard.writeText(u).then(()=>alert('링크가 복사되었습니다'))}
+function toggleChangeLog(el){const b=el.nextElementSibling;if(b)b.style.display=b.style.display==='none'?'block':'none'}
 load()
 </script>
 </body>
