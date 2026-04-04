@@ -12312,6 +12312,7 @@ async function reloadScheduleMonth() {
     if (scheduleTab === 'schedule') {
       tc.innerHTML = renderMonthlyScheduleTab()
       setTimeout(initExtWorkerEvents, 0)
+      setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 300)
     } else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
   }
 }
@@ -12485,6 +12486,8 @@ function renderScheduleTab(content) {
   setTimeout(initExtWorkerEvents, 0)
   // 툴바 토글 버튼 초기 상태 동기화
   setTimeout(_syncToolbarToggleBtn, 0)
+  // 관리자 뷰 요약 패널 (관리자 뷰 상태일 때만)
+  setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 200)
 }
 
 // ─── 인사카드 탭 ─────────────────────────────────────────────
@@ -13152,11 +13155,198 @@ window.switchSchedView = function(mode) {
     setTimeout(() => { 
       try { initExtWorkerEvents() } catch(e) { console.warn('[switchSchedView] initExtWorkerEvents 오류:', e) }
       try { _syncToolbarToggleBtn() } catch(e) {}
-    }, 100)
+      // 관리자 뷰일 때만 요약 패널 렌더링
+      if (mode === 'admin') {
+        try { renderAdminSummaryPanel() } catch(e) { console.warn('[switchSchedView] adminSummary 오류:', e) }
+      }
+    }, 150)
   } catch(e) {
     console.error('[switchSchedView] 오류:', e)
     showToast('뷰 전환 중 오류가 발생했습니다: ' + e.message, 'error')
   }
+}
+
+// ── 관리자 뷰 하단 요약 패널 렌더링 ──────────────────────────
+function renderAdminSummaryPanel() {
+  const panel = document.getElementById('schedAdminSummaryPanel')
+  if (!panel) return
+  const md = scheduleMonthData
+  if (!md) return
+  const sm = md.sched_map || {}
+  const emps = scheduleEmployees || []
+  const shifts = scheduleShifts || []
+  const ws = scheduleWorkSettings || {}
+  const year = App.currentYear, month = App.currentMonth
+  const days = new Date(year, month, 0).getDate()
+  const REST_CODES = new Set(['연','휴','경조','병가'])
+
+  function calcShiftHrs(code) {
+    if (!code || code==='-' || REST_CODES.has(code)) return 0
+    const sf = shifts.find(s=>s.shift_code===code)
+    if (sf?.start_time && sf?.end_time) {
+      const [sh,sm2]=sf.start_time.split(':').map(Number)
+      const [eh,em]=sf.end_time.split(':').map(Number)
+      let hrs=(eh*60+em-sh*60-sm2)/60
+      if(hrs<0)hrs+=24
+      return Math.max(0,hrs-1)
+    }
+    return 8
+  }
+
+  // 직원별 집계
+  const empData = emps.map(emp => {
+    let totalHrs=0, workDays=0, otDays=0
+    let curConsec=0, maxConsec=0
+    const weeklyHrs = {} // weekIdx → hrs
+    const codeCounts = {}
+    for(let d=1;d<=days;d++){
+      const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const key=`${emp.id}_${ds}`
+      const entry=sm[key]||{}
+      const code=entry.shift_code||''
+      if(!code||code==='-'){curConsec=0;continue}
+      codeCounts[code]=(codeCounts[code]||0)+1
+      if(REST_CODES.has(code)){curConsec=0;continue}
+      const hrs=calcShiftHrs(code)
+      totalHrs+=hrs
+      workDays++
+      if(code==='OT')otDays++
+      curConsec++
+      if(curConsec>maxConsec)maxConsec=curConsec
+      const wk=Math.floor((d-1)/7)
+      weeklyHrs[wk]=(weeklyHrs[wk]||0)+hrs
+    }
+    const maxWeeklyHrs = Math.max(...Object.values(weeklyHrs),0)
+    const weeklyMaxSet = parseFloat(ws.weekly_max_hours||'52')
+    const maxConsecSet = parseInt(ws.consecutive_max_days||'6')
+    const legalWarn = (ws.legal_warning_enabled??'1')==='1'
+    // 예상 급여 계산 (기본 포함)
+    let estimatedSalary = null
+    const salaryType = emp.salary_type || 'monthly'
+    const baseSalary = parseFloat(emp.base_salary||0)
+    if(baseSalary > 0) {
+      if(salaryType==='monthly') estimatedSalary = baseSalary
+      else if(salaryType==='hourly') estimatedSalary = totalHrs * baseSalary
+      else if(salaryType==='annual') estimatedSalary = Math.round(baseSalary/12)
+    }
+    return {
+      ...emp, totalHrs, workDays, otDays, maxConsec, weeklyHrs, maxWeeklyHrs,
+      weeklyMaxSet, maxConsecSet, legalWarn, estimatedSalary, salaryType, codeCounts
+    }
+  })
+
+  // 근무시간 합계
+  const totalAllHrs = empData.reduce((a,e)=>a+e.totalHrs,0)
+  const avgHrs = empData.length ? (totalAllHrs/empData.length).toFixed(1) : 0
+
+  // 연속근무 위반자
+  const consecViolators = empData.filter(e=>e.legalWarn && e.maxConsec>e.maxConsecSet)
+  // 주간초과 위반자  
+  const weeklyViolators = empData.filter(e=>e.legalWarn && e.maxWeeklyHrs>e.weeklyMaxSet)
+  // 휴무부족 (휴무일 3일 미만)
+  const lowOffViolators = empData.filter(e=>{
+    let off=0
+    for(let d=1;d<=days;d++){
+      const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const code=(sm[`${e.id}_${ds}`]||{}).shift_code||''
+      if(REST_CODES.has(code))off++
+    }
+    return off < 3
+  })
+
+  // 주차별 근무시간 합계 (전 직원)
+  const weekCount = Math.ceil(days/7)
+  const weekTotalHrs = Array.from({length:weekCount},(_,wk)=>empData.reduce((a,e)=>a+(e.weeklyHrs[wk]||0),0))
+  const weekMaxHrs = Math.max(...weekTotalHrs, 1)
+
+  // 총 예상급여
+  const totalSalary = empData.reduce((a,e)=>a+(e.estimatedSalary||0),0)
+
+  // 근무시간 행
+  const empRows = empData.map(e=>{
+    const salaryStr = e.estimatedSalary!=null ? `${e.estimatedSalary.toLocaleString()}원` : '-'
+    const salaryTypeLabel = {monthly:'월급',hourly:'시급',annual:'연봉'}[e.salaryType]||''
+    const consecWarn = e.legalWarn&&e.maxConsec>e.maxConsecSet
+    const weekWarn = e.legalWarn&&e.maxWeeklyHrs>e.weeklyMaxSet
+    const wkCells = Array.from({length:weekCount},(_,wk)=>{
+      const h=e.weeklyHrs[wk]||0
+      const over=h>e.weeklyMaxSet
+      return `<td style="padding:3px 5px;text-align:center;font-size:11px;${over?'color:#ef4444;font-weight:700':'color:#374151'}">${h.toFixed(0)}h${over?'⚠':''}</td>`
+    }).join('')
+    return `<tr style="border-bottom:1px solid #f3f4f6">
+      <td style="padding:5px 8px;font-size:11px;font-weight:600;color:#1f2937;white-space:nowrap">
+        ${e.name}
+        ${consecWarn?`<span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:800;margin-left:2px" title="연속${e.maxConsec}일">!</span>`:''}
+        ${weekWarn?`<span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px" title="주${e.maxWeeklyHrs.toFixed(0)}h">W</span>`:''}
+      </td>
+      <td style="padding:3px 5px;text-align:center;font-size:12px;font-weight:700;color:#166534">${e.workDays}일</td>
+      <td style="padding:3px 5px;text-align:center;font-size:12px;font-weight:700;color:#2563eb">${e.totalHrs.toFixed(1)}h</td>
+      ${wkCells}
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-weight:700;color:#92400e;white-space:nowrap">${salaryStr}<span style="font-size:9px;color:#b45309;margin-left:2px">${salaryTypeLabel}</span></td>
+    </tr>`
+  }).join('')
+
+  // 주차 헤더
+  const wkHeaders = Array.from({length:weekCount},(_,i)=>`<th style="padding:4px 5px;text-align:center;font-size:10px;color:#6b7280">${i+1}주</th>`).join('')
+
+  // 주차별 바 차트
+  const wkBarHtml = weekTotalHrs.map((h,i)=>{
+    const pct=Math.round((h/weekMaxHrs)*100)
+    return `<div style="display:flex;flex-direction:column;align-items:center;flex:1;gap:2px">
+      <span style="font-size:9px;font-weight:700;color:#374151">${h.toFixed(0)}h</span>
+      <div style="width:100%;background:#e5e7eb;border-radius:3px;height:40px;display:flex;align-items:flex-end">
+        <div style="width:100%;background:linear-gradient(180deg,#2563eb,#1d4ed8);height:${pct}%;border-radius:3px"></div>
+      </div>
+      <span style="font-size:9px;color:#6b7280">${i+1}주</span>
+    </div>`
+  }).join('')
+
+  // 경고 섹션
+  let warnHtml = ''
+  if(consecViolators.length) warnHtml+=`<div style="background:#fff1f2;border:1px solid #fecaca;border-radius:8px;padding:7px 12px;font-size:11px;color:#b91c1c"><i class="fas fa-exclamation-circle" style="margin-right:5px"></i><strong>연속근무 초과:</strong> ${consecViolators.map(e=>`${e.name}(${e.maxConsec}일)`).join(', ')} — 기준 ${consecViolators[0]?.maxConsecSet||6}일 초과</div>`
+  if(weeklyViolators.length) warnHtml+=`<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:7px 12px;font-size:11px;color:#9a3412"><i class="fas fa-clock" style="margin-right:5px"></i><strong>주간 근무시간 초과:</strong> ${weeklyViolators.map(e=>`${e.name}(최대${e.maxWeeklyHrs.toFixed(0)}h)`).join(', ')} — 기준 ${weeklyViolators[0]?.weeklyMaxSet||52}h 초과</div>`
+  if(lowOffViolators.length) warnHtml+=`<div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:7px 12px;font-size:11px;color:#92400e"><i class="fas fa-calendar-minus" style="margin-right:5px"></i><strong>휴무 부족(3일 미만):</strong> ${lowOffViolators.map(e=>e.name).join(', ')} — 충분한 휴무 배정 권장</div>`
+  if(!warnHtml) warnHtml=`<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:7px 12px;font-size:11px;color:#166534"><i class="fas fa-check-circle" style="margin-right:5px"></i>근무시간 및 연속근무 이상 없음</div>`
+
+  panel.innerHTML = `
+    <!-- 경고 -->
+    <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:12px">
+      <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px"><i class="fas fa-exclamation-triangle" style="margin-right:5px;color:#f59e0b"></i>근무 경고 사항</div>
+      <div style="display:flex;flex-direction:column;gap:5px">${warnHtml}</div>
+    </div>
+
+    <!-- 주차별 근무시간 차트 -->
+    <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:12px">
+      <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-calendar-week" style="margin-right:5px;color:#2563eb"></i>주차별 총 근무시간 합계 (전 직원)</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;height:70px;padding:0 4px">${wkBarHtml}</div>
+      <div style="margin-top:6px;font-size:10px;color:#9ca3af;text-align:right">전체 총 근무시간: <strong style="color:#374151">${totalAllHrs.toFixed(1)}h</strong> · 평균: <strong style="color:#374151">${avgHrs}h</strong></div>
+    </div>
+
+    <!-- 직원별 근무시간 + 예상 급여 테이블 -->
+    <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-table" style="margin-right:5px;color:#166534"></i>직원별 근무시간 분석 · 예상 급여</div>
+        ${totalSalary>0?`<div style="font-size:11px;color:#92400e;font-weight:700"><i class="fas fa-won-sign" style="margin-right:3px"></i>총 예상 급여: ${totalSalary.toLocaleString()}원</div>`:''}
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#f8fafc;border-bottom:1px solid #e5e7eb">
+              <th style="padding:6px 8px;text-align:left;font-size:11px;color:#374151;font-weight:700">직원</th>
+              <th style="padding:4px 5px;text-align:center;font-size:10px;color:#374151">근무일</th>
+              <th style="padding:4px 5px;text-align:center;font-size:10px;color:#374151">총 시간</th>
+              ${wkHeaders}
+              <th style="padding:4px 8px;text-align:right;font-size:10px;color:#374151">예상 급여</th>
+            </tr>
+          </thead>
+          <tbody>${empRows}</tbody>
+        </table>
+      </div>
+      <div style="padding:8px 12px;background:#f8fafc;border-top:1px solid #e5e7eb;font-size:10px;color:#6b7280">
+        <i class="fas fa-info-circle" style="margin-right:3px"></i>예상 급여는 월급/시급/연봉 기준 산출 (수당·공제 별도). 인사카드에서 급여 설정 가능.
+      </div>
+    </div>
+  `
 }
 
 // ── 직원 공유 뷰 렌더 함수 ────────────────────────────────────
@@ -13165,114 +13355,197 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
   const year = App.currentYear, month = App.currentMonth
   const shiftColorMap = {}
   shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
-  // allOffSet 방어
   const _offSet = (allOffSet instanceof Set) ? allOffSet : new Set()
-
-  function getCodeStyle(code) {
-    if (!code || code === '-') return 'background:#f9fafb;color:#9ca3af'
-    if (shiftColorMap[code]) {
-      const hex = shiftColorMap[code]
-      return `background:${hex}22;color:${hex};font-weight:700`
-    }
-    const defMap = {
-      '연':'background:#fef9c3;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
-      '오전':'background:#ede9fe;color:#6d28d9','오후':'background:#dbeafe;color:#1d4ed8',
-      '경조':'background:#fce7f3;color:#9d174d','OT':'background:#ecfdf5;color:#065f46'
-    }
-    return defMap[code] || 'background:#f3f4f6;color:#374151'
-  }
-
   const md = scheduleMonthData
   const sm = md?.sched_map || {}
+  const holidays = md?.holidays || []
+  const holidaySet = new Set(holidays.map(h => h.date || h))
+  const REST_CODES = new Set(['연','휴','경조','병가'])
+
+  function getCodeBadge(code, isSun, isSat, isHoliday) {
+    if (!code || code === '-') return ''
+    let bg, fg
+    if (shiftColorMap[code]) {
+      const hex = shiftColorMap[code]
+      bg = hex + '28'; fg = hex
+    } else {
+      const dm = {'연':'#f59e0b,#fef3c7','휴':'#ef4444,#fee2e2','경조':'#a855f7,#fdf4ff','병가':'#6366f1,#eef2ff','OT':'#059669,#ecfdf5'}
+      const parts = (dm[code]||'#374151,#f3f4f6').split(',')
+      fg = parts[0]; bg = parts[1]
+    }
+    const isOffCode = REST_CODES.has(code)
+    const border = isHoliday ? 'border:2px solid #ef4444;' : ''
+    return `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border-radius:5px;font-size:11px;font-weight:800;background:${bg};color:${fg};${border}">${code}</span>`
+  }
+
+  const dayNames = ['일','월','화','수','목','금','토']
 
   // 직원 행 생성
-  const rows = emps.map(emp => {
+  const rows = emps.map((emp, empIdx) => {
     let workCount = 0
+    const codeCounts = {}
     const cells = Array.from({length: days}, (_, i) => {
       const day = i + 1
       const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
       const dow = new Date(year, month-1, day).getDay()
+      const isSun = dow===0, isSat = dow===6
+      const isHoliday = holidaySet.has(ds)
+      const isGrantOff = _offSet.has(ds)
       const key = `${emp.id}_${ds}`
       const entry = sm[key] || {}
       const code = entry.shift_code || ''
-      const isOff = code==='연'||code==='휴'
-      const isSun = dow===0, isSat = dow===6
-      if (code && !isOff && code!=='-') workCount++
-      const bgDay = isOff ? '#fff1f2' : _offSet.has(ds) ? '#fffbeb' : isSun ? '#fff5f5' : isSat ? '#eff6ff' : 'white'
-      const codeSt = code ? getCodeStyle(code) : ''
-      return `<td style="padding:1px;text-align:center;min-width:28px;border-left:1px solid ${isSun?'#fca5a5':isSat?'#93c5fd':'#e5e7eb'};background:${bgDay}">
-        ${code ? `<span style="${codeSt};padding:1px 4px;border-radius:3px;font-size:10px;font-weight:700;display:block;text-align:center">${code}</span>` : ''}
-      </td>`
+      const isOff = REST_CODES.has(code)
+      if (code && !isOff && code !== '-') {
+        workCount++
+        codeCounts[code] = (codeCounts[code]||0)+1
+      }
+      // 배경색: 공휴일 > 연/휴 > 부여휴무 > 주말 > 평일
+      const cellBg = isOff ? (code==='연'?'#fef3c7':(code==='경조'?'#fdf4ff':'#fee2e2'))
+                   : isHoliday ? '#fff1f2'
+                   : isGrantOff ? '#fffbeb'
+                   : isSun ? '#fff5f5' : isSat ? '#f0f7ff' : (empIdx%2===0 ? '#fff' : '#f9fafb')
+      const borderCol = isHoliday ? '#fca5a5' : isSun ? '#fecaca' : isSat ? '#bfdbfe' : '#e5e7eb'
+      const badge = getCodeBadge(code, isSun, isSat, isHoliday)
+      // 공휴일 표시 도트
+      const hDot = isHoliday && !code ? `<span style="display:block;width:5px;height:5px;border-radius:50%;background:#ef4444;margin:2px auto 0"></span>` : ''
+      return `<td style="padding:2px 1px;text-align:center;min-width:26px;border-left:1px solid ${borderCol};background:${cellBg};vertical-align:middle">${badge}${hDot}</td>`
     }).join('')
 
-    return `<tr style="border-bottom:1px solid #e5e7eb">
-      <td style="padding:6px 10px;min-width:100px;position:sticky;left:0;background:white;z-index:5;border-right:2px solid #e5e7eb">
-        <div style="font-size:12px;font-weight:700;color:#374151">${emp.name}</div>
-        <div style="font-size:10px;color:#9ca3af">${emp.position||''}</div>
+    // 근무유형 요약
+    const summaryItems = Object.entries(codeCounts).sort((a,b)=>b[1]-a[1]).map(([code,cnt])=>{
+      let fg = shiftColorMap[code] || '#6b7280'
+      return `<span style="display:inline-flex;align-items:center;gap:2px;font-size:9px;background:${fg}18;color:${fg};border-radius:4px;padding:1px 5px;font-weight:700">${code}<span style="opacity:.7">${cnt}</span></span>`
+    }).join('')
+
+    // 휴무 횟수 (연+휴+경조)
+    let offCount = 0
+    for (let i=1;i<=days;i++) {
+      const ds=`${year}-${String(month).padStart(2,'0')}-${String(i).padStart(2,'0')}`
+      const code=(sm[`${emp.id}_${ds}`]||{}).shift_code||''
+      if(REST_CODES.has(code)) offCount++
+    }
+
+    return `<tr class="staff-emp-row" style="border-bottom:1px solid ${empIdx%2===0?'#e5e7eb':'#f3f4f6'}">
+      <td style="padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;background:${empIdx%2===0?'#fff':'#f9fafb'};z-index:5;border-right:2px solid #d1fae5">
+        <div style="font-size:12px;font-weight:800;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
+        <div style="font-size:9px;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.position_name||emp.position||''}</div>
       </td>
       ${cells}
-      <td style="padding:4px 6px;text-align:center;min-width:36px;border-left:2px solid #e5e7eb;font-weight:800;color:#166534;font-size:13px">${workCount}</td>
+      <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:2px solid #d1fae5;background:#f0fdf4;white-space:nowrap">
+        <div style="font-size:13px;font-weight:900;color:#166534">${workCount}</div>
+        <div style="font-size:8px;color:#4ade80">근무</div>
+      </td>
+      <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:1px solid #fde68a;background:#fffbeb;white-space:nowrap">
+        <div style="font-size:13px;font-weight:900;color:#b45309">${offCount}</div>
+        <div style="font-size:8px;color:#d97706">휴무</div>
+      </td>
+      <td style="padding:3px 6px;min-width:80px;border-left:1px solid #e5e7eb;background:#fafafa">
+        <div style="display:flex;flex-wrap:wrap;gap:2px">${summaryItems}</div>
+      </td>
     </tr>`
   }).join('')
 
   // 날짜 헤더
   const dateHeader = Array.from({length: days}, (_, i) => {
     const day = i+1
+    const ds = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
     const dow = new Date(year, month-1, day).getDay()
     const isSun = dow===0, isSat = dow===6
-    const dayNames = ['일','월','화','수','목','금','토']
-    return `<th style="padding:4px 1px;min-width:28px;text-align:center;font-size:10px;border-left:1px solid ${isSun?'#fca5a5':isSat?'#93c5fd':'rgba(255,255,255,.2)'};background:${isSun?'#b91c1c':isSat?'#1d4ed8':'#166534'};color:white">
-      <div>${day}</div><div style="font-size:8px;opacity:.8">${dayNames[dow]}</div>
+    const isHoliday = holidaySet.has(ds)
+    const bg = isHoliday ? '#ef4444' : isSun ? '#dc2626' : isSat ? '#2563eb' : '#166534'
+    return `<th style="padding:3px 0;min-width:26px;text-align:center;font-size:9px;border-left:1px solid rgba(255,255,255,.15);background:${bg};color:white;white-space:nowrap">
+      <div style="font-size:10px">${day}</div><div style="opacity:.8">${dayNames[dow]}</div>${isHoliday?'<div style="font-size:6px;opacity:.9">★</div>':''}
     </th>`
   }).join('')
 
+  // 범례
   const legend = shifts.filter(s=>s.shift_code).map(s=>
-    `<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px">
-      <span style="width:24px;height:18px;border-radius:4px;background:${s.color}22;color:${s.color};font-weight:700;font-size:9px;display:flex;align-items:center;justify-content:center;border:1px solid ${s.color}44">${s.shift_code}</span>${s.shift_name||s.shift_code}
+    `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#374151">
+      <span style="display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:18px;border-radius:4px;background:${s.color}28;color:${s.color};font-weight:800;font-size:9px;border:1px solid ${s.color}44">${s.shift_code}</span>${s.shift_name||s.shift_code}
     </span>`
   ).join('')
+  // 고정 범례
+  const fixedLegend = [
+    {code:'연',label:'연차',color:'#f59e0b'},{code:'휴',label:'휴무',color:'#ef4444'},
+    {code:'경조',label:'경조사',color:'#a855f7'},{code:'OT',label:'초과근무',color:'#059669'}
+  ].map(l=>`<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#374151">
+      <span style="display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:18px;border-radius:4px;background:${l.color}18;color:${l.color};font-weight:800;font-size:9px;border:1px solid ${l.color}44">${l.code}</span>${l.label}
+    </span>`).join('')
+
+  // 공휴일 목록
+  const holidayListHtml = holidays.length ? holidays.map(h=>{
+    const hDate = h.date||h
+    const dw = new Date(hDate).getDay()
+    return `<span style="font-size:10px;color:#b91c1c;background:#fff1f2;border:1px solid #fecaca;border-radius:5px;padding:2px 7px">${hDate.substring(5)} ${h.name||''}</span>`
+  }).join('') : '<span style="font-size:10px;color:#9ca3af">공휴일 없음</span>'
 
   return `
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-    <div class="px-5 py-4 border-b border-gray-100">
+  <div style="background:white;border-radius:16px;border:1px solid #e5e7eb;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
+    <!-- 헤더 -->
+    <div style="background:linear-gradient(135deg,#1e40af,#2563eb);padding:14px 18px 10px">
       ${viewTabsHtml}
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px">
         <div>
-          <h3 style="font-size:16px;font-weight:800;color:#1e40af">${year}년 ${month}월 근무표 (직원 공유용)</h3>
-          <p style="font-size:11px;color:#6b7280;margin-top:2px"><i class="fas fa-info-circle" style="margin-right:4px;color:#3b82f6"></i>이름·근무코드·근무일수만 표시 — 급여·내부 지표 제외</p>
+          <h3 style="font-size:17px;font-weight:900;color:white;margin:0">${year}년 ${month}월 근무표</h3>
+          <p style="font-size:10px;color:rgba(255,255,255,.75);margin:3px 0 0"><i class="fas fa-shield-alt" style="margin-right:4px"></i>직원 공유용 — 급여·분석 정보 미포함</p>
         </div>
         <div style="display:flex;gap:6px">
-          <button onclick="window.print()" style="padding:7px 14px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:5px"></i>인쇄/PDF</button>
-          <button onclick="openQrManageModal()" style="padding:7px 14px;background:#166534;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer"><i class="fas fa-qrcode" style="margin-right:5px"></i>QR 공유</button>
+          <button onclick="window.print()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>인쇄/PDF</button>
+          <button onclick="window.openQrManageModal&&openQrManageModal()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-qrcode" style="margin-right:4px"></i>QR 공유</button>
         </div>
       </div>
-      ${legend ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;background:#f0fdf4;border-radius:8px">${legend}</div>` : ''}
     </div>
-    <div style="overflow-x:auto;max-height:70vh">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
+
+    <!-- 범례 + 공휴일 -->
+    <div style="padding:8px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        <span style="font-size:10px;font-weight:700;color:#374151;margin-right:2px"><i class="fas fa-tag" style="margin-right:3px;color:#2563eb"></i>근무조</span>
+        ${legend || '<span style="font-size:10px;color:#9ca3af">미설정</span>'}
+        ${fixedLegend}
+      </div>
+      ${holidays.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+        <span style="font-size:10px;font-weight:700;color:#b91c1c;margin-right:2px"><i class="fas fa-calendar-times" style="margin-right:3px"></i>공휴일</span>
+        ${holidayListHtml}
+      </div>` : ''}
+    </div>
+
+    <!-- 테이블 -->
+    <div style="overflow-x:auto;max-height:68vh">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead style="position:sticky;top:0;z-index:10">
           <tr style="background:#166534;color:white">
-            <th style="padding:8px 12px;text-align:left;min-width:100px;position:sticky;left:0;background:#166534;z-index:20;border-right:2px solid #14532d">이름/직위</th>
+            <th style="padding:8px 10px;text-align:left;min-width:90px;position:sticky;left:0;background:#166534;z-index:20;border-right:2px solid #14532d;font-size:11px">이름</th>
             ${dateHeader}
-            <th style="padding:6px 4px;min-width:36px;text-align:center;border-left:2px solid #14532d;background:#0f3d25;font-size:10px">근무</th>
+            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:2px solid #14532d;background:#0f3d25;font-size:9px">근무</th>
+            <th style="padding:4px 2px;min-width:34px;text-align:center;border-left:1px solid #0f3d25;background:#0f3d25;font-size:9px">휴무</th>
+            <th style="padding:4px 8px;min-width:80px;text-align:left;border-left:1px solid #0f3d25;background:#0f3d25;font-size:9px">유형별 요약</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
+
+    <!-- 하단 안내 -->
+    <div style="padding:8px 14px;background:#f0fdf4;border-top:1px solid #d1fae5;font-size:10px;color:#15803d;display:flex;align-items:center;gap:6px">
+      <i class="fas fa-info-circle"></i>
+      <span>★ 표시는 공휴일 · 빨간 테두리 배지는 공휴일 근무 · 노란 배경은 부여휴무일</span>
+    </div>
   </div>
   <style>
   @media print {
-    .bottom-bar, nav, .month-nav, button:not(.noprint) { display:none!important }
-    body { background:white }
-    .bg-white { box-shadow:none!important }
-    table { font-size:9px!important }
-    th, td { padding:2px!important }
+    .bottom-bar, nav, .month-nav, button { display:none!important }
+    body { background:white!important }
+    div[style*="linear-gradient"] { background:#1e40af!important;-webkit-print-color-adjust:exact;print-color-adjust:exact }
+    table { font-size:8px!important;page-break-inside:auto }
+    tr { page-break-inside:avoid }
+    th, td { padding:2px 1px!important }
+    thead { display:table-header-group }
   }
+  .staff-emp-row:hover td { filter:brightness(.97) }
   </style>`
   } catch(e) {
     console.error('[renderSchedStaffView] 오류:', e)
-    return `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px">${viewTabsHtml}<p>직원 공유 뷰 렌더 오류: ${e.message}</p></div>`
+    return `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px">${viewTabsHtml}<p style="margin:8px 0 0">직원 공유 뷰 렌더 오류: ${e.message}</p></div>`
   }
 }
 
@@ -13283,157 +13556,291 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
   const md = scheduleMonthData
   const sm = md?.sched_map || {}
   const extWorkers = md?.ext_workers || []
+  const extSchedMap = scheduleExtSchedMap || {}
+  const holidays = md?.holidays || []
+  const holidaySet = new Set(holidays.map(h => h.date||h))
+  const REST_CODES = new Set(['연','휴','경조','병가'])
+  const shiftColorMap = {}
+  shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
 
-  // 직원별 근무 집계
+  // ── 직원별 근무 집계 ──────────────────────────────────────
   const empStats = emps.map(emp => {
-    let workDays = 0, offDays = 0, otDays = 0
+    let workDays=0, offDays=0, otDays=0, holidayWorkDays=0
     const codeCounts = {}
-    for (let d = 1; d <= days; d++) {
+    const weeklyWorkDays = {} // weekIdx → workDays
+    for (let d=1; d<=days; d++) {
       const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
       const key = `${emp.id}_${ds}`
       const entry = sm[key] || {}
       const code = entry.shift_code || ''
+      const isHoliday = holidaySet.has(ds)
+      const dow = new Date(ds).getDay()
+      // 주차 인덱스 (월 기준 0~4)
+      const weekIdx = Math.floor((d-1)/7)
       if (!code || code==='-') continue
-      codeCounts[code] = (codeCounts[code]||0)+1
-      if (code==='연'||code==='휴'||code==='경조') offDays++
-      else if (code==='OT') { workDays++; otDays++ }
-      else workDays++
+      codeCounts[code]=(codeCounts[code]||0)+1
+      if (REST_CODES.has(code)) offDays++
+      else {
+        workDays++
+        if (code==='OT') otDays++
+        if (isHoliday || dow===0) holidayWorkDays++
+        if (!weeklyWorkDays[weekIdx]) weeklyWorkDays[weekIdx]=0
+        weeklyWorkDays[weekIdx]++
+      }
     }
-    return { ...emp, workDays, offDays, otDays, codeCounts }
+    return { ...emp, workDays, offDays, otDays, holidayWorkDays, codeCounts, weeklyWorkDays }
   })
 
   const totalWork = empStats.reduce((a,e)=>a+e.workDays,0)
-  const avgWork = empStats.length ? (totalWork/empStats.length).toFixed(1) : 0
-  const maxWork = Math.max(...empStats.map(e=>e.workDays), 0)
+  const avgWork = empStats.length ? (totalWork/empStats.length) : 0
+  const avgWorkStr = avgWork.toFixed(1)
+  const maxWork = empStats.length ? Math.max(...empStats.map(e=>e.workDays)) : 0
   const minWork = empStats.length ? Math.min(...empStats.map(e=>e.workDays)) : 0
 
-  // 근무조별 사용 집계
-  const globalCodeCount = {}
-  empStats.forEach(e => { Object.entries(e.codeCounts).forEach(([c,n]) => { globalCodeCount[c]=(globalCodeCount[c]||0)+n }) })
-  const shiftColorMap = {}
-  shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
-  const defColorMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
-
-  // 외부인력 집계
-  const extMap = md?.ext_map || {}
-  let extWorkDays = 0
-  const extWorkerList = extWorkers || []
-  extWorkerList.forEach(w => {
+  // ── 외부인력 집계 ──────────────────────────────────────────
+  const dispatchWorkers = extWorkers.filter(w=>w.worker_type==='dispatch')
+  const parttimeWorkers = extWorkers.filter(w=>w.worker_type==='parttime')
+  let extWorkDays=0, dispatchDays=0, parttimeDays=0
+  extWorkers.forEach(w => {
     for (let d=1;d<=days;d++) {
       const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
       const key=`${w.id}_${ds}`
-      if (extMap[key]?.shift_type) extWorkDays++
+      if (extSchedMap[key]?.shift_type || extSchedMap[key]?.shift_code) {
+        extWorkDays++
+        if (w.worker_type==='dispatch') dispatchDays++
+        else parttimeDays++
+      }
     }
   })
 
-  // 직원별 근무 바 차트
-  const maxBar = Math.max(maxWork, 1)
-  const empBars = empStats.map(emp => {
-    const pct = Math.round((emp.workDays/maxBar)*100)
-    const warn = emp.workDays > avgWork*1.3 ? '#ef4444' : emp.workDays < avgWork*0.7 ? '#f59e0b' : '#166534'
-    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-      <div style="min-width:70px;font-size:11px;font-weight:600;color:#374151;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
-      <div style="flex:1;background:#f3f4f6;border-radius:4px;height:18px;position:relative">
-        <div style="width:${pct}%;background:${warn};height:100%;border-radius:4px;transition:width .3s"></div>
-        <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:700;color:#374151">${emp.workDays}일</span>
+  // ── 주차별 인력 분포 ────────────────────────────────────────
+  const weekCount = Math.ceil(days/7)
+  const weekLabels = Array.from({length:weekCount},(_,i)=>`${i+1}주`)
+  const weekTotals = Array.from({length:weekCount},(_,wk)=>empStats.reduce((a,e)=>a+(e.weeklyWorkDays[wk]||0),0))
+  const weekMax = Math.max(...weekTotals, 1)
+
+  // ── 근무조별 분포 ────────────────────────────────────────────
+  const globalCodeCount = {}
+  empStats.forEach(e => {
+    Object.entries(e.codeCounts).forEach(([c,n]) => {
+      globalCodeCount[c]=(globalCodeCount[c]||0)+n
+    })
+  })
+  const topCodes = Object.entries(globalCodeCount).filter(([c])=>!REST_CODES.has(c)).sort((a,b)=>b[1]-a[1]).slice(0,8)
+  const totalShiftCount = topCodes.reduce((a,[,n])=>a+n,0)
+
+  // ── 근무 불균형 점수 ─────────────────────────────────────────
+  const variance = empStats.length ? empStats.reduce((a,e)=>a+Math.pow(e.workDays-avgWork,2),0)/empStats.length : 0
+  const stdDev = Math.sqrt(variance).toFixed(1)
+  const balanceScore = avgWork > 0 ? Math.max(0, Math.min(100, 100 - (stdDev/avgWork)*100)).toFixed(0) : 100
+  const balanceColor = balanceScore>=80?'#16a34a':balanceScore>=60?'#f59e0b':'#ef4444'
+  const balanceLabel = balanceScore>=80?'양호':'경고'
+
+  // ── 과부하/부족 직원 ─────────────────────────────────────────
+  const overloaded = empStats.filter(e=>e.workDays>avgWork*1.3)
+  const underloaded = empStats.filter(e=>e.workDays<avgWork*0.7&&e.workDays>0)
+  const riskLevel = overloaded.length>=2?'high':overloaded.length===1?'medium':'low'
+  const riskColor = riskLevel==='high'?'#ef4444':riskLevel==='medium'?'#f59e0b':'#16a34a'
+  const riskLabel = riskLevel==='high'?'⚠ 과부하 위험 높음':riskLevel==='medium'?'△ 주의 필요':'✔ 정상 범위'
+
+  // ── 직원별 근무일수 바 차트 ──────────────────────────────────
+  const maxBarVal = Math.max(maxWork, 1)
+  const empBars = empStats.sort((a,b)=>b.workDays-a.workDays).map(emp => {
+    const pct = Math.round((emp.workDays/maxBarVal)*100)
+    const isOver = emp.workDays > avgWork*1.3
+    const isUnder = emp.workDays < avgWork*0.7 && emp.workDays>0
+    const barColor = isOver?'#ef4444':isUnder?'#f59e0b':'#2563eb'
+    const badge = isOver?'<span style="font-size:9px;color:#ef4444;font-weight:800">▲과중</span>':isUnder?'<span style="font-size:9px;color:#f59e0b;font-weight:800">▽부족</span>':''
+    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
+      <div style="min-width:64px;font-size:11px;font-weight:600;color:#374151;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
+      <div style="flex:1;background:#e5e7eb;border-radius:4px;height:16px;position:relative;overflow:hidden">
+        <div style="width:${pct}%;background:${barColor};height:100%;border-radius:4px"></div>
+        <span style="position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:700;color:#1f2937;text-shadow:0 0 3px white">${emp.workDays}일</span>
       </div>
-      ${emp.workDays > avgWork*1.3 ? '<span style="font-size:9px;color:#ef4444;font-weight:700">⚠과중</span>' : emp.workDays < avgWork*0.7 ? '<span style="font-size:9px;color:#f59e0b;font-weight:700">⚠부족</span>' : ''}
+      ${badge}
     </div>`
   }).join('')
 
-  // 근무조 분포 카드
-  const topCodes = Object.entries(globalCodeCount).sort((a,b)=>b[1]-a[1]).slice(0,6)
+  // ── 주차별 인력 분포 바 차트 ─────────────────────────────────
+  const weekBars = weekLabels.map((lbl, i) => {
+    const val = weekTotals[i]
+    const pct = Math.round((val/weekMax)*100)
+    return `<div style="display:flex;flex-direction:column;align-items:center;flex:1;gap:3px">
+      <div style="font-size:10px;font-weight:700;color:#374151">${val}</div>
+      <div style="width:100%;background:#e5e7eb;border-radius:4px;height:60px;display:flex;align-items:flex-end">
+        <div style="width:100%;background:linear-gradient(180deg,#6366f1,#4338ca);height:${pct}%;border-radius:4px;transition:height .3s"></div>
+      </div>
+      <div style="font-size:10px;color:#6b7280">${lbl}</div>
+    </div>`
+  }).join('')
+
+  // ── 근무조 분포 도넛차트 (CSS 기반) ─────────────────────────
   const codeCards = topCodes.map(([code,cnt]) => {
-    const color = shiftColorMap[code] || defColorMap[code] || '#6b7280'
-    return `<div style="background:${color}11;border:1.5px solid ${color}44;border-radius:10px;padding:10px;text-align:center;min-width:64px">
-      <div style="font-size:20px;font-weight:800;color:${color}">${cnt}</div>
-      <div style="font-size:10px;color:${color};font-weight:700">${code}</div>
+    const color = shiftColorMap[code] || '#6b7280'
+    const pct = totalShiftCount ? ((cnt/totalShiftCount)*100).toFixed(0) : 0
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:${color}0e;border-radius:8px;border:1px solid ${color}30">
+      <span style="display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;border-radius:6px;background:${color}28;color:${color};font-weight:900;font-size:12px">${code}</span>
+      <div style="flex:1">
+        <div style="font-size:11px;font-weight:700;color:#374151">${cnt}회</div>
+        <div style="background:#e5e7eb;border-radius:3px;height:4px;margin-top:3px;overflow:hidden">
+          <div style="width:${pct}%;background:${color};height:100%;border-radius:3px"></div>
+        </div>
+      </div>
+      <span style="font-size:10px;color:${color};font-weight:700">${pct}%</span>
     </div>`
   }).join('')
 
-  // 경고 시스템
+  // ── 경고 메시지 ──────────────────────────────────────────────
   const warnings = []
-  if (emps.length > 0) {
-    const overloaded = empStats.filter(e=>e.workDays>avgWork*1.3)
-    if (overloaded.length) warnings.push(`⚠️ 과중 근무: ${overloaded.map(e=>e.name).join(', ')} (평균 ${avgWork}일 대비 130% 초과)`)
-    const underloaded = empStats.filter(e=>e.workDays<avgWork*0.7 && e.workDays>0)
-    if (underloaded.length) warnings.push(`📉 근무 부족: ${underloaded.map(e=>e.name).join(', ')} (평균 대비 70% 미만)`)
-  }
-  const warningHtml = warnings.length ? warnings.map(w=>
-    `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 12px;font-size:12px;color:#9a3412">${w}</div>`
-  ).join('') : `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;font-size:12px;color:#166534"><i class="fas fa-check-circle" style="margin-right:6px"></i>특이 사항 없음 — 근무 분포가 양호합니다</div>`
+  if (overloaded.length) warnings.push({type:'error',icon:'⚠',msg:`과중 근무 직원 (평균 ${avgWorkStr}일 130% 초과): ${overloaded.map(e=>`${e.name}(${e.workDays}일)`).join(', ')}`})
+  if (underloaded.length) warnings.push({type:'warn',icon:'△',msg:`근무 부족 직원 (평균 70% 미만): ${underloaded.map(e=>`${e.name}(${e.workDays}일)`).join(', ')}`})
+  if (empStats.some(e=>e.holidayWorkDays>2)) warnings.push({type:'info',icon:'ℹ',msg:`공휴일 근무 3일 초과: ${empStats.filter(e=>e.holidayWorkDays>2).map(e=>`${e.name}(${e.holidayWorkDays}일)`).join(', ')}`})
+  const warningHtml = warnings.length
+    ? warnings.map(w=>{
+        const bg=w.type==='error'?'#fff1f2':w.type==='warn'?'#fffbeb':'#eff6ff'
+        const border=w.type==='error'?'#fecaca':w.type==='warn'?'#fde68a':'#bfdbfe'
+        const text=w.type==='error'?'#b91c1c':w.type==='warn'?'#92400e':'#1e40af'
+        return `<div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:7px 12px;font-size:11px;color:${text};display:flex;align-items:flex-start;gap:6px"><span>${w.icon}</span><span>${w.msg}</span></div>`
+      }).join('')
+    : `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:7px 12px;font-size:11px;color:#166534"><i class="fas fa-check-circle" style="margin-right:5px"></i>근무 분포 이상 없음 — 모든 직원 정상 범위</div>`
 
   return `
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-    <div class="px-5 py-4 border-b border-gray-100">
+  <div style="background:white;border-radius:16px;border:1px solid #e5e7eb;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif">
+    <!-- 헤더 -->
+    <div style="background:linear-gradient(135deg,#4c1d95,#7c3aed);padding:14px 18px 10px">
       ${viewTabsHtml}
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px">
         <div>
-          <h3 style="font-size:16px;font-weight:800;color:#7c3aed">${year}년 ${month}월 운영진 요약</h3>
-          <p style="font-size:11px;color:#6b7280;margin-top:2px"><i class="fas fa-chart-bar" style="margin-right:4px;color:#7c3aed"></i>전체 인력 현황 및 근무 분포 요약</p>
+          <h3 style="font-size:17px;font-weight:900;color:white;margin:0">${year}년 ${month}월 운영진 요약</h3>
+          <p style="font-size:10px;color:rgba(255,255,255,.75);margin:3px 0 0"><i class="fas fa-chart-bar" style="margin-right:4px"></i>전체 인력 운영 현황 · 경영진 의사결정 지원</p>
         </div>
-        <button onclick="window.print()" style="padding:7px 14px;background:#7c3aed;color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:5px"></i>보고서 출력</button>
+        <button onclick="window.print()" style="padding:6px 12px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:white;border:1px solid rgba(255,255,255,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer"><i class="fas fa-print" style="margin-right:4px"></i>보고서 출력</button>
       </div>
     </div>
-    <div style="padding:16px;overflow-y:auto;max-height:70vh;display:flex;flex-direction:column;gap:14px">
-      <!-- KPI 카드 -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
-        <div style="background:linear-gradient(135deg,#166534,#16a34a);color:white;border-radius:12px;padding:14px;text-align:center">
-          <div style="font-size:28px;font-weight:800">${emps.length}</div>
-          <div style="font-size:11px;opacity:.85">재직 직원</div>
+
+    <div style="padding:14px;overflow-y:auto;max-height:72vh;display:flex;flex-direction:column;gap:12px">
+
+      <!-- ① KPI 카드 행 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">
+        <div style="background:linear-gradient(135deg,#166534,#15803d);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${emps.length}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-users" style="margin-right:3px"></i>재직 직원</div>
         </div>
-        <div style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:white;border-radius:12px;padding:14px;text-align:center">
-          <div style="font-size:28px;font-weight:800">${avgWork}</div>
-          <div style="font-size:11px;opacity:.85">평균 근무일</div>
+        <div style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${avgWorkStr}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-calendar-check" style="margin-right:3px"></i>평균 근무일</div>
         </div>
-        <div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:12px;padding:14px;text-align:center">
-          <div style="font-size:28px;font-weight:800">${maxWork}</div>
-          <div style="font-size:11px;opacity:.85">최대 근무일</div>
+        <div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${maxWork}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-arrow-up" style="margin-right:3px"></i>최대 근무일</div>
         </div>
-        <div style="background:linear-gradient(135deg,#065f46,#047857);color:white;border-radius:12px;padding:14px;text-align:center">
-          <div style="font-size:28px;font-weight:800">${minWork}</div>
-          <div style="font-size:11px;opacity:.85">최소 근무일</div>
+        <div style="background:linear-gradient(135deg,#065f46,#047857);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${minWork}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-arrow-down" style="margin-right:3px"></i>최소 근무일</div>
         </div>
-        <div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border-radius:12px;padding:14px;text-align:center">
-          <div style="font-size:28px;font-weight:800">${extWorkerList.length}</div>
-          <div style="font-size:11px;opacity:.85">외부인력</div>
+        <div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${extWorkers.length}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-user-tie" style="margin-right:3px"></i>외부인력</div>
         </div>
-        <div style="background:linear-gradient(135deg,#9d174d,#be185d);color:white;border-radius:12px;padding:14px;text-align:center">
-          <div style="font-size:28px;font-weight:800">${extWorkDays}</div>
-          <div style="font-size:11px;opacity:.85">외부 근무일수</div>
+        <div style="background:linear-gradient(135deg,#9d174d,#be185d);color:white;border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:26px;font-weight:900">${extWorkDays}</div>
+          <div style="font-size:10px;opacity:.85;margin-top:2px"><i class="fas fa-briefcase" style="margin-right:3px"></i>외부 근무일수</div>
         </div>
       </div>
 
-      <!-- 경고 -->
-      <div style="display:flex;flex-direction:column;gap:6px">
-        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:2px"><i class="fas fa-exclamation-triangle" style="margin-right:6px;color:#f59e0b"></i>근무 불균형 경고</div>
+      <!-- ② 근무 균형 지표 + 과부하 위험 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="background:#fafafa;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
+          <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px"><i class="fas fa-balance-scale" style="margin-right:5px;color:#2563eb"></i>근무 균형 지표</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:56px;height:56px;border-radius:50%;background:conic-gradient(${balanceColor} ${balanceScore}%,#e5e7eb ${balanceScore}%);display:flex;align-items:center;justify-content:center">
+              <div style="width:42px;height:42px;border-radius:50%;background:white;display:flex;align-items:center;justify-content:center">
+                <span style="font-size:12px;font-weight:900;color:${balanceColor}">${balanceScore}</span>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:13px;font-weight:800;color:${balanceColor}">${balanceLabel}</div>
+              <div style="font-size:10px;color:#6b7280;margin-top:2px">표준편차: ${stdDev}일</div>
+              <div style="font-size:10px;color:#6b7280">평균: ${avgWorkStr}일</div>
+            </div>
+          </div>
+        </div>
+        <div style="background:#fafafa;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
+          <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px"><i class="fas fa-exclamation-triangle" style="margin-right:5px;color:${riskColor}"></i>과부하 위험</div>
+          <div style="font-size:13px;font-weight:800;color:${riskColor};margin-bottom:6px">${riskLabel}</div>
+          <div style="font-size:10px;color:#6b7280">과중(130%↑): ${overloaded.length}명</div>
+          <div style="font-size:10px;color:#6b7280">부족(70%↓): ${underloaded.length}명</div>
+          ${extWorkers.length ? `<div style="font-size:10px;color:#6b7280;margin-top:4px">파출: ${dispatchWorkers.length}명·${dispatchDays}일 / 알바: ${parttimeWorkers.length}명·${parttimeDays}일</div>` : ''}
+        </div>
+      </div>
+
+      <!-- ③ 경고 메시지 -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:2px"><i class="fas fa-bell" style="margin-right:5px;color:#f59e0b"></i>운영 알림</div>
         ${warningHtml}
       </div>
 
-      <!-- 직원별 근무 분포 바 차트 -->
-      <div style="background:#f9fafb;border-radius:12px;padding:14px">
-        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-users" style="margin-right:6px;color:#2563eb"></i>직원별 근무일수</div>
-        ${empBars}
+      <!-- ④ 직원별 근무일수 바 차트 -->
+      <div style="background:#f9fafb;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-users" style="margin-right:5px;color:#2563eb"></i>직원별 근무일수 (평균 ${avgWorkStr}일 기준)</div>
+        <div style="position:relative">
+          <!-- 평균선 표시 (시각적) -->
+          <div style="margin-bottom:6px;font-size:9px;color:#9ca3af;display:flex;gap:10px">
+            <span style="color:#2563eb">■ 정상</span><span style="color:#ef4444">■ 과중(130%+)</span><span style="color:#f59e0b">■ 부족(70%-)</span>
+          </div>
+          ${empBars}
+        </div>
       </div>
 
-      <!-- 근무조 분포 -->
+      <!-- ⑤ 주차별 인력 분포 -->
+      <div style="background:#f9fafb;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-calendar-week" style="margin-right:5px;color:#6366f1"></i>주차별 근무 배치 (직원 총 근무일수 합계)</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;height:90px;padding:0 4px">${weekBars}</div>
+      </div>
+
+      <!-- ⑥ 근무조 집중도 -->
       ${topCodes.length ? `
-      <div style="background:#f9fafb;border-radius:12px;padding:14px">
-        <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-layer-group" style="margin-right:6px;color:#7c3aed"></i>근무유형 분포 (횟수)</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">${codeCards}</div>
+      <div style="background:#f9fafb;border-radius:12px;padding:12px;border:1px solid #e5e7eb">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:10px"><i class="fas fa-layer-group" style="margin-right:5px;color:#7c3aed"></i>근무조별 집중도 (실근무 기준 ${totalShiftCount}회)</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px">${codeCards}</div>
       </div>` : ''}
+
+      <!-- ⑦ 파출/알바 사용 현황 -->
+      ${extWorkers.length ? `
+      <div style="background:#fff7ed;border-radius:12px;padding:12px;border:1px solid #fed7aa">
+        <div style="font-size:12px;font-weight:700;color:#9a3412;margin-bottom:8px"><i class="fas fa-people-carry" style="margin-right:5px"></i>외부 인력 사용 현황</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+          <div style="text-align:center;padding:8px;background:white;border-radius:8px;border:1px solid #fed7aa">
+            <div style="font-size:20px;font-weight:900;color:#ea580c">${dispatchWorkers.length}</div>
+            <div style="font-size:10px;color:#9a3412">파출 인원</div>
+            <div style="font-size:11px;font-weight:700;color:#ea580c">${dispatchDays}일</div>
+          </div>
+          <div style="text-align:center;padding:8px;background:white;border-radius:8px;border:1px solid #fbcfe8">
+            <div style="font-size:20px;font-weight:900;color:#db2777">${parttimeWorkers.length}</div>
+            <div style="font-size:10px;color:#9d174d">알바 인원</div>
+            <div style="font-size:11px;font-weight:700;color:#db2777">${parttimeDays}일</div>
+          </div>
+          <div style="text-align:center;padding:8px;background:white;border-radius:8px;border:1px solid #fde68a">
+            <div style="font-size:20px;font-weight:900;color:#b45309">${extWorkDays}</div>
+            <div style="font-size:10px;color:#92400e">총 외부 근무일</div>
+            <div style="font-size:11px;font-weight:700;color:#b45309">${totalWork>0?((extWorkDays/(totalWork+extWorkDays))*100).toFixed(0):0}% 비중</div>
+          </div>
+        </div>
+      </div>` : ''}
+
     </div>
   </div>
   <style>
   @media print {
-    nav, button { display:none!important }
-    body { background:white }
+    nav, button, .bottom-bar { display:none!important }
+    body { background:white!important }
+    div[style*="linear-gradient"] { -webkit-print-color-adjust:exact;print-color-adjust:exact }
     .bg-white { box-shadow:none!important }
   }
   </style>`
   } catch(e) {
     console.error('[renderSchedExecutiveView] 오류:', e)
-    return `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px">${viewTabsHtml}<p>운영진 뷰 렌더 오류: ${e.message}</p></div>`
+    return `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px">${viewTabsHtml}<p style="margin:8px 0 0">운영진 뷰 렌더 오류: ${e.message}</p></div>`
   }
 }
 
@@ -13964,6 +14371,11 @@ function renderMonthlyScheduleTab() {
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!-- ═══ 관리자 근무 분석 요약 패널 ════════════════════════════ -->
+  <div id="schedAdminSummaryPanel" style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+    <!-- 주차별/총 근무시간 요약 (JS로 동적 렌더링) -->
   </div>
 
   <!-- 다중 선택 일괄 변경 툴바 (선택 시 자동 표시) -->
