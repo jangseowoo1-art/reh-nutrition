@@ -25949,17 +25949,36 @@ function canvasToHiResPng(canvas) {
 //  - 각 슬라이드의 실제 높이 비율을 보존하여 짤림/늘어남 방지
 // ══════════════════════════════════════════════════════════════════
 
-// html2canvas CDN 로드 (공통) - 타임아웃 10초
+// html2canvas 로컬 우선 로드 (CDN fallback)
 async function _loadHtml2Canvas() {
   if (window.html2canvas) return true
-  return new Promise((resolve) => {
+  // 로딩 중 중복 방지
+  if (window._h2cLoading) {
+    return new Promise((resolve) => {
+      const check = setInterval(() => {
+        if (window.html2canvas) { clearInterval(check); resolve(true) }
+        else if (!window._h2cLoading) { clearInterval(check); resolve(false) }
+      }, 100)
+      setTimeout(() => { clearInterval(check); resolve(!!window.html2canvas) }, 15000)
+    })
+  }
+  window._h2cLoading = true
+  const tryLoad = (src, timeout) => new Promise((resolve) => {
     const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
-    const timer = setTimeout(() => { resolve(false) }, 10000) // 10초 타임아웃
+    s.src = src
+    const timer = setTimeout(() => { s.onload = s.onerror = null; resolve(false) }, timeout)
     s.onload  = () => { clearTimeout(timer); resolve(true) }
     s.onerror = () => { clearTimeout(timer); resolve(false) }
     document.head.appendChild(s)
   })
+  // 로컬 파일 먼저 (1.5초 타임아웃)
+  let ok = await tryLoad('/static/html2canvas.min.js', 1500)
+  if (!ok || !window.html2canvas) {
+    // CDN fallback (8초 타임아웃)
+    ok = await tryLoad('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', 8000)
+  }
+  window._h2cLoading = false
+  return !!(ok && window.html2canvas)
 }
 
 // PptxGenJS CDN 로드 (공통) - 타임아웃 10초
@@ -25985,6 +26004,7 @@ window._rptImgCacheKey = ''  // 마지막 캡처한 병원+년월 키
  *         (뷰포트 밖이어도 100% 캡처 성공)
  */
 async function _captureAllSlides(slides, onProgress) {
+  if (onProgress) onProgress(0, slides.length)   // 로드 시작 알림
   const loaded = await _loadHtml2Canvas()
   if (!loaded || !window.html2canvas) {
     // html2canvas 로드 실패 → 빈 캐시 반환 (각 슬라이드를 실패로 표시)
@@ -26179,25 +26199,30 @@ window.showPrintPreview = async function() {
   `
   document.body.appendChild(loadingModal)
 
-  // html2canvas 로드 먼저 확인
-  const loaded = await _loadHtml2Canvas()
-  if (!loaded || !window.html2canvas) {
-    const existing2 = document.getElementById('printPreviewModal')
-    if (existing2) existing2.remove()
-    showToast('캡처 라이브러리 로드 실패 (네트워크 확인 필요) — 직접 인쇄를 사용하세요', 'error')
-    return
-  }
-
   const txt0 = document.getElementById('ppLoadingText')
-  if (txt0) txt0.textContent = `슬라이드 캡처 중 (0/${totalPages})`
+  if (txt0) txt0.textContent = `라이브러리 로드 중... (0/${totalPages})`
 
-  // 전체 캡처
+  // 전체 캡처 (_captureAllSlides 내부에서 html2canvas 로드 처리)
   const cache = await _captureAllSlides(slides, (cur, tot) => {
     const txt = document.getElementById('ppLoadingText')
     const bar = document.getElementById('ppLoadingBar')
-    if (txt) txt.textContent = `슬라이드 캡처 중 (${cur}/${tot})`
-    if (bar) bar.style.width = `${Math.round(cur/tot*100)}%`
+    if (cur === 0) {
+      if (txt) txt.textContent = `라이브러리 로드 중...`
+      if (bar) bar.style.width = `5%`
+    } else {
+      if (txt) txt.textContent = `슬라이드 캡처 중 (${cur}/${tot})`
+      if (bar) bar.style.width = `${Math.round(cur/tot*100)}%`
+    }
   })
+
+  // 캡처가 모두 실패(null)인 경우 → 라이브러리 로드 실패로 판단
+  const allFailed = cache.every(c => !c.imgData)
+  if (allFailed && slides.length > 0) {
+    const lm = document.getElementById('printPreviewModal')
+    if (lm) lm.remove()
+    showToast('캡처 라이브러리 로드 실패 — 직접 인쇄 버튼을 사용하세요', 'error')
+    return
+  }
 
   // 로딩 모달 제거 후 미리보기 모달 생성
   loadingModal.remove()
