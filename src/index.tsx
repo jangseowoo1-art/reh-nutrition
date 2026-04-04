@@ -22,6 +22,11 @@ type Variables = { user: any }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 app.use('/static/*', serveStatic({ root: './' }))
+// 정적 파일 캐시 (1시간) - 로컬 번들 파일의 빠른 서빙
+app.use('/static/*', async (c, next) => {
+  await next()
+  c.header('Cache-Control', 'public, max-age=3600')
+})
 app.use('/api/*', cors())
 
 // favicon - 빈 204로 브라우저 에러 방지
@@ -113,8 +118,8 @@ function getLoginPage(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>급식 예산 관리 - 로그인</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+<script src="/static/tailwind.min.js"></script>
+<link href="/static/fontawesome.min.css" rel="stylesheet">
 <style>
   body { background: linear-gradient(135deg, #1a4731 0%, #15803d 60%, #166534 100%); min-height: 100vh; }
   .login-card { backdrop-filter: blur(10px); background: rgba(255,255,255,0.97); }
@@ -243,11 +248,11 @@ function getAppShell(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>병원 급식 예산 관리</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="/static/tailwind.min.js"></script>
+<link href="/static/fontawesome.min.css" rel="stylesheet">
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/axios.min.js"></script>
+<script src="/static/xlsx.bundle.js"></script>
 <script src="/static/jspdf.umd.min.js" defer></script>
 <link rel="stylesheet" href="/static/styles.css?v=20260330d">
 </head>
@@ -366,9 +371,9 @@ function getExecutiveShell(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>운영 현황 대시보드</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/static/tailwind.min.js"></script>
+<link href="/static/fontawesome.min.css" rel="stylesheet">
+<script src="/static/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body { background: #f0f4f8; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -454,7 +459,7 @@ function getMySchedulePage(token: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>내 근무표</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+<link rel="stylesheet" href="/static/fontawesome.min.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0fdf4;min-height:100vh;}
