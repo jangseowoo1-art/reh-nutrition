@@ -13182,17 +13182,60 @@ function renderMonthlyScheduleTab() {
           <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">선택 후 바로 타이핑: 직접입력</span> &nbsp;|&nbsp; <span class="font-medium text-blue-400">방향키: 셀이동</span> &nbsp;|&nbsp; <span class="font-medium text-emerald-600">드래그: 자동채우기</span> &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기(계속)</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; <span class="font-medium text-amber-600">Ctrl+Z/Y: 실행취소/재실행</span> &nbsp;|&nbsp; 우클릭: 상세</p>
         </div>
         <div class="flex gap-2 flex-wrap items-center">
-          <!-- 근무코드 범례 -->
-          <div class="flex gap-1 flex-wrap">
+          <!-- 근무코드 버튼 (직원 + 파출/알바, 클릭하면 선택된 셀에 즉시 적용) -->
+          <div class="flex gap-1 flex-wrap items-center" id="schedQuickCodeBtns">
             ${shifts.map(s => `
-              <span class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold"
-                style="background:${s.color}22;color:${s.color};border:1px solid ${s.color}44"
-                title="${s.shift_name} ${s.start_time}~${s.end_time}">${s.shift_code}</span>
+              <button onclick="applyCodeInstant('${s.shift_code}')"
+                class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                style="background:${s.color}22;color:${s.color};border:1.5px solid ${s.color}55"
+                title="${s.shift_name} ${s.start_time||''}~${s.end_time||''} — 클릭하면 선택 셀에 적용">${s.shift_code}</button>
             `).join('')}
             ${defaultCodes.filter(c=>c!=='-').map(c => {
               const st = getShiftStyle(c)
-              return `<span class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold" style="${st}">${c}</span>`
+              const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
+              const col = colMap[c] || '#374151'
+              return `<button onclick="applyCodeInstant('${c}')"
+                class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                style="${st};border:1.5px solid ${col}44"
+                title="${c} — 클릭하면 선택 셀에 적용">${c}</button>`
             }).join('')}
+            ${(() => {
+              // 파출/알바 근무조 버튼 (구분선 후 추가)
+              try {
+                const extCfgRaw = localStorage.getItem('extShiftConfig')
+                const extCfg = extCfgRaw ? JSON.parse(extCfgRaw) : []
+                const active = extCfg.filter(c => c.enabled !== false)
+                if (active.length === 0) {
+                  // 기본 4가지
+                  const defaults = [
+                    {key:'morning',  label:'오전', bg:'#fff7ed', color:'#c2410c'},
+                    {key:'afternoon',label:'오후', bg:'#fef3c7', color:'#b45309'},
+                    {key:'full_9h',  label:'9H',  bg:'#ffedd5', color:'#ea580c'},
+                    {key:'full_12h', label:'12H', bg:'#fee2e2', color:'#dc2626'},
+                  ]
+                  return '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle"></span>' +
+                    defaults.map(d =>
+                      `<button onclick="extApplyCodeInstant('${d.key}')"
+                        data-extkey="${d.key}"
+                        class="inline-flex items-center justify-center px-2 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                        style="background:${d.bg};color:${d.color};border:1.5px solid ${d.color}55"
+                        title="${d.label} (파출/알바) — 클릭하면 파출/알바 셀에 적용">${d.label}</button>`
+                    ).join('')
+                }
+                return '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle"></span>' +
+                  active.map(d => {
+                    const colorMap = {morning:'#c2410c',afternoon:'#b45309',full_9h:'#ea580c',full_12h:'#dc2626'}
+                    const bgMap    = {morning:'#fff7ed',afternoon:'#fef3c7',full_9h:'#ffedd5',full_12h:'#fee2e2'}
+                    const col = colorMap[d.key] || '#374151'
+                    const bg  = bgMap[d.key] || '#f9fafb'
+                    return `<button onclick="extApplyCodeInstant('${d.key}')"
+                      data-extkey="${d.key}"
+                      class="inline-flex items-center justify-center px-2 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                      style="background:${bg};color:${col};border:1.5px solid ${col}55"
+                      title="${d.label||d.key} (파출/알바) — 클릭하면 파출/알바 셀에 적용">${d.label||d.key}</button>`
+                  }).join('')
+              } catch(e) { return '' }
+            })()}
           </div>
         </div>
       </div>
@@ -16605,6 +16648,10 @@ function initExtWorkerEvents() {
     if (!cell) return
     if (!(App.role === 'admin' || App.role === 'hospital')) return
     e.preventDefault(); e.stopPropagation()
+    // 재클릭 타이머 취소 (더블클릭은 이 핸들러에서 처리)
+    if (typeof _extClickTimer !== 'undefined' && _extClickTimer) {
+      clearTimeout(_extClickTimer); _extClickTimer = null
+    }
     const wid  = parseInt(cell.dataset.extid)
     const date = cell.dataset.date
     // 선택 상태 맞추기
@@ -16865,6 +16912,7 @@ function _extClearSelection() {
 }
 
 // ── 셀 클릭 처리 ─────────────────────────────────────────────
+let _extClickTimer = null  // 재클릭 드롭다운 지연 타이머
 function _extHandleCellClick(e, cell) {
   const key = _extCellKey(cell)
   const wid  = parseInt(cell.dataset.extid)
@@ -16882,11 +16930,19 @@ function _extHandleCellClick(e, cell) {
     // Shift+클릭: 범위 선택
     _extSelectRange(_extAnchorKey, key)
   } else if (_extSelectedCells.has(key) && _extSelectedCells.size === 1) {
-    // 이미 선택된 단일 셀을 다시 클릭 → 드롭다운 열기 (더블클릭 대체)
-    _extOpenInlineInput(wid, date, cell, null)
-    return  // 선택 스타일 갱신 불필요 (드롭다운이 처리)
+    // 이미 선택된 단일 셀 재클릭 → 지연 후 드롭다운 열기 (더블클릭이면 취소됨)
+    if (_extClickTimer) clearTimeout(_extClickTimer)
+    _extClickTimer = setTimeout(() => {
+      _extClickTimer = null
+      // 아직 드롭다운이 없는 경우만 열기
+      if (!cell.querySelector('.ext-inline-select')) {
+        _extOpenInlineInput(wid, date, cell, null)
+      }
+    }, 230)
+    return
   } else {
     // 단독 클릭 → 선택
+    if (_extClickTimer) { clearTimeout(_extClickTimer); _extClickTimer = null }
     _extSelectedCells.clear()
     _extSelectedCells.add(key)
     _extAnchorKey = key
@@ -17110,9 +17166,12 @@ function _extMoveSelection(dir) {
 function _extOpenInlineInput(workerId, date, cell, initChar) {
   if (!cell) cell = _extGetCell(workerId, date)
   if (!cell) return
-  // 이미 열린 드롭다운 있으면 제거
+  // 이미 열린 드롭다운이 있으면 — initChar가 없으면 그냥 focus만 (닫지 않음)
   const existing = cell.querySelector('.ext-inline-select')
-  if (existing) { existing.remove(); return }
+  if (existing) {
+    if (!initChar) { existing.focus(); return }
+    existing.remove()
+  }
   const seq = getExtShiftSeq().filter(s => s !== '')
   if (seq.length === 0) { showToast('활성화된 근무유형이 없습니다. 근무조 설정에서 활성화하세요.', 'info'); return }
   // select 드롭다운 생성
@@ -17210,6 +17269,14 @@ function _extUpdateBar() {
     }).join('')
   }
 
+  // 상단 #schedQuickCodeBtns 버튼도 파출/알바 활성 코드 하이라이트
+  document.querySelectorAll('#schedQuickCodeBtns button[data-extkey]').forEach(b => {
+    const isActive = b.dataset.extkey === curShift
+    b.style.borderWidth = isActive ? '2.5px' : '1.5px'
+    b.style.transform   = isActive ? 'scale(1.15)' : 'scale(1)'
+    b.style.boxShadow   = isActive ? `0 0 0 2px ${b.style.color}44` : ''
+  })
+
   // 복사/붙여넣기/삭제 버튼을 외부인력용으로 교체
   _extSyncToolbarButtons(true)
 }
@@ -17244,7 +17311,10 @@ function _extHideBar() {
 }
 
 window.extApplyCodeInstant = (shiftType) => {
-  if (_extSelectedCells.size === 0) return
+  if (_extSelectedCells.size === 0) {
+    showToast('파출/알바 셀을 먼저 클릭하여 선택하세요', 'info')
+    return
+  }
   const items = Array.from(_extSelectedCells).map(k => {
     const { workerId, date } = _extParseKey(k)
     return { workerId, date, shiftType }
@@ -17855,8 +17925,13 @@ function updateMultiSelectBar() {
   if (typeof _extSyncToolbarButtons === 'function') _extSyncToolbarButtons(false)
 }
 
-// 코드 버튼 클릭 → 즉시 일괄 적용
+// 코드 버튼 클릭 → 즉시 일괄 적용 (직원 + 파출/알바 통합)
 window.applyCodeInstant = (code) => {
+  // 파출/알바 셀이 선택된 경우 → extApplyCodeInstant 위임
+  if (typeof _extSelectedCells !== 'undefined' && _extSelectedCells.size > 0) {
+    if (typeof extApplyCodeInstant === 'function') extApplyCodeInstant(code)
+    return
+  }
   if (_selectedCells.size === 0) { showToast('셀을 먼저 선택하세요', 'error'); return }
   _multiCode = code
   // 버튼 활성화 표시
