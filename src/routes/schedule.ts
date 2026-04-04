@@ -2144,12 +2144,33 @@ const DEFAULT_WORK_SETTINGS: Record<string, string> = {
   dispatch_enabled:         '1',
   // 인력 운영 기준
   required_staff_count:     '0',   // 일일 기준(목표) 근무인원 (0=미설정)
-  // 휴무 부여 방식: 'weekly5' (주5일제, 기본) | 'cycle' (순환근무) | 'custom' (수동)
+  // ── 근무제 유형 ──────────────────────────────────────────────────
+  // 'weekly5'      : 주5일제 — 토·일·공휴일 자동 휴무
+  // 'cycle'        : 순환근무제 — N일 근무 + M일 휴무 반복
+  // 'monthly_fixed': 월 고정 휴무제 — 매월 N일 고정 (공휴일 수 무관)
+  // 'mixed'        : 혼합형 — 순환근무 기본 + 공휴일 별도 정책 적용
   off_grant_type:           'weekly5',
-  // 순환근무 패턴 (off_grant_type='cycle' 일 때 사용)
+  // 순환근무 패턴 (off_grant_type='cycle' | 'mixed' 일 때 사용)
   off_cycle_work_days:      '5',   // 연속 근무일수
   off_cycle_rest_days:      '2',   // 연속 휴무일수
   off_cycle_start_date:     '',    // 순환 시작 기준일 (YYYY-MM-DD, 비어있으면 해당 월 1일)
+  // ── 월 고정 휴무제 (off_grant_type='monthly_fixed' 일 때 사용) ──
+  monthly_fixed_off_days:   '10',  // 월 고정 휴무일수
+  // ── 월 최소 휴무 보장 (0=미사용) ────────────────────────────────
+  monthly_min_off_days:     '0',   // 최소 보장 휴무일 — 부족분 min_guarantee 자동 삽입
+  // ── 공휴일 처리 정책 (병원 전체 기본값) ─────────────────────────
+  // 'off'              : 공휴일 = 휴무 (기본)
+  // 'work_pay'         : 공휴일 = 근무 + 공휴수당 지급
+  // 'work_substitute'  : 공휴일 = 근무 + 대체휴무 자동 생성
+  holiday_policy:           'off',
+  // ── 순환/혼합형에서 공휴일이 근무일과 겹칠 때 처리 방식 ──────────
+  // 'ignore'    : 순환패턴 유지 (공휴일 별도 처리 없음)
+  // 'pay'       : 공휴일이 근무일과 겹치면 공휴수당 지급
+  // 'add'       : 공휴일이 근무일과 겹치면 추가 휴무 부여
+  // 'substitute': 공휴일이 근무일과 겹치면 대체휴무 자동 생성
+  cycle_holiday_policy:     'add',
+  // ── 이력 관리 설정 ───────────────────────────────────────────────
+  off_grant_log_enabled:    '1',   // 휴무 수정 이력 저장 여부 (1=사용)
 }
 
 schedule.get('/work-settings', async (c) => {
@@ -2172,16 +2193,65 @@ schedule.post('/work-settings', async (c) => {
     ? (body.hospitalId ? parseInt(body.hospitalId) : getHospitalId(user, c.req.query('hospitalId')))
     : user.hospitalId
   if (!hospitalId) return c.json({ error: 'hospitalId가 필요합니다' }, 400)
+
+  // 변경 전 기존값 조회 (이력 저장용)
+  const existingRows = await c.env.DB.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(hospitalId).all<any>()
+  const existingMap: Record<string, string> = {}
+  for (const r of (existingRows.results || [])) existingMap[r.setting_key] = r.setting_value
+
+  const changedBy  = (user as any)?.username || (user as any)?.name || 'system'
+  const changeType = body._changeType || 'manual'  // 'manual' | 'force_recalc'
+
   for (const [key, value] of Object.entries(body)) {
-    if (key === 'hospitalId') continue  // 내부 키 제외
-    await c.env.DB.prepare(
-      `INSERT INTO hospital_work_settings (hospital_id, setting_key, setting_value)
-       VALUES (?,?,?)
-       ON CONFLICT(hospital_id, setting_key) DO UPDATE SET
-         setting_value=excluded.setting_value, updated_at=datetime('now')`
-    ).bind(hospitalId, key, String(value)).run()
+    if (key === 'hospitalId' || key === '_changeType') continue  // 내부 키 제외
+    const strVal  = String(value)
+    const prevVal = existingMap[key] ?? DEFAULT_WORK_SETTINGS[key] ?? null
+
+    // 실제 변경이 있을 때만 처리
+    if (prevVal !== strVal) {
+      // 설정값 저장 (upsert)
+      await c.env.DB.prepare(
+        `INSERT INTO hospital_work_settings (hospital_id, setting_key, setting_value)
+         VALUES (?,?,?)
+         ON CONFLICT(hospital_id, setting_key) DO UPDATE SET
+           setting_value=excluded.setting_value, updated_at=datetime('now')`
+      ).bind(hospitalId, key, strVal).run()
+
+      // 이력 저장 (work_settings_history)
+      await c.env.DB.prepare(
+        `INSERT INTO work_settings_history
+           (hospital_id, setting_key, prev_value, new_value, changed_by, change_type)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(hospitalId, key, prevVal, strVal, changedBy, changeType).run()
+    } else {
+      // 값 변경 없어도 upsert는 유지 (다른 필드 저장 보장)
+      await c.env.DB.prepare(
+        `INSERT INTO hospital_work_settings (hospital_id, setting_key, setting_value)
+         VALUES (?,?,?)
+         ON CONFLICT(hospital_id, setting_key) DO UPDATE SET
+           setting_value=excluded.setting_value, updated_at=datetime('now')`
+      ).bind(hospitalId, key, strVal).run()
+    }
   }
   return c.json({ success: true })
+})
+
+// 근무설정 변경 이력 조회
+schedule.get('/work-settings/history', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user) && user?.role !== 'hospital') return c.json({ error: '권한 없음' }, 403)
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const limit  = parseInt(c.req.query('limit')  || '50')
+  const offset = parseInt(c.req.query('offset') || '0')
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM work_settings_history
+     WHERE hospital_id=?
+     ORDER BY changed_at DESC
+     LIMIT ? OFFSET ?`
+  ).bind(hospitalId, limit, offset).all<any>()
+  return c.json(rows.results || [])
 })
 
 // ════════════════════════════════════════════════════════════════

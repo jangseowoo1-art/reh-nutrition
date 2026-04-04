@@ -13334,8 +13334,9 @@ function renderAdminSummaryPanel() {
   for(let d=1; d<=days; d++) {
     const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
     let regular=0, dispatch=0, parttime=0
-    // 정규 직원
+    // 정규 직원 (영양사 제외 — team==='nutrition')
     for(const emp of emps) {
+      if(emp.team === 'nutrition') continue
       const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
       if(code && code !== '-' && !REST_CODES2.has(code)) regular++
     }
@@ -13890,6 +13891,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
     let regular=0, dispatch2=0, parttime2=0
     for(const emp of emps) {
+      if(emp.team === 'nutrition') continue // 영양사 제외
       const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
       if(code && code !== '-' && !REST_CODES.has(code)) regular++
     }
@@ -16253,9 +16255,9 @@ function renderWorkSettingsModal() {
         </p>
         <div class="space-y-5">
 
-          <!-- 휴무 부여 방식 (NEW) -->
+          <!-- ① 근무제 유형 선택 -->
           <div>
-            <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-calendar-check mr-1 text-blue-500"></i>휴무 부여 방식</h4>
+            <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-calendar-check mr-1 text-blue-500"></i>① 근무제 유형</h4>
             <div class="space-y-2">
               <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors" onclick="wsToggleOffGrantType('weekly5')">
                 <input type="radio" name="ws_off_grant_type" id="ws_ogt_weekly5" value="weekly5" class="w-4 h-4 text-blue-600">
@@ -16271,9 +16273,23 @@ function renderWorkSettingsModal() {
                   <div class="text-xs text-gray-500">N일 근무 후 M일 휴무가 반복되는 방식 (예: 2일 근무/1일 휴무)</div>
                 </div>
               </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-purple-50 transition-colors" onclick="wsToggleOffGrantType('monthly_fixed')">
+                <input type="radio" name="ws_off_grant_type" id="ws_ogt_monthly_fixed" value="monthly_fixed" class="w-4 h-4 text-purple-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">월 고정 휴무제 <span class="text-xs text-purple-500 ml-1">NEW</span></div>
+                  <div class="text-xs text-gray-500">매월 N일 고정 휴무 — 공휴일 수와 무관하게 일정하게 적용</div>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-teal-50 transition-colors" onclick="wsToggleOffGrantType('mixed')">
+                <input type="radio" name="ws_off_grant_type" id="ws_ogt_mixed" value="mixed" class="w-4 h-4 text-teal-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">혼합형 <span class="text-xs text-teal-500 ml-1">NEW</span></div>
+                  <div class="text-xs text-gray-500">순환근무 기본 유지 + 공휴일 발생 시 아래 공휴일 정책 별도 적용</div>
+                </div>
+              </label>
             </div>
 
-            <!-- 순환 패턴 세부 설정 (cycle 선택 시 표시) -->
+            <!-- 순환 패턴 세부 설정 (cycle / mixed 선택 시 표시) -->
             <div id="ws_cycle_options" class="hidden mt-3 ml-7 p-3 bg-blue-50 rounded-xl border border-blue-100">
               <div class="text-xs font-bold text-blue-700 mb-2"><i class="fas fa-sync-alt mr-1"></i>순환 패턴 설정</div>
               <div class="grid grid-cols-2 gap-3 mb-3">
@@ -16297,10 +16313,100 @@ function renderWorkSettingsModal() {
                 <input type="date" id="ws_off_cycle_start_date" class="form-input mt-1 w-full" oninput="wsUpdateCyclePreview()">
               </div>
               <div id="ws_cycle_preview" class="mt-2 text-xs text-blue-700 font-medium"></div>
-              <div class="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700">
-                <i class="fas fa-info-circle mr-1"></i>
-                공휴일은 순환패턴과 관계없이 항상 휴무로 추가됩니다.
+            </div>
+
+            <!-- 월 고정 휴무제 세부 설정 (monthly_fixed 선택 시 표시) -->
+            <div id="ws_monthly_fixed_options" class="hidden mt-3 ml-7 p-3 bg-purple-50 rounded-xl border border-purple-100">
+              <div class="text-xs font-bold text-purple-700 mb-2"><i class="fas fa-calendar-alt mr-1"></i>월 고정 휴무 설정</div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-gray-600">월 고정 휴무일수</label>
+                <input type="number" id="ws_monthly_fixed_off_days" class="form-input w-20" min="1" max="20" placeholder="10">
+                <span class="text-xs text-gray-500">일</span>
               </div>
+              <div class="mt-2 p-2 bg-purple-100 rounded text-xs text-purple-800">
+                <i class="fas fa-robot mr-1"></i>
+                시스템이 <strong>자동 균등 배치</strong>합니다. 배치 후 관리자가 날짜별 수동 수정 가능하며,
+                수동 수정된 날짜는 재계산 시 보호됩니다.
+              </div>
+            </div>
+          </div>
+
+          <!-- 구분선 -->
+          <div class="border-t border-gray-100"></div>
+
+          <!-- ② 공휴일 처리 정책 (신규) -->
+          <div>
+            <h4 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-flag mr-1 text-red-500"></i>② 공휴일 처리 정책 <span class="text-xs text-gray-400 font-normal">— 병원 전체 기본값 (직원별 개별 예외 설정 가능)</span></h4>
+            <div class="space-y-2">
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-red-50 transition-colors">
+                <input type="radio" name="ws_holiday_policy" id="ws_hp_off" value="off" class="w-4 h-4 text-red-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">공휴일 = 휴무 <span class="text-xs text-gray-400 ml-1">(기본)</span></div>
+                  <div class="text-xs text-gray-500">공휴일에 자동으로 휴무 부여 (off_type: holiday)</div>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-yellow-50 transition-colors">
+                <input type="radio" name="ws_holiday_policy" id="ws_hp_work_pay" value="work_pay" class="w-4 h-4 text-yellow-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">공휴일 = 근무 + 수당</div>
+                  <div class="text-xs text-gray-500">공휴일 출근 후 공휴수당 자동 지급 플래그</div>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-green-50 transition-colors">
+                <input type="radio" name="ws_holiday_policy" id="ws_hp_work_substitute" value="work_substitute" class="w-4 h-4 text-green-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">공휴일 = 근무 + 대체휴무</div>
+                  <div class="text-xs text-gray-500">공휴일 출근 후 대체휴무 자동 생성 (off_type: substitute)</div>
+                </div>
+              </label>
+            </div>
+
+            <!-- 순환/혼합형 공휴일 충돌 처리 (cycle/mixed 선택 시 표시) -->
+            <div id="ws_cycle_holiday_options" class="hidden mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
+              <div class="text-xs font-bold text-amber-700 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>순환·혼합형 — 공휴일이 근무일과 겹칠 때 처리</div>
+              <div class="space-y-1.5">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="ws_cycle_holiday_policy" id="ws_chp_ignore" value="ignore" class="w-3.5 h-3.5 text-gray-600">
+                  <span class="text-xs text-gray-700"><strong>패턴 유지</strong> — 공휴일을 순환패턴 그대로 처리 (별도 처리 없음)</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="ws_cycle_holiday_policy" id="ws_chp_pay" value="pay" class="w-3.5 h-3.5 text-yellow-600">
+                  <span class="text-xs text-gray-700"><strong>수당 지급</strong> — 공휴일이 근무일과 겹치면 공휴수당 지급</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="ws_cycle_holiday_policy" id="ws_chp_add" value="add" class="w-3.5 h-3.5 text-blue-600">
+                  <span class="text-xs text-gray-700"><strong>추가 휴무</strong> — 공휴일이 근무일과 겹치면 별도 휴무 추가 부여</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="ws_cycle_holiday_policy" id="ws_chp_substitute" value="substitute" class="w-3.5 h-3.5 text-green-600">
+                  <span class="text-xs text-gray-700"><strong>대체휴무</strong> — 공휴일이 근무일과 겹치면 대체휴무 자동 생성</span>
+                </label>
+              </div>
+              <div class="mt-2 p-2 bg-white border border-amber-200 rounded text-xs text-amber-700">
+                <i class="fas fa-info-circle mr-1"></i>
+                <strong>충돌 규칙:</strong> 공휴일이 순환 휴무일과 겹치면 holiday로 단일 처리 (중복 인정 안 함).
+                순환 <em>근무일</em>에 공휴일이 겹칠 때만 위 정책 적용.
+              </div>
+            </div>
+          </div>
+
+          <!-- 구분선 -->
+          <div class="border-t border-gray-100"></div>
+
+          <!-- ③ 월 최소 휴무 보장 (신규) -->
+          <div>
+            <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-shield-alt mr-1 text-indigo-500"></i>③ 월 최소 휴무 보장 <span class="text-xs text-gray-400 font-normal">— 부족분 자동 추가 (유형: 최소보장)</span></h4>
+            <div class="p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+              <div class="flex items-center gap-3">
+                <label class="text-xs text-gray-600 whitespace-nowrap">월 최소 보장 휴무일</label>
+                <input type="number" id="ws_monthly_min_off_days" class="form-input w-20" min="0" max="20" placeholder="0">
+                <span class="text-xs text-gray-500">일 <span class="text-gray-400">(0=미사용)</span></span>
+              </div>
+              <p class="text-xs text-indigo-700 mt-2">
+                <i class="fas fa-info-circle mr-1"></i>
+                설정 시 해당 월 휴무가 N일 미만이면 부족분을 <strong>최소보장 휴무</strong>로 자동 추가합니다.
+                자동 추가분은 영양사·관리자·운영진 화면에서 구분 표시됩니다.
+              </p>
             </div>
           </div>
 
@@ -18996,6 +19102,7 @@ window.printMonthlyAnalysisReport = function() {
     const isHol = (holidays || []).some(h => (h.date||h) === ds)
     let regular=0, dispatch=0, parttime=0
     for(const emp of emps) {
+      if(emp.team === 'nutrition') continue // 영양사 제외
       const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
       if(code && code!=='-' && !REST_CODES_R.has(code)) regular++
     }
@@ -19374,13 +19481,23 @@ window.openWorkSettingsModal = async () => {
   setChk('ws_legal_warning_enabled',   ws.legal_warning_enabled   ?? '1')
   setChk('ws_ot_cost_enabled',         ws.ot_cost_enabled         ?? '1')
   setChk('ws_dispatch_enabled',        ws.dispatch_enabled        ?? '1')
-  // 휴무 부여 방식
+  // ① 근무제 유형
   const ogt = ws.off_grant_type || 'weekly5'
   const radioEl = document.getElementById(`ws_ogt_${ogt}`)
   if (radioEl) radioEl.checked = true
-  setVal('ws_off_cycle_work_days',   ws.off_cycle_work_days  ?? '5')
-  setVal('ws_off_cycle_rest_days',   ws.off_cycle_rest_days  ?? '2')
-  setVal('ws_off_cycle_start_date',  ws.off_cycle_start_date ?? '')
+  setVal('ws_off_cycle_work_days',      ws.off_cycle_work_days      ?? '5')
+  setVal('ws_off_cycle_rest_days',      ws.off_cycle_rest_days      ?? '2')
+  setVal('ws_off_cycle_start_date',     ws.off_cycle_start_date     ?? '')
+  setVal('ws_monthly_fixed_off_days',   ws.monthly_fixed_off_days   ?? '10')
+  // ② 공휴일 처리 정책
+  const hp = ws.holiday_policy || 'off'
+  const hpEl = document.getElementById(`ws_hp_${hp}`)
+  if (hpEl) hpEl.checked = true
+  const chp = ws.cycle_holiday_policy || 'add'
+  const chpEl = document.getElementById(`ws_chp_${chp}`)
+  if (chpEl) chpEl.checked = true
+  // ③ 월 최소 휴무 보장
+  setVal('ws_monthly_min_off_days', ws.monthly_min_off_days ?? '0')
   wsToggleOffGrantType(ogt)
   scheduleWorkSettings = ws
 }
@@ -19388,21 +19505,27 @@ window.openWorkSettingsModal = async () => {
 window.saveWorkSettings = async () => {
   const getVal = (id) => document.getElementById(id)?.value || ''
   const getChk = (id) => document.getElementById(id)?.checked ? '1' : '0'
-  const getRadio = (name) => document.querySelector(`input[name="${name}"]:checked`)?.value || 'weekly5'
+  const getRadio = (name) => document.querySelector(`input[name="${name}"]:checked`)?.value || ''
   const body = {
-    daily_max_hours:         getVal('ws_daily_max_hours'),
-    weekly_max_hours:        getVal('ws_weekly_max_hours'),
-    consecutive_max_days:    getVal('ws_consecutive_max_days'),
-    leave_cluster_threshold: getVal('ws_leave_cluster_threshold'),
-    required_staff_count:    getVal('ws_required_staff_count') || '0',
-    legal_warning_enabled:   getChk('ws_legal_warning_enabled'),
-    ot_cost_enabled:         getChk('ws_ot_cost_enabled'),
-    dispatch_enabled:        getChk('ws_dispatch_enabled'),
-    // 휴무 부여 방식
-    off_grant_type:          getRadio('ws_off_grant_type'),
-    off_cycle_work_days:     getVal('ws_off_cycle_work_days') || '5',
-    off_cycle_rest_days:     getVal('ws_off_cycle_rest_days') || '2',
-    off_cycle_start_date:    getVal('ws_off_cycle_start_date'),
+    daily_max_hours:           getVal('ws_daily_max_hours'),
+    weekly_max_hours:          getVal('ws_weekly_max_hours'),
+    consecutive_max_days:      getVal('ws_consecutive_max_days'),
+    leave_cluster_threshold:   getVal('ws_leave_cluster_threshold'),
+    required_staff_count:      getVal('ws_required_staff_count') || '0',
+    legal_warning_enabled:     getChk('ws_legal_warning_enabled'),
+    ot_cost_enabled:           getChk('ws_ot_cost_enabled'),
+    dispatch_enabled:          getChk('ws_dispatch_enabled'),
+    // ① 근무제 유형
+    off_grant_type:            getRadio('ws_off_grant_type') || 'weekly5',
+    off_cycle_work_days:       getVal('ws_off_cycle_work_days')    || '5',
+    off_cycle_rest_days:       getVal('ws_off_cycle_rest_days')    || '2',
+    off_cycle_start_date:      getVal('ws_off_cycle_start_date'),
+    monthly_fixed_off_days:    getVal('ws_monthly_fixed_off_days') || '10',
+    // ② 공휴일 처리 정책
+    holiday_policy:            getRadio('ws_holiday_policy')        || 'off',
+    cycle_holiday_policy:      getRadio('ws_cycle_holiday_policy')  || 'add',
+    // ③ 월 최소 휴무 보장
+    monthly_min_off_days:      getVal('ws_monthly_min_off_days')   || '0',
     // admin이면 현재 병원 ID 포함
     ...(App.role === 'admin' && App.currentHospitalId ? { hospitalId: App.currentHospitalId } : {})
   }
@@ -19473,11 +19596,28 @@ window.toggleExtShiftRow = (idx, enabled) => {
 window.wsToggleOffGrantType = (type) => {
   const el = document.getElementById('ws_ogt_' + type)
   if (el) el.checked = true
+
+  // 순환 패턴 옵션 (cycle / mixed 선택 시 표시)
   const cycleOpts = document.getElementById('ws_cycle_options')
   if (cycleOpts) {
-    if (type === 'cycle') cycleOpts.classList.remove('hidden')
+    if (type === 'cycle' || type === 'mixed') cycleOpts.classList.remove('hidden')
     else cycleOpts.classList.add('hidden')
   }
+
+  // 월 고정 휴무제 옵션 (monthly_fixed 선택 시 표시)
+  const monthlyOpts = document.getElementById('ws_monthly_fixed_options')
+  if (monthlyOpts) {
+    if (type === 'monthly_fixed') monthlyOpts.classList.remove('hidden')
+    else monthlyOpts.classList.add('hidden')
+  }
+
+  // 순환/혼합형 공휴일 충돌 처리 옵션 (cycle / mixed 선택 시 표시)
+  const cycleHolOpts = document.getElementById('ws_cycle_holiday_options')
+  if (cycleHolOpts) {
+    if (type === 'cycle' || type === 'mixed') cycleHolOpts.classList.remove('hidden')
+    else cycleHolOpts.classList.add('hidden')
+  }
+
   wsUpdateCyclePreview()
 }
 
