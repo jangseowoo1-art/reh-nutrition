@@ -38935,6 +38935,24 @@ window.openQrManageModal = async () => {
     })
   }
 
+  // ── QR 개인 목록 버튼 이벤트 위임 ──────────────────────────────
+  // 기존 핸들러 제거 후 재등록 (모달 재오픈 시 중복 방지)
+  if (window._qrBtnHandler) {
+    document.removeEventListener('click', window._qrBtnHandler)
+    window._qrBtnHandler = null
+  }
+  window._qrBtnHandler = (e) => {
+    const btn = e.target.closest('.qr-btn-kakao, .qr-btn-copy, .qr-btn-open, .qr-btn-dl, .qr-btn-regen')
+    if (!btn) return
+    const cls = btn.classList
+    if (cls.contains('qr-btn-kakao'))  { qrCopyKakao(btn.dataset.name, btn.dataset.url) }
+    else if (cls.contains('qr-btn-copy'))   { qrCopyLink(btn.dataset.url) }
+    else if (cls.contains('qr-btn-open'))   { window.open(btn.dataset.url, '_blank') }
+    else if (cls.contains('qr-btn-dl'))     { qrDownload(Number(btn.dataset.empid), btn.dataset.name) }
+    else if (cls.contains('qr-btn-regen'))  { qrRegen(Number(btn.dataset.empid)) }
+  }
+  document.addEventListener('click', window._qrBtnHandler)
+
   await qrLoadList()
   qrLoadTeamPanel()
 }
@@ -39058,14 +39076,12 @@ window.qrTeamRegen = async () => {
 }
 
 window.qrTeamCopyLink = (url) => {
-  if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => showToast('링크가 복사됐습니다', 'success'))
-  else prompt('링크를 복사하세요:', url)
+  _copyText(url, '링크가 복사됐습니다')
 }
 
 window.qrTeamCopyKakao = (url, hospitalName, month) => {
   const msg = `[${hospitalName}] ${month}월 전체 근무표 📋\n\n아래 링크에서 전체 직원 근무표를 확인하세요 👇\n${url}`
-  if (navigator.clipboard) navigator.clipboard.writeText(msg).then(() => showToast('카카오톡 메시지가 복사됐어요! 카톡에 붙여넣기 하세요 😊', 'success'))
-  else prompt('메시지를 복사하세요:', msg)
+  _copyText(msg, '카카오톡 메시지가 복사됐어요! 카톡에 붙여넣기 하세요 😊')
 }
 
 window.qrTeamOpen = (url) => { window.open(url, '_blank') }
@@ -39163,22 +39179,7 @@ window.qrLoadList = async function qrLoadList() {
       </div>`
     }).join('')
 
-    // data-* 이벤트 위임 (onclick 따옴표 충돌 완전 방지)
-    listEl.addEventListener('click', (e) => {
-      const btn = e.target.closest('button')
-      if (!btn) return
-      if (btn.classList.contains('qr-btn-kakao')) {
-        qrCopyKakao(btn.dataset.name, btn.dataset.url)
-      } else if (btn.classList.contains('qr-btn-copy')) {
-        qrCopyLink(btn.dataset.url)
-      } else if (btn.classList.contains('qr-btn-open')) {
-        window.open(btn.dataset.url, '_blank')
-      } else if (btn.classList.contains('qr-btn-dl')) {
-        qrDownload(Number(btn.dataset.empid), btn.dataset.name)
-      } else if (btn.classList.contains('qr-btn-regen')) {
-        qrRegen(Number(btn.dataset.empid))
-      }
-    }, { once: false })
+    // 이벤트 위임은 openQrManageModal에서 document에 한 번만 등록 (중복 방지)
 
     // QR 캔버스 렌더링 (비동기, 하나씩 처리)
     for (const t of tokens) {
@@ -39235,23 +39236,45 @@ window.qrBulkGenerate = async () => {
 }
 
 window.qrCopyLink = (url) => {
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(url).then(() => showToast('링크가 복사되었습니다', 'success'))
-  } else {
-    prompt('아래 링크를 복사하세요:', url)
-  }
+  if (!url) { showToast('URL이 없습니다', 'error'); return }
+  _copyText(url, '링크가 복사되었습니다')
 }
 
 // 카카오톡용 메시지 복사 (이름+병원+월+링크)
 window.qrCopyKakao = (name, url) => {
+  if (!url) { showToast('URL이 없습니다', 'error'); return }
   const now = new Date()
   const month = now.getMonth() + 1
-  const hospitalName = window._currentHospitalName || App?.hospitalName || '병원'
+  const hospitalName = window._currentHospitalName || (typeof App !== 'undefined' && App?.hospitalName) || '병원'
   const msg = `[${hospitalName}] ${name} 님의 ${month}월 근무표 📅\n\n아래 링크를 눌러 확인하세요 👇\n${url}\n\n※ 본인 근무표만 확인 가능합니다`
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(msg).then(() => showToast('카카오톡 메시지가 복사됐어요! 카톡에 붙여넣기 하세요 😊', 'success'))
+  _copyText(msg, '카카오톡 메시지가 복사됐어요! 카톡에 붙여넣기 하세요 😊')
+}
+
+// 공통 복사 유틸 (clipboard API 실패 시 textarea 폴백)
+function _copyText(text, successMsg) {
+  const _fallback = () => {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (ok) showToast(successMsg, 'success')
+      else prompt('복사하세요:', text)
+    } catch(err) {
+      prompt('복사하세요:', text)
+    }
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(
+      () => showToast(successMsg, 'success'),
+      () => _fallback()
+    )
   } else {
-    prompt('아래 메시지를 복사하세요:', msg)
+    _fallback()
   }
 }
 
