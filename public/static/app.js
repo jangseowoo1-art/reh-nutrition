@@ -15011,6 +15011,17 @@ function renderMonthlyScheduleTab() {
                     ${emp.holiday_policy_override?`<span title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'}" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f59e0b;color:white;font-size:8px;font-weight:800;margin-left:2px">H</span>`:''}
                   </div>
                   <div id="namecell-pos-${emp.id}" style="font-size:10px;color:#94a3b8">${emp.position_name||emp.position||''}</div>
+                  ${(()=>{
+                    const badges2=[]
+                    if((emp.schedule_type||'flexible')==='fixed') badges2.push(`<span style="display:inline-block;font-size:8px;padding:1px 4px;border-radius:3px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-weight:700">🔒고정</span>`)
+                    if(emp.work_type) {
+                      const wtLabel2={'weekly5':'주5일','cycle':'순환','monthly_fixed':'월고정','mixed':'혼합'}
+                      const wtColor2={'weekly5':'#dbeafe','cycle':'#ede9fe','monthly_fixed':'#dcfce7','mixed':'#ffedd5'}
+                      const wtText2={'weekly5':'#1e40af','cycle':'#5b21b6','monthly_fixed':'#166534','mixed':'#9a3412'}
+                      badges2.push(`<span style="display:inline-block;font-size:8px;padding:1px 4px;border-radius:3px;background:${wtColor2[emp.work_type]||'#f3f4f6'};color:${wtText2[emp.work_type]||'#374151'};border:1px solid currentColor;font-weight:600">${wtLabel2[emp.work_type]||emp.work_type}</span>`)
+                    }
+                    return badges2.length ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">${badges2.join('')}</div>` : ''
+                  })()}
                 </td>
                 ${cells}
                 <td id="workdays-${emp.id}" style="padding:4px 3px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;min-width:38px">
