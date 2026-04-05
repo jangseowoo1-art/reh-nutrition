@@ -917,14 +917,19 @@ schedule.post('/monthly-leave/generate', async (c) => {
       if (dateStr < emp.hire_date) continue // 입사 전 제외
 
       const sc = schedMap[dateStr]
-      if (!sc) { absenceDays++; continue } // 스케줄 미입력 = 결근 처리 (partial 이상은 허용)
-      if (sc.leave_type && sc.leave_type !== 'annual' && sc.leave_type !== 'monthly') {
-        // 병가, 경조 등은 결근 아님
+      if (!sc) {
+        // 스케줄 미입력 = 출근으로 간주 (스케줄을 일일이 기록하지 않는 병원 현장 특성 반영)
+        // full 기준일 때만 스케줄 없는 날을 확인 불가로 처리 가능하지만,
+        // 기본적으로 스케줄 기록 없음 ≠ 결근이므로 출근으로 봄
         attendanceDays++
-      } else if (REST_CODES_SET.has(sc.shift_code || '')) {
-        attendanceDays++ // 연차 사용도 개근 인정 (법적 기준)
+        continue
+      }
+      const shiftCode = sc.shift_code || ''
+      const ABSENCE_CODES = new Set(['결','결근'])
+      if (ABSENCE_CODES.has(shiftCode)) {
+        absenceDays++ // 명시적 결근 코드만 결근으로 처리
       } else {
-        attendanceDays++
+        attendanceDays++ // 연차, 병가, 경조 등 모두 출근 인정 (법적 기준)
       }
     }
 
@@ -994,6 +999,178 @@ schedule.post('/monthly-leave/generate', async (c) => {
   }
 
   return c.json({ ok: true, results, targetYear, targetMonth })
+})
+
+// ── 월차 소급 처리 (입사 후 현재까지 미발생 월차 일괄 발생) ──────
+// POST /api/schedule/monthly-leave/backfill
+// body: { employeeId? }  — 특정 직원 또는 전체 1년 미만 직원 소급 처리
+schedule.post('/monthly-leave/backfill', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const body = await c.req.json().catch(() => ({}) as any)
+  const specificEmpId = body.employeeId ? parseInt(body.employeeId) : null
+
+  const policy = await getMonthlyLeavePolicy(c.env.DB, hospitalId)
+  if (!policy.enabled) return c.json({ ok: true, skipped: true, reason: '월차 기능이 비활성화되어 있습니다' })
+
+  let empSql = `SELECT * FROM employees WHERE hospital_id=? AND is_active=1 AND hire_date IS NOT NULL AND hire_date != ''`
+  const empParams: any[] = [hospitalId]
+  if (specificEmpId) { empSql += ` AND id=?`; empParams.push(specificEmpId) }
+  const emps = await c.env.DB.prepare(empSql).bind(...empParams).all<any>()
+
+  const now = new Date()
+  const allResults: any[] = []
+
+  for (const emp of (emps.results || [])) {
+    // 1년 미만 직원만 소급 처리
+    const hired = new Date(emp.hire_date)
+    const msPerYear = 365.25 * 24 * 60 * 60 * 1000
+    const yearsWorked = (now.getTime() - hired.getTime()) / msPerYear
+    if (yearsWorked >= 1) continue // 1년 이상은 연차 전환 대상
+
+    // 입사 다음 달부터 현재 달 이전 달까지 반복
+    let checkYear = hired.getFullYear()
+    let checkMonth = hired.getMonth() + 2 // 입사 다음 달
+    if (checkMonth > 12) { checkMonth = 1; checkYear++ }
+
+    const todayYM = now.getFullYear() * 100 + now.getMonth() // 현재 달 (0-indexed month = 이전 달)
+
+    while (checkYear * 100 + checkMonth <= todayYM) {
+      const targetYear = checkYear
+      const targetMonth = checkMonth
+
+      // 1년 미만 여부 확인 (해당 월 말일 기준)
+      const lastDayOfMonth = new Date(targetYear, targetMonth, 0).toISOString().slice(0, 10)
+      if (!isUnder1Year(emp.hire_date, new Date(lastDayOfMonth))) {
+        // 다음 달로 이동
+        checkMonth++
+        if (checkMonth > 12) { checkMonth = 1; checkYear++ }
+        continue
+      }
+
+      // 이미 발생된 월차 확인
+      const existing = await c.env.DB.prepare(
+        `SELECT id FROM monthly_leave_grants WHERE hospital_id=? AND employee_id=? AND target_year=? AND target_month=?`
+      ).bind(hospitalId, emp.id, targetYear, targetMonth).first<any>()
+      if (existing) {
+        // 다음 달로 이동
+        checkMonth++
+        if (checkMonth > 12) { checkMonth = 1; checkYear++ }
+        continue
+      }
+
+      // 최대 11일 초과 여부
+      const prevGrants = await c.env.DB.prepare(
+        `SELECT COALESCE(SUM(days_granted),0) as total FROM monthly_leave_grants WHERE hospital_id=? AND employee_id=? AND status='active'`
+      ).bind(hospitalId, emp.id).first<any>()
+      const alreadyGranted = prevGrants?.total || 0
+      if (alreadyGranted >= policy.maxDays) {
+        allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'max_reached' })
+        checkMonth++
+        if (checkMonth > 12) { checkMonth = 1; checkYear++ }
+        continue
+      }
+
+      // 개근 여부 확인 (소급 시 스케줄 미입력 = 출근 간주)
+      const mmPad = String(targetMonth).padStart(2, '0')
+      const fromDate = `${targetYear}-${mmPad}-01`
+      const toDateStr = `${targetYear}-${mmPad}-${String(new Date(targetYear, targetMonth, 0).getDate()).padStart(2,'0')}`
+
+      const schedRows = await c.env.DB.prepare(`
+        SELECT work_date, shift_code FROM daily_schedules
+        WHERE hospital_id=? AND employee_id=? AND work_date BETWEEN ? AND ?
+      `).bind(hospitalId, emp.id, fromDate, toDateStr).all<any>()
+
+      const schedMap2: Record<string, any> = {}
+      for (const s of (schedRows.results || [])) schedMap2[s.work_date] = s
+
+      const workingDays2 = calcWorkingDays(targetYear, targetMonth)
+      let attendanceDays2 = 0
+      let absenceDays2 = 0
+      const ABSENCE_CODES2 = new Set(['결','결근'])
+
+      for (let d = 1; d <= new Date(targetYear, targetMonth, 0).getDate(); d++) {
+        const dateStr = `${targetYear}-${mmPad}-${String(d).padStart(2,'0')}`
+        const dow = new Date(dateStr).getDay()
+        if (dow === 0 || dow === 6) continue
+        if (dateStr < emp.hire_date) continue
+
+        const sc = schedMap2[dateStr]
+        if (!sc) { attendanceDays2++; continue } // 미입력 = 출근 간주
+        if (ABSENCE_CODES2.has(sc.shift_code || '')) {
+          absenceDays2++
+        } else {
+          attendanceDays2++
+        }
+      }
+
+      // 개근 기준 평가
+      let qualified2 = false
+      if (policy.attendanceRule === 'full') {
+        qualified2 = absenceDays2 === 0
+      } else if (policy.attendanceRule === 'partial') {
+        qualified2 = absenceDays2 <= 1
+      } else if (policy.attendanceRule === 'ratio') {
+        const total2 = attendanceDays2 + absenceDays2
+        const ratio2 = total2 > 0 ? (attendanceDays2 / total2 * 100) : 100
+        qualified2 = ratio2 >= policy.attendanceRatio
+      } else {
+        qualified2 = absenceDays2 === 0
+      }
+
+      if (!qualified2) {
+        allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'not_qualified', absenceDays: absenceDays2 })
+        checkMonth++
+        if (checkMonth > 12) { checkMonth = 1; checkYear++ }
+        continue
+      }
+
+      // 월차 발생
+      const daysToGrant2 = Math.min(1, policy.maxDays - alreadyGranted)
+      const grantResult2 = await c.env.DB.prepare(`
+        INSERT INTO monthly_leave_grants
+          (hospital_id, employee_id, grant_year, grant_month, target_year, target_month,
+           days_granted, grant_type, status, attendance_days, working_days, absence_days, note)
+        VALUES (?,?,?,?,?,?,?,'auto_backfill','active',?,?,?,?)
+      `).bind(
+        hospitalId, emp.id, targetYear, targetMonth, targetYear, targetMonth,
+        daysToGrant2, attendanceDays2, workingDays2, absenceDays2,
+        `${targetYear}년 ${targetMonth}월 개근 월차 소급 발생`
+      ).run()
+
+      const leaveYear2 = targetYear
+      await c.env.DB.prepare(`
+        INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+        VALUES (?,?,?,'monthly',?,0,?)
+        ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+          total_days = total_days + excluded.total_days,
+          note = excluded.note,
+          updated_at = datetime('now')
+      `).bind(hospitalId, emp.id, leaveYear2, daysToGrant2, `${targetYear}년 월차 소급`).run()
+
+      await c.env.DB.prepare(`
+        INSERT INTO monthly_leave_audit
+          (hospital_id, employee_id, grant_id, action, after_value, actor_id, actor_role, reason)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).bind(
+        hospitalId, emp.id, grantResult2.meta.last_row_id,
+        'backfill_grant',
+        JSON.stringify({ year: leaveYear2, month: targetMonth, days: daysToGrant2, attendance: attendanceDays2, absence: absenceDays2 }),
+        user.userId || null, 'system',
+        `${targetYear}년 ${targetMonth}월 소급 처리`
+      ).run()
+
+      allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'granted', days: daysToGrant2 })
+
+      // 다음 달로 이동
+      checkMonth++
+      if (checkMonth > 12) { checkMonth = 1; checkYear++ }
+    }
+  }
+
+  return c.json({ ok: true, results: allResults })
 })
 
 // ── 월차 수동 조정 ──────────────────────────────────────────────

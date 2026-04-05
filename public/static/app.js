@@ -16106,7 +16106,7 @@ function renderLeavesTab() {
         <td class="px-3 py-3 text-center">
           ${mlTotal !== null
             ? `<span class="text-sm font-bold text-gray-800">${mlTotal}일</span><span class="text-xs text-gray-400 ml-1">/ ${maxDays}일</span>`
-            : `<span class="text-xs text-orange-600 font-bold">미발생</span>`}
+            : under1Year ? `<span class="text-xs text-orange-600 font-bold">미발생</span><br><span class="text-xs text-gray-400">소급처리 필요</span>` : `<span class="text-xs text-gray-400">-</span>`}
         </td>
         <td class="px-3 py-3 text-center">
           <span class="text-sm font-bold ${mlUsed > 0 ? 'text-blue-700' : 'text-gray-400'}">${mlUsed}일</span>
@@ -16163,8 +16163,11 @@ function renderLeavesTab() {
         </div>
         <div class="flex gap-2 flex-wrap">
           ${isAdm ? `
+          <button onclick="runMonthlyLeaveBackfill()" class="px-3 py-1.5 rounded-lg text-xs bg-orange-500 text-white hover:bg-orange-600">
+            <i class="fas fa-history mr-1"></i>소급 일괄 처리
+          </button>
           <button onclick="runMonthlyLeaveGenerate()" class="px-3 py-1.5 rounded-lg text-xs bg-teal-600 text-white hover:bg-teal-700">
-            <i class="fas fa-magic mr-1"></i>월차 발생 처리
+            <i class="fas fa-magic mr-1"></i>이번달 발생 처리
           </button>
           <button onclick="runMonthlyLeaveTransition()" class="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-700">
             <i class="fas fa-exchange-alt mr-1"></i>연차 전환 처리
@@ -17186,13 +17189,36 @@ window.saveMonthlyLeaveEdit = async () => {
   }
 }
 
-// 월차 발생 처리 (전체)
+// 월차 발생 처리 (이번달/선택달)
 window.runMonthlyLeaveGenerate = async () => {
   const now   = new Date()
-  // 기본: 이전 달 대상
-  const month = now.getMonth() === 0 ? 12 : now.getMonth()
-  const year  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
-  if (!confirm(`${year}년 ${month}월 개근 확인 후 월차를 자동 발생하시겠습니까?`)) return
+  // 현재 달도 포함하여 선택 가능
+  const curMonth = now.getMonth() + 1
+  const curYear  = now.getFullYear()
+  const prevMonth = now.getMonth() === 0 ? 12 : now.getMonth()
+  const prevYear  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+
+  // 간단한 월/년 선택 다이얼로그
+  const input = prompt(
+    `발생 처리할 연월을 입력하세요 (예: ${prevYear}-${String(prevMonth).padStart(2,'0')})\n비워두면 이전 달(${prevYear}년 ${prevMonth}월) 처리`,
+    `${prevYear}-${String(prevMonth).padStart(2,'0')}`
+  )
+  if (input === null) return // 취소
+
+  let year = prevYear, month = prevMonth
+  if (input && input.trim()) {
+    const parts = input.trim().split('-')
+    if (parts.length === 2) {
+      year  = parseInt(parts[0])
+      month = parseInt(parts[1])
+    }
+  }
+  if (isNaN(year) || isNaN(month) || month < 1 || month > 12) {
+    showToast('올바른 연월을 입력하세요 (예: 2025-03)', 'error')
+    return
+  }
+
+  if (!confirm(`${year}년 ${month}월 개근 확인 후 월차를 발생하시겠습니까?\n(스케줄 미입력 직원도 개근으로 간주합니다)`)) return
 
   const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
   const res = await api('POST', `/api/schedule/monthly-leave/generate${hospQuery}`, { year, month }).catch(() => null)
@@ -17203,7 +17229,35 @@ window.runMonthlyLeaveGenerate = async () => {
   const qualified = (res.results || []).filter((r) => r.status === 'not_qualified').length
   const existing  = (res.results || []).filter((r) => r.status === 'already_exists').length
   const maxed     = (res.results || []).filter((r) => r.status === 'max_reached').length
-  showToast(`월차 발생: ${granted}명 발생, ${qualified}명 미개근, ${existing}명 이미처리, ${maxed}명 한도초과`, 'success')
+  showToast(`${year}년 ${month}월 월차 발생: ${granted}명 발생, ${qualified}명 미개근, ${existing}명 이미처리, ${maxed}명 한도초과`, granted > 0 ? 'success' : 'info')
+
+  await loadMonthlyLeaveData()
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+}
+
+// 월차 소급 일괄 처리 (입사일부터 현재까지 미발생 월차 자동 생성)
+window.runMonthlyLeaveBackfill = async () => {
+  if (!confirm('입사일부터 현재까지 발생하지 않은 월차를 소급하여 일괄 처리하시겠습니까?\n\n' +
+    '• 스케줄 미입력 직원도 개근으로 간주합니다\n' +
+    '• 이미 처리된 달은 건너뜁니다\n' +
+    '• 1년 이상 근무자는 제외됩니다')) return
+
+  showToast('소급 처리 중... 잠시 기다려주세요', 'info')
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const res = await api('POST', `/api/schedule/monthly-leave/backfill${hospQuery}`, {}).catch(() => null)
+  if (!res) { showToast('오류 발생', 'error'); return }
+
+  const granted   = (res.results || []).filter((r) => r.status === 'granted').length
+  const qualified = (res.results || []).filter((r) => r.status === 'not_qualified').length
+  const maxed     = (res.results || []).filter((r) => r.status === 'max_reached').length
+  const total     = (res.results || []).length
+
+  if (total === 0) {
+    showToast('소급 처리할 대상이 없습니다 (모두 처리됨)', 'info')
+  } else {
+    showToast(`소급 처리 완료: ${granted}건 발생, ${qualified}건 미개근, ${maxed}건 한도초과 (총 ${total}건 검토)`, granted > 0 ? 'success' : 'info')
+  }
 
   await loadMonthlyLeaveData()
   const content = document.getElementById('pageContent')
