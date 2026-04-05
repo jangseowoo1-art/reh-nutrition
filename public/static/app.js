@@ -13845,6 +13845,75 @@ function renderAdminSummaryPanel() {
         </table>
       </div>
     </div>
+
+    <!-- ⑥ 직원별 근무정책 현황 (0057) -->
+    ${(()=>{
+      const ewp = scheduleOffGrants?.employee_work_policies || []
+      const ps  = scheduleOffGrants?.policy_stats || {}
+      if (!ewp.length) return ''
+
+      const hosBases = scheduleWorkSettings?.off_grant_type || 'weekly5'
+      const typeLabel = { weekly5:'주5일', cycle:'순환', monthly_fixed:'월고정', mixed:'혼합형' }
+      const typeColor = { weekly5:'#dbeafe', cycle:'#ede9fe', monthly_fixed:'#dcfce7', mixed:'#ffedd5' }
+      const typeText  = { weekly5:'#1e40af', cycle:'#5b21b6', monthly_fixed:'#166534', mixed:'#9a3412' }
+
+      const rows = ewp.map(e => {
+        const isFixed = e.is_fixed
+        const wtOverride = e.work_type
+        const effType = e.effective_work_type
+        return `<tr style="border-bottom:1px solid #f3f4f6">
+          <td style="padding:5px 8px;font-size:11px;font-weight:600;color:#1f2937">${e.name}</td>
+          <td style="padding:4px 6px;text-align:center">
+            ${wtOverride
+              ? `<span style="display:inline-block;font-size:9px;padding:1px 6px;border-radius:4px;background:${typeColor[wtOverride]||'#f3f4f6'};color:${typeText[wtOverride]||'#374151'};font-weight:700;border:1px solid currentColor">${typeLabel[wtOverride]||wtOverride}</span><br><span style="font-size:8px;color:#9ca3af">개별설정</span>`
+              : `<span style="display:inline-block;font-size:9px;padding:1px 6px;border-radius:4px;background:#f3f4f6;color:#6b7280;font-weight:500">상속(${typeLabel[hosBases]||hosBases})</span>`
+            }
+          </td>
+          <td style="padding:4px 6px;text-align:center">
+            ${isFixed
+              ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;font-weight:700;border:1px solid #fde68a">🔒 고정형</span>`
+              : `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;padding:2px 6px;border-radius:4px;background:#eff6ff;color:#1d4ed8;font-weight:600;border:1px solid #bfdbfe">⚙ 스케줄형</span>`
+            }
+          </td>
+          <td style="padding:4px 6px;font-size:10px;color:#6b7280">
+            ${e.cycle_work_days != null
+              ? `<span style="color:#7c3aed">${e.cycle_work_days}근/${e.cycle_rest_days}휴 (개인)</span>`
+              : (e.work_type === 'cycle' || e.work_type === 'mixed'
+                  ? '<span style="color:#9ca3af">병원 패턴 사용</span>'
+                  : '-')
+            }
+          </td>
+        </tr>`
+      }).join('')
+
+      return `<div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+          <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-layer-group" style="margin-right:5px;color:#6366f1"></i>직원별 근무정책 현황</div>
+          <div style="display:flex;gap:8px;font-size:10px">
+            <span style="padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e;font-weight:600">🔒 고정형 ${ps.fixed_count||0}명</span>
+            <span style="padding:2px 8px;border-radius:10px;background:#eff6ff;color:#1d4ed8;font-weight:600">⚙ 스케줄형 ${ps.flexible_count||0}명</span>
+            ${ps.type_override_count ? `<span style="padding:2px 8px;border-radius:10px;background:#f3f4f6;color:#6b7280;font-weight:600">개별유형 ${ps.type_override_count}명</span>` : ''}
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead>
+              <tr style="background:#f8fafc;border-bottom:1px solid #e5e7eb">
+                <th style="padding:6px 8px;text-align:left;font-size:10px;color:#374151;font-weight:700">직원</th>
+                <th style="padding:4px 6px;text-align:center;font-size:10px;color:#374151">근무 유형</th>
+                <th style="padding:4px 6px;text-align:center;font-size:10px;color:#374151">운영 방식</th>
+                <th style="padding:4px 6px;text-align:center;font-size:10px;color:#374151">순환 패턴</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div style="padding:8px 14px;background:#f8fafc;font-size:10px;color:#9ca3af;border-top:1px solid #f3f4f6">
+          <i class="fas fa-info-circle" style="margin-right:4px"></i>
+          직원 인사카드에서 개별 근무정책을 설정할 수 있습니다. 상속 = 병원 전체 설정 따름.
+        </div>
+      </div>`
+    })()}
   `
 }
 
@@ -13945,6 +14014,19 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
       <td style="padding:5px 8px;min-width:90px;max-width:110px;position:sticky;left:0;background:${empIdx%2===0?'#fff':'#f9fafb'};z-index:5;border-right:4px solid ${grpColor}">
         <div style="font-size:12px;font-weight:800;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.name}</div>
         <div style="font-size:9px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.position_name||emp.position||''}</div>
+        ${(()=>{
+          const badges=[]
+          // 고정형 뱃지
+          if((emp.schedule_type||'flexible')==='fixed') badges.push(`<span style="display:inline-block;font-size:8px;padding:1px 4px;border-radius:3px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-weight:700">🔒고정</span>`)
+          // 근무유형 오버라이드 뱃지
+          if(emp.work_type) {
+            const wtLabel={'weekly5':'주5일','cycle':'순환','monthly_fixed':'월고정','mixed':'혼합'}
+            const wtColor={'weekly5':'#dbeafe','cycle':'#ede9fe','monthly_fixed':'#dcfce7','mixed':'#ffedd5'}
+            const wtText={'weekly5':'#1e40af','cycle':'#5b21b6','monthly_fixed':'#166534','mixed':'#9a3412'}
+            badges.push(`<span style="display:inline-block;font-size:8px;padding:1px 4px;border-radius:3px;background:${wtColor[emp.work_type]||'#f3f4f6'};color:${wtText[emp.work_type]||'#374151'};border:1px solid currentColor;font-weight:600">${wtLabel[emp.work_type]||emp.work_type}</span>`)
+          }
+          return badges.length ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">${badges.join('')}</div>` : ''
+        })()}
       </td>
       ${cells}
       <td style="padding:3px 4px;text-align:center;min-width:34px;border-left:2px solid #e2e8f0;background:#f8fafc;white-space:nowrap">
@@ -15378,6 +15460,120 @@ function renderEmployeeModal() {
                 emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'
               }</strong>
             </div>` : ''}
+          </div>
+
+          <!-- 근무정책 설정 (0057) -->
+          <div class="col-span-2 mt-1">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">
+              <i class="fas fa-layer-group text-indigo-400 mr-1"></i>근무정책 (개별 설정)
+            </h4>
+          </div>
+
+          <!-- ① 근무 유형 (WHAT) -->
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700 block mb-1">
+              근무 유형 <span class="text-xs text-gray-400 font-normal ml-1">※ 병원 전체 설정 상속 시 비워두세요</span>
+            </label>
+            <div class="flex flex-wrap gap-2">
+              ${[
+                { val: '', label: '병원 설정 상속', icon: 'fa-building', color: 'gray' },
+                { val: 'weekly5', label: '주 5일 근무', icon: 'fa-calendar-week', color: 'blue' },
+                { val: 'cycle', label: '순환근무', icon: 'fa-rotate', color: 'purple' },
+                { val: 'monthly_fixed', label: '월 고정 휴무', icon: 'fa-calendar-check', color: 'green' },
+                { val: 'mixed', label: '혼합형', icon: 'fa-shuffle', color: 'orange' },
+              ].map(opt => {
+                const curWT = isEdit ? (emp?.work_type ?? '') : ''
+                const sel = curWT === opt.val
+                const colorMap = { gray:'border-gray-300 text-gray-600', blue:'border-blue-300 text-blue-600', purple:'border-purple-300 text-purple-600', green:'border-green-300 text-green-600', orange:'border-orange-300 text-orange-600' }
+                const selMap = { gray:'bg-gray-100 border-gray-500 text-gray-800 font-semibold ring-2 ring-gray-300', blue:'bg-blue-50 border-blue-500 text-blue-800 font-semibold ring-2 ring-blue-200', purple:'bg-purple-50 border-purple-500 text-purple-800 font-semibold ring-2 ring-purple-200', green:'bg-green-50 border-green-500 text-green-800 font-semibold ring-2 ring-green-200', orange:'bg-orange-50 border-orange-500 text-orange-800 font-semibold ring-2 ring-orange-200' }
+                return `<label class="cursor-pointer">
+                  <input type="radio" name="ei_work_type" value="${opt.val}" class="hidden" ${sel?'checked':''}>
+                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-all
+                    ${sel ? selMap[opt.color] : colorMap[opt.color]+' bg-white hover:bg-gray-50'}
+                    select-work-type-btn">
+                    <i class="fas ${opt.icon} text-xs"></i>${opt.label}
+                  </span>
+                </label>`
+              }).join('')}
+            </div>
+            <!-- 순환근무 개인 패턴 설정 -->
+            <div id="ei_cycle_options" class="${(isEdit && (emp?.work_type==='cycle'||emp?.work_type==='mixed')) ? '' : 'hidden'} mt-3 p-3 bg-purple-50 rounded-lg border border-purple-200">
+              <p class="text-xs text-purple-700 font-medium mb-2"><i class="fas fa-rotate mr-1"></i>개인 순환 패턴 (비워두면 병원 전체 패턴 사용)</p>
+              <div class="flex gap-3 flex-wrap">
+                <div>
+                  <label class="text-xs text-gray-600 block mb-1">근무일수</label>
+                  <input type="number" id="ei_cycle_work_days" min="1" max="30"
+                    class="form-input w-20 text-sm py-1"
+                    placeholder="병원설정"
+                    value="${isEdit && emp?.cycle_work_days != null ? emp.cycle_work_days : ''}">
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600 block mb-1">휴무일수</label>
+                  <input type="number" id="ei_cycle_rest_days" min="1" max="14"
+                    class="form-input w-20 text-sm py-1"
+                    placeholder="병원설정"
+                    value="${isEdit && emp?.cycle_rest_days != null ? emp.cycle_rest_days : ''}">
+                </div>
+                <div>
+                  <label class="text-xs text-gray-600 block mb-1">개인 시작일</label>
+                  <input type="date" id="ei_work_cycle_start_date"
+                    class="form-input w-36 text-sm py-1"
+                    value="${isEdit ? (emp?.work_cycle_start_date||'') : ''}">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ② 운영 방식 (HOW) -->
+          <div class="col-span-2 mt-1">
+            <label class="text-sm font-medium text-gray-700 block mb-2">
+              운영 방식 <span class="text-xs text-gray-400 font-normal ml-1">※ 패턴 유지 vs 인력 기준 조정</span>
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <!-- flexible -->
+              <label class="cursor-pointer">
+                <input type="radio" name="ei_schedule_type" value="flexible" class="hidden"
+                  ${(!isEdit || (emp?.schedule_type??'flexible')==='flexible') ? 'checked' : ''}>
+                <div class="border-2 rounded-xl p-3 transition-all schedule-type-option
+                  ${(!isEdit || (emp?.schedule_type??'flexible')==='flexible') ? 'border-blue-500 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}">
+                  <div class="flex items-center gap-2 mb-1.5">
+                    <div class="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center">
+                      <i class="fas fa-sliders text-blue-600 text-xs"></i>
+                    </div>
+                    <span class="font-semibold text-sm text-gray-800">스케줄형</span>
+                    <span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Flexible</span>
+                  </div>
+                  <ul class="text-xs text-gray-500 space-y-0.5 ml-1">
+                    <li>· 자동 배치 후 조정 가능</li>
+                    <li>· 인력 기준 반영</li>
+                    <li>· 날짜 이동 허용</li>
+                  </ul>
+                </div>
+              </label>
+              <!-- fixed -->
+              <label class="cursor-pointer">
+                <input type="radio" name="ei_schedule_type" value="fixed" class="hidden"
+                  ${(isEdit && emp?.schedule_type==='fixed') ? 'checked' : ''}>
+                <div class="border-2 rounded-xl p-3 transition-all schedule-type-option
+                  ${(isEdit && emp?.schedule_type==='fixed') ? 'border-amber-500 bg-amber-50' : 'border-gray-200 bg-white hover:border-gray-300'}">
+                  <div class="flex items-center gap-2 mb-1.5">
+                    <div class="w-7 h-7 rounded-full bg-amber-100 flex items-center justify-center">
+                      <i class="fas fa-lock text-amber-600 text-xs"></i>
+                    </div>
+                    <span class="font-semibold text-sm text-gray-800">고정형</span>
+                    <span class="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Fixed</span>
+                  </div>
+                  <ul class="text-xs text-gray-500 space-y-0.5 ml-1">
+                    <li>· 패턴 고정 우선</li>
+                    <li>· 변경 최소화</li>
+                    <li>· 자동 잠금 적용</li>
+                  </ul>
+                </div>
+              </label>
+            </div>
+            <p class="text-xs text-gray-400 mt-1.5">
+              <i class="fas fa-info-circle mr-1"></i>고정형: 재계산 시에도 스케줄 패턴 유지. 스케줄형: 인력 상황에 따라 패턴 조정 가능.
+            </p>
           </div>
 
           <!-- 메모 -->
@@ -20081,7 +20277,65 @@ window.openEmpModal = async (mode, empId, defaultTeam) => {
   renderScheduleTab(content)
   setTimeout(() => {
     document.getElementById('empCardModal').classList.remove('hidden')
+    // 0057: 모달 열릴 때 근무정책 UI 초기화
+    initEmpWorkPolicyUI()
   }, 50)
+}
+
+// 0057: 직원 근무정책 UI 초기화 및 이벤트 바인딩
+function initEmpWorkPolicyUI() {
+  // ① 근무유형 라디오 버튼 클릭 시 선택 스타일 + cycle 옵션 표시/숨김
+  document.querySelectorAll('input[name="ei_work_type"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      // 모든 버튼 스타일 초기화
+      document.querySelectorAll('.select-work-type-btn').forEach(btn => {
+        btn.className = btn.className
+          .replace(/bg-\w+-50\s*/g, '')
+          .replace(/border-\w+-500\s*/g, '')
+          .replace(/text-\w+-800\s*/g, '')
+          .replace(/font-semibold\s*/g, '')
+          .replace(/ring-2\s*/g, '')
+          .replace(/ring-\w+-[0-9]+\s*/g, '')
+      })
+      // 선택된 버튼 스타일 적용
+      const sel = document.querySelector('input[name="ei_work_type"]:checked')
+      if (sel) {
+        const colorMap = {
+          '': 'gray', weekly5: 'blue', cycle: 'purple', monthly_fixed: 'green', mixed: 'orange'
+        }
+        const c = colorMap[sel.value] || 'gray'
+        const selSpan = sel.nextElementSibling
+        if (selSpan) {
+          selSpan.classList.add(`bg-${c}-50`, `border-${c}-500`, `text-${c}-800`, 'font-semibold', 'ring-2', `ring-${c}-200`)
+        }
+      }
+      // cycle/mixed 선택 시 패턴 옵션 표시
+      const cycleOpts = document.getElementById('ei_cycle_options')
+      if (cycleOpts) {
+        const v = document.querySelector('input[name="ei_work_type"]:checked')?.value
+        cycleOpts.classList.toggle('hidden', v !== 'cycle' && v !== 'mixed')
+      }
+    })
+  })
+
+  // ② 운영방식 라디오 버튼 클릭 시 카드 스타일 업데이트
+  document.querySelectorAll('input[name="ei_schedule_type"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      document.querySelectorAll('.schedule-type-option').forEach((card, i) => {
+        const isFlexible = i === 0
+        const checked = document.querySelectorAll('input[name="ei_schedule_type"]')[i]?.checked
+        if (checked) {
+          card.classList.remove('border-gray-200', 'bg-white')
+          if (isFlexible) card.classList.add('border-blue-500', 'bg-blue-50')
+          else card.classList.add('border-amber-500', 'bg-amber-50')
+        } else {
+          if (isFlexible) card.classList.remove('border-blue-500', 'bg-blue-50')
+          else card.classList.remove('border-amber-500', 'bg-amber-50')
+          card.classList.add('border-gray-200', 'bg-white')
+        }
+      })
+    })
+  })
 }
 
 window.saveEmployeeCard = async (empId) => {
@@ -20116,7 +20370,13 @@ window.saveEmployeeCard = async (empId) => {
     nightEnabled: document.getElementById('ei_nightEnabled')?.checked ? 1 : 0,
     holidayEnabled: document.getElementById('ei_holidayEnabled')?.checked ? 1 : 0,
     // Phase D: 공휴일 정책 오버라이드 (빈 문자열 = 병원 기본값 상속)
-    holidayPolicyOverride: document.getElementById('ei_holidayPolicyOverride')?.value || null
+    holidayPolicyOverride: document.getElementById('ei_holidayPolicyOverride')?.value || null,
+    // 0057: 직원별 근무정책
+    workType: document.querySelector('input[name="ei_work_type"]:checked')?.value || null,
+    scheduleType: document.querySelector('input[name="ei_schedule_type"]:checked')?.value || 'flexible',
+    workCycleStartDate: document.getElementById('ei_work_cycle_start_date')?.value || null,
+    cycleWorkDays: document.getElementById('ei_cycle_work_days')?.value ? parseInt(document.getElementById('ei_cycle_work_days').value) : null,
+    cycleRestDays: document.getElementById('ei_cycle_rest_days')?.value ? parseInt(document.getElementById('ei_cycle_rest_days').value) : null,
   }
 
   let res

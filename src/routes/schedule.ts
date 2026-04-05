@@ -318,7 +318,9 @@ schedule.post('/employees', async (c) => {
     name, team, positionId, position, empNumber, birthDate, hireDate,
     employmentType, workParts, phone, email, address, emergencyContact, note,
     healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder,
-    salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled
+    salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled,
+    // 0057: 직원별 근무정책
+    workType, scheduleType, workCycleStartDate, cycleWorkDays, cycleRestDays
   } = body
 
   if (!name) return c.json({ error: '이름은 필수입니다' }, 400)
@@ -338,8 +340,9 @@ schedule.post('/employees', async (c) => {
        employment_type, work_parts, section, phone, email, address, emergency_contact,
        note, health_cert_expire, health_exam_date, health_exam_status,
        annual_leave_total, sort_order, is_active,
-       salary_type, base_salary, ot_enabled, night_allowance_enabled, holiday_allowance_enabled
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
+       salary_type, base_salary, ot_enabled, night_allowance_enabled, holiday_allowance_enabled,
+       work_type, schedule_type, work_cycle_start_date, cycle_work_days, cycle_rest_days
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     hid, name, team || 'cook', positionId || null, position || '',
     empNumber || '', birthDate || '', hireDate || '',
@@ -348,7 +351,13 @@ schedule.post('/employees', async (c) => {
     note || '', healthCertExpire || '', healthExamDate || '',
     healthExamStatus || 'pending', annualLeaveTotal || 15, finalSortOrder,
     salaryType || 'monthly', baseSalary || 0,
-    otEnabled ? 1 : 0, nightEnabled ? 1 : 0, holidayEnabled ? 1 : 0
+    otEnabled ? 1 : 0, nightEnabled ? 1 : 0, holidayEnabled ? 1 : 0,
+    // 0057: 직원별 근무정책 (NULL=병원설정 상속)
+    workType || null,
+    scheduleType || 'flexible',
+    workCycleStartDate || null,
+    cycleWorkDays !== undefined ? cycleWorkDays : null,
+    cycleRestDays !== undefined ? cycleRestDays : null
   ).run()
   return c.json({ success: true })
 })
@@ -368,7 +377,9 @@ schedule.put('/employees/:id', async (c) => {
     employmentType, workParts, phone, email, address, emergencyContact, note,
     healthCertExpire, healthExamDate, healthExamStatus, annualLeaveTotal, sortOrder, isActive,
     salaryType, baseSalary, otEnabled, nightEnabled, holidayEnabled,
-    holidayPolicyOverride  // Phase D: 직원별 공휴일 정책 예외 ('off'|'work_pay'|'work_substitute'|null)
+    holidayPolicyOverride,  // Phase D: 직원별 공휴일 정책 예외 ('off'|'work_pay'|'work_substitute'|null)
+    // 0057: 직원별 근무정책
+    workType, scheduleType, workCycleStartDate, cycleWorkDays, cycleRestDays
   } = body
 
   await c.env.DB.prepare(
@@ -382,6 +393,8 @@ schedule.put('/employees/:id', async (c) => {
        salary_type = ?, base_salary = ?, ot_enabled = ?,
        night_allowance_enabled = ?, holiday_allowance_enabled = ?,
        holiday_policy_override = ?,
+       work_type = ?, schedule_type = ?,
+       work_cycle_start_date = ?, cycle_work_days = ?, cycle_rest_days = ?,
        updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
@@ -412,10 +425,21 @@ schedule.put('/employees/:id', async (c) => {
     otEnabled !== undefined ? (otEnabled ? 1 : 0) : (existing.ot_enabled ?? 0),
     nightEnabled !== undefined ? (nightEnabled ? 1 : 0) : (existing.night_allowance_enabled ?? 0),
     holidayEnabled !== undefined ? (holidayEnabled ? 1 : 0) : (existing.holiday_allowance_enabled ?? 0),
-    // Phase D: holiday_policy_override — 명시적으로 null 전달 시 병원 기본값 상속으로 초기화
+    // Phase D: holiday_policy_override
     holidayPolicyOverride !== undefined
       ? (holidayPolicyOverride === '' ? null : (holidayPolicyOverride ?? null))
       : (existing.holiday_policy_override ?? null),
+    // 0057: 직원별 근무정책
+    // workType: 명시적 null 전달 시 병원 설정 상속으로 초기화
+    workType !== undefined
+      ? (workType === '' ? null : (workType ?? null))
+      : (existing.work_type ?? null),
+    scheduleType !== undefined ? (scheduleType || 'flexible') : (existing.schedule_type ?? 'flexible'),
+    workCycleStartDate !== undefined
+      ? (workCycleStartDate || null)
+      : (existing.work_cycle_start_date ?? null),
+    cycleWorkDays !== undefined ? cycleWorkDays : (existing.cycle_work_days ?? null),
+    cycleRestDays !== undefined ? cycleRestDays : (existing.cycle_rest_days ?? null),
     c.req.param('id')
   ).run()
   return c.json({ success: true })
@@ -1971,11 +1995,45 @@ schedule.get('/off-grants', async (c) => {
     policy_review_signal:    minGuaranteeCount > 0,
   }
 
+  // ── 직원별 근무정책 요약 (0057) ──────────────────────────────
+  // 병원 소속 활성 직원들의 work_type, schedule_type 정보를 함께 반환
+  const empPolicyRows = await c.env.DB.prepare(
+    `SELECT id, name, work_type, schedule_type,
+            work_cycle_start_date, cycle_work_days, cycle_rest_days
+     FROM employees
+     WHERE hospital_id = ? AND is_active = 1
+     ORDER BY sort_order, name`
+  ).bind(hospitalId).all<any>()
+
+  const employeeWorkPolicies = (empPolicyRows.results || []).map((e: any) => ({
+    id:                    e.id,
+    name:                  e.name,
+    // work_type: NULL이면 병원 전체 설정 상속
+    work_type:             e.work_type ?? null,
+    effective_work_type:   e.work_type ?? offGrantType,  // 실제 적용 유형
+    schedule_type:         e.schedule_type ?? 'flexible',
+    work_cycle_start_date: e.work_cycle_start_date ?? null,
+    cycle_work_days:       e.cycle_work_days ?? null,
+    cycle_rest_days:       e.cycle_rest_days ?? null,
+    // 고정형 여부 플래그
+    is_fixed:              (e.schedule_type ?? 'flexible') === 'fixed',
+  }))
+
+  // 정책별 직원 수 집계
+  const policyStats = {
+    total:             employeeWorkPolicies.length,
+    fixed_count:       employeeWorkPolicies.filter((e: any) => e.is_fixed).length,
+    flexible_count:    employeeWorkPolicies.filter((e: any) => !e.is_fixed).length,
+    type_override_count: employeeWorkPolicies.filter((e: any) => e.work_type !== null).length,
+  }
+
   return c.json({
     year, month,
-    granted_days:    grantedDays,
-    substitute_days: substituteDays,
-    summary
+    granted_days:           grantedDays,
+    substitute_days:        substituteDays,
+    summary,
+    employee_work_policies: employeeWorkPolicies,
+    policy_stats:           policyStats,
   })
 })
 
