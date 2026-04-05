@@ -12265,7 +12265,7 @@ async function renderSchedule() {
   const hqs = hId ? `?hospitalId=${hId}` : ''
 
   // 모든 데이터 병렬 로드
-  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData, holidayPolicySummaryData] = await Promise.all([
+  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData, holidayPolicySummaryData, monthlyLeaveSummary] = await Promise.all([
     api('GET', `/api/schedule/employees${hqs}`).catch(() => []),
     api('GET', `/api/schedule/shifts${hqs}`).catch(() => []),
     api('GET', `/api/schedule/positions${hqs}`).catch(() => []),
@@ -12276,7 +12276,8 @@ async function renderSchedule() {
     api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/work-settings${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null)
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
   ])
 
   scheduleEmployees = empData || []
@@ -12292,6 +12293,7 @@ async function renderSchedule() {
   scheduleMealStats = mealStats || null
   scheduleWorkSettings = workSettingsData || null
   scheduleHolidayPolicySummary = holidayPolicySummaryData || null
+  window._monthlyLeavesData = monthlyLeaveSummary || []
 
   renderScheduleTab(content)
 }
@@ -12308,13 +12310,14 @@ async function reloadScheduleMonth() {
   const hq  = hId ? `&hospitalId=${hId}` : ''   // 기존 쿼리에 추가용
   const hqs = hId ? `?hospitalId=${hId}` : ''   // 쿼리가 없는 경로용
 
-  const [offGrants, monthData, leaveAlerts, analysisData, mealStats, holidayPolicySum] = await Promise.all([
+  const [offGrants, monthData, leaveAlerts, analysisData, mealStats, holidayPolicySum, monthlyLeaveSummary] = await Promise.all([
     api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
     api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
     api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null)
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
   ])
   scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
@@ -12324,6 +12327,7 @@ async function reloadScheduleMonth() {
   scheduleAnalysisData = analysisData || null
   scheduleMealStats = mealStats || null
   scheduleHolidayPolicySummary = holidayPolicySum || null
+  window._monthlyLeavesData = monthlyLeaveSummary || []
   if (tc) {
     if (scheduleTab === 'schedule') {
       tc.innerHTML = renderMonthlyScheduleTab()
@@ -12490,6 +12494,7 @@ function renderScheduleTab(content) {
   ${renderEmployeeModal()}
   ${renderShiftModal()}
   ${renderLeaveEditModal()}
+  ${renderMonthlyLeaveEditModal()}
   ${renderEmpStatsModal()}
   ${renderLaborCostSettingsModal()}
   ${renderSchedDetailModal()}
@@ -12540,7 +12545,7 @@ function renderEmployeeTab() {
               <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">입사일</th>
               <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[90px]">보건증 만료</th>
               <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">검진상태</th>
-              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 min-w-[80px]">연차</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-blue-600 min-w-[100px]">연차/월차</th>
               <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">연락처</th>
               <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 min-w-[80px]">관리</th>
             </tr>
@@ -12598,8 +12603,45 @@ function renderEmployeeTab() {
                 <td class="px-4 py-3">
                   <span class="text-sm ${es.color}">${es.label}</span>
                 </td>
-                <td class="px-4 py-3 text-center">
-                  <span class="text-sm font-semibold text-gray-700">${emp.annual_leave_total || 15}일</span>
+                <td class="px-4 py-3">
+                  ${(() => {
+                    const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
+                    const mlData = (window._monthlyLeavesData || []).find((m) => m.employee_id === emp.id)
+                    const leavesRow = (scheduleLeavesData || []).find((l) => l.employee_id === emp.id)
+                    const annualTotal = leavesRow?.total_days ?? null
+                    const annualUsed  = leavesRow?.used_days  ?? 0
+                    const annualRemain = annualTotal !== null ? annualTotal - annualUsed : null
+                    // 1년 미만 여부
+                    const hired = emp.hire_date ? new Date(emp.hire_date) : null
+                    const under1Y = hired ? ((new Date().getTime() - hired.getTime()) < 365.25*24*3600*1000) : false
+                    if (mlEnabled && under1Y && mlData) {
+                      const mlTotal  = mlData.monthly_total ?? 0
+                      const mlUsed   = mlData.monthly_used  ?? 0
+                      const mlRemain = mlTotal - mlUsed
+                      return `<div class="flex flex-col gap-0.5">
+                        <div class="flex items-center gap-1">
+                          <span class="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">월차</span>
+                          <span class="text-xs text-gray-700 font-semibold">${mlTotal}일</span>
+                          <span class="text-xs text-gray-400">잔${mlRemain}일</span>
+                        </div>
+                        ${annualTotal !== null ? `<div class="flex items-center gap-1">
+                          <span class="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">연차</span>
+                          <span class="text-xs text-gray-700 font-semibold">${annualTotal}일</span>
+                          <span class="text-xs text-gray-400">잔${annualRemain}일</span>
+                        </div>` : ''}
+                      </div>`
+                    }
+                    if (annualTotal !== null) {
+                      return `<div class="flex flex-col gap-0.5">
+                        <div class="flex items-center gap-1">
+                          <span class="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">연차</span>
+                          <span class="text-xs text-gray-700 font-semibold">${annualTotal}일</span>
+                          <span class="text-xs text-gray-400">잔${annualRemain}일</span>
+                        </div>
+                      </div>`
+                    }
+                    return `<span class="text-sm font-semibold text-gray-700">${emp.annual_leave_total || 15}일</span>`
+                  })()}
                 </td>
                 <td class="px-4 py-3 text-gray-500 text-sm">${emp.phone || '-'}</td>
                 <td class="px-4 py-3">
@@ -15141,9 +15183,24 @@ function renderMonthlyScheduleTab() {
               const annualCarried2 = empLeave2.annual?.allowance_paid ? 0 : (empLeave2.annual?.carried_over_days ?? 0)
               const annualEffective2 = annualTot2 !== null ? annualTot2 + annualCarried2 : null
               const annualRemain2 = annualEffective2 !== null ? (annualEffective2 - (empLeave2.annual?.used ?? 0)) : null
-              const annualCell2 = annualEffective2 !== null
-                ? `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
-                : `<div style="font-size:10px;color:#d1d5db">-</div>`
+              // 월차 데이터
+              const mlEnabled2 = scheduleWorkSettings?.monthly_leave_enabled !== '0'
+              const mlData2 = mlEnabled2 ? (window._monthlyLeavesData || []).find((m) => m.employee_id === emp.id) : null
+              const hired2 = emp.hire_date ? new Date(emp.hire_date) : null
+              const under1Y2 = hired2 ? ((new Date().getTime() - hired2.getTime()) < 365.25*24*3600*1000) : false
+              const mlTot2 = mlData2?.monthly_total ?? null
+              const mlUsed2 = mlData2?.monthly_used ?? 0
+              const mlRemain2 = mlTot2 !== null ? mlTot2 - mlUsed2 : null
+              // 연차 셀 (월차 + 연차 통합 표시)
+              let annualCell2 = ''
+              if (mlEnabled2 && under1Y2 && mlTot2 !== null) {
+                annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${mlTot2}↗${mlRemain2}잔</div>`
+                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualUsed}↑${annualRemain2}잔</div>`
+              } else if (annualEffective2 !== null) {
+                annualCell2 = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
+              } else {
+                annualCell2 = `<div style="font-size:10px;color:#d1d5db">-</div>`
+              }
 
               const consecWarn2 = legalWarnEnabled2 && maxConsecFound2 > maxConsec2
               const weekWarn2 = legalWarnEnabled2 && maxWeeklyHoursFound > weeklyMaxHours2
@@ -16001,6 +16058,78 @@ function renderLeavesTab() {
   const statTotalDays = leaves.reduce((a,l) => a + (l.total_days||0), 0)
   const statUsedDays  = leaves.reduce((a,l) => a + (l.used_days||0), 0)
 
+  // ── 월차 데이터 로드 (글로벌 캐시 또는 별도 로드) ─────────────
+  const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
+  const monthlyLeavesData = Array.isArray(window._monthlyLeavesData) ? window._monthlyLeavesData : []
+  const mlByEmp: Record<number, any> = {}
+  for (const ml of monthlyLeavesData) mlByEmp[ml.employee_id] = ml
+
+  // 월차 통계
+  const mlEmps      = emps.filter(e => mlByEmp[e.id])
+  const mlTotalDays = monthlyLeavesData.reduce((a: number, l: any) => a + (l.monthly_total||0), 0)
+  const mlUsedDays  = monthlyLeavesData.reduce((a: number, l: any) => a + (l.monthly_used||0), 0)
+
+  function renderMonthlyLeaveRows(teamEmps: any[], teamKey: string) {
+    if (!teamEmps.length) return ''
+    const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
+    let html = `<tr class="bg-gray-50">
+      <td colspan="8" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase border-b">
+        <i class="fas ${tl.icon} mr-1"></i>${tl.label} (${teamEmps.length}명)
+      </td></tr>`
+    for (const emp of teamEmps) {
+      if (!emp.hire_date) continue
+      const hired = new Date(emp.hire_date)
+      const now   = new Date()
+      const diffMs = now.getTime() - hired.getTime()
+      const under1Year = diffMs < 365.25 * 24 * 3600 * 1000
+      const tenureMonths = Math.floor(diffMs / (1000*60*60*24*30))
+      const ml = mlByEmp[emp.id]
+      const mlTotal  = ml?.monthly_total ?? null
+      const mlUsed   = ml?.monthly_used  ?? 0
+      const mlRemain = mlTotal !== null ? mlTotal - mlUsed : null
+      const maxDays  = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
+      const mlPct    = mlTotal ? Math.round(mlUsed / mlTotal * 100) : 0
+      const mlPctColor = mlPct >= 80 ? 'bg-red-500' : mlPct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
+      const statusBadge = under1Year
+        ? `<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-teal-100 text-teal-700 font-bold">1년미만</span>`
+        : `<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-500">연차전환</span>`
+      html += `<tr class="border-b hover:bg-teal-50 transition-colors">
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800">${emp.name}</div>
+          <div class="text-xs text-gray-400">${emp.position_name||emp.position||''}</div>
+        </td>
+        <td class="px-3 py-3 text-center text-xs">${emp.hire_date ? emp.hire_date.substring(0,7) : '-'}</td>
+        <td class="px-3 py-3 text-center">${statusBadge}</td>
+        <td class="px-3 py-3 text-center">
+          <span class="inline-block px-2 py-0.5 rounded-full text-xs bg-teal-100 text-teal-700 font-bold">${tenureMonths}개월</span>
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${mlTotal !== null
+            ? `<span class="text-sm font-bold text-gray-800">${mlTotal}일</span><span class="text-xs text-gray-400 ml-1">/ ${maxDays}일</span>`
+            : `<span class="text-xs text-orange-600 font-bold">미발생</span>`}
+        </td>
+        <td class="px-3 py-3 text-center">
+          <span class="text-sm font-bold ${mlUsed > 0 ? 'text-blue-700' : 'text-gray-400'}">${mlUsed}일</span>
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${mlRemain !== null
+            ? `<span class="text-sm font-bold ${mlRemain <= 1 ? 'text-red-600' : mlRemain <= 3 ? 'text-yellow-600' : 'text-teal-700'}">${mlRemain}일</span>`
+            : `<span class="text-xs text-gray-400">-</span>`}
+        </td>
+        <td class="px-3 py-3 text-center">
+          ${isAdm ? `<button onclick="openMonthlyLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}',${mlTotal??0},${mlUsed})"
+            class="px-2 py-1 rounded text-xs bg-teal-600 text-white hover:bg-teal-700">수정</button>
+            <button onclick="generateMonthlyLeaveForEmp(${emp.id})"
+            class="ml-1 px-2 py-1 rounded text-xs bg-green-600 text-white hover:bg-green-700 text-xs">발생</button>` : '-'}
+        </td>
+      </tr>`
+    }
+    return html
+  }
+
+  const cookEmpsML  = emps.filter(e => e.team === 'cook'  || !e.team)
+  const nutriEmpsML = emps.filter(e => e.team === 'nutrition')
+
   return `
   <div class="space-y-4">
     <!-- 통계 카드 -->
@@ -16023,6 +16152,66 @@ function renderLeavesTab() {
         <div class="text-xs text-gray-400">잔여 ${statTotalDays - statUsedDays}일</div>
       </div>
     </div>
+
+    <!-- ── 월차(1년 미만) 섹션 ── -->
+    ${mlEnabled ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-teal-100 overflow-hidden">
+      <div class="px-5 py-4 border-b border-teal-100 bg-teal-50 flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h3 class="font-bold text-teal-800"><i class="fas fa-calendar-plus mr-2 text-teal-600"></i>${year}년 월차 현황 <span class="text-xs font-normal text-teal-600 ml-1">(1년 미만 근무자)</span></h3>
+          <p class="text-xs text-teal-600 mt-0.5">매월 개근 시 1일 자동 발생 · 최대 ${scheduleWorkSettings?.monthly_leave_max_days || 11}일 · 1년 만료 시 연차 전환</p>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          ${isAdm ? `
+          <button onclick="runMonthlyLeaveGenerate()" class="px-3 py-1.5 rounded-lg text-xs bg-teal-600 text-white hover:bg-teal-700">
+            <i class="fas fa-magic mr-1"></i>월차 발생 처리
+          </button>
+          <button onclick="runMonthlyLeaveTransition()" class="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-700">
+            <i class="fas fa-exchange-alt mr-1"></i>연차 전환 처리
+          </button>` : ''}
+        </div>
+      </div>
+      <!-- 월차 요약 카드 -->
+      <div class="grid grid-cols-3 gap-3 p-4 border-b border-gray-100">
+        <div class="text-center">
+          <div class="text-xs text-gray-500 mb-1">월차 보유 직원</div>
+          <div class="text-xl font-bold text-teal-700">${mlEmps.length}명</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-gray-500 mb-1">총 발생 월차</div>
+          <div class="text-xl font-bold text-gray-800">${mlTotalDays}일</div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-gray-500 mb-1">사용 / 잔여</div>
+          <div class="text-xl font-bold text-gray-800"><span class="text-blue-600">${mlUsedDays}</span><span class="text-gray-400 text-sm">일</span> / <span class="text-teal-600">${mlTotalDays - mlUsedDays}</span><span class="text-gray-400 text-sm">일</span></div>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600">직원</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">입사월</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-teal-600">상태</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">근속</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-teal-600">발생(누계)</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-blue-600">사용</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">잔여</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${emps.filter(e => e.hire_date).length === 0
+              ? `<tr><td colspan="8" class="text-center py-8 text-gray-400">직원이 없습니다</td></tr>`
+              : renderMonthlyLeaveRows(cookEmpsML, 'cook') + renderMonthlyLeaveRows(nutriEmpsML, 'nutrition')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : `
+    <div class="bg-gray-50 rounded-xl border border-gray-200 p-4 text-center text-gray-400 text-sm">
+      <i class="fas fa-toggle-off mr-2"></i>월차 자동 생성이 비활성화되어 있습니다.
+      근무설정에서 <strong>월차 자동 생성 정책</strong>을 켜면 활성화됩니다.
+    </div>`}
 
     <!-- 연차 테이블 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -16121,6 +16310,50 @@ function renderLeaveEditModal() {
       <div class="flex gap-3 mt-6">
         <button onclick="saveLeaveEdit()" class="btn btn-primary flex-1">저장</button>
         <button onclick="document.getElementById('leaveEditModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
+      </div>
+    </div>
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 월차 수정 모달
+// ════════════════════════════════════════════════════════════════
+function renderMonthlyLeaveEditModal() {
+  return `
+  <div id="monthlyLeaveEditModal" class="hidden modal-overlay" style="z-index:1015">
+    <div class="modal-box max-w-md p-0 overflow-hidden">
+      <div class="bg-teal-700 text-white px-6 py-4 flex items-center justify-between">
+        <h3 class="font-bold text-lg"><i class="fas fa-calendar-plus mr-2"></i>월차 수정: <span id="mlEditEmpName"></span></h3>
+        <button onclick="document.getElementById('monthlyLeaveEditModal').classList.add('hidden')" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
+      </div>
+      <div class="p-6 space-y-4">
+        <input type="hidden" id="mlEditEmpId">
+        <div class="bg-teal-50 border border-teal-200 rounded-lg p-3 text-xs text-teal-800">
+          <i class="fas fa-info-circle mr-1"></i>
+          월차는 1년 미만 근무자에게 매월 개근 시 자동 발생합니다. 수동 조정 시 이력이 저장됩니다.
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">발생(누계) 월차 일수</label>
+          <input type="number" id="mlEditTotal" min="0" max="11" step="1" class="form-input mt-1" placeholder="0">
+          <p class="text-xs text-gray-400 mt-1">자동 발생된 일수를 포함한 총 누계입니다. 직접 수정 가능합니다.</p>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">사용 월차 일수</label>
+          <input type="number" id="mlEditUsed" min="0" max="11" step="0.5" class="form-input mt-1" placeholder="0">
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">수정 사유 <span class="text-red-400">*</span></label>
+          <input type="text" id="mlEditReason" class="form-input mt-1" placeholder="수동 조정 사유를 입력하세요">
+        </div>
+        <!-- 발생 이력 -->
+        <div id="mlEditGrantHistory" class="hidden">
+          <label class="text-sm font-medium text-gray-700 mb-2 block"><i class="fas fa-history mr-1 text-teal-600"></i>발생 이력</label>
+          <div id="mlEditGrantHistoryList" class="max-h-40 overflow-y-auto space-y-1 text-xs"></div>
+        </div>
+      </div>
+      <div class="flex gap-3 px-6 pb-6">
+        <button onclick="saveMonthlyLeaveEdit()" class="btn btn-primary flex-1 bg-teal-600 hover:bg-teal-700">저장</button>
+        <button onclick="document.getElementById('monthlyLeaveEditModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
       </div>
     </div>
   </div>`
@@ -16898,6 +17131,135 @@ window.autoGrantAllLeaves = async () => {
   renderScheduleTab(content)
 }
 
+// ════════════════════════════════════════════════════════════════
+// 월차 관리 함수
+// ════════════════════════════════════════════════════════════════
+
+// 월차 수정 모달 열기
+window.openMonthlyLeaveEditModal = async (empId, empName, totalDays, usedDays) => {
+  document.getElementById('mlEditEmpId').value = empId
+  document.getElementById('mlEditEmpName').textContent = empName
+  document.getElementById('mlEditTotal').value = totalDays || 0
+  document.getElementById('mlEditUsed').value  = usedDays || 0
+  document.getElementById('mlEditReason').value = ''
+
+  // 발생 이력 로드
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `&hospitalId=${App.currentHospitalId}` : ''
+  const grants = await api('GET', `/api/schedule/monthly-leave/grants?year=${App.currentYear}&employeeId=${empId}${hospQuery}`).catch(() => [])
+  const histEl = document.getElementById('mlEditGrantHistory')
+  const histList = document.getElementById('mlEditGrantHistoryList')
+  if (grants && grants.length > 0) {
+    histList.innerHTML = grants.map((g) => `
+      <div class="flex items-center justify-between p-1.5 rounded bg-teal-50 border border-teal-100">
+        <span class="text-teal-700">${g.target_year}년 ${g.target_month}월 개근 → <strong>${g.days_granted}일</strong></span>
+        <span class="text-gray-400">${g.grant_type === 'auto' ? '자동' : '수동'} · ${(g.created_at||'').substring(0,10)}</span>
+      </div>`).join('')
+    histEl.classList.remove('hidden')
+  } else {
+    histEl.classList.add('hidden')
+  }
+
+  document.getElementById('monthlyLeaveEditModal').classList.remove('hidden')
+}
+
+// 월차 수정 저장
+window.saveMonthlyLeaveEdit = async () => {
+  const empId    = parseInt(document.getElementById('mlEditEmpId').value)
+  const totalDays= parseFloat(document.getElementById('mlEditTotal').value) || 0
+  const usedDays = parseFloat(document.getElementById('mlEditUsed').value)  || 0
+  const reason   = document.getElementById('mlEditReason').value.trim()
+  if (!reason) { showToast('수정 사유를 입력해 주세요', 'error'); return }
+
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const res = await api('POST', `/api/schedule/monthly-leave/adjust${hospQuery}`, {
+    employeeId: empId, year: App.currentYear, totalDays, usedDays, reason
+  }).catch(() => null)
+
+  if (res?.ok) {
+    showToast('월차 수정이 완료되었습니다', 'success')
+    document.getElementById('monthlyLeaveEditModal').classList.add('hidden')
+    await loadMonthlyLeaveData()
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  } else {
+    showToast('저장 실패', 'error')
+  }
+}
+
+// 월차 발생 처리 (전체)
+window.runMonthlyLeaveGenerate = async () => {
+  const now   = new Date()
+  // 기본: 이전 달 대상
+  const month = now.getMonth() === 0 ? 12 : now.getMonth()
+  const year  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+  if (!confirm(`${year}년 ${month}월 개근 확인 후 월차를 자동 발생하시겠습니까?`)) return
+
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const res = await api('POST', `/api/schedule/monthly-leave/generate${hospQuery}`, { year, month }).catch(() => null)
+  if (!res) { showToast('오류 발생', 'error'); return }
+  if (res.skipped) { showToast(res.reason || '월차 기능 비활성화', 'info'); return }
+
+  const granted   = (res.results || []).filter((r: any) => r.status === 'granted').length
+  const qualified = (res.results || []).filter((r: any) => r.status === 'not_qualified').length
+  const existing  = (res.results || []).filter((r: any) => r.status === 'already_exists').length
+  const maxed     = (res.results || []).filter((r: any) => r.status === 'max_reached').length
+  showToast(`월차 발생: ${granted}명 발생, ${qualified}명 미개근, ${existing}명 이미처리, ${maxed}명 한도초과`, 'success')
+
+  await loadMonthlyLeaveData()
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+}
+
+// 연차 전환 처리
+window.runMonthlyLeaveTransition = async () => {
+  if (!confirm('1년 만료 직원을 연차로 전환하시겠습니까?')) return
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const res = await api('POST', `/api/schedule/monthly-leave/transition${hospQuery}`, {}).catch(() => null)
+  if (!res) { showToast('오류 발생', 'error'); return }
+  const count = (res.transitioned || []).length
+  showToast(count > 0 ? `${count}명 연차 전환 완료` : '전환 대상 없음', 'success')
+  if (count > 0) {
+    scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+    await loadMonthlyLeaveData()
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  }
+}
+
+// 직원 1명 월차 발생
+window.generateMonthlyLeaveForEmp = async (empId) => {
+  const now   = new Date()
+  const month = now.getMonth() === 0 ? 12 : now.getMonth()
+  const year  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const res = await api('POST', `/api/schedule/monthly-leave/generate${hospQuery}`, { year, month, employeeId: empId }).catch(() => null)
+  if (!res) { showToast('오류 발생', 'error'); return }
+  const r = (res.results || [])[0]
+  if (!r) { showToast('처리 결과 없음', 'info'); return }
+  const msgs: Record<string, string> = {
+    granted: '월차 1일 발생',
+    not_qualified: '개근 미충족',
+    already_exists: '이미 처리됨',
+    max_reached: '최대 한도 초과'
+  }
+  showToast(msgs[r.status] || r.status, r.status === 'granted' ? 'success' : 'info')
+  if (r.status === 'granted') {
+    await loadMonthlyLeaveData()
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  }
+}
+
+// 월차 데이터 로드 (글로벌 캐시)
+async function loadMonthlyLeaveData() {
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `&hospitalId=${App.currentHospitalId}` : ''
+  try {
+    window._monthlyLeavesData = await api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hospQuery}`)
+  } catch (e) {
+    window._monthlyLeavesData = []
+  }
+}
+
 // 월 이동 (이전/다음달)
 window.schedMoveMonth = async (delta) => {
   let y = App.currentYear, m = App.currentMonth + delta
@@ -17263,6 +17625,77 @@ function renderWorkSettingsModal() {
                   <span class="text-xs text-gray-500">명</span>
                 </div>
                 <p class="text-xs text-green-700 mt-1"><i class="fas fa-info-circle mr-1"></i>0 입력 시 기준인원 비교 기능이 비활성화됩니다. 영양사·운영진 뷰의 인력 현황 분석에 사용됩니다.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 구분선 -->
+          <div class="border-t border-gray-100"></div>
+
+          <!-- ⑤ 월차(월별 유급휴가) 자동 생성 정책 -->
+          <div>
+            <h4 class="text-sm font-bold text-gray-700 mb-2">
+              <i class="fas fa-calendar-plus mr-1 text-teal-600"></i>⑤ 월차 자동 생성 정책
+              <span class="ml-2 text-xs font-normal text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full">1년 미만 근무자</span>
+            </h4>
+            <div class="p-3 bg-teal-50 border border-teal-100 rounded-xl space-y-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">월차 자동 생성</div>
+                  <div class="text-xs text-gray-500 mt-0.5">1년 미만 근무자에게 매월 개근 시 1일 유급휴가를 자동 부여합니다 (최대 11일)</div>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" id="ws_monthly_leave_enabled" class="sr-only peer">
+                  <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                </label>
+              </div>
+
+              <div id="ws_monthly_leave_options" class="space-y-3">
+                <div>
+                  <label class="text-xs font-medium text-gray-700 mb-1 block">개근 판단 기준</label>
+                  <div class="space-y-1.5">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="ws_ml_attendance_rule" id="ws_ml_rule_full" value="full" class="w-3.5 h-3.5 text-teal-600">
+                      <span class="text-xs text-gray-700"><strong>완전 개근</strong> — 결근 0일 (법정 기준, 기본)</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="ws_ml_attendance_rule" id="ws_ml_rule_partial" value="partial" class="w-3.5 h-3.5 text-teal-600">
+                      <span class="text-xs text-gray-700"><strong>부분 개근</strong> — 결근 1일 이하 허용</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer" onclick="document.getElementById('ws_ml_ratio_row').classList.remove('hidden')">
+                      <input type="radio" name="ws_ml_attendance_rule" id="ws_ml_rule_ratio" value="ratio" class="w-3.5 h-3.5 text-teal-600">
+                      <span class="text-xs text-gray-700"><strong>출근율 기준</strong> — 출근율 N% 이상</span>
+                    </label>
+                  </div>
+                  <div id="ws_ml_ratio_row" class="hidden mt-2 flex items-center gap-2 ml-5">
+                    <label class="text-xs text-gray-600">출근율</label>
+                    <input type="number" id="ws_ml_attendance_ratio" class="form-input w-20" min="50" max="100" placeholder="80">
+                    <span class="text-xs text-gray-500">% 이상</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-3">
+                  <label class="text-xs font-medium text-gray-700">최대 월차 발생</label>
+                  <input type="number" id="ws_ml_max_days" class="form-input w-20" min="1" max="11" placeholder="11">
+                  <span class="text-xs text-gray-500">일 (법정 최대 11일)</span>
+                </div>
+
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-xs font-medium text-gray-700">1년 도달 시 연차 자동 전환</div>
+                    <div class="text-xs text-gray-400 mt-0.5">1년 만료 직원에게 법정 연차(15일~)를 자동 생성합니다</div>
+                  </div>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="ws_ml_auto_transition" class="sr-only peer">
+                    <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-teal-600"></div>
+                  </label>
+                </div>
+
+                <div class="p-2 bg-teal-100/60 rounded-lg text-xs text-teal-800">
+                  <i class="fas fa-robot mr-1"></i>
+                  <strong>자동 생성 시점:</strong> 매월 스케줄 저장 시 또는 관리자가 수동으로 "월차 발생 처리" 버튼을 누를 때 실행됩니다.
+                  월차 발생·사용 이력은 연차관리 탭에서 확인할 수 있습니다.
+                </div>
               </div>
             </div>
           </div>
@@ -20267,6 +20700,16 @@ window.openWorkSettingsModal = async () => {
   // ③ 월 최소 휴무 보장
   setVal('ws_monthly_min_off_days', ws.monthly_min_off_days ?? '0')
   wsToggleOffGrantType(ogt)
+  // ⑤ 월차 자동 생성 정책
+  setChk('ws_monthly_leave_enabled',   ws.monthly_leave_enabled   ?? '1')
+  setVal('ws_ml_max_days',             ws.monthly_leave_max_days  ?? '11')
+  setChk('ws_ml_auto_transition',      ws.monthly_leave_auto_transition ?? '1')
+  setVal('ws_ml_attendance_ratio',     ws.monthly_leave_attendance_ratio ?? '80')
+  const mlRule = ws.monthly_leave_attendance_rule || 'full'
+  const mlRuleEl = document.getElementById(`ws_ml_rule_${mlRule}`)
+  if (mlRuleEl) mlRuleEl.checked = true
+  const ratioRow = document.getElementById('ws_ml_ratio_row')
+  if (ratioRow) ratioRow.classList.toggle('hidden', mlRule !== 'ratio')
   scheduleWorkSettings = ws
 }
 
@@ -20294,6 +20737,12 @@ window.saveWorkSettings = async () => {
     cycle_holiday_policy:      getRadio('ws_cycle_holiday_policy')  || 'add',
     // ③ 월 최소 휴무 보장
     monthly_min_off_days:      getVal('ws_monthly_min_off_days')   || '0',
+    // ⑤ 월차 자동 생성 정책
+    monthly_leave_enabled:           getChk('ws_monthly_leave_enabled'),
+    monthly_leave_attendance_rule:   getRadio('ws_ml_attendance_rule') || 'full',
+    monthly_leave_attendance_ratio:  getVal('ws_ml_attendance_ratio') || '80',
+    monthly_leave_max_days:          getVal('ws_ml_max_days') || '11',
+    monthly_leave_auto_transition:   getChk('ws_ml_auto_transition'),
     // admin이면 현재 병원 ID 포함
     ...(App.role === 'admin' && App.currentHospitalId ? { hospitalId: App.currentHospitalId } : {})
   }
@@ -22189,8 +22638,9 @@ function renderAdminStaffContent(content) {
     </div>
   </div>
 
-  <!-- 연차 수정 모달 (관리자 직원관리에서 재사용) -->
+  <!-- 연차/월차 수정 모달 (관리자 직원관리에서 재사용) -->
   ${renderLeaveEditModal()}
+  ${renderMonthlyLeaveEditModal()}
 
   <!-- 관리자 직원 추가/수정 모달 -->
   <div id="adminEmpModal" class="hidden modal-overlay" style="z-index:1000">

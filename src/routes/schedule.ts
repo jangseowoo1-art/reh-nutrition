@@ -707,6 +707,456 @@ schedule.get('/leaves/all', async (c) => {
   return c.json(rows.results || [])
 })
 
+// ════════════════════════════════════════════════════════════════
+// 월차(月次) 관리 — 1년 미만 근무자 자동 월별 유급휴가
+// ════════════════════════════════════════════════════════════════
+
+// ── 헬퍼: 병원 월차 정책 읽기 ──────────────────────────────────
+async function getMonthlyLeavePolicy(db: any, hospitalId: number) {
+  const rows = await db.prepare(
+    `SELECT setting_key, setting_value FROM hospital_work_settings WHERE hospital_id=?`
+  ).bind(hospitalId).all<any>()
+  const map: Record<string, string> = {}
+  for (const r of (rows.results || [])) map[r.setting_key] = r.setting_value
+  return {
+    enabled:           map['monthly_leave_enabled']           !== '0',  // 기본 ON
+    attendanceRule:    map['monthly_leave_attendance_rule']   || 'full', // full|partial|ratio
+    attendanceRatio:   parseFloat(map['monthly_leave_attendance_ratio'] || '80'),
+    maxDays:           parseInt(map['monthly_leave_max_days'] || '11'),
+    autoTransition:    map['monthly_leave_auto_transition']   !== '0',  // 기본 ON
+  }
+}
+
+// ── 헬퍼: 직원의 1년 만료 여부 ─────────────────────────────────
+function isUnder1Year(hireDate: string, refDate?: Date): boolean {
+  const hired = new Date(hireDate)
+  const ref   = refDate || new Date()
+  const diffMs = ref.getTime() - hired.getTime()
+  return diffMs < 365.25 * 24 * 3600 * 1000
+}
+
+// ── 헬퍼: 특정 월 소정근로일수 계산 (토/일 제외) ──────────────
+function calcWorkingDays(year: number, month: number): number {
+  const lastDay = new Date(year, month, 0).getDate()
+  let count = 0
+  for (let d = 1; d <= lastDay; d++) {
+    const dow = new Date(year, month - 1, d).getDay()
+    if (dow !== 0 && dow !== 6) count++
+  }
+  return count
+}
+
+// ── 월차 발생 내역 조회 ─────────────────────────────────────────
+schedule.get('/monthly-leave/grants', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year = parseInt(c.req.query('year') || new Date().getFullYear().toString())
+  const empId = c.req.query('employeeId')
+
+  let sql = `SELECT g.*, e.name as emp_name, e.hire_date, e.team
+             FROM monthly_leave_grants g
+             JOIN employees e ON e.id = g.employee_id
+             WHERE g.hospital_id = ? AND g.grant_year = ?`
+  const params: any[] = [hospitalId, year]
+  if (empId) { sql += ` AND g.employee_id = ?`; params.push(parseInt(empId)) }
+  sql += ` ORDER BY e.name, g.target_year, g.target_month`
+
+  const rows = await c.env.DB.prepare(sql).bind(...params).all<any>()
+  return c.json(rows.results || [])
+})
+
+// ── 월차 감사 로그 조회 ─────────────────────────────────────────
+schedule.get('/monthly-leave/audit', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const empId = c.req.query('employeeId')
+  const limit = parseInt(c.req.query('limit') || '50')
+
+  let sql = `SELECT a.*, e.name as emp_name
+             FROM monthly_leave_audit a
+             JOIN employees e ON e.id = a.employee_id
+             WHERE a.hospital_id = ?`
+  const params: any[] = [hospitalId]
+  if (empId) { sql += ` AND a.employee_id = ?`; params.push(parseInt(empId)) }
+  sql += ` ORDER BY a.created_at DESC LIMIT ?`
+  params.push(limit)
+
+  const rows = await c.env.DB.prepare(sql).bind(...params).all<any>()
+  return c.json(rows.results || [])
+})
+
+// ── 월차 요약 (직원별) ──────────────────────────────────────────
+schedule.get('/monthly-leave/summary', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const year = parseInt(c.req.query('year') || new Date().getFullYear().toString())
+
+  // 월차 발생 집계
+  const grants = await c.env.DB.prepare(`
+    SELECT employee_id,
+           SUM(days_granted) as total_granted,
+           COUNT(*) as grant_count
+    FROM monthly_leave_grants
+    WHERE hospital_id=? AND grant_year=? AND status='active'
+    GROUP BY employee_id
+  `).bind(hospitalId, year).all<any>()
+
+  // employee_leaves 에서 monthly 타입 조회
+  const leaves = await c.env.DB.prepare(`
+    SELECT el.*, e.name as emp_name, e.hire_date, e.team
+    FROM employee_leaves el
+    JOIN employees e ON e.id = el.employee_id
+    WHERE el.hospital_id=? AND el.year=? AND el.leave_type='monthly'
+  `).bind(hospitalId, year).all<any>()
+
+  const grantMap: Record<number, any> = {}
+  for (const g of (grants.results || [])) grantMap[g.employee_id] = g
+
+  const result = (leaves.results || []).map((l: any) => ({
+    ...l,
+    grant_count:   grantMap[l.employee_id]?.grant_count   || 0,
+    total_granted: grantMap[l.employee_id]?.total_granted || 0,
+    remain:        (l.total_days || 0) - (l.used_days || 0),
+  }))
+
+  return c.json(result)
+})
+
+// ── 월차 자동 생성 (트리거: 매월 또는 수동 실행) ─────────────────
+// POST /api/schedule/monthly-leave/generate
+// body: { year, month, employeeId? }  — 특정 월의 월차 발생 처리
+schedule.post('/monthly-leave/generate', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const body = await c.req.json().catch(() => ({}))
+  const now  = new Date()
+  // 기본: 이전 달(개근 확인 대상)
+  const targetYear  = body.year  || (now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear())
+  const targetMonth = body.month || (now.getMonth() === 0 ? 12 : now.getMonth())
+  const specificEmpId = body.employeeId ? parseInt(body.employeeId) : null
+
+  const policy = await getMonthlyLeavePolicy(c.env.DB, hospitalId)
+  if (!policy.enabled) return c.json({ ok: true, skipped: true, reason: '월차 기능이 비활성화되어 있습니다' })
+
+  // 대상 직원 조회 (1년 미만 재직자)
+  const mmStr = `${targetYear}-${String(targetMonth).padStart(2,'0')}`
+  const lastDayOfMonth = new Date(targetYear, targetMonth, 0).toISOString().slice(0, 10)
+
+  let empSql = `SELECT * FROM employees WHERE hospital_id=? AND is_active=1 AND hire_date IS NOT NULL AND hire_date != ''`
+  const empParams: any[] = [hospitalId]
+  if (specificEmpId) { empSql += ` AND id=?`; empParams.push(specificEmpId) }
+  const emps = await c.env.DB.prepare(empSql).bind(...empParams).all<any>()
+
+  const results: any[] = []
+  const grantDate = `${targetYear}-${String(targetMonth).padStart(2,'0')}-28` // 말일 기준
+
+  for (const emp of (emps.results || [])) {
+    // 1년 미만 여부 확인 (해당 월 말일 기준)
+    const refDate = new Date(lastDayOfMonth)
+    if (!isUnder1Year(emp.hire_date, refDate)) {
+      // 1년 이상 → 월차 대상 아님, 연차 전환 체크
+      if (policy.autoTransition) {
+        // 연차 전환은 별도 API에서 처리
+      }
+      continue
+    }
+
+    // 입사 후 첫 달인지 확인 (첫 달은 개근 발생 안 함 - 다음 달부터)
+    const hired = new Date(emp.hire_date)
+    const hireYear  = hired.getFullYear()
+    const hireMonth = hired.getMonth() + 1
+    if (hireYear === targetYear && hireMonth >= targetMonth) continue // 입사월 이하
+
+    // 이미 발생된 월차 확인
+    const existing = await c.env.DB.prepare(
+      `SELECT id FROM monthly_leave_grants WHERE hospital_id=? AND employee_id=? AND target_year=? AND target_month=?`
+    ).bind(hospitalId, emp.id, targetYear, targetMonth).first<any>()
+    if (existing) {
+      results.push({ empId: emp.id, name: emp.name, status: 'already_exists' })
+      continue
+    }
+
+    // 최대 11일 초과 여부 확인
+    const prevGrants = await c.env.DB.prepare(
+      `SELECT COALESCE(SUM(days_granted),0) as total FROM monthly_leave_grants
+       WHERE hospital_id=? AND employee_id=? AND status='active'`
+    ).bind(hospitalId, emp.id).first<any>()
+    const alreadyGranted = prevGrants?.total || 0
+    if (alreadyGranted >= policy.maxDays) {
+      results.push({ empId: emp.id, name: emp.name, status: 'max_reached', total: alreadyGranted })
+      continue
+    }
+
+    // 개근 여부 확인
+    const mmPad = String(targetMonth).padStart(2, '0')
+    const fromDate = `${targetYear}-${mmPad}-01`
+    const toDateStr = `${targetYear}-${mmPad}-${String(new Date(targetYear, targetMonth, 0).getDate()).padStart(2,'0')}`
+
+    // 해당 월 스케줄에서 결근/연차 사용 여부 확인
+    const schedRows = await c.env.DB.prepare(`
+      SELECT work_date, shift_code, leave_type
+      FROM daily_schedules
+      WHERE hospital_id=? AND employee_id=? AND work_date BETWEEN ? AND ?
+    `).bind(hospitalId, emp.id, fromDate, toDateStr).all<any>()
+
+    const schedMap: Record<string, any> = {}
+    for (const s of (schedRows.results || [])) schedMap[s.work_date] = s
+
+    const workingDays = calcWorkingDays(targetYear, targetMonth)
+    // 입사일 이후 소정근로일만 계산
+    let attendanceDays = 0
+    let absenceDays = 0
+    const REST_CODES_SET = new Set(['연','반','경조','병','off','OFF','휴','대체'])
+
+    for (let d = 1; d <= new Date(targetYear, targetMonth, 0).getDate(); d++) {
+      const dateStr = `${targetYear}-${mmPad}-${String(d).padStart(2,'0')}`
+      const dow = new Date(dateStr).getDay()
+      if (dow === 0 || dow === 6) continue // 주말 제외
+      if (dateStr < emp.hire_date) continue // 입사 전 제외
+
+      const sc = schedMap[dateStr]
+      if (!sc) { absenceDays++; continue } // 스케줄 미입력 = 결근 처리 (partial 이상은 허용)
+      if (sc.leave_type && sc.leave_type !== 'annual' && sc.leave_type !== 'monthly') {
+        // 병가, 경조 등은 결근 아님
+        attendanceDays++
+      } else if (REST_CODES_SET.has(sc.shift_code || '')) {
+        attendanceDays++ // 연차 사용도 개근 인정 (법적 기준)
+      } else {
+        attendanceDays++
+      }
+    }
+
+    // 개근 기준 평가
+    let qualified = false
+    if (policy.attendanceRule === 'full') {
+      qualified = absenceDays === 0
+    } else if (policy.attendanceRule === 'partial') {
+      qualified = absenceDays <= 1
+    } else if (policy.attendanceRule === 'ratio') {
+      const actualWorking = attendanceDays + absenceDays
+      const ratio = actualWorking > 0 ? (attendanceDays / actualWorking * 100) : 0
+      qualified = ratio >= policy.attendanceRatio
+    } else {
+      qualified = absenceDays === 0
+    }
+
+    if (!qualified) {
+      results.push({ empId: emp.id, name: emp.name, status: 'not_qualified', absenceDays })
+      continue
+    }
+
+    // 월차 발생 처리
+    const daysToGrant = Math.min(1, policy.maxDays - alreadyGranted)
+
+    // monthly_leave_grants 에 삽입
+    const grantResult = await c.env.DB.prepare(`
+      INSERT INTO monthly_leave_grants
+        (hospital_id, employee_id, grant_year, grant_month, target_year, target_month,
+         days_granted, grant_type, status, attendance_days, working_days, absence_days, note)
+      VALUES (?,?,?,?,?,?,?,'auto','active',?,?,?,?)
+    `).bind(
+      hospitalId, emp.id,
+      targetYear, targetMonth,  // 발생 연월 (= 개근 확인 대상 다음 달이 원칙이나 여기선 동일 처리)
+      targetYear, targetMonth,  // 개근 대상 연월
+      daysToGrant,
+      attendanceDays, workingDays, absenceDays,
+      `${targetYear}년 ${targetMonth}월 개근 월차 자동 발생`
+    ).run()
+
+    // employee_leaves (monthly 타입) upsert
+    // year = 발생 연도 기준
+    const leaveYear = targetYear
+    await c.env.DB.prepare(`
+      INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+      VALUES (?,?,?,'monthly',?,0,?)
+      ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+        total_days = total_days + excluded.total_days,
+        note = excluded.note,
+        updated_at = datetime('now')
+    `).bind(hospitalId, emp.id, leaveYear, daysToGrant, `${targetYear}년 월차`).run()
+
+    // 감사 로그
+    await c.env.DB.prepare(`
+      INSERT INTO monthly_leave_audit
+        (hospital_id, employee_id, grant_id, action, after_value, actor_id, actor_role, reason)
+      VALUES (?,?,?,?,?,?,?,?)
+    `).bind(
+      hospitalId, emp.id, grantResult.meta.last_row_id,
+      'auto_grant',
+      JSON.stringify({ year: leaveYear, month: targetMonth, days: daysToGrant, attendance: attendanceDays, absence: absenceDays }),
+      user.userId || null, 'system',
+      `${targetYear}년 ${targetMonth}월 개근 확인 후 자동 발생`
+    ).run()
+
+    results.push({ empId: emp.id, name: emp.name, status: 'granted', days: daysToGrant })
+  }
+
+  return c.json({ ok: true, results, targetYear, targetMonth })
+})
+
+// ── 월차 수동 조정 ──────────────────────────────────────────────
+schedule.post('/monthly-leave/adjust', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 수동 조정 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const { employeeId, year, totalDays, usedDays, reason } = await c.req.json()
+  if (!employeeId || year == null) return c.json({ error: '필수 파라미터 누락' }, 400)
+
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(employeeId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+
+  // 현재 값 조회
+  const prev = await c.env.DB.prepare(
+    `SELECT total_days, used_days FROM employee_leaves WHERE hospital_id=? AND employee_id=? AND year=? AND leave_type='monthly'`
+  ).bind(hospitalId, employeeId, year).first<any>()
+
+  await c.env.DB.prepare(`
+    INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+    VALUES (?,?,?,'monthly',?,?,?)
+    ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+      total_days = excluded.total_days,
+      used_days  = excluded.used_days,
+      note       = excluded.note,
+      updated_at = datetime('now')
+  `).bind(hospitalId, employeeId, year, totalDays || 0, usedDays || 0, reason || '').run()
+
+  // 감사 로그
+  await c.env.DB.prepare(`
+    INSERT INTO monthly_leave_audit
+      (hospital_id, employee_id, action, before_value, after_value, actor_id, actor_role, reason)
+    VALUES (?,?,?,?,?,?,?,?)
+  `).bind(
+    hospitalId, employeeId,
+    'manual_adjust',
+    JSON.stringify(prev || {}),
+    JSON.stringify({ total_days: totalDays, used_days: usedDays }),
+    user.userId || null, user.role || 'hospital',
+    reason || '수동 조정'
+  ).run()
+
+  return c.json({ ok: true })
+})
+
+// ── 직원별 월차 상세 조회 (인사카드용) ─────────────────────────
+schedule.get('/employees/:id/monthly-leave', async (c) => {
+  const user = c.get('user')
+  const empId = parseInt(c.req.param('id'))
+  const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=?`).bind(empId).first<any>()
+  if (!emp) return c.json({ error: '직원 없음' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const year = parseInt(c.req.query('year') || new Date().getFullYear().toString())
+
+  // 월차 발생 이력
+  const grants = await c.env.DB.prepare(`
+    SELECT * FROM monthly_leave_grants WHERE employee_id=? ORDER BY target_year, target_month
+  `).bind(empId).all<any>()
+
+  // 월차 집계
+  const leaveRow = await c.env.DB.prepare(
+    `SELECT * FROM employee_leaves WHERE employee_id=? AND year=? AND leave_type='monthly'`
+  ).bind(empId, year).first<any>()
+
+  // 연차 집계
+  const annualRow = await c.env.DB.prepare(
+    `SELECT * FROM employee_leaves WHERE employee_id=? AND year=? AND leave_type='annual'`
+  ).bind(empId, year).first<any>()
+
+  // 감사 로그 (최근 20건)
+  const audit = await c.env.DB.prepare(`
+    SELECT * FROM monthly_leave_audit WHERE employee_id=? ORDER BY created_at DESC LIMIT 20
+  `).bind(empId).all<any>()
+
+  // 정책
+  const policy = await getMonthlyLeavePolicy(c.env.DB, emp.hospital_id)
+
+  // 1년 도달 여부
+  const under1Year = isUnder1Year(emp.hire_date || '')
+
+  return c.json({
+    emp: { id: emp.id, name: emp.name, hire_date: emp.hire_date },
+    policy,
+    under1Year,
+    grants:     grants.results || [],
+    monthlyLeave: leaveRow || null,
+    annualLeave:  annualRow || null,
+    audit:      audit.results || [],
+  })
+})
+
+// ── 1년 도달 직원 연차 전환 처리 ────────────────────────────────
+schedule.post('/monthly-leave/transition', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const body = await c.req.json().catch(() => ({}))
+  const specificEmpId = body.employeeId ? parseInt(body.employeeId) : null
+
+  const policy = await getMonthlyLeavePolicy(c.env.DB, hospitalId)
+  if (!policy.autoTransition) return c.json({ ok: true, skipped: true, reason: '자동 전환 비활성화' })
+
+  const today = new Date()
+  const todayStr = today.toISOString().slice(0, 10)
+  const year = today.getFullYear()
+
+  let empSql = `SELECT * FROM employees WHERE hospital_id=? AND is_active=1 AND hire_date IS NOT NULL AND hire_date != ''`
+  const empParams: any[] = [hospitalId]
+  if (specificEmpId) { empSql += ` AND id=?`; empParams.push(specificEmpId) }
+  const emps = await c.env.DB.prepare(empSql).bind(...empParams).all<any>()
+
+  const transitioned: any[] = []
+  for (const emp of (emps.results || [])) {
+    if (isUnder1Year(emp.hire_date, today)) continue // 아직 1년 미만
+
+    // 이미 연차 레코드 있는지 확인
+    const annualRow = await c.env.DB.prepare(
+      `SELECT id FROM employee_leaves WHERE hospital_id=? AND employee_id=? AND year=? AND leave_type='annual'`
+    ).bind(hospitalId, emp.id, year).first<any>()
+    if (annualRow) continue // 이미 연차 있음
+
+    // 법정 연차 계산
+    const hired = new Date(emp.hire_date)
+    const diffMs = today.getTime() - hired.getTime()
+    const yearsWorked = diffMs / (365.25 * 24 * 3600 * 1000)
+    let legalDays = 15
+    if (yearsWorked >= 3) {
+      const extra = Math.floor((yearsWorked - 1) / 2)
+      legalDays = Math.min(15 + extra, 25)
+    }
+
+    // 연차 레코드 생성
+    await c.env.DB.prepare(`
+      INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+      VALUES (?,?,?,'annual',?,0,?)
+      ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+        total_days = excluded.total_days,
+        note = excluded.note,
+        updated_at = datetime('now')
+    `).bind(hospitalId, emp.id, year, legalDays, `1년 만료 자동 연차 전환 (${todayStr})`).run()
+
+    // 감사 로그
+    await c.env.DB.prepare(`
+      INSERT INTO monthly_leave_audit
+        (hospital_id, employee_id, action, after_value, actor_id, actor_role, reason)
+      VALUES (?,?,?,?,?,?,?)
+    `).bind(
+      hospitalId, emp.id,
+      'policy_change',
+      JSON.stringify({ transition: 'monthly_to_annual', annual_days: legalDays, years_worked: yearsWorked }),
+      user.userId || null, 'system',
+      `1년 만료 연차 전환 (${Math.floor(yearsWorked * 10) / 10}년 근무)`
+    ).run()
+
+    transitioned.push({ empId: emp.id, name: emp.name, legalDays, yearsWorked })
+  }
+
+  return c.json({ ok: true, transitioned })
+})
+
 // 공개 API: 토큰으로 직원 스케줄 조회 (인증 불필요) ── /:year/:month 보다 먼저 등록
 schedule.get('/public/:token', async (c) => {
   const token = c.req.param('token')
@@ -3199,6 +3649,20 @@ const DEFAULT_WORK_SETTINGS: Record<string, string> = {
   cycle_holiday_policy:     'add',
   // ── 이력 관리 설정 ───────────────────────────────────────────────
   off_grant_log_enabled:    '1',   // 휴무 수정 이력 저장 여부 (1=사용)
+  // ── 월차 자동 생성 정책 (1년 미만 근무자) ───────────────────────
+  // monthly_leave_enabled       : '1' = 활성화(기본), '0' = 비활성화
+  // monthly_leave_attendance_rule: 개근 판단 기준
+  //   'full'    = 결근 0일 (완전 개근, 기본)
+  //   'partial' = 결근 1일 이하
+  //   'ratio'   = 출근율 N% 이상 (monthly_leave_attendance_ratio 참조)
+  // monthly_leave_attendance_ratio: 출근율 기준 (%) - ratio 방식일 때
+  // monthly_leave_max_days      : 최대 발생 월차 일수 (법정 11일)
+  // monthly_leave_auto_transition: 1년 도달 시 연차로 자동 전환 여부
+  monthly_leave_enabled:           '1',
+  monthly_leave_attendance_rule:   'full',
+  monthly_leave_attendance_ratio:  '80',
+  monthly_leave_max_days:          '11',
+  monthly_leave_auto_transition:   '1',
 }
 
 schedule.get('/work-settings', async (c) => {
