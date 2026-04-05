@@ -12444,9 +12444,6 @@ function renderScheduleTab(content) {
           <i class="fas fa-copy mr-1"></i>주 복사
         </button>
         <span class="w-px h-4 bg-gray-300"></span>
-        <button onclick="printSchedule()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-600 text-white hover:bg-gray-700">
-          <i class="fas fa-print mr-1"></i>인쇄/PDF
-        </button>
         <button onclick="exportScheduleExcel()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-700 text-white hover:bg-green-800">
           <i class="fas fa-file-excel mr-1"></i>엑셀
         </button>
@@ -12967,6 +12964,46 @@ function renderShiftsTab() {
       </div>
     </div>
   </div>`
+}
+
+// ─── 근무조 시간대 범례 HTML 생성 (공용) ─────────────────────
+// opts: { compact: bool, forPrint: bool }
+function buildShiftLegendHtml(shifts, opts) {
+  opts = opts || {}
+  const compact = !!opts.compact
+  const forPrint = !!opts.forPrint
+  if (!shifts || !shifts.length) return ''
+
+  const items = shifts.map(s => {
+    const code = s.shift_code || ''
+    const name = s.shift_name || code
+    const st   = s.start_time  || ''
+    const et   = s.end_time    || ''
+    const col  = s.color || '#374151'
+    const timeStr = (st && et) ? `${st}~${et}` : (st ? `${st}~` : '')
+    if (forPrint) {
+      return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;color:#374151;background:${col}15;border:1px solid ${col}44;border-radius:4px;padding:2px 5px">` +
+        `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:3px;background:${col}33;color:${col};font-weight:800;font-size:9px">${code}</span>` +
+        `<span style="font-weight:600">${name}</span>` +
+        (timeStr ? `<span style="color:#6b7280;font-size:8px">${timeStr}</span>` : '') +
+        `</span>`
+    }
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-size:${compact?'9px':'10px'};color:#374151;background:${col}12;border:1px solid ${col}33;border-radius:5px;padding:${compact?'2px 5px':'3px 7px'}">` +
+      `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:${compact?'20px':'22px'};height:${compact?'18px':'20px'};border-radius:4px;background:${col}33;color:${col};font-weight:800;font-size:${compact?'9px':'10px'};border:1px solid ${col}55">${code}</span>` +
+      `<span style="font-weight:600">${name}</span>` +
+      (timeStr ? `<span style="color:#6b7280;font-size:${compact?'8px':'9px'}">${timeStr}</span>` : '') +
+      `</span>`
+  }).join('')
+
+  if (forPrint) {
+    return `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:6px">` +
+      `<span style="font-size:9px;font-weight:700;color:#374151;margin-right:2px">근무조:</span>` +
+      items + `</div>`
+  }
+  return `<div style="padding:6px 14px;background:#f0fdf4;border-bottom:1px solid #d1fae5;display:flex;flex-wrap:wrap;gap:6px;align-items:center">` +
+    `<span style="font-size:10px;font-weight:700;color:#166534;white-space:nowrap"><i class="fas fa-clock" style="margin-right:4px;color:#16a34a"></i>근무조 안내</span>` +
+    items +
+    `</div>`
 }
 
 // ─── 월별 부여휴무 패널 렌더 ─────────────────────────────────
@@ -14132,7 +14169,11 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
     <div style="padding:8px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start">
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
         <span style="font-size:10px;font-weight:700;color:#374151;margin-right:2px"><i class="fas fa-tag" style="margin-right:3px;color:#2563eb"></i>근무조</span>
-        ${legend || '<span style="font-size:10px;color:#9ca3af">미설정</span>'}
+        ${shifts.filter(s=>s.shift_code).map(s=>{
+          const col=s.color||'#374151'
+          const timeStr=(s.start_time&&s.end_time)?` <span style="color:#6b7280;font-size:8px">${s.start_time}~${s.end_time}</span>`:''
+          return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#374151;background:${col}12;border:1px solid ${col}33;border-radius:5px;padding:2px 6px"><span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:3px;background:${col}33;color:${col};font-weight:800;font-size:9px;border:1px solid ${col}55">${s.shift_code}</span><span style="font-weight:600">${s.shift_name||s.shift_code}</span>${timeStr}</span>`
+        }).join('') || '<span style="font-size:10px;color:#9ca3af">미설정</span>'}
         ${fixedLegend}
       </div>
       ${holidays.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
@@ -14147,6 +14188,52 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
         <tbody>${allGroupRows}</tbody>
       </table>
     </div>
+
+    <!-- 외부인력(파출/알바) 섹션 -->
+    ${(()=>{
+      const extW = scheduleExternalWorkers || []
+      const extMap2 = scheduleExtSchedMap || {}
+      if (extW.length === 0) return ''
+      const EXT_LABELS = (()=>{ const d={morning:'오전',afternoon:'오후',full_9h:'9H',full_12h:'12H'}; try{const c=JSON.parse(localStorage.getItem('extShiftConfig')||'[]');c.forEach(x=>{if(x.key&&x.label)d[x.key]=x.label})}catch(e){}; return d })()
+      const EXT_COLORS = { morning:'background:#fff7ed;color:#c2410c', afternoon:'background:#fef3c7;color:#b45309', full_9h:'background:#ffedd5;color:#ea580c', full_12h:'background:#fee2e2;color:#dc2626' }
+      function buildExtRows(workers, wType) {
+        if (!workers.length) return ''
+        const lbl = wType==='dispatch'?'파출':'알바'
+        const col = wType==='dispatch'?'#ea580c':'#db2777'
+        const bg  = wType==='dispatch'?'#fff7ed':'#fdf2f8'
+        let out = `<tr><td colspan="${days+3}" style="background:${bg};padding:4px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid ${col}33">` +
+          `<span style="font-size:11px;font-weight:700;color:${col}"><i class="fas fa-${wType==='dispatch'?'people-carry':'user-clock'}" style="margin-right:5px"></i>${lbl} 외부인력 (${workers.length}명)</span></td></tr>`
+        workers.forEach((w,wi)=>{
+          const rowBg = wi%2===0?'#fffaf5':'#fff5ee'
+          let cells2 = ''
+          for(let i=0;i<days;i++){
+            const day=i+1
+            const ds=`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+            const dow2=new Date(year,month-1,day).getDay()
+            const isSun=dow2===0,isSat=dow2===6
+            const sc = extMap2[`${w.id}_${ds}`]
+            const sType = sc?.shift_type||''
+            const cellBg2=isSun?'#fff1f2':isSat?'#fffbeb':rowBg
+            const borderCol2=isSun?'#fecaca':isSat?'#fde68a':'#e5e7eb'
+            const spanSt = EXT_COLORS[sType]||'background:#f9fafb;color:#d1d5db'
+            const spanTx = EXT_LABELS[sType]||'·'
+            cells2+=`<td style="padding:2px;text-align:center;background:${cellBg2};border-left:1px solid ${borderCol2}"><span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:4px;font-size:10px;font-weight:700;${spanSt}">${spanTx}</span></td>`
+          }
+          let wdCnt=0; for(let d=1;d<=days;d++){const ds=`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;if(extMap2[`${w.id}_${ds}`]?.shift_type)wdCnt++}
+          out+=`<tr style="border-bottom:1px solid #e2e8f0">` +
+            `<td style="padding:5px 10px;position:sticky;left:0;background:${rowBg};z-index:2;min-width:90px;border-right:1px solid #e2e8f0">` +
+            `<div style="display:flex;align-items:center;gap:4px"><span style="font-size:9px;padding:1px 4px;border-radius:3px;background:${col}22;color:${col};font-weight:700">${lbl}</span><span style="font-size:11px;font-weight:600;color:#374151">${w.name}</span></div></td>` +
+            `<td style="text-align:center;font-size:10px;color:#6b7280;padding:2px">${wdCnt}일</td><td style="padding:2px"></td>` +
+            cells2 + `</tr>`
+        })
+        return out
+      }
+      const dWorkers = extW.filter(w=>w.worker_type==='dispatch')
+      const pWorkers = extW.filter(w=>w.worker_type==='parttime')
+      const extRows = buildExtRows(dWorkers,'dispatch') + buildExtRows(pWorkers,'parttime')
+      if (!extRows) return ''
+      return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${extRows}</tbody></table></div>`
+    })()}
 
     <!-- 하단 안내 -->
     <div style="padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:10px;color:#64748b;display:flex;align-items:center;gap:6px">
@@ -14453,6 +14540,8 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
       </div>
     </div>
 
+    ${buildShiftLegendHtml(shifts)}
+
     <div style="padding:14px;overflow-y:auto;max-height:72vh;display:flex;flex-direction:column;gap:12px">
 
       <!-- ① KPI 카드 행 -->
@@ -14748,6 +14837,8 @@ function renderMonthlyScheduleTab() {
         </div>
       </div>
     </div>
+
+    ${buildShiftLegendHtml(shifts)}
 
     <div class="overflow-x-auto overflow-y-auto" style="-webkit-overflow-scrolling:touch;max-height:65vh;">
       <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
@@ -16282,6 +16373,7 @@ window.executePrintStaffView = function() {
 
   const year = App.currentYear, month = App.currentMonth
   const printWindow = window.open('', '_blank', 'width=1400,height=900')
+  const shiftLegendPrint = buildShiftLegendHtml(scheduleShifts, {forPrint:true})
   printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
@@ -16302,6 +16394,7 @@ window.executePrintStaffView = function() {
 </style>
 </head>
 <body>
+${shiftLegendPrint}
 ${clone.outerHTML}
 <script>
   document.querySelectorAll('button').forEach(b => b.style.display='none');
@@ -16401,8 +16494,9 @@ window.printSchedule = () => {
     <span class="legend-item" style="background:#dbeafe;color:#1d4ed8">오후 = 오후반차</span>
     <span class="legend-item" style="background:#fce7f3;color:#9d174d">경조 = 경조사</span>
     <span class="legend-item" style="background:#ecfdf5;color:#065f46">OT = 오버타임</span>
-    ${scheduleShifts.map(s=>`<span class="legend-item" style="background:${s.color}33;color:${s.color}">${s.shift_code} = ${s.shift_name}</span>`).join('')}
+    ${scheduleShifts.map(s=>`<span class="legend-item" style="background:${s.color}33;color:${s.color}">${s.shift_code} = ${s.shift_name}${s.start_time&&s.end_time?` (${s.start_time}~${s.end_time})`:''}</span>`).join('')}
   </div>
+  ${buildShiftLegendHtml(scheduleShifts, {forPrint:true})}
   <table>
     <thead>
       <tr>
