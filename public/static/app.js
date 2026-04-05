@@ -12809,6 +12809,52 @@ function renderLeaveAlertBanner() {
   </div>`
 }
 
+// ─── 외부인력(파출/알바) 근무조 시간대 범례 HTML 생성 (공용) ─
+function buildExtShiftLegendHtml(opts) {
+  opts = opts || {}
+  const forPrint = !!opts.forPrint
+  const EXT_DEFAULTS = [
+    { key:'morning',   label:'오전', color:'#c2410c', bg:'#fff7ed', hours:'4',  startTime:'07:00', endTime:'13:00' },
+    { key:'afternoon', label:'오후', color:'#b45309', bg:'#fef3c7', hours:'4',  startTime:'13:00', endTime:'19:00' },
+    { key:'full_9h',   label:'9H',   color:'#ea580c', bg:'#ffedd5', hours:'9',  startTime:'07:00', endTime:'16:00' },
+    { key:'full_12h',  label:'12H',  color:'#dc2626', bg:'#fee2e2', hours:'12', startTime:'07:00', endTime:'19:00' },
+  ]
+  let extItems = EXT_DEFAULTS
+  try {
+    const stored = localStorage.getItem('extShiftConfig')
+    if (stored) extItems = JSON.parse(stored)
+  } catch(e) {}
+  const activeItems = extItems.filter(x => x.enabled !== false)
+  if (!activeItems.length) return ''
+
+  const items = activeItems.map(s => {
+    const col  = s.color || '#ea580c'
+    const bg   = s.bg    || '#fff7ed'
+    const timeStr = (s.startTime && s.endTime) ? `${s.startTime}~${s.endTime}` : (s.hours ? `${s.hours}h` : '')
+    if (forPrint) {
+      return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;color:#374151;background:${bg};border:1px solid ${col}44;border-radius:4px;padding:2px 5px">` +
+        `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:3px;background:${col}33;color:${col};font-weight:800;font-size:9px">${s.label}</span>` +
+        (timeStr ? `<span style="color:#6b7280;font-size:8px">${timeStr}</span>` : '') +
+        `</span>`
+    }
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;background:${bg};border:1px solid ${col}44;border-radius:5px;padding:3px 7px">` +
+      `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:3px;background:${col}33;color:${col};font-weight:800;font-size:10px;border:1px solid ${col}55">${s.label}</span>` +
+      `<span style="font-weight:600;color:#374151">${s.label}</span>` +
+      (timeStr ? `<span style="color:#6b7280;font-size:9px">${timeStr}</span>` : '') +
+      `</span>`
+  }).join('')
+
+  if (forPrint) {
+    return `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:4px">` +
+      `<span style="font-size:9px;font-weight:700;color:#9a3412;margin-right:2px">파출/알바 근무조:</span>` +
+      items + `</div>`
+  }
+  return `<div style="padding:6px 14px;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;flex-wrap:wrap;gap:6px;align-items:center">` +
+    `<span style="font-size:10px;font-weight:700;color:#9a3412;white-space:nowrap"><i class="fas fa-people-carry" style="margin-right:4px;color:#ea580c"></i>파출/알바 근무조</span>` +
+    items +
+    `</div>`
+}
+
 // ─── 근무조 설정 탭 ──────────────────────────────────────────
 function renderShiftsTab() {
   const shifts = scheduleShifts
@@ -14181,6 +14227,7 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
         ${holidayListHtml}
       </div>` : ''}
     </div>
+    ${buildExtShiftLegendHtml()}
 
     <!-- 테이블 -->
     <div style="overflow-x:auto;max-height:68vh">
@@ -14541,6 +14588,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
     </div>
 
     ${buildShiftLegendHtml(shifts)}
+    ${buildExtShiftLegendHtml()}
 
     <div style="padding:14px;overflow-y:auto;max-height:72vh;display:flex;flex-direction:column;gap:12px">
 
@@ -14839,6 +14887,7 @@ function renderMonthlyScheduleTab() {
     </div>
 
     ${buildShiftLegendHtml(shifts)}
+    ${buildExtShiftLegendHtml()}
 
     <div class="overflow-x-auto overflow-y-auto" style="-webkit-overflow-scrolling:touch;max-height:65vh;">
       <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
@@ -16374,6 +16423,7 @@ window.executePrintStaffView = function() {
   const year = App.currentYear, month = App.currentMonth
   const printWindow = window.open('', '_blank', 'width=1400,height=900')
   const shiftLegendPrint = buildShiftLegendHtml(scheduleShifts, {forPrint:true})
+  const extShiftLegendPrint = buildExtShiftLegendHtml({forPrint:true})
   printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
@@ -16395,6 +16445,7 @@ window.executePrintStaffView = function() {
 </head>
 <body>
 ${shiftLegendPrint}
+${extShiftLegendPrint}
 ${clone.outerHTML}
 <script>
   document.querySelectorAll('button').forEach(b => b.style.display='none');
@@ -16497,6 +16548,7 @@ window.printSchedule = () => {
     ${scheduleShifts.map(s=>`<span class="legend-item" style="background:${s.color}33;color:${s.color}">${s.shift_code} = ${s.shift_name}${s.start_time&&s.end_time?` (${s.start_time}~${s.end_time})`:''}</span>`).join('')}
   </div>
   ${buildShiftLegendHtml(scheduleShifts, {forPrint:true})}
+  ${buildExtShiftLegendHtml({forPrint:true})}
   <table>
     <thead>
       <tr>
