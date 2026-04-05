@@ -16061,15 +16061,15 @@ function renderLeavesTab() {
   // ── 월차 데이터 로드 (글로벌 캐시 또는 별도 로드) ─────────────
   const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
   const monthlyLeavesData = Array.isArray(window._monthlyLeavesData) ? window._monthlyLeavesData : []
-  const mlByEmp: Record<number, any> = {}
+  const mlByEmp = {}
   for (const ml of monthlyLeavesData) mlByEmp[ml.employee_id] = ml
 
   // 월차 통계
   const mlEmps      = emps.filter(e => mlByEmp[e.id])
-  const mlTotalDays = monthlyLeavesData.reduce((a: number, l: any) => a + (l.monthly_total||0), 0)
-  const mlUsedDays  = monthlyLeavesData.reduce((a: number, l: any) => a + (l.monthly_used||0), 0)
+  const mlTotalDays = monthlyLeavesData.reduce((a, l) => a + (l.monthly_total||0), 0)
+  const mlUsedDays  = monthlyLeavesData.reduce((a, l) => a + (l.monthly_used||0), 0)
 
-  function renderMonthlyLeaveRows(teamEmps: any[], teamKey: string) {
+  function renderMonthlyLeaveRows(teamEmps, teamKey) {
     if (!teamEmps.length) return ''
     const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
     let html = `<tr class="bg-gray-50">
@@ -17199,10 +17199,10 @@ window.runMonthlyLeaveGenerate = async () => {
   if (!res) { showToast('오류 발생', 'error'); return }
   if (res.skipped) { showToast(res.reason || '월차 기능 비활성화', 'info'); return }
 
-  const granted   = (res.results || []).filter((r: any) => r.status === 'granted').length
-  const qualified = (res.results || []).filter((r: any) => r.status === 'not_qualified').length
-  const existing  = (res.results || []).filter((r: any) => r.status === 'already_exists').length
-  const maxed     = (res.results || []).filter((r: any) => r.status === 'max_reached').length
+  const granted   = (res.results || []).filter((r) => r.status === 'granted').length
+  const qualified = (res.results || []).filter((r) => r.status === 'not_qualified').length
+  const existing  = (res.results || []).filter((r) => r.status === 'already_exists').length
+  const maxed     = (res.results || []).filter((r) => r.status === 'max_reached').length
   showToast(`월차 발생: ${granted}명 발생, ${qualified}명 미개근, ${existing}명 이미처리, ${maxed}명 한도초과`, 'success')
 
   await loadMonthlyLeaveData()
@@ -17236,7 +17236,7 @@ window.generateMonthlyLeaveForEmp = async (empId) => {
   if (!res) { showToast('오류 발생', 'error'); return }
   const r = (res.results || [])[0]
   if (!r) { showToast('처리 결과 없음', 'info'); return }
-  const msgs: Record<string, string> = {
+  const msgs = {
     granted: '월차 1일 발생',
     not_qualified: '개근 미충족',
     already_exists: '이미 처리됨',
