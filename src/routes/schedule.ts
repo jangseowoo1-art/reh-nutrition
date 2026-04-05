@@ -1334,6 +1334,234 @@ schedule.post('/monthly-leave/transition', async (c) => {
   return c.json({ ok: true, transitioned })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 초기 도입 셋업 — 과거 이력 없는 병원을 위한 발생+사용보정 일괄 처리
+// ════════════════════════════════════════════════════════════════
+
+// ── 헬퍼: 입사일 기준 법정 발생 일수 계산 (미리보기용) ──────────
+function calcInitialLeave(hireDate: string, referenceDate: Date) {
+  const hired = new Date(hireDate)
+  if (isNaN(hired.getTime())) return null
+
+  const diffMs = referenceDate.getTime() - hired.getTime()
+  if (diffMs < 0) return null
+
+  const msPerYear = 365.25 * 24 * 3600 * 1000
+  const yearsWorked = diffMs / msPerYear
+
+  if (yearsWorked < 1) {
+    // 월차: 입사 다음 달~기준일 이전 달까지 (최대 maxDays)
+    const hireYear  = hired.getFullYear()
+    const hireMonth = hired.getMonth() + 1
+    const refYear   = referenceDate.getFullYear()
+    const refMonth  = referenceDate.getMonth() + 1
+
+    const breakdown: { year: number; month: number; days: number }[] = []
+    let y = hireYear
+    let m = hireMonth + 1 // 입사 다음 달부터
+    if (m > 12) { m = 1; y++ }
+
+    // 기준일 이전 달까지만
+    const limitYM = refYear * 100 + refMonth
+    while (y * 100 + m < limitYM && breakdown.length < 11) {
+      breakdown.push({ year: y, month: m, days: 1 })
+      m++; if (m > 12) { m = 1; y++ }
+    }
+    return {
+      leaveType: 'monthly' as const,
+      totalDays: breakdown.length,
+      breakdown,
+    }
+  } else {
+    // 연차: 법정 기준
+    let legalDays = 15
+    if (yearsWorked >= 3) {
+      const extra = Math.floor((yearsWorked - 1) / 2)
+      legalDays = Math.min(15 + extra, 25)
+    }
+    return {
+      leaveType: 'annual' as const,
+      totalDays: legalDays,
+      breakdown: [],
+    }
+  }
+}
+
+// ── GET /initial-setup/status ────────────────────────────────────
+// 병원의 초기 셋업 완료 여부 조회
+schedule.get('/initial-setup/status', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+
+  const row = await c.env.DB.prepare(
+    `SELECT setting_value FROM hospital_work_settings WHERE hospital_id=? AND setting_key='initial_setup_done'`
+  ).bind(hospitalId).first<any>()
+
+  const done = row?.setting_value === '1'
+  return c.json({ done })
+})
+
+// ── POST /initial-setup/calculate ───────────────────────────────
+// 입사일 기준 발생 예상치 계산 (미리보기 — DB 저장 없음)
+schedule.post('/initial-setup/calculate', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const body = await c.req.json().catch(() => ({}) as any)
+  const refDate = body.referenceDate ? new Date(body.referenceDate) : new Date()
+  const specificEmpId = body.employeeId ? parseInt(body.employeeId) : null
+
+  let empSql = `SELECT e.*, p.name as position_name FROM employees e
+    LEFT JOIN employee_positions p ON e.position_id = p.id
+    WHERE e.hospital_id=? AND e.is_active=1 AND e.hire_date IS NOT NULL AND e.hire_date != ''`
+  const empParams: any[] = [hospitalId]
+  if (specificEmpId) { empSql += ` AND e.id=?`; empParams.push(specificEmpId) }
+  empSql += ` ORDER BY e.team, e.hire_date`
+  const emps = await c.env.DB.prepare(empSql).bind(...empParams).all<any>()
+
+  const result = []
+  for (const emp of (emps.results || [])) {
+    const calc = calcInitialLeave(emp.hire_date, refDate)
+    if (!calc) continue
+
+    // 이미 설정된 값 확인
+    const existing = await c.env.DB.prepare(
+      `SELECT total_days, used_days, initial_used_days, is_initial_setup FROM employee_leaves
+       WHERE hospital_id=? AND employee_id=? AND leave_type=?`
+    ).bind(hospitalId, emp.id, calc.leaveType).first<any>()
+
+    result.push({
+      employeeId:    emp.id,
+      name:          emp.name,
+      position:      emp.position_name || emp.position || '',
+      team:          emp.team || 'cook',
+      hireDate:      emp.hire_date,
+      leaveType:     calc.leaveType,
+      calculatedDays: calc.totalDays,
+      breakdown:     calc.breakdown,
+      alreadySet:    existing ? {
+        totalDays:       existing.total_days,
+        usedDays:        existing.used_days,
+        initialUsedDays: existing.initial_used_days,
+        isInitialSetup:  !!existing.is_initial_setup,
+      } : null,
+    })
+  }
+
+  return c.json({ ok: true, referenceDate: refDate.toISOString().slice(0, 10), employees: result })
+})
+
+// ── POST /initial-setup/apply ────────────────────────────────────
+// 발생 세팅 + 사용 보정 일괄 적용 (덮어쓰기)
+// body: { employees: [{ employeeId, totalDays, initialUsedDays, leaveType, note }] }
+schedule.post('/initial-setup/apply', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const body = await c.req.json().catch(() => ({}) as any)
+  const employees: any[] = body.employees || []
+
+  if (!employees.length) return c.json({ error: '직원 목록이 없습니다' }, 400)
+
+  const now = new Date()
+  const year = now.getFullYear()
+  const processed: any[] = []
+  const skipped: any[] = []
+
+  for (const item of employees) {
+    const empId        = parseInt(item.employeeId)
+    const totalDays    = parseFloat(item.totalDays)   ?? 0
+    const initUsed     = parseFloat(item.initialUsedDays ?? 0)
+    const leaveType    = item.leaveType || 'annual'
+    const note         = item.note || `초기 도입 셋업 (${now.toISOString().slice(0, 10)})`
+
+    if (isNaN(empId) || isNaN(totalDays)) { skipped.push({ empId, reason: '유효하지 않은 값' }); continue }
+
+    const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id=? AND hospital_id=?`)
+      .bind(empId, hospitalId).first<any>()
+    if (!emp) { skipped.push({ empId, reason: '직원 없음' }); continue }
+
+    // 실제 사용일수 = initialUsedDays (보정값)
+    const usedDays = Math.min(initUsed, totalDays)
+
+    await c.env.DB.prepare(`
+      INSERT INTO employee_leaves
+        (hospital_id, employee_id, year, leave_type, total_days, used_days,
+         initial_used_days, is_initial_setup, note)
+      VALUES (?,?,?,?,?,?,?,1,?)
+      ON CONFLICT(hospital_id, employee_id, year, leave_type) DO UPDATE SET
+        total_days        = excluded.total_days,
+        used_days         = excluded.used_days,
+        initial_used_days = excluded.initial_used_days,
+        is_initial_setup  = 1,
+        note              = excluded.note,
+        updated_at        = datetime('now')
+    `).bind(hospitalId, empId, year, leaveType, totalDays, usedDays, initUsed, note).run()
+
+    // 월차 타입이면 monthly_leave_grants 에도 초기 레코드 생성 (이력용)
+    if (leaveType === 'monthly' && totalDays > 0) {
+      // 이미 grant 이력이 없는 경우에만 bulk insert (단일 row로 요약)
+      const existGrant = await c.env.DB.prepare(
+        `SELECT id FROM monthly_leave_grants WHERE hospital_id=? AND employee_id=? AND grant_type='initial_setup'`
+      ).bind(hospitalId, empId).first<any>()
+      if (!existGrant) {
+        const hireDate = emp.hire_date || ''
+        await c.env.DB.prepare(`
+          INSERT INTO monthly_leave_grants
+            (hospital_id, employee_id, grant_year, grant_month, target_year, target_month,
+             days_granted, grant_type, status, note)
+          VALUES (?,?,?,?,?,?,?,'initial_setup','active',?)
+        `).bind(
+          hospitalId, empId,
+          year, 0,   // grant_month=0 = 초기 셋업 일괄
+          year, 0,
+          totalDays,
+          `초기 도입 셋업: ${totalDays}일 발생 / ${initUsed}일 사용 보정`
+        ).run()
+      }
+    }
+
+    // 감사 로그
+    await c.env.DB.prepare(`
+      INSERT INTO monthly_leave_audit
+        (hospital_id, employee_id, action, after_value, actor_id, actor_role, reason)
+      VALUES (?,?,?,?,?,?,?)
+    `).bind(
+      hospitalId, empId,
+      'initial_setup',
+      JSON.stringify({ leaveType, totalDays, usedDays, initUsed }),
+      user.userId || null, user.role || 'admin',
+      `초기 도입 셋업 적용`
+    ).run()
+
+    processed.push({ empId, name: emp.name, leaveType, totalDays, usedDays })
+  }
+
+  return c.json({ ok: true, processed: processed.length, skipped: skipped.length, details: processed })
+})
+
+// ── POST /initial-setup/finalize ─────────────────────────────────
+// 초기 셋업 완료 확정 (병원 단위 플래그 세팅)
+schedule.post('/initial-setup/finalize', async (c) => {
+  const user = c.get('user')
+  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  const body = await c.req.json().catch(() => ({}) as any)
+  const undo = body.undo === true  // 초기화(취소) 시 undo:true
+
+  const val = undo ? '0' : '1'
+  await c.env.DB.prepare(`
+    INSERT INTO hospital_work_settings (hospital_id, setting_key, setting_value)
+    VALUES (?,?,?)
+    ON CONFLICT(hospital_id, setting_key) DO UPDATE SET setting_value=excluded.setting_value
+  `).bind(hospitalId, 'initial_setup_done', val).run()
+
+  return c.json({ ok: true, done: !undo, finalizedAt: new Date().toISOString() })
+})
+
 // 공개 API: 토큰으로 직원 스케줄 조회 (인증 불필요) ── /:year/:month 보다 먼저 등록
 schedule.get('/public/:token', async (c) => {
   const token = c.req.param('token')

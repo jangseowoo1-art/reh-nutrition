@@ -12201,6 +12201,7 @@ let scheduleLaborCostData = null // 인건비 집계 데이터
 let scheduleLaborCostSettings = null // 인건비 단가 설정
 let scheduleLeaveHistorySummary = null // 연차이력 요약 (반차/경조사 등)
 let scheduleWorkSettings = null // 병원별 법정근무 설정
+let scheduleInitialSetupDone = null // 초기 셋업 완료 여부 (null=미조회, true/false)
 let scheduleExternalWorkers = [] // 외부인력 마스터 목록
 let scheduleExtSchedMap = {}     // 외부인력 스케줄 맵 { "workerId_date": {...} }
 
@@ -15916,6 +15917,23 @@ function renderLeavesTab() {
   const leaves = Array.isArray(scheduleLeavesData) ? scheduleLeavesData : []
   const histSummary = scheduleLeaveHistorySummary || {}
 
+  // ── 초기 셋업 배너 (미완료 시 상단 노출) ──────────────────────
+  const setupBanner = isAdm && scheduleInitialSetupDone === false ? `
+  <div id="initialSetupBanner" class="bg-amber-50 border border-amber-300 rounded-xl p-4 mb-4 flex items-start gap-3">
+    <i class="fas fa-star text-amber-500 mt-0.5 text-lg flex-shrink-0"></i>
+    <div class="flex-1 min-w-0">
+      <div class="font-bold text-amber-800 text-sm">초기 도입 셋업이 필요합니다</div>
+      <div class="text-xs text-amber-700 mt-0.5">과거 스케줄 이력이 없는 경우, 입사일 기준으로 월차·연차를 자동 계산한 뒤 실제 사용분을 보정하여 잔여를 확정하세요.</div>
+    </div>
+    <button onclick="openInitialSetupWizard()" class="flex-shrink-0 px-4 py-2 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600">
+      <i class="fas fa-magic mr-1"></i>초기 셋업 시작
+    </button>
+  </div>` : isAdm && scheduleInitialSetupDone === true ? `
+  <div class="text-xs text-gray-400 flex items-center gap-1.5 mb-3 px-1">
+    <i class="fas fa-check-circle text-green-500"></i>초기 셋업 완료
+    <button onclick="openInitialSetupWizard()" class="ml-2 text-xs text-blue-500 underline">재실행</button>
+  </div>` : ''
+
   // leave map by empId
   const leaveByEmp = {}
   for (const l of leaves) leaveByEmp[l.employee_id] = l
@@ -16132,6 +16150,7 @@ function renderLeavesTab() {
 
   return `
   <div class="space-y-4">
+    ${setupBanner}
     <!-- 통계 카드 -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
@@ -16998,6 +17017,8 @@ window.switchScheduleTab = async (tab) => {
       scheduleLeavesData = Array.isArray(raw) ? raw : (raw?.employees ? raw.employees : [])
       if (Array.isArray(emps)) scheduleEmployees = emps
       scheduleLeaveHistorySummary = histSummary
+      // 월차 + 초기 셋업 상태도 함께 갱신
+      await loadMonthlyLeaveData()
     } else if (tab === 'analysis') {
       scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null)
     } else if (tab === 'laborCost') {
@@ -17307,12 +17328,322 @@ window.generateMonthlyLeaveForEmp = async (empId) => {
 // 월차 데이터 로드 (글로벌 캐시)
 async function loadMonthlyLeaveData() {
   const hospQuery = App.role === 'admin' && App.currentHospitalId ? `&hospitalId=${App.currentHospitalId}` : ''
+  const hospQueryQ = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
   try {
     window._monthlyLeavesData = await api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hospQuery}`)
   } catch (e) {
     window._monthlyLeavesData = []
   }
+  // 초기 셋업 상태도 함께 로드
+  try {
+    const st = await api('GET', `/api/schedule/initial-setup/status${hospQueryQ}`)
+    scheduleInitialSetupDone = st?.done === true
+  } catch (e) {
+    scheduleInitialSetupDone = null
+  }
 }
+
+// ════════════════════════════════════════════════════════════════
+// 초기 셋업 마법사 (3단계)
+// ════════════════════════════════════════════════════════════════
+let _setupWizardStep = 1           // 현재 단계 1~3
+let _setupWizardData = []          // [{ employeeId, name, position, team, hireDate, leaveType, calculatedDays, finalDays, initialUsedDays }]
+let _setupRefDate    = ''          // 기준일
+
+window.openInitialSetupWizard = async () => {
+  _setupWizardStep = 1
+  _setupWizardData = []
+  _setupRefDate    = new Date().toISOString().slice(0, 10)
+  document.getElementById('initialSetupModal')?.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'initialSetupModal'
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4'
+  modal.innerHTML = `<div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+    <div class="flex items-center justify-between px-6 py-4 border-b">
+      <div>
+        <h2 class="font-bold text-lg text-gray-800"><i class="fas fa-magic mr-2 text-amber-500"></i>초기 도입 셋업</h2>
+        <p class="text-xs text-gray-500 mt-0.5">과거 이력 없는 병원용 · 발생 자동계산 → 사용 보정 → 잔여 확정</p>
+      </div>
+      <button onclick="document.getElementById('initialSetupModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+    </div>
+    <!-- 단계 표시 -->
+    <div class="flex items-center gap-0 px-6 py-3 border-b bg-gray-50 text-xs">
+      <div id="wizStep1" class="flex items-center gap-1.5 font-bold text-amber-600"><span class="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs">1</span>발생 자동계산</div>
+      <div class="flex-1 border-t border-gray-300 mx-2"></div>
+      <div id="wizStep2" class="flex items-center gap-1.5 text-gray-400"><span class="w-5 h-5 rounded-full bg-gray-300 text-white flex items-center justify-center text-xs">2</span>사용 보정</div>
+      <div class="flex-1 border-t border-gray-300 mx-2"></div>
+      <div id="wizStep3" class="flex items-center gap-1.5 text-gray-400"><span class="w-5 h-5 rounded-full bg-gray-300 text-white flex items-center justify-center text-xs">3</span>확정</div>
+    </div>
+    <div id="wizBody" class="flex-1 overflow-y-auto p-6"></div>
+    <div id="wizFooter" class="flex justify-between px-6 py-4 border-t bg-gray-50"></div>
+  </div>`
+  document.body.appendChild(modal)
+  renderWizardStep1()
+}
+
+function updateWizardStepUI(step) {
+  const colors = ['text-amber-600','text-gray-400']
+  const bgOn  = 'bg-amber-500'
+  const bgOff = 'bg-gray-300'
+  for (let i = 1; i <= 3; i++) {
+    const el = document.getElementById(`wizStep${i}`)
+    if (!el) continue
+    const span = el.querySelector('span')
+    if (i <= step) {
+      el.className = el.className.replace('text-gray-400','text-amber-600')
+      if (!el.className.includes('text-amber-600')) el.className += ' text-amber-600'
+      span.className = span.className.replace('bg-gray-300', bgOn)
+    } else {
+      el.className = el.className.replace('text-amber-600','text-gray-400')
+      span.className = span.className.replace(bgOn, bgOff)
+    }
+  }
+}
+
+function renderWizardStep1() {
+  updateWizardStepUI(1)
+  const body   = document.getElementById('wizBody')
+  const footer = document.getElementById('wizFooter')
+
+  body.innerHTML = `
+    <div class="space-y-4">
+      <div class="bg-blue-50 rounded-lg p-3 text-xs text-blue-700">
+        <i class="fas fa-info-circle mr-1"></i>
+        입사일 기준으로 현재까지 발생했어야 할 월차/연차를 자동 계산합니다.<br>
+        계산 결과는 수정 가능하며, 다음 단계에서 실제 사용분을 입력합니다.
+      </div>
+      <div class="flex items-center gap-3">
+        <label class="text-sm font-medium text-gray-700 w-28 flex-shrink-0">기준일</label>
+        <input type="date" id="wiz_refDate" value="${_setupRefDate}" class="form-input w-48" max="${new Date().toISOString().slice(0,10)}">
+        <button onclick="wizCalculate()" class="px-4 py-2 bg-amber-500 text-white text-sm rounded-lg hover:bg-amber-600 flex-shrink-0">
+          <i class="fas fa-calculator mr-1"></i>계산
+        </button>
+      </div>
+      <div id="wizCalcResult" class="text-sm text-gray-400 text-center py-8">
+        <i class="fas fa-arrow-up mr-1"></i>기준일 선택 후 계산 버튼을 눌러주세요
+      </div>
+    </div>`
+
+  footer.innerHTML = `
+    <div></div>
+    <button onclick="wizGoStep2()" id="wizNext1" disabled class="px-5 py-2 bg-amber-500 text-white text-sm font-bold rounded-lg hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed">
+      다음 <i class="fas fa-chevron-right ml-1"></i>
+    </button>`
+}
+
+window.wizCalculate = async () => {
+  const refDate = document.getElementById('wiz_refDate')?.value
+  if (!refDate) { showToast('기준일을 선택하세요', 'error'); return }
+  _setupRefDate = refDate
+  const resultDiv = document.getElementById('wizCalcResult')
+  resultDiv.innerHTML = `<div class="text-center py-6"><i class="fas fa-spinner fa-spin text-amber-500 text-2xl"></i><div class="text-xs text-gray-500 mt-2">계산 중...</div></div>`
+
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const res = await api('POST', `/api/schedule/initial-setup/calculate${hospQuery}`, { referenceDate: refDate }).catch(() => null)
+  if (!res || !res.ok) { resultDiv.innerHTML = `<div class="text-red-500 text-sm">계산 실패. 다시 시도하세요.</div>`; return }
+
+  _setupWizardData = (res.employees || []).map(e => ({
+    ...e,
+    finalDays: e.calculatedDays,
+    initialUsedDays: e.alreadySet?.usedDays ?? 0,
+  }))
+
+  if (_setupWizardData.length === 0) {
+    resultDiv.innerHTML = `<div class="text-gray-400 text-sm py-4 text-center">해당 병원에 재직 중인 직원이 없습니다.</div>`
+    return
+  }
+
+  // 팀별 그룹핑
+  const teamLabels = { cook: '조리원', nutrition: '영양사' }
+  const groups = {}
+  for (const e of _setupWizardData) {
+    const t = e.team || 'cook'
+    if (!groups[t]) groups[t] = []
+    groups[t].push(e)
+  }
+
+  let html = `<div class="overflow-x-auto"><table class="w-full text-xs border-collapse">
+    <thead><tr class="bg-gray-100">
+      <th class="px-3 py-2 text-left">이름</th>
+      <th class="px-3 py-2 text-center">입사일</th>
+      <th class="px-3 py-2 text-center">유형</th>
+      <th class="px-3 py-2 text-center">자동계산</th>
+      <th class="px-3 py-2 text-center">최종 반영일수<br><span class="font-normal text-gray-400">(수정가능)</span></th>
+    </tr></thead><tbody>`
+
+  _setupWizardData.forEach((e, idx) => {
+    const typeLabel = e.leaveType === 'monthly'
+      ? `<span class="px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">월차</span>`
+      : `<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">연차</span>`
+    html += `<tr class="border-b hover:bg-gray-50">
+      <td class="px-3 py-2 font-medium">${e.name}<div class="text-gray-400">${e.position}</div></td>
+      <td class="px-3 py-2 text-center text-gray-600">${e.hireDate || '-'}</td>
+      <td class="px-3 py-2 text-center">${typeLabel}</td>
+      <td class="px-3 py-2 text-center font-bold text-gray-700">${e.calculatedDays}일</td>
+      <td class="px-3 py-2 text-center">
+        <input type="number" min="0" max="30" step="0.5"
+          data-idx="${idx}" class="wiz-final-days w-20 text-center border rounded px-2 py-1 text-sm font-bold"
+          value="${e.finalDays}"
+          oninput="_setupWizardData[this.dataset.idx].finalDays=parseFloat(this.value)||0">
+      </td>
+    </tr>`
+  })
+  html += `</tbody></table></div>
+  <div class="mt-3 text-xs text-gray-400 text-right">총 ${_setupWizardData.length}명 · 계산 기준일: ${refDate}</div>`
+
+  resultDiv.innerHTML = html
+  document.getElementById('wizNext1').disabled = false
+}
+
+window.wizGoStep2 = () => {
+  if (!_setupWizardData.length) { showToast('먼저 계산을 실행하세요', 'error'); return }
+  _setupWizardStep = 2
+  updateWizardStepUI(2)
+  const body   = document.getElementById('wizBody')
+  const footer = document.getElementById('wizFooter')
+
+  let html = `
+    <div class="bg-amber-50 rounded-lg p-3 text-xs text-amber-700 mb-4">
+      <i class="fas fa-pencil-alt mr-1"></i>
+      직원별 기존 사용한 월차/연차 일수를 입력하세요. 0이면 비워두어도 됩니다.<br>
+      <span class="font-bold">잔여 = 발생 − 사용</span>으로 자동 계산됩니다.
+    </div>
+    <div class="overflow-x-auto"><table class="w-full text-xs border-collapse">
+      <thead><tr class="bg-gray-100">
+        <th class="px-3 py-2 text-left">이름</th>
+        <th class="px-3 py-2 text-center">유형</th>
+        <th class="px-3 py-2 text-center">발생일수</th>
+        <th class="px-3 py-2 text-center">기존 사용<br><span class="font-normal text-gray-400">(입력)</span></th>
+        <th class="px-3 py-2 text-center">잔여</th>
+      </tr></thead><tbody id="wizStep2Table">`
+
+  _setupWizardData.forEach((e, idx) => {
+    const typeLabel = e.leaveType === 'monthly'
+      ? `<span class="px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">월차</span>`
+      : `<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">연차</span>`
+    const remain = Math.max(0, e.finalDays - (e.initialUsedDays || 0))
+    html += `<tr class="border-b hover:bg-gray-50" id="wizRow${idx}">
+      <td class="px-3 py-2 font-medium">${e.name}</td>
+      <td class="px-3 py-2 text-center">${typeLabel}</td>
+      <td class="px-3 py-2 text-center font-bold text-gray-800">${e.finalDays}일</td>
+      <td class="px-3 py-2 text-center">
+        <input type="number" min="0" max="${e.finalDays}" step="0.5"
+          data-idx="${idx}" class="wiz-used-days w-20 text-center border rounded px-2 py-1 text-sm"
+          value="${e.initialUsedDays || 0}"
+          oninput="wizUpdateRemain(${idx})">
+      </td>
+      <td class="px-3 py-2 text-center font-bold" id="wizRemain${idx}">
+        <span class="${remain <= 0 ? 'text-red-500' : 'text-teal-700'}">${remain}일</span>
+      </td>
+    </tr>`
+  })
+
+  html += `</tbody></table></div>`
+  body.innerHTML = html
+  footer.innerHTML = `
+    <button onclick="renderWizardStep1()" class="px-5 py-2 bg-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-300">
+      <i class="fas fa-chevron-left mr-1"></i>이전
+    </button>
+    <button onclick="wizGoStep3()" class="px-5 py-2 bg-amber-500 text-white text-sm font-bold rounded-lg hover:bg-amber-600">
+      다음 <i class="fas fa-chevron-right ml-1"></i>
+    </button>`
+}
+
+window.wizUpdateRemain = (idx) => {
+  const input = document.querySelector(`.wiz-used-days[data-idx="${idx}"]`)
+  const val = parseFloat(input?.value) || 0
+  _setupWizardData[idx].initialUsedDays = val
+  const remain = Math.max(0, _setupWizardData[idx].finalDays - val)
+  const cell = document.getElementById(`wizRemain${idx}`)
+  if (cell) cell.innerHTML = `<span class="${remain <= 0 ? 'text-red-500' : 'text-teal-700'}">${remain}일</span>`
+}
+
+window.wizGoStep3 = () => {
+  _setupWizardStep = 3
+  updateWizardStepUI(3)
+  const body   = document.getElementById('wizBody')
+  const footer = document.getElementById('wizFooter')
+
+  const monthly = _setupWizardData.filter(e => e.leaveType === 'monthly')
+  const annual  = _setupWizardData.filter(e => e.leaveType === 'annual')
+
+  body.innerHTML = `
+    <div class="space-y-4">
+      <div class="bg-green-50 border border-green-200 rounded-xl p-4 text-sm">
+        <div class="font-bold text-green-800 mb-3"><i class="fas fa-check-circle mr-2"></i>셋업 내용 확인</div>
+        <div class="grid grid-cols-2 gap-4">
+          <div class="bg-white rounded-lg p-3 border border-teal-100">
+            <div class="text-xs text-teal-600 font-bold mb-1">월차 (1년 미만)</div>
+            <div class="text-2xl font-bold text-teal-700">${monthly.length}명</div>
+            <div class="text-xs text-gray-500 mt-1">
+              총 발생 ${monthly.reduce((a,e)=>a+e.finalDays,0)}일 /
+              사용 ${monthly.reduce((a,e)=>a+(e.initialUsedDays||0),0)}일 /
+              잔여 ${monthly.reduce((a,e)=>a+Math.max(0,e.finalDays-(e.initialUsedDays||0)),0)}일
+            </div>
+          </div>
+          <div class="bg-white rounded-lg p-3 border border-blue-100">
+            <div class="text-xs text-blue-600 font-bold mb-1">연차 (1년 이상)</div>
+            <div class="text-2xl font-bold text-blue-700">${annual.length}명</div>
+            <div class="text-xs text-gray-500 mt-1">
+              총 발생 ${annual.reduce((a,e)=>a+e.finalDays,0)}일 /
+              사용 ${annual.reduce((a,e)=>a+(e.initialUsedDays||0),0)}일 /
+              잔여 ${annual.reduce((a,e)=>a+Math.max(0,e.finalDays-(e.initialUsedDays||0)),0)}일
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+        <i class="fas fa-exclamation-triangle mr-1"></i>
+        확정 후에는 일반 운영 모드로 전환됩니다. 이미 설정된 값이 있으면 덮어씁니다.
+      </div>
+    </div>`
+
+  footer.innerHTML = `
+    <button onclick="wizGoStep2()" class="px-5 py-2 bg-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-300">
+      <i class="fas fa-chevron-left mr-1"></i>이전
+    </button>
+    <button onclick="wizFinalize()" class="px-5 py-2 bg-green-600 text-white text-sm font-bold rounded-lg hover:bg-green-700">
+      <i class="fas fa-check mr-1"></i>초기 셋업 완료
+    </button>`
+}
+
+window.wizFinalize = async () => {
+  const btn = document.querySelector('#wizFooter button:last-child')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장 중...' }
+
+  const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+
+  // apply
+  const employees = _setupWizardData.map(e => ({
+    employeeId:      e.employeeId,
+    totalDays:       e.finalDays,
+    initialUsedDays: e.initialUsedDays || 0,
+    leaveType:       e.leaveType,
+    note:            `초기 도입 셋업 (기준일: ${_setupRefDate})`,
+  }))
+
+  const applyRes = await api('POST', `/api/schedule/initial-setup/apply${hospQuery}`, { employees }).catch(() => null)
+  if (!applyRes?.ok) {
+    showToast('저장 실패. 다시 시도하세요.', 'error')
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check mr-1"></i>초기 셋업 완료' }
+    return
+  }
+
+  // finalize
+  await api('POST', `/api/schedule/initial-setup/finalize${hospQuery}`, {}).catch(() => null)
+
+  showToast(`초기 셋업 완료: ${applyRes.processed}명 처리`, 'success')
+  document.getElementById('initialSetupModal')?.remove()
+
+  // 데이터 갱신
+  scheduleInitialSetupDone = true
+  await loadMonthlyLeaveData()
+  scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
+}
+
 
 // 월 이동 (이전/다음달)
 window.schedMoveMonth = async (delta) => {
