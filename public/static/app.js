@@ -14227,7 +14227,6 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
         ${holidayListHtml}
       </div>` : ''}
     </div>
-    ${buildExtShiftLegendHtml()}
 
     <!-- 테이블 -->
     <div style="overflow-x:auto;max-height:68vh">
@@ -14279,7 +14278,27 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
       const pWorkers = extW.filter(w=>w.worker_type==='parttime')
       const extRows = buildExtRows(dWorkers,'dispatch') + buildExtRows(pWorkers,'parttime')
       if (!extRows) return ''
-      return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${extRows}</tbody></table></div>`
+      // 파출/알바 근무조 시간대 범례 행
+      const EXT_DEFAULTS_SV = [
+        { key:'morning',   label:'오전', color:'#c2410c', bg:'#fff7ed', hours:'4',  startTime:'07:00', endTime:'13:00' },
+        { key:'afternoon', label:'오후', color:'#b45309', bg:'#fef3c7', hours:'4',  startTime:'13:00', endTime:'19:00' },
+        { key:'full_9h',   label:'9H',   color:'#ea580c', bg:'#ffedd5', hours:'9',  startTime:'07:00', endTime:'16:00' },
+        { key:'full_12h',  label:'12H',  color:'#dc2626', bg:'#fee2e2', hours:'12', startTime:'07:00', endTime:'19:00' },
+      ]
+      let extItemsSV = EXT_DEFAULTS_SV
+      try { const sv = localStorage.getItem('extShiftConfig'); if (sv) extItemsSV = JSON.parse(sv) } catch(e) {}
+      const extLegendItems = extItemsSV.filter(x=>x.enabled!==false).map(s=>{
+        const col=s.color||'#ea580c', bg2=s.bg||'#fff7ed'
+        const timeStr=(s.startTime&&s.endTime)?`${s.startTime}~${s.endTime}`:(s.hours?`${s.hours}h`:'')
+        return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:${bg2};border:1px solid ${col}44;border-radius:5px;padding:2px 7px;margin-right:4px">` +
+          `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:3px;background:${col}33;color:${col};font-weight:800;font-size:10px;border:1px solid ${col}55">${s.label}</span>` +
+          (timeStr?`<span style="color:#6b7280;font-size:9px">${timeStr}</span>`:'') +
+          `</span>`
+      }).join('')
+      const legendRow = `<tr><td colspan="${days+3}" style="background:#fff3e8;padding:5px 14px;border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa">` +
+        `<span style="font-size:10px;font-weight:700;color:#9a3412;margin-right:6px"><i class="fas fa-clock" style="margin-right:3px;color:#ea580c"></i>파출/알바 근무조 안내</span>` +
+        extLegendItems + `</td></tr>`
+      return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${legendRow}${extRows}</tbody></table></div>`
     })()}
 
     <!-- 하단 안내 -->
@@ -14887,7 +14906,6 @@ function renderMonthlyScheduleTab() {
     </div>
 
     ${buildShiftLegendHtml(shifts)}
-    ${buildExtShiftLegendHtml()}
 
     <div class="overflow-x-auto overflow-y-auto" style="-webkit-overflow-scrolling:touch;max-height:65vh;">
       <table style="width:100%;border-collapse:collapse;font-size:12px;border:2px solid #166534">
@@ -15317,7 +15335,34 @@ function renderMonthlyScheduleTab() {
                 return buildEmptyRow()
               }
 
-              let html = ''
+              // ── 파출/알바 근무조 시간대 범례 행 (파출 섹션 바로 위) ──
+              const EXT_LEGEND_COLSPAN = days + 3
+              let extLegendRow = '<tr>'
+              extLegendRow += '<td colspan="' + EXT_LEGEND_COLSPAN + '" style="background:#fff3e8;padding:5px 14px;border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa">'
+              extLegendRow += '<span style="font-size:10px;font-weight:700;color:#9a3412;margin-right:6px"><i class="fas fa-clock" style="margin-right:3px;color:#ea580c"></i>파출/알바 근무조 안내</span>'
+              // extShiftConfig 읽기
+              ;(function() {
+                const EXT_DEFAULTS_LEGEND = [
+                  { key:'morning',   label:'오전', color:'#c2410c', bg:'#fff7ed', hours:'4',  startTime:'07:00', endTime:'13:00' },
+                  { key:'afternoon', label:'오후', color:'#b45309', bg:'#fef3c7', hours:'4',  startTime:'13:00', endTime:'19:00' },
+                  { key:'full_9h',   label:'9H',   color:'#ea580c', bg:'#ffedd5', hours:'9',  startTime:'07:00', endTime:'16:00' },
+                  { key:'full_12h',  label:'12H',  color:'#dc2626', bg:'#fee2e2', hours:'12', startTime:'07:00', endTime:'19:00' },
+                ]
+                let items = EXT_DEFAULTS_LEGEND
+                try { const s = localStorage.getItem('extShiftConfig'); if (s) items = JSON.parse(s) } catch(e) {}
+                items.filter(function(x){ return x.enabled !== false }).forEach(function(s) {
+                  const col = s.color || '#ea580c'
+                  const bg2 = s.bg    || '#fff7ed'
+                  const timeStr = (s.startTime && s.endTime) ? (s.startTime + '~' + s.endTime) : (s.hours ? s.hours + 'h' : '')
+                  extLegendRow += '<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:' + bg2 + ';border:1px solid ' + col + '44;border-radius:5px;padding:2px 7px;margin-right:4px">'
+                  extLegendRow += '<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:3px;background:' + col + '33;color:' + col + ';font-weight:800;font-size:10px;border:1px solid ' + col + '55">' + s.label + '</span>'
+                  if (timeStr) extLegendRow += '<span style="color:#6b7280;font-size:9px">' + timeStr + '</span>'
+                  extLegendRow += '</span>'
+                })
+              })()
+              extLegendRow += '</td></tr>'
+
+              let html = extLegendRow
               if (dispatchWorkers.length > 0 || canEdit) {
                 html += buildSectionRows(dispatchWorkers, 'dispatch')
               }
