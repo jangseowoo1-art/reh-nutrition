@@ -16467,8 +16467,6 @@ window.executePrintStaffView = function() {
 
   const year = App.currentYear, month = App.currentMonth
   const printWindow = window.open('', '_blank', 'width=1400,height=900')
-  const shiftLegendPrint = buildShiftLegendHtml(scheduleShifts, {forPrint:true})
-  const extShiftLegendPrint = buildExtShiftLegendHtml({forPrint:true})
   printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
@@ -16489,8 +16487,6 @@ window.executePrintStaffView = function() {
 </style>
 </head>
 <body>
-${shiftLegendPrint}
-${extShiftLegendPrint}
 ${clone.outerHTML}
 <script>
   document.querySelectorAll('button').forEach(b => b.style.display='none');
