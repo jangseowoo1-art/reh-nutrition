@@ -19540,7 +19540,7 @@ function renderLaborCostTab() {
     </div>
 
     <!-- 관리자 버튼 행 -->
-    ${(isAdm || canEdit) ? `
+    ${isAdm ? `
     <div class="flex flex-wrap gap-2 justify-end items-center">
       <span class="text-xs text-gray-400 mr-1"><i class="fas fa-info-circle mr-1"></i>파출/알바 단가를 설정해야 비용이 계산됩니다</span>
       <button onclick="openLaborCostSettings()" class="px-4 py-2 rounded-lg text-sm font-semibold bg-orange-600 text-white hover:bg-orange-700 shadow-sm">
