@@ -283,14 +283,17 @@ schedule.get('/employees', async (c) => {
     return c.json(data.results)
   }
   
-  // 영양사: 본인 병원 활성 직원만
+  // 영양사: 본인 병원 활성 직원 + 당월 퇴사자 포함 (스케줄 히스토리 보존)
+  const yearMonth = c.req.query('yearMonth') // 'YYYY-MM' 형태
+  const ym = yearMonth || new Date().toISOString().slice(0, 7)
   const data = await c.env.DB.prepare(
     `SELECT e.*, p.name as position_name, p.team as position_team
      FROM employees e
      LEFT JOIN employee_positions p ON e.position_id = p.id
-     WHERE e.hospital_id = ? AND e.is_active = 1
+     WHERE e.hospital_id = ?
+       AND (e.is_active = 1 OR (e.resign_date IS NOT NULL AND e.resign_date >= ?))
      ORDER BY e.team, p.sort_order, e.hire_date, e.name`
-  ).bind(user.hospitalId).all<any>()
+  ).bind(user.hospitalId, ym + '-01').all<any>()
   return c.json(data.results)
 })
 
@@ -2195,7 +2198,8 @@ function computeMonthlyFixedOff(
   dailyWorkCount: Record<string, number>,
   requiredStaff: number,
   lockedDates: Set<string>,
-  lockedTypes: Map<string, string>
+  lockedTypes: Map<string, string>,
+  requiredStaffWeekend: number = 0
 ): OffGrantDay[] {
   const DOW_LABEL = ['일', '월', '화', '수', '목', '금', '토']
   const daysInMonth = new Date(year, month, 0).getDate()
@@ -2337,7 +2341,9 @@ function computeMonthlyFixedOff(
     // 기준인원 보호: 이 날을 휴무로 배정하면 근무인원이 기준 미달인지 확인
     // workCount: 현재 해당 날짜에 실제 입력된 근무인원
     // 해당 날짜에 월고정 휴무가 배정되면 그 직원이 빠지므로 예상 인원 = workCount - 1
-    if (requiredStaff > 0 && cand.workCount >= 0) {
+    const isWkndDate = (dow === 0 || dow === 6) || holidays.has(ds)
+    const effectiveRequired = (requiredStaffWeekend > 0 && isWkndDate) ? requiredStaffWeekend : requiredStaff
+    if (effectiveRequired > 0 && cand.workCount >= 0) {
       const afterOff = cand.workCount - 1  // 1명 추가 휴무 시 예상 잔여 인원
 
       // 단계별 임계값 적용:
@@ -2345,7 +2351,7 @@ function computeMonthlyFixedOff(
       //   목표의 마지막 20% 배정 시: 75%까지 허용 (목표 달성 우선)
       //   스케줄 미입력(-1)인 날: 건너뜀 없이 배정 (Step6에서 처리)
       const nearEnd = (remaining - assigned) <= Math.ceil(remaining * 0.2)
-      const threshold = nearEnd ? requiredStaff * 0.75 : requiredStaff * 0.85
+      const threshold = nearEnd ? effectiveRequired * 0.75 : effectiveRequired * 0.85
 
       if (afterOff < threshold) {
         // 인력 부족 우려 → 배정 금지 (STEP 6에서 기준 완화 후 재시도)
@@ -2440,7 +2446,8 @@ schedule.get('/off-grants', async (c) => {
   const cycleRestDays      = parseInt(wsMap.off_cycle_rest_days  || '2')
   const cycleStartDate     = wsMap.off_cycle_start_date    || ''
   const monthlyFixedDays   = parseInt(wsMap.monthly_fixed_off_days || '10')
-  const requiredStaff      = parseInt(wsMap.required_staff_count  || '0')
+  const requiredStaff        = parseInt(wsMap.required_staff_count         || '0')
+  const requiredStaffWeekend = parseInt(wsMap.required_staff_count_weekend || '0')
   const monthlyMinOff      = parseInt(wsMap.monthly_min_off_days  || '0')
   const holidayPolicy      = wsMap.holiday_policy          || 'off'
   const cycleHolidayPolicy = wsMap.cycle_holiday_policy    || 'add'
@@ -2517,7 +2524,8 @@ schedule.get('/off-grants', async (c) => {
       dailyWorkCount,
       requiredStaff,
       lockedDates,
-      lockedTypes
+      lockedTypes,
+      requiredStaffWeekend
     )
 
   } else if (offGrantType === 'cycle' || offGrantType === 'mixed') {
@@ -2850,6 +2858,7 @@ schedule.get('/off-grants', async (c) => {
     holiday_policy:          holidayPolicy,
     cycle_holiday_policy:    cycleHolidayPolicy,
     required_staff:          requiredStaff,
+    required_staff_weekend:  requiredStaffWeekend,
     // 정책 검토 신호: min_guarantee 발생 여부
     policy_review_signal:    minGuaranteeCount > 0,
   }
@@ -3319,7 +3328,7 @@ schedule.get('/analysis/:year/:month', async (c) => {
   // 근무 설정값 파싱
   const wsMap: Record<string,string> = {}
   for (const r of (workSettingsRows.results||[])) wsMap[r.setting_key] = r.setting_value
-  const clusterThreshold = parseInt(wsMap['leave_cluster_threshold'] || '3')
+  const clusterThreshold = parseInt(wsMap['leave_cluster_threshold'] || '40')
 
   const scheds = schedRows.results || []
   const emps   = empRows.results   || []
@@ -3385,12 +3394,19 @@ schedule.get('/analysis/:year/:month', async (c) => {
     if (shorts.length > 0) shortDates[date] = shorts
   }
 
-  // 연차/휴무 쏠림 감지 (설정된 임계값 이상 연차/휴무 시 경고)
+  // 연차/휴무 쏠림 감지 — 비율 기준으로 변경 (전체 직원 대비 %)
+  // clusterThreshold: 전체 직원 수 대비 연차 쏠림 비율(%) 기준 (기본 40%)
+  const totalEmpCount = emps.length || 1
+  const clusterRatio = clusterThreshold <= 20
+    ? 0.40  // 설정값이 20 이하인 경우(기존 절대값 방식) → 40% 비율로 자동 전환
+    : clusterThreshold / 100  // 설정값을 퍼센트로 해석 (예: 40 → 40%)
   const clusterDates: Record<string, {annual: number, rest: number, warning: boolean}> = {}
   for (const [date, data] of Object.entries(dateMap)) {
-    // clusterThreshold명 이상 연차이거나, 그 1.5배 이상 휴무일 때 경고
-    const restThreshold = Math.ceil(clusterThreshold * 1.5)
-    if (data.annual >= clusterThreshold || data.rest >= restThreshold) {
+    const annualRatio = data.annual / totalEmpCount
+    const restRatio   = data.rest   / totalEmpCount
+    // 연차: 전체 직원의 40% 이상 집중 시 경고
+    // 휴무: 전체 직원의 50% 이상 집중 시 경고
+    if (annualRatio >= clusterRatio || restRatio >= clusterRatio * 1.25) {
       clusterDates[date] = { annual: data.annual, rest: data.rest, warning: true }
     }
   }
@@ -4025,7 +4041,7 @@ const DEFAULT_WORK_SETTINGS: Record<string, string> = {
   daily_max_hours:          '8',
   weekly_max_hours:         '52',
   consecutive_max_days:     '6',
-  leave_cluster_threshold:  '3',
+  leave_cluster_threshold:  '40',
   legal_warning_enabled:    '1',
   ot_cost_enabled:          '1',
   dispatch_enabled:         '1',

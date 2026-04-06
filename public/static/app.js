@@ -11628,7 +11628,7 @@ async function renderAdminDashboard() {
     </div>
   </div>
 
-  <!-- 전체 병원 인력 & 인건비 현황 -->
+  <!-- 전체 병원 인력 & 인력비 현황 -->
   ${renderAdminStaffLabor(adminStaffLabor)}
   `
   } catch(renderErr) {
@@ -12267,7 +12267,7 @@ async function renderSchedule() {
 
   // 모든 데이터 병렬 로드
   const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData, holidayPolicySummaryData, monthlyLeaveSummary] = await Promise.all([
-    api('GET', `/api/schedule/employees${hqs}`).catch(() => []),
+    api('GET', `/api/schedule/employees${hqs ? hqs + '&' : '?'}yearMonth=${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}`).catch(() => []),
     api('GET', `/api/schedule/shifts${hqs}`).catch(() => []),
     api('GET', `/api/schedule/positions${hqs}`).catch(() => []),
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
@@ -12346,7 +12346,7 @@ function renderScheduleTab(content) {
     { id: 'employees', label: '인사카드',   icon: 'fa-id-card' },
     { id: 'leaves',    label: '연차 관리',  icon: 'fa-umbrella-beach' },
     { id: 'analysis',  label: '운영 분석',  icon: 'fa-chart-bar' },
-    { id: 'laborCost', label: '인건비',     icon: 'fa-won-sign' },
+    { id: 'laborCost', label: '인력비',     icon: 'fa-won-sign' },
     { id: 'shifts',    label: '근무조 설정', icon: 'fa-clock' },
     { id: 'laborCostSettings', label: '단가 설정', icon: 'fa-cog' },
     { id: 'schedule',  label: '월간 스케줄', icon: 'fa-calendar-alt' }
@@ -12405,10 +12405,10 @@ function renderScheduleTab(content) {
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'analysis' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
               <i class="fas fa-chart-bar mr-1"></i>운영분석
             </button>
-            <button onclick="switchScheduleTab('laborCost')"
+            ${App.role === 'admin' ? `<button onclick="switchScheduleTab('laborCost')"
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'laborCost' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
-              <i class="fas fa-won-sign mr-1"></i>인건비
-            </button>
+              <i class="fas fa-won-sign mr-1"></i>인력비
+            </button>` : ''}
           </div>
 
           <!-- 그룹 3: 설정 -->
@@ -12512,7 +12512,8 @@ function renderScheduleTab(content) {
 // ─── 인사카드 탭 ─────────────────────────────────────────────
 function renderEmployeeTab() {
   const isAdm = App.role === 'admin'
-  const emps = scheduleEmployees
+  // 인사카드는 활성 직원만 (퇴사자 제외)
+  const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
 
   // 팀별 그룹핑
   const cookEmps = emps.filter(e => e.team === 'cook' || !e.team)
@@ -13760,12 +13761,16 @@ function renderAdminSummaryPanel() {
   const extWorkers2 = (md?.ext_workers || md?.external_workers) || []
   const extSchedMap2 = scheduleExtSchedMap || {}
   const requiredCount = parseInt(ws.required_staff_count || '0')
+  const requiredCountWeekend = parseInt(ws.required_staff_count_weekend || '0')
   const REST_CODES2 = new Set(['연','휴','경조','병가'])
 
   // 날짜별 정규/파출/알바 카운트
   const dailyCounts = []
   for(let d=1; d<=days; d++) {
     const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    const isWkndDay = isWeekend(year, month, d) || allOffSet?.has(ds)
+    // 평일/주말 기준인원 선택
+    const reqCount = (isWkndDay && requiredCountWeekend > 0) ? requiredCountWeekend : requiredCount
     let regular=0, dispatch=0, parttime=0
     // 정규 직원 (영양사 제외 — team==='nutrition')
     for(const emp of emps) {
@@ -13783,13 +13788,13 @@ function renderAdminSummaryPanel() {
     }
     const total = regular + dispatch + parttime
     let status = 'normal', statusColor = '#6b7280', statusBg = '#f9fafb'
-    if(requiredCount > 0) {
-      const ratio = total / requiredCount
+    if(reqCount > 0) {
+      const ratio = total / reqCount
       if(ratio < 0.9) { status='shortage'; statusColor='#dc2626'; statusBg='#fff1f2' }
       else if(ratio > 1.1) { status='over'; statusColor='#2563eb'; statusBg='#eff6ff' }
       else { status='normal'; statusColor='#16a34a'; statusBg='#f0fdf4' }
     }
-    dailyCounts.push({ d, ds, regular, dispatch, parttime, total, status, statusColor, statusBg })
+    dailyCounts.push({ d, ds, regular, dispatch, parttime, total, status, statusColor, statusBg, reqCount, isWknd: isWkndDay })
   }
 
   // 부족/과다/정상 일수
@@ -13823,15 +13828,19 @@ function renderAdminSummaryPanel() {
       `<td style="padding:2px 3px;text-align:center;font-size:10px;color:${dc.parttime>0?'#db2777':'#d1d5db'}">${dc.parttime||'-'}</td>`
     ).join('')
     const diffCells = dailyCounts.map(dc => {
-      const diff = dc.total - requiredCount
+      const diff = dc.total - dc.reqCount
       const c = diff<0?'#dc2626':diff>0?'#2563eb':'#16a34a'
       return `<td style="padding:2px 3px;text-align:center;font-size:10px;font-weight:600;color:${c}">${diff>0?'+'+diff:diff===0?'±0':diff}</td>`
     }).join('')
 
+    const reqLabel = requiredCountWeekend > 0
+      ? `평일 ${requiredCount}명 / 주말 ${requiredCountWeekend}명`
+      : `${requiredCount}명`
+
     dailyStaffHtml = `
     <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden">
       <div style="padding:10px 14px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
-        <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-users" style="margin-right:5px;color:#16a34a"></i>일별 인력 현황 <span style="font-size:10px;color:#6b7280;font-weight:400">(기준: ${requiredCount}명)</span></div>
+        <div style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-users" style="margin-right:5px;color:#16a34a"></i>일별 인력 현황 <span style="font-size:10px;color:#6b7280;font-weight:400">(기준: ${reqLabel})</span></div>
         <div style="display:flex;gap:8px;font-size:10px">
           <span style="color:#dc2626"><i class="fas fa-circle" style="font-size:7px;margin-right:3px"></i>부족 ${shortageDays}일</span>
           <span style="color:#16a34a"><i class="fas fa-circle" style="font-size:7px;margin-right:3px"></i>정상 ${normalDays}일</span>
@@ -15133,6 +15142,8 @@ function renderMonthlyScheduleTab() {
                 const sched = schedMap[key]
                 const code = sched?.shift_code || ''
                 const ltype = sched?.leave_type || ''
+                // 퇴사일 이후 날짜는 비활성 처리 (히스토리 보존)
+                const isAfterResign = emp.resign_date && dateStr > emp.resign_date
 
                 if (code && code !== '-') {
                   if (code === '연' || ltype === 'annual') annualUsed++
@@ -15152,6 +15163,8 @@ function renderMonthlyScheduleTab() {
 
                 let cellBg = isSun2 ? 'background:#fff1f2;' : isWknd2 ? 'background:#fffbeb;' : `background:${rowBg};`
                 if (isOff2 && !code) cellBg = isSun2 ? 'background:#fff1f2;' : 'background:#fffde7;'
+                // 퇴사 이후 날짜는 회색 처리 (편집 불가)
+                if (isAfterResign) cellBg = 'background:#f1f5f9;'
                 const borderLeft2 = `border-left:1px solid ${isSun2?'#fecaca':isWknd2?'#fde68a':'#e5e7eb'};`
                 let spanStyle2, spanText2
                 if (code && code !== '-') { spanStyle2 = getShiftStyle(code); spanText2 = code }
@@ -15162,6 +15175,16 @@ function renderMonthlyScheduleTab() {
                 const extraIcon2 = otH2>0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH2}h</div>`
                   : isTempS2 ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
                   : isNightW2 ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
+
+                // 퇴사 이후 날짜 셀은 편집 불가 처리
+                if (isAfterResign) {
+                  return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft2}cursor:not-allowed;position:relative;opacity:0.35"
+                    data-shift="" data-empid="${emp.id}" data-date="${dateStr}">
+                    <div style="display:inline-flex;flex-direction:column;align-items:center">
+                      <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:9px;color:#94a3b8;background:#e2e8f0">-</span>
+                    </div>
+                  </td>`
+                }
 
                 return `<td style="padding:2px;text-align:center;${cellBg}${borderLeft2}cursor:pointer;position:relative;user-select:none"
                   onclick="schedCellClick(event,${emp.id},'${dateStr}',this)"
@@ -15369,11 +15392,6 @@ function renderMonthlyScheduleTab() {
                   out += '<div style="display:flex;align-items:center;gap:4px">'
                   out += '<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:' + typeColor + '22;color:' + typeColor + ';font-weight:700">' + typeLbl + '</span>'
                   out += '<span style="font-size:11px;font-weight:600;color:#374151">' + worker.name + '</span>'
-                  if (canEdit) {
-                    out += '<button class="ext-del-btn" data-wid="' + worker.id + '" data-wname="' + worker.name + '"'
-                    out += ' style="margin-left:auto;background:none;border:none;cursor:pointer;color:#ef4444;font-size:10px;padding:0 2px" title="삭제">'
-                    out += '<i class="fas fa-times"></i></button>'
-                  }
                   out += '</div></td>'
                   out += '<td style="text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px">' + wdCount + '일</td>'
                   out += '<td style="text-align:center;font-size:10px;color:#6b7280;padding:2px"></td>'
@@ -17844,7 +17862,7 @@ function renderLaborCostSettingsModal() {
       <div class="bg-gray-800 text-white px-6 py-4 flex items-center justify-between">
         <div>
           <h3 class="font-bold text-lg"><i class="fas fa-cog mr-2"></i>파출/알바 단가 설정</h3>
-          <p class="text-xs opacity-60 mt-0.5">병원별 외부인력 단가 · 인건비 자동 계산에 사용됩니다</p>
+          <p class="text-xs opacity-60 mt-0.5">병원별 외부인력 단가 · 인력비 자동 계산에 사용됩니다</p>
         </div>
         <button onclick="document.getElementById('laborCostSettingsModal').classList.add('hidden')" class="text-white/70 hover:text-white"><i class="fas fa-times text-lg"></i></button>
       </div>
@@ -18095,11 +18113,12 @@ function renderWorkSettingsModal() {
                 </div>
               </div>
               <div>
-                <label class="text-xs text-gray-600">연차 동시사용 임계</label>
+                <label class="text-xs text-gray-600">연차 쏠림 경고 기준 (%)</label>
                 <div class="flex items-center gap-2 mt-1">
-                  <input type="number" id="ws_leave_cluster_threshold" class="form-input flex-1" min="1" max="20" placeholder="3">
-                  <span class="text-xs text-gray-500">명</span>
+                  <input type="number" id="ws_leave_cluster_threshold" class="form-input flex-1" min="10" max="90" placeholder="40">
+                  <span class="text-xs text-gray-500">%</span>
                 </div>
+                <div class="text-xs text-gray-400 mt-1">전체 직원 수 대비 연차 집중 비율 (기본 40%)</div>
               </div>
             </div>
           </div>
@@ -18139,13 +18158,20 @@ function renderWorkSettingsModal() {
             <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-users mr-1 text-green-600"></i>인력 운영 기준</h4>
             <div class="p-3 bg-green-50 border border-green-100 rounded-xl space-y-3">
               <div>
-                <label class="text-xs text-gray-600 font-medium">일일 기준(목표) 근무인원</label>
+                <label class="text-xs text-gray-600 font-medium">평일 기준(목표) 근무인원</label>
                 <div class="flex items-center gap-2 mt-1">
                   <input type="number" id="ws_required_staff_count" class="form-input flex-1" min="0" max="200" placeholder="0 (미설정)">
                   <span class="text-xs text-gray-500">명</span>
                 </div>
-                <p class="text-xs text-green-700 mt-1"><i class="fas fa-info-circle mr-1"></i>0 입력 시 기준인원 비교 기능이 비활성화됩니다. 영양사·운영진 뷰의 인력 현황 분석에 사용됩니다.</p>
               </div>
+              <div>
+                <label class="text-xs text-gray-600 font-medium">주말·공휴일 기준(목표) 근무인원</label>
+                <div class="flex items-center gap-2 mt-1">
+                  <input type="number" id="ws_required_staff_count_weekend" class="form-input flex-1" min="0" max="200" placeholder="0 (평일과 동일)">
+                  <span class="text-xs text-gray-500">명</span>
+                </div>
+              </div>
+              <p class="text-xs text-green-700"><i class="fas fa-info-circle mr-1"></i>0 입력 시 해당 기준 비교 기능이 비활성화됩니다. 영양사·운영진 뷰의 인력 현황 분석에 사용됩니다.</p>
             </div>
           </div>
 
@@ -19239,7 +19265,7 @@ function renderLaborCostTab() {
       const tc = document.getElementById('scheduleTabContent')
       if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
     }).catch(()=>{})
-    return `<div class="flex items-center justify-center h-40"><div class="loading-spinner mr-2"></div>인건비 데이터 로딩 중...</div>`
+    return `<div class="flex items-center justify-center h-40"><div class="loading-spinner mr-2"></div>인력비 데이터 로딩 중...</div>`
   }
 
   const empTotals        = data.empTotals         || {}
@@ -21197,8 +21223,9 @@ window.openWorkSettingsModal = async () => {
   setVal('ws_daily_max_hours',         ws.daily_max_hours         ?? '8')
   setVal('ws_weekly_max_hours',        ws.weekly_max_hours        ?? '52')
   setVal('ws_consecutive_max_days',    ws.consecutive_max_days    ?? '6')
-  setVal('ws_leave_cluster_threshold', ws.leave_cluster_threshold ?? '3')
+  setVal('ws_leave_cluster_threshold', ws.leave_cluster_threshold ?? '40')
   setVal('ws_required_staff_count',    ws.required_staff_count    ?? '0')
+  setVal('ws_required_staff_count_weekend', ws.required_staff_count_weekend ?? '0')
   setChk('ws_legal_warning_enabled',   ws.legal_warning_enabled   ?? '1')
   setChk('ws_ot_cost_enabled',         ws.ot_cost_enabled         ?? '1')
   setChk('ws_dispatch_enabled',        ws.dispatch_enabled        ?? '1')
@@ -21243,6 +21270,7 @@ window.saveWorkSettings = async () => {
     consecutive_max_days:      getVal('ws_consecutive_max_days'),
     leave_cluster_threshold:   getVal('ws_leave_cluster_threshold'),
     required_staff_count:      getVal('ws_required_staff_count') || '0',
+    required_staff_count_weekend: getVal('ws_required_staff_count_weekend') || '0',
     legal_warning_enabled:     getChk('ws_legal_warning_enabled'),
     ot_cost_enabled:           getChk('ws_ot_cost_enabled'),
     dispatch_enabled:          getChk('ws_dispatch_enabled'),
@@ -21557,7 +21585,8 @@ window.saveEmployeeCard = async (empId) => {
     document.getElementById('empCardModal').classList.add('hidden')
     showToast(empId ? '수정되었습니다' : '직원이 추가되었습니다', 'success')
     // 데이터 리로드
-    scheduleEmployees = await api('GET', '/api/schedule/employees').catch(() => [])
+    const _ym = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}`
+    scheduleEmployees = await api('GET', `/api/schedule/employees?yearMonth=${_ym}`).catch(() => [])
     const content = document.getElementById('pageContent')
     renderScheduleTab(content)
   } else {
@@ -21570,7 +21599,8 @@ window.confirmResignEmployee = (empId, name) => {
   api('DELETE', `/api/schedule/employees/${empId}`).then(res => {
     if (res?.success) {
       showToast(`${name}님 퇴사 처리됨`, 'success')
-      api('GET', '/api/schedule/employees').then(data => {
+      const _ym2 = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}`
+      api('GET', `/api/schedule/employees?yearMonth=${_ym2}`).then(data => {
         scheduleEmployees = data || []
         const content = document.getElementById('pageContent')
         renderScheduleTab(content)
@@ -21941,6 +21971,8 @@ window.applyMultiSelect = () => {
 window.schedCellClick = (event, empId, date, cell) => {
   // 채우기 핸들 클릭이면 무시
   if (event.target.classList.contains('sched-fill-handle')) return
+  // 외부인력 선택 상태가 있으면 해제 (직원 영역으로 전환)
+  if (_extSelectedCells?.size > 0) _extClearSelection && _extClearSelection()
 
   const key = `${empId}_${date}`
 
@@ -22392,7 +22424,7 @@ window.schedPasteCells = () => {
       batchItems.push({ empId, date, code: srcCode || '-' })
     }
   } else {
-    // 다중 셀 복사 → 대상 첫 번째 셀 기준으로 날짜 오프셋 적용
+    // 다중 셀 복사 → 대상 첫 번째 셀 기준으로 날짜 오프셋 + 직원 오프셋 적용
     const srcFirst = srcEntries[0]
     const dstFirst = _parseKey(dstKeys[0])
     const days = getDaysInMonth(App.currentYear, App.currentMonth)
@@ -22400,10 +22432,25 @@ window.schedPasteCells = () => {
     const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
     const dateOffset = allDates.indexOf(dstFirst.date) - allDates.indexOf(srcFirst.date)
 
+    // 직원 순서 배열 (DOM에서 data-empid 순서 추출)
+    const allEmpCells = Array.from(document.querySelectorAll('td[data-empid][data-date]'))
+    const empOrder = []
+    allEmpCells.forEach(c => {
+      if (!empOrder.includes(c.dataset.empid)) empOrder.push(c.dataset.empid)
+    })
+    const srcEmpIds = [...new Set(srcEntries.map(e => e.empId))]
+    const srcFirstEmpIdx = empOrder.indexOf(srcFirst.empId)
+    const dstFirstEmpIdx = empOrder.indexOf(dstFirst.empId)
+    const empOffset = dstFirstEmpIdx - srcFirstEmpIdx
+
     for (const srcEntry of srcEntries) {
       const dstIdx = allDates.indexOf(srcEntry.date) + dateOffset
       if (dstIdx < 0 || dstIdx >= allDates.length) continue
-      batchItems.push({ empId: dstFirst.empId, date: allDates[dstIdx], code: srcEntry.code || '-' })
+      // 직원 오프셋 계산
+      const srcEmpIdx = empOrder.indexOf(srcEntry.empId)
+      const dstEmpIdx = srcEmpIdx + empOffset
+      const dstEmpId = (dstEmpIdx >= 0 && dstEmpIdx < empOrder.length) ? empOrder[dstEmpIdx] : dstFirst.empId
+      batchItems.push({ empId: dstEmpId, date: allDates[dstIdx], code: srcEntry.code || '-' })
     }
   }
 
@@ -22611,8 +22658,18 @@ document.addEventListener('keydown', (e) => {
     return
   }
 
-  // ESC: 선택 해제
+  // ESC: 선택 해제 + 복사 버퍼 초기화
   if (e.key === 'Escape') {
+    // 외부인력 복사 버퍼 초기화
+    if (_extCopiedData) {
+      _extCopiedData = null
+      document.querySelectorAll('.ext-cell-copied').forEach(el => el.classList.remove('ext-cell-copied'))
+    }
+    // 직원 복사 버퍼 초기화 (점선 테두리 제거)
+    if (_copiedCellData) {
+      _copiedCellData = null
+      document.querySelectorAll('td.sched-cell-copied').forEach(el => el.classList.remove('sched-cell-copied'))
+    }
     if (_extSelectedCells?.size > 0) { _extClearSelection(); return }
     if (_selectedCells.size > 0) { clearMultiSelection(); return }
   }
@@ -32434,7 +32491,7 @@ async function renderCeoDashboard() {
         ${alertsHtml}
       </div>
 
-      <!-- 인력 & 인건비 현황 (운영진 전용) -->
+      <!-- 인력 & 인력비 현황 (운영진 전용) -->
       ${staffLaborHtml ? `<div id="execStaffLaborSection" class="mb-5">${staffLaborHtml}</div>` : ''}
 
       <!-- 식수 카테고리별 집계 -->
@@ -33131,7 +33188,7 @@ function renderCeoAlerts(data) {
 
 // ── 지출 사용내역 조회 ──────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
-// 운영진 전용: 인력 & 인건비 현황 렌더러
+// 운영진 전용: 인력 & 인력비 현황 렌더러
 // ════════════════════════════════════════════════════════════════
 function renderExecStaffLabor(d) {
   const fmt = v => (v || 0).toLocaleString()
@@ -33146,7 +33203,7 @@ function renderExecStaffLabor(d) {
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
       <div class="flex items-center gap-2 mb-4">
         <i class="fas fa-users text-indigo-500 text-lg"></i>
-        <h3 class="font-bold text-gray-800 text-base">인력 & 인건비 현황</h3>
+        <h3 class="font-bold text-gray-800 text-base">인력 & 인력비 현황</h3>
       </div>
       <div class="text-center text-gray-400 py-8 text-sm">데이터를 불러오는 중...</div>
     </div>`
@@ -33193,8 +33250,8 @@ function renderExecStaffLabor(d) {
     <!-- 헤더 -->
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
       <div>
-        <h3 class="font-bold text-gray-800"><i class="fas fa-users text-indigo-500 mr-2"></i>인력 & 인건비 현황</h3>
-        <p class="text-xs text-gray-400 mt-0.5">이번 달 인력 운영 및 인건비 내역</p>
+        <h3 class="font-bold text-gray-800"><i class="fas fa-users text-indigo-500 mr-2"></i>인력 & 인력비 현황</h3>
+        <p class="text-xs text-gray-400 mt-0.5">이번 달 인력 운영 및 인력비 내역</p>
       </div>
     </div>
 
@@ -33277,13 +33334,13 @@ function renderExecStaffLabor(d) {
         </div>
       </div>
 
-      <!-- 오른쪽: 인건비 내역 -->
+      <!-- 오른쪽: 인력비 내역 -->
       <div>
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">💰 인건비 내역</p>
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">💰 인력비 내역</p>
 
-        <!-- 총 인건비 -->
+        <!-- 총 인력비 -->
         <div class="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl p-4 text-white mb-4">
-          <p class="text-xs text-indigo-200 mb-1">이번 달 총 인건비</p>
+          <p class="text-xs text-indigo-200 mb-1">이번 달 총 인력비</p>
           <p class="text-3xl font-bold">${fmtW(lc.total)}<span class="text-sm font-normal ml-1">원</span></p>
           <p class="text-xs text-indigo-200 mt-1">기본급 + OT + 파출 + 알바 합산</p>
         </div>
@@ -33381,7 +33438,7 @@ function renderDashStaffLabor(d) {
     <div class="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
       <i class="fas fa-users text-indigo-500"></i>
       <div>
-        <h3 class="font-bold text-gray-800 text-sm">인력 & 인건비 현황</h3>
+        <h3 class="font-bold text-gray-800 text-sm">인력 & 인력비 현황</h3>
         <p class="text-xs text-gray-400">이번 달 인력 운영 요약</p>
       </div>
     </div>
@@ -33406,7 +33463,7 @@ function renderDashStaffLabor(d) {
       </div>
       <!-- 인건비 -->
       <div class="bg-purple-50 rounded-xl p-3 text-center">
-        <p class="text-xs text-purple-500 mb-1">이번 달 인건비</p>
+        <p class="text-xs text-purple-500 mb-1">이번 달 인력비</p>
         <p class="text-xl font-bold text-purple-700">${fmtW(lc.total)}<span class="text-xs font-normal ml-0.5">원</span></p>
         <p class="text-xs text-purple-400">파출 ${fmtW(lc.dispatchCost)} · 알바 ${fmtW(lc.parttimeCost)}</p>
       </div>
@@ -33415,7 +33472,7 @@ function renderDashStaffLabor(d) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 관리자 대시보드: 전체 병원 인력 & 인건비 현황 렌더러
+// 관리자 대시보드: 전체 병원 인력 & 인력비 현황 렌더러
 // ════════════════════════════════════════════════════════════════
 function renderAdminStaffLabor(d) {
   if (!d || !d.hospitals) return ''
@@ -33434,7 +33491,7 @@ function renderAdminStaffLabor(d) {
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
       <div>
         <h3 class="font-bold text-gray-800 text-sm flex items-center gap-2">
-          <i class="fas fa-users text-indigo-500"></i>전체 병원 인력 & 인건비 현황
+          <i class="fas fa-users text-indigo-500"></i>전체 병원 인력 & 인력비 현황
         </h3>
         <p class="text-xs text-gray-400 mt-0.5">병원별 이번 달 인력 운영 및 비용 요약</p>
       </div>
@@ -33459,7 +33516,7 @@ function renderAdminStaffLabor(d) {
         <p class="text-lg font-bold text-orange-700">${fmt(totals.dispatchDays + totals.parttimeDays)}<span class="text-xs font-normal ml-0.5">회</span></p>
       </div>
       <div class="text-center">
-        <p class="text-xs text-purple-600">총 인건비</p>
+        <p class="text-xs text-purple-600">총 인력비</p>
         <p class="text-lg font-bold text-purple-700">${fmtW(totals.totalLaborCost)}<span class="text-xs font-normal ml-0.5">원</span></p>
       </div>
     </div>
