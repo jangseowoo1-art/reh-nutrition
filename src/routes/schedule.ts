@@ -1365,9 +1365,9 @@ function calcInitialLeave(hireDate: string, referenceDate: Date) {
     let m = hireMonth + 1 // 입사 다음 달부터
     if (m > 12) { m = 1; y++ }
 
-    // 기준일 이전 달까지만
+    // 기준일 당월까지 포함
     const limitYM = refYear * 100 + refMonth
-    while (y * 100 + m < limitYM && breakdown.length < 11) {
+    while (y * 100 + m <= limitYM && breakdown.length < 11) {
       breakdown.push({ year: y, month: m, days: 1 })
       m++; if (m > 12) { m = 1; y++ }
     }
@@ -1409,7 +1409,7 @@ schedule.get('/initial-setup/status', async (c) => {
 // 입사일 기준 발생 예상치 계산 (미리보기 — DB 저장 없음)
 schedule.post('/initial-setup/calculate', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const body = await c.req.json().catch(() => ({}) as any)
@@ -1461,7 +1461,7 @@ schedule.post('/initial-setup/calculate', async (c) => {
 // body: { employees: [{ employeeId, totalDays, initialUsedDays, leaveType, note }] }
 schedule.post('/initial-setup/apply', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const body = await c.req.json().catch(() => ({}) as any)
@@ -1550,7 +1550,7 @@ schedule.post('/initial-setup/apply', async (c) => {
 // 초기 셋업 완료 확정 (병원 단위 플래그 세팅)
 schedule.post('/initial-setup/finalize', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const body = await c.req.json().catch(() => ({}) as any)

@@ -15917,22 +15917,8 @@ function renderLeavesTab() {
   const leaves = Array.isArray(scheduleLeavesData) ? scheduleLeavesData : []
   const histSummary = scheduleLeaveHistorySummary || {}
 
-  // ── 초기 셋업 배너 (미완료 시 상단 노출) ──────────────────────
-  const setupBanner = isAdm && scheduleInitialSetupDone === false ? `
-  <div id="initialSetupBanner" class="bg-amber-50 border border-amber-300 rounded-xl p-4 mb-4 flex items-start gap-3">
-    <i class="fas fa-star text-amber-500 mt-0.5 text-lg flex-shrink-0"></i>
-    <div class="flex-1 min-w-0">
-      <div class="font-bold text-amber-800 text-sm">초기 도입 셋업이 필요합니다</div>
-      <div class="text-xs text-amber-700 mt-0.5">과거 스케줄 이력이 없는 경우, 입사일 기준으로 월차·연차를 자동 계산한 뒤 실제 사용분을 보정하여 잔여를 확정하세요.</div>
-    </div>
-    <button onclick="openInitialSetupWizard()" class="flex-shrink-0 px-4 py-2 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600">
-      <i class="fas fa-magic mr-1"></i>초기 셋업 시작
-    </button>
-  </div>` : isAdm && scheduleInitialSetupDone === true ? `
-  <div class="text-xs text-gray-400 flex items-center gap-1.5 mb-3 px-1">
-    <i class="fas fa-check-circle text-green-500"></i>초기 셋업 완료
-    <button onclick="openInitialSetupWizard()" class="ml-2 text-xs text-blue-500 underline">재실행</button>
-  </div>` : ''
+  // 초기 셋업 배너 제거 — '전체 월차 자동발생' 버튼으로 통합
+  const setupBanner = ''
 
   // leave map by empId
   const leaveByEmp = {}
@@ -17477,13 +17463,6 @@ async function loadMonthlyLeaveData() {
     window._monthlyLeavesData = await api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hospQuery}`)
   } catch (e) {
     window._monthlyLeavesData = []
-  }
-  // 초기 셋업 상태도 함께 로드
-  try {
-    const st = await api('GET', `/api/schedule/initial-setup/status${hospQueryQ}`)
-    scheduleInitialSetupDone = st?.done === true
-  } catch (e) {
-    scheduleInitialSetupDone = null
   }
 }
 
