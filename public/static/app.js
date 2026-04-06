@@ -17262,10 +17262,12 @@ window.switchScheduleTab = async (tab) => {
   try {
     if (tab === 'leaves') {
       // 직원 데이터도 같이 최신화
+      const hospQ = (App.role === 'admin' && App.currentHospitalId) ? `&hospitalId=${App.currentHospitalId}` : ''
+      const hospQs = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
       const [raw, emps, histSummary] = await Promise.all([
-        api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => []),
-        api('GET', '/api/schedule/employees').catch(() => []),
-        api('GET', `/api/schedule/leaves/history-summary?year=${App.currentYear}`).catch(() => null)
+        api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hospQ}`).catch(() => []),
+        api('GET', `/api/schedule/employees${hospQs}`).catch(() => []),
+        api('GET', `/api/schedule/leaves/history-summary?year=${App.currentYear}${hospQ}`).catch(() => null)
       ])
       scheduleLeavesData = Array.isArray(raw) ? raw : (raw?.employees ? raw.employees : [])
       if (Array.isArray(emps)) scheduleEmployees = emps
@@ -17293,9 +17295,11 @@ window.switchScheduleTab = async (tab) => {
         } catch(e) {}
       }
     } else if (tab === 'analysis') {
-      scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+      const hq = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+      scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hq}`).catch(() => null)
     } else if (tab === 'laborCost') {
-      scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+      const hq = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+      scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}${hq}`).catch(() => null)
     }
   } catch(e) { console.error('탭 데이터 로드 오류:', e) }
 
@@ -19498,7 +19502,8 @@ function renderLaborCostTab() {
   const fmt   = n => (n||0).toLocaleString()
 
   if (!data) {
-    api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).then(d => {
+    const _hq = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+    api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}${_hq}`).then(d => {
       scheduleLaborCostData = d
       const tc = document.getElementById('scheduleTabContent')
       if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
@@ -19897,7 +19902,8 @@ window.saveDispatchEntry = async () => {
     showToast('파출/알바 입력이 저장되었습니다', 'success')
     document.getElementById('dispatchInputModal')?.remove()
     // 인건비 데이터 새로고침
-    scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(()=>null)
+    const _hqD = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+    scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}${_hqD}`).catch(()=>null)
     const tc = document.getElementById('scheduleTabContent')
     if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
     // 외부인력 탭으로 자동 이동
@@ -19912,7 +19918,8 @@ window.deleteDispatchEntry = async (id) => {
   const res = await api('DELETE', `/api/schedule/dispatch/${id}`).catch(() => null)
   if (res?.success !== false) {
     showToast('삭제되었습니다', 'success')
-    scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(()=>null)
+    const _hqDD = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+    scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}${_hqDD}`).catch(()=>null)
     const tc = document.getElementById('scheduleTabContent')
     if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
     setTimeout(() => switchLaborSubTab('dispatch'), 100)
@@ -21721,7 +21728,8 @@ window.saveLaborCostSettings = async () => {
   showToast('단가 설정이 저장되었습니다', 'success')
   document.getElementById('laborCostSettingsModal')?.classList.add('hidden')
   // 리포트 새로고침
-  scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}`).catch(()=>null)
+  const _hqLC = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+  scheduleLaborCostData = await api('GET', `/api/schedule/labor-cost-report/${App.currentYear}/${App.currentMonth}${_hqLC}`).catch(()=>null)
   const tc = document.getElementById('scheduleTabContent')
   if (tc && scheduleTab === 'laborCost') tc.innerHTML = renderLaborCostTab()
 }
