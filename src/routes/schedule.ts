@@ -1054,6 +1054,7 @@ schedule.post('/monthly-leave/generate', async (c) => {
 // ── 월차 소급 처리 (입사 후 현재까지 미발생 월차 일괄 발생) ──────
 // POST /api/schedule/monthly-leave/backfill
 // body: { employeeId? }  — 특정 직원 또는 전체 1년 미만 직원 소급 처리
+// 개근 조건 없이 입사 다음달부터 이번달까지 무조건 자동 발생 (초기 도입용)
 schedule.post('/monthly-leave/backfill', async (c) => {
   const user = c.get('user')
   if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
@@ -1074,123 +1075,72 @@ schedule.post('/monthly-leave/backfill', async (c) => {
   const allResults: any[] = []
 
   for (const emp of (emps.results || [])) {
-    // 1년 미만 직원만 소급 처리
     const hired = new Date(emp.hire_date)
     const msPerYear = 365.25 * 24 * 60 * 60 * 1000
     const yearsWorked = (now.getTime() - hired.getTime()) / msPerYear
-    if (yearsWorked >= 1) continue // 1년 이상은 연차 전환 대상
 
-    // 입사 다음 달부터 현재 달 이전 달까지 반복
+    // 1년 미만 직원만 소급 처리 (1년 이상은 연차 전환 대상)
+    if (yearsWorked >= 1) continue
+
+    // 입사 다음 달부터 시작
     let checkYear = hired.getFullYear()
-    let checkMonth = hired.getMonth() + 2 // 입사 다음 달
+    let checkMonth = hired.getMonth() + 2 // 입사 다음 달 (getMonth()는 0-indexed)
     if (checkMonth > 12) { checkMonth = 1; checkYear++ }
 
-    const todayYM = now.getFullYear() * 100 + now.getMonth() // 현재 달 (0-indexed month = 이전 달)
+    // 이번 달(현재 달 포함)까지 처리: getMonth()+1이 현재 월(1-indexed)
+    const todayYM = now.getFullYear() * 100 + (now.getMonth() + 1)
 
     while (checkYear * 100 + checkMonth <= todayYM) {
       const targetYear = checkYear
       const targetMonth = checkMonth
 
-      // 1년 미만 여부 확인 (해당 월 말일 기준)
+      // 해당 월이 1년 미만 범위인지 확인 (말일 기준)
       const lastDayOfMonth = new Date(targetYear, targetMonth, 0).toISOString().slice(0, 10)
       if (!isUnder1Year(emp.hire_date, new Date(lastDayOfMonth))) {
-        // 다음 달로 이동
         checkMonth++
         if (checkMonth > 12) { checkMonth = 1; checkYear++ }
         continue
       }
 
-      // 이미 발생된 월차 확인
+      // 이미 발생된 월차 확인 → 스킵
       const existing = await c.env.DB.prepare(
         `SELECT id FROM monthly_leave_grants WHERE hospital_id=? AND employee_id=? AND target_year=? AND target_month=?`
       ).bind(hospitalId, emp.id, targetYear, targetMonth).first<any>()
       if (existing) {
-        // 다음 달로 이동
+        allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'already_exists' })
         checkMonth++
         if (checkMonth > 12) { checkMonth = 1; checkYear++ }
         continue
       }
 
-      // 최대 11일 초과 여부
+      // 누적 발생일수 확인 (최대 11일)
       const prevGrants = await c.env.DB.prepare(
         `SELECT COALESCE(SUM(days_granted),0) as total FROM monthly_leave_grants WHERE hospital_id=? AND employee_id=? AND status='active'`
       ).bind(hospitalId, emp.id).first<any>()
       const alreadyGranted = prevGrants?.total || 0
       if (alreadyGranted >= policy.maxDays) {
-        allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'max_reached' })
+        allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'max_reached', total: alreadyGranted })
         checkMonth++
         if (checkMonth > 12) { checkMonth = 1; checkYear++ }
         continue
       }
 
-      // 개근 여부 확인 (소급 시 스케줄 미입력 = 출근 간주)
-      const mmPad = String(targetMonth).padStart(2, '0')
-      const fromDate = `${targetYear}-${mmPad}-01`
-      const toDateStr = `${targetYear}-${mmPad}-${String(new Date(targetYear, targetMonth, 0).getDate()).padStart(2,'0')}`
-
-      const schedRows = await c.env.DB.prepare(`
-        SELECT work_date, shift_code FROM daily_schedules
-        WHERE hospital_id=? AND employee_id=? AND work_date BETWEEN ? AND ?
-      `).bind(hospitalId, emp.id, fromDate, toDateStr).all<any>()
-
-      const schedMap2: Record<string, any> = {}
-      for (const s of (schedRows.results || [])) schedMap2[s.work_date] = s
-
-      const workingDays2 = calcWorkingDays(targetYear, targetMonth)
-      let attendanceDays2 = 0
-      let absenceDays2 = 0
-      const ABSENCE_CODES2 = new Set(['결','결근'])
-
-      for (let d = 1; d <= new Date(targetYear, targetMonth, 0).getDate(); d++) {
-        const dateStr = `${targetYear}-${mmPad}-${String(d).padStart(2,'0')}`
-        const dow = new Date(dateStr).getDay()
-        if (dow === 0 || dow === 6) continue
-        if (dateStr < emp.hire_date) continue
-
-        const sc = schedMap2[dateStr]
-        if (!sc) { attendanceDays2++; continue } // 미입력 = 출근 간주
-        if (ABSENCE_CODES2.has(sc.shift_code || '')) {
-          absenceDays2++
-        } else {
-          attendanceDays2++
-        }
-      }
-
-      // 개근 기준 평가
-      let qualified2 = false
-      if (policy.attendanceRule === 'full') {
-        qualified2 = absenceDays2 === 0
-      } else if (policy.attendanceRule === 'partial') {
-        qualified2 = absenceDays2 <= 1
-      } else if (policy.attendanceRule === 'ratio') {
-        const total2 = attendanceDays2 + absenceDays2
-        const ratio2 = total2 > 0 ? (attendanceDays2 / total2 * 100) : 100
-        qualified2 = ratio2 >= policy.attendanceRatio
-      } else {
-        qualified2 = absenceDays2 === 0
-      }
-
-      if (!qualified2) {
-        allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'not_qualified', absenceDays: absenceDays2 })
-        checkMonth++
-        if (checkMonth > 12) { checkMonth = 1; checkYear++ }
-        continue
-      }
-
-      // 월차 발생
+      // ✅ 개근 조건 없이 무조건 발생 (초기 도입 소급 처리)
       const daysToGrant2 = Math.min(1, policy.maxDays - alreadyGranted)
+      const workingDays2 = calcWorkingDays(targetYear, targetMonth)
+
       const grantResult2 = await c.env.DB.prepare(`
         INSERT INTO monthly_leave_grants
           (hospital_id, employee_id, grant_year, grant_month, target_year, target_month,
            days_granted, grant_type, status, attendance_days, working_days, absence_days, note)
-        VALUES (?,?,?,?,?,?,?,'auto_backfill','active',?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,'auto_backfill','active',?,?,0,?)
       `).bind(
         hospitalId, emp.id, targetYear, targetMonth, targetYear, targetMonth,
-        daysToGrant2, attendanceDays2, workingDays2, absenceDays2,
-        `${targetYear}년 ${targetMonth}월 개근 월차 소급 발생`
+        daysToGrant2, workingDays2, workingDays2,
+        `${targetYear}년 ${targetMonth}월 월차 자동발생`
       ).run()
 
-      const leaveYear2 = targetYear
+      // employee_leaves 누적 업데이트
       await c.env.DB.prepare(`
         INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
         VALUES (?,?,?,'monthly',?,0,?)
@@ -1198,8 +1148,9 @@ schedule.post('/monthly-leave/backfill', async (c) => {
           total_days = total_days + excluded.total_days,
           note = excluded.note,
           updated_at = datetime('now')
-      `).bind(hospitalId, emp.id, leaveYear2, daysToGrant2, `${targetYear}년 월차 소급`).run()
+      `).bind(hospitalId, emp.id, targetYear, daysToGrant2, `${targetYear}년 월차 자동발생`).run()
 
+      // 감사 로그
       await c.env.DB.prepare(`
         INSERT INTO monthly_leave_audit
           (hospital_id, employee_id, grant_id, action, after_value, actor_id, actor_role, reason)
@@ -1207,20 +1158,23 @@ schedule.post('/monthly-leave/backfill', async (c) => {
       `).bind(
         hospitalId, emp.id, grantResult2.meta.last_row_id,
         'backfill_grant',
-        JSON.stringify({ year: leaveYear2, month: targetMonth, days: daysToGrant2, attendance: attendanceDays2, absence: absenceDays2 }),
+        JSON.stringify({ year: targetYear, month: targetMonth, days: daysToGrant2 }),
         user.userId || null, 'system',
-        `${targetYear}년 ${targetMonth}월 소급 처리`
+        `${targetYear}년 ${targetMonth}월 자동 소급 처리`
       ).run()
 
       allResults.push({ empId: emp.id, name: emp.name, year: targetYear, month: targetMonth, status: 'granted', days: daysToGrant2 })
 
-      // 다음 달로 이동
       checkMonth++
       if (checkMonth > 12) { checkMonth = 1; checkYear++ }
     }
   }
 
-  return c.json({ ok: true, results: allResults })
+  const grantedCount = allResults.filter(r => r.status === 'granted').length
+  const alreadyCount = allResults.filter(r => r.status === 'already_exists').length
+  const maxCount = allResults.filter(r => r.status === 'max_reached').length
+
+  return c.json({ ok: true, results: allResults, summary: { granted: grantedCount, already_exists: alreadyCount, max_reached: maxCount } })
 })
 
 // ── 월차 수동 조정 ──────────────────────────────────────────────

@@ -17358,25 +17358,30 @@ window.runMonthlyLeaveGenerate = async () => {
 window.runMonthlyLeaveBackfill = async () => {
   if (!confirm('1년 미만 재직 직원의 월차를 자동 발생하시겠습니까?\n\n' +
     '• 입사 다음달부터 이번달까지 미발생 월차를 한번에 처리합니다\n' +
-    '• 스케줄이 없어도 개근으로 간주하여 발생합니다\n' +
+    '• 스케줄(근무기록) 없어도 자동으로 발생됩니다\n' +
     '• 이미 발생된 달은 건너뜁니다\n' +
-    '• 사용일수는 수정 버튼으로 별도 입력하세요')) return
+    '• 발생 후 수정 버튼으로 실제 사용일수를 입력하세요')) return
 
   showToast('월차 자동발생 처리 중...', 'info')
   const hospQuery = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
   const res = await api('POST', `/api/schedule/monthly-leave/backfill${hospQuery}`, {}).catch(() => null)
   if (!res) { showToast('오류 발생', 'error'); return }
 
-  const granted = (res.results || []).filter((r) => r.status === 'granted').length
-  const maxed   = (res.results || []).filter((r) => r.status === 'max_reached').length
-  const total   = (res.results || []).length
+  const granted = res.summary?.granted ?? (res.results || []).filter((r) => r.status === 'granted').length
+  const already = res.summary?.already_exists ?? (res.results || []).filter((r) => r.status === 'already_exists').length
+  const maxed   = res.summary?.max_reached ?? (res.results || []).filter((r) => r.status === 'max_reached').length
 
-  if (total === 0) {
-    showToast('처리할 대상이 없습니다 — 이미 모두 발생되었습니다', 'info')
+  if (granted === 0 && already === 0 && maxed === 0) {
+    showToast('처리 대상 직원이 없습니다 (1년 미만 재직자 없음)', 'info')
+  } else if (granted === 0 && already > 0) {
+    showToast(`이미 모두 발생 완료 (${already}건 기존 발생)`, 'info')
   } else if (granted > 0) {
-    showToast(`✅ 월차 발생 완료: ${granted}건 발생 처리 (${maxed > 0 ? maxed + '건 한도초과 제외' : '전원 처리'})`, 'success')
+    let msg = `✅ 월차 발생 완료: ${granted}일 발생`
+    if (already > 0) msg += ` (기존 ${already}건 제외)`
+    if (maxed > 0) msg += ` (한도초과 ${maxed}건 제외)`
+    showToast(msg, 'success')
   } else {
-    showToast(`처리 완료: 발생 ${granted}건 (최대한도 초과 ${maxed}건)`, 'info')
+    showToast(`처리 완료 — 발생 ${granted}건, 한도초과 ${maxed}건`, 'info')
   }
 
   await loadMonthlyLeaveData()
