@@ -16216,9 +16216,6 @@ function renderLeavesTab() {
           ${isAdm ? `
           <button onclick="runMonthlyLeaveBackfill()" class="px-3 py-1.5 rounded-lg text-xs bg-teal-600 text-white hover:bg-teal-700">
             <i class="fas fa-bolt mr-1"></i>전체 월차 자동발생
-          </button>
-          <button onclick="runMonthlyLeaveTransition()" class="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-700">
-            <i class="fas fa-exchange-alt mr-1"></i>연차 전환 처리
           </button>` : ''}
         </div>
       </div>
@@ -16271,9 +16268,7 @@ function renderLeavesTab() {
           <h3 class="font-bold text-gray-800">${year}년 연차 현황</h3>
           <p class="text-xs text-gray-400 mt-0.5">법정 연차 = 입사 1년 미만:월1개, 1년 이상:15일+근속증가(최대25일)</p>
         </div>
-        ${isAdm ? `<button onclick="runAnnualLeaveTransition()" class="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-700">
-          <i class="fas fa-exchange-alt mr-1"></i>연차 자동 전환 실행
-        </button>` : ''}
+
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
