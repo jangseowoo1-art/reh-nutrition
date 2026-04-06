@@ -791,33 +791,83 @@ schedule.get('/monthly-leave/summary', async (c) => {
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const year = parseInt(c.req.query('year') || new Date().getFullYear().toString())
 
-  // 월차 발생 집계
+  const policy = await getMonthlyLeavePolicy(c.env.DB, hospitalId)
+  const maxDays = policy.maxDays || 11
+
+  // 1년 미만 + 이미 monthly 레코드 있는 직원 모두 포함
+  const emps = await c.env.DB.prepare(`
+    SELECT e.id as employee_id, e.name as emp_name, e.hire_date, e.team
+    FROM employees e
+    WHERE e.hospital_id=? AND e.is_active=1 AND e.hire_date IS NOT NULL AND e.hire_date != ''
+    ORDER BY e.team, e.hire_date
+  `).bind(hospitalId).all<any>()
+
+  // employee_leaves monthly 레코드
+  const leaves = await c.env.DB.prepare(`
+    SELECT * FROM employee_leaves
+    WHERE hospital_id=? AND year=? AND leave_type='monthly'
+  `).bind(hospitalId, year).all<any>()
+  const leaveMap: Record<number, any> = {}
+  for (const l of (leaves.results || [])) leaveMap[l.employee_id] = l
+
+  // monthly_leave_grants 집계
   const grants = await c.env.DB.prepare(`
-    SELECT employee_id,
-           SUM(days_granted) as total_granted,
-           COUNT(*) as grant_count
+    SELECT employee_id, SUM(days_granted) as total_granted, COUNT(*) as grant_count
     FROM monthly_leave_grants
     WHERE hospital_id=? AND grant_year=? AND status='active'
     GROUP BY employee_id
   `).bind(hospitalId, year).all<any>()
-
-  // employee_leaves 에서 monthly 타입 조회
-  const leaves = await c.env.DB.prepare(`
-    SELECT el.*, e.name as emp_name, e.hire_date, e.team
-    FROM employee_leaves el
-    JOIN employees e ON e.id = el.employee_id
-    WHERE el.hospital_id=? AND el.year=? AND el.leave_type='monthly'
-  `).bind(hospitalId, year).all<any>()
-
   const grantMap: Record<number, any> = {}
   for (const g of (grants.results || [])) grantMap[g.employee_id] = g
 
-  const result = (leaves.results || []).map((l: any) => ({
-    ...l,
-    grant_count:   grantMap[l.employee_id]?.grant_count   || 0,
-    total_granted: grantMap[l.employee_id]?.total_granted || 0,
-    remain:        (l.total_days || 0) - (l.used_days || 0),
-  }))
+  const now = new Date()
+  const result = []
+
+  for (const emp of (emps.results || [])) {
+    // 1년 미만 여부 판단
+    const msPerYear = 365.25 * 24 * 3600 * 1000
+    const diffMs = now.getTime() - new Date(emp.hire_date).getTime()
+    const under1Year = diffMs < msPerYear
+
+    // 이미 DB에 레코드 있으면 그 값 사용
+    const leafRow = leaveMap[emp.employee_id]
+
+    // DB에 없을 때: 1년 미만이면 자동 계산값으로 표시
+    if (!leafRow && !under1Year) continue  // 1년 이상인데 monthly 레코드 없으면 제외
+
+    // 자동계산 발생일수: 입사 다음달 ~ 이번달까지
+    let autoCalcDays = 0
+    if (under1Year) {
+      const hired = new Date(emp.hire_date)
+      let cy = hired.getFullYear(), cm = hired.getMonth() + 2
+      if (cm > 12) { cm = 1; cy++ }
+      const limitY = now.getFullYear(), limitM = now.getMonth() + 1
+      while ((cy < limitY || (cy === limitY && cm <= limitM)) && autoCalcDays < maxDays) {
+        autoCalcDays++
+        cm++; if (cm > 12) { cm = 1; cy++ }
+      }
+    }
+
+    const monthly_total = leafRow ? (leafRow.total_days ?? null) : null
+    const monthly_used  = leafRow ? (leafRow.used_days  ?? 0)    : 0
+
+    result.push({
+      employee_id:    emp.employee_id,
+      emp_name:       emp.emp_name,
+      hire_date:      emp.hire_date,
+      team:           emp.team,
+      year,
+      leave_type:     'monthly',
+      monthly_total,               // null = DB에 발생 기록 없음
+      monthly_used,
+      monthly_remain: monthly_total !== null ? monthly_total - monthly_used : null,
+      auto_calc_days: autoCalcDays, // 입사일 기준 자동계산 (표시용)
+      under1Year,
+      grant_count:    grantMap[emp.employee_id]?.grant_count   || 0,
+      total_granted:  grantMap[emp.employee_id]?.total_granted || 0,
+      is_initial_setup: leafRow?.is_initial_setup || 0,
+    })
+  }
 
   return c.json(result)
 })

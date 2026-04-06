@@ -16082,9 +16082,9 @@ function renderLeavesTab() {
   const mlByEmp = {}
   for (const ml of monthlyLeavesData) mlByEmp[ml.employee_id] = ml
 
-  // 월차 통계
-  const mlEmps      = emps.filter(e => mlByEmp[e.id])
-  const mlTotalDays = monthlyLeavesData.reduce((a, l) => a + (l.monthly_total||0), 0)
+  // 월차 통계 — DB 저장값 기준 (미저장은 auto_calc_days로 표시)
+  const mlEmps      = monthlyLeavesData.filter(m => m.under1Year)
+  const mlTotalDays = monthlyLeavesData.reduce((a, l) => a + (l.monthly_total ?? l.auto_calc_days ?? 0), 0)
   const mlUsedDays  = monthlyLeavesData.reduce((a, l) => a + (l.monthly_used||0), 0)
 
   function renderMonthlyLeaveRows(teamEmps, teamKey) {
@@ -16102,10 +16102,25 @@ function renderLeavesTab() {
       const under1Year = diffMs < 365.25 * 24 * 3600 * 1000
       const tenureMonths = Math.floor(diffMs / (1000*60*60*24*30))
       const ml = mlByEmp[emp.id]
+      const maxDays  = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
+
+      // DB에 저장된 값 (null = 아직 "전체 월차 자동발생" 미실행)
       const mlTotal  = ml?.monthly_total ?? null
       const mlUsed   = ml?.monthly_used  ?? 0
       const mlRemain = mlTotal !== null ? mlTotal - mlUsed : null
-      const maxDays  = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
+
+      // 자동계산 발생일수 (API에서 계산해서 내려줌, 없으면 프론트에서 계산)
+      const autoCalcDays = ml?.auto_calc_days ?? (() => {
+        if (!under1Year) return 0
+        const h = new Date(emp.hire_date)
+        let cy = h.getFullYear(), cm = h.getMonth() + 2
+        if (cm > 12) { cm = 1; cy++ }
+        const ly = now.getFullYear(), lm = now.getMonth() + 1
+        let cnt = 0
+        while ((cy < ly || (cy === ly && cm <= lm)) && cnt < maxDays) { cnt++; cm++; if (cm > 12) { cm = 1; cy++ } }
+        return cnt
+      })()
+
       const mlPct    = mlTotal ? Math.round(mlUsed / mlTotal * 100) : 0
       const mlPctColor = mlPct >= 80 ? 'bg-red-500' : mlPct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
       const statusBadge = under1Year
@@ -16124,7 +16139,14 @@ function renderLeavesTab() {
         <td class="px-3 py-3 text-center">
           ${mlTotal !== null
             ? `<span class="text-sm font-bold text-gray-800">${mlTotal}일</span><span class="text-xs text-gray-400 ml-1">/ ${maxDays}일</span>`
-            : under1Year ? `<span class="text-xs text-orange-600 font-bold">미발생</span><br><span class="text-xs text-gray-400">소급처리 필요</span>` : `<span class="text-xs text-gray-400">-</span>`}
+            : under1Year && autoCalcDays > 0
+              ? `<div class="flex flex-col items-center gap-0.5">
+                  <span class="text-sm font-bold text-teal-600">${autoCalcDays}일</span>
+                  <span class="text-xs text-gray-400">미저장·수정 후 확정</span>
+                </div>`
+              : under1Year
+                ? `<span class="text-xs text-gray-400">-</span>`
+                : `<span class="text-xs text-gray-300">-</span>`}
         </td>
         <td class="px-3 py-3 text-center">
           <span class="text-sm font-bold ${mlUsed > 0 ? 'text-blue-700' : 'text-gray-400'}">${mlUsed}일</span>
@@ -16191,7 +16213,7 @@ function renderLeavesTab() {
       <!-- 월차 요약 카드 -->
       <div class="grid grid-cols-3 gap-3 p-4 border-b border-gray-100">
         <div class="text-center">
-          <div class="text-xs text-gray-500 mb-1">월차 보유 직원</div>
+          <div class="text-xs text-gray-500 mb-1">1년 미만 직원</div>
           <div class="text-xl font-bold text-teal-700">${mlEmps.length}명</div>
         </div>
         <div class="text-center">
