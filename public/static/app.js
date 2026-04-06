@@ -306,6 +306,7 @@ function getAdminMenus() {
     { id: 'hospital-manage', icon: 'fa-hospital', label: '병원 관리', section: null },
     { id: 'holiday-manage', icon: 'fa-calendar-times', label: '공휴일 관리', section: null },
     { id: 'staff-manage', icon: 'fa-users-cog', label: '직원 관리', section: '인사' },
+    { id: 'schedule', icon: 'fa-calendar-alt', label: '스케줄 관리', section: null },
     { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
     { id: 'report', icon: 'fa-file-pdf', label: '보고서 출력', section: null },
     { id: 'ceo-dashboard', icon: 'fa-crown', label: '경영 대시보드', section: '경영' },
