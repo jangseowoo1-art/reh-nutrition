@@ -13656,6 +13656,11 @@ window.switchSchedView = function(mode) {
   try {
     _schedViewMode = mode
     window._designActiveCode = ''  // 설계 모드 코드 선택 초기화
+    // 설계 모드로 전환 시 외부인력 섹션 항상 접힌 상태로 초기화
+    if (mode === 'design') {
+      window._designExtCollapsed = true
+      window._designExtGroupCollapsed = { dispatch: true, parttime: true }
+    }
     const tc = document.getElementById('scheduleTabContent')
     if (!tc) { console.warn('[switchSchedView] scheduleTabContent 컨테이너를 찾을 수 없음'); return }
     tc.innerHTML = renderMonthlyScheduleTab()
@@ -14323,60 +14328,103 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         '</tr>'
     }
 
-    // 파출/알바 섹션
+    // 파출/알바 섹션 (접기/펼치기 지원 — 초기 접힌 상태)
     function buildDesignExtSection() {
       if (extWorkers.length === 0 && !canEditExt) return ''
-      let extBody = ''
+
+      // 접기 상태 기억 (설계 모드 재렌더 시 이전 상태 유지)
+      if (typeof window._designExtCollapsed === 'undefined') window._designExtCollapsed = true
+      if (typeof window._designExtGroupCollapsed === 'undefined') window._designExtGroupCollapsed = { dispatch: true, parttime: true }
+
       const extGroups = [
         { workers: dispatchW, type:'dispatch', label:'파출', color:'#ea580c', bg:'#fff7ed', border:'#fed7aa' },
         { workers: parttimeW, type:'parttime', label:'알바', color:'#7c3aed', bg:'#faf5ff', border:'#e9d5ff' }
       ]
+
+      // 전체 외부인력 메인 토글 헤더 (파출/알바 전체 섹션)
+      const totalExt     = extWorkers.length
+      const isMasterOpen = !window._designExtCollapsed
+      const masterIcon   = isMasterOpen ? '▲' : '▼'
+      const masterStyle  = 'display:' + (isMasterOpen ? '' : 'none')
+
+      let masterHeader =
+        '<tr id="design-ext-master-header"><td colspan="' + (days+3) + '" style="padding:5px 10px;background:linear-gradient(90deg,#fff7ed,#faf5ff);border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa;cursor:pointer;user-select:none" onclick="(function(){\
+window._designExtCollapsed=!window._designExtCollapsed;\
+var rows=document.querySelectorAll(\'.design-ext-content\');\
+var open=!window._designExtCollapsed;\
+rows.forEach(function(r){r.style.display=open?\'table-row\':\'none\'});\
+var ic=document.getElementById(\'design-ext-master-icon\');\
+if(ic)ic.textContent=open?\'▲\':\'▼\';\
+})()">' +
+        '<span style="font-size:11px;font-weight:800;color:#ea580c"><i class="fas fa-people-carry" style="margin-right:5px"></i>외부인력 (파출 / 알바)</span>' +
+        '<span style="font-size:9px;color:#9ca3af;margin-left:6px">파출 ' + dispatchW.length + '명 · 알바 ' + parttimeW.length + '명</span>' +
+        '<span id="design-ext-master-icon" style="margin-left:8px;font-size:10px;color:#ea580c;font-weight:900">' + masterIcon + '</span>' +
+        '<span style="font-size:9px;color:#9ca3af;margin-left:8px">' + (isMasterOpen ? '클릭하여 접기' : '클릭하여 펼치기') + '</span>' +
+        '</td></tr>'
+
+      // 각 그룹(파출/알바) 별 내용 생성
+      let groupRows = ''
       extGroups.forEach(function(eg) {
         if (eg.workers.length === 0 && !canEditExt) return
-        // 섹션 헤더
-        extBody += '<tr><td colspan="' + (days+3) + '" style="padding:3px 8px;background:' + eg.bg + ';border-top:2px solid ' + eg.color + ';border-bottom:1px solid ' + eg.border + '">'
-        extBody += '<span style="font-size:10px;font-weight:800;color:' + eg.color + '"><i class="fas fa-user-clock" style="margin-right:4px"></i>' + eg.label + ' ' + eg.workers.length + '명</span>'
-        if (canEditExt) extBody += '<button class="ext-add-btn" data-stype="' + eg.type + '" style="margin-left:6px;padding:1px 6px;border-radius:4px;background:' + eg.color + '22;border:1px solid ' + eg.color + '55;color:' + eg.color + ';font-size:9px;font-weight:700;cursor:pointer">+ ' + eg.label + ' 추가</button>'
-        extBody += '</td></tr>'
-        // 날짜 헤더
-        extBody += '<tr style="background:' + eg.color + '">'
-        extBody += '<th style="padding:2px 5px;text-align:left;width:' + NAME_W + 'px;min-width:' + NAME_W + 'px;position:sticky;left:0;background:' + eg.color + ';z-index:10;border-right:2px solid rgba(255,255,255,.3);font-size:9px;color:white">이름</th>'
+        const isGrpOpen = !window._designExtGroupCollapsed[eg.type]
+        const grpIcon   = isGrpOpen ? '▲' : '▼'
+        const grpContentStyle = (isMasterOpen && isGrpOpen) ? '' : 'none'
+
+        // 그룹 서브 헤더 (파출 또는 알바 — 클릭 시 해당 그룹만 접기/펼치기)
+        groupRows +=
+          '<tr class="design-ext-content" style="' + (isMasterOpen ? '' : 'display:none') + '">' +
+          '<td colspan="' + (days+3) + '" style="padding:3px 10px;background:' + eg.bg + ';border-top:2px solid ' + eg.color + ';border-bottom:1px solid ' + eg.border + ';cursor:pointer;user-select:none" onclick="(function(){\
+var t=\'' + eg.type + '\';\
+window._designExtGroupCollapsed[t]=!window._designExtGroupCollapsed[t];\
+var open=!window._designExtGroupCollapsed[t];\
+document.querySelectorAll(\'.design-ext-grp-' + eg.type + '\').forEach(function(r){r.style.display=open?\'table-row\':\'none\'});\
+var ic=document.getElementById(\'design-ext-grp-icon-' + eg.type + '\');\
+if(ic)ic.textContent=open?\'▲\':\'▼\';\
+})()">' +
+          '<span style="font-size:10px;font-weight:800;color:' + eg.color + '"><i class="fas fa-user-clock" style="margin-right:4px"></i>' + eg.label + ' ' + eg.workers.length + '명</span>' +
+          (canEditExt ? '<button class="ext-add-btn" data-stype="' + eg.type + '" onclick="event.stopPropagation()" style="margin-left:6px;padding:1px 6px;border-radius:4px;background:' + eg.color + '22;border:1px solid ' + eg.color + '55;color:' + eg.color + ';font-size:9px;font-weight:700;cursor:pointer">+ ' + eg.label + ' 추가</button>' : '') +
+          '<span id="design-ext-grp-icon-' + eg.type + '" style="margin-left:6px;font-size:9px;color:' + eg.color + ';font-weight:900">' + grpIcon + '</span>' +
+          '</td></tr>'
+
+        // 날짜 헤더 행
+        let dateHdr = '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="background:' + eg.color + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '">'
+        dateHdr += '<th style="padding:2px 5px;text-align:left;width:' + NAME_W + 'px;min-width:' + NAME_W + 'px;position:sticky;left:0;background:' + eg.color + ';z-index:10;border-right:2px solid rgba(255,255,255,.3);font-size:9px;color:white">이름</th>'
         for (let d2 = 1; d2 <= days; d2++) {
           const dow2 = getDayOfWeek(year, month, d2)
           const isSun2 = dow2==='일', isSat2 = dow2==='토'
-          extBody += '<th style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;border-left:1px solid rgba(255,255,255,.15);' + ((isSun2||isSat2)?'background:rgba(0,0,0,.15);':'') + 'font-size:8px;color:' + (isSun2?'#fca5a5':isSat2?'#93c5fd':'rgba(255,255,255,.9)') + ';font-weight:' + ((isSun2||isSat2)?'700':'500') + '">' + d2 + '<br><span style="font-size:7px;opacity:.8">' + dow2 + '</span></th>'
+          dateHdr += '<th style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;border-left:1px solid rgba(255,255,255,.15);' + ((isSun2||isSat2)?'background:rgba(0,0,0,.15);':'') + 'font-size:8px;color:' + (isSun2?'#fca5a5':isSat2?'#93c5fd':'rgba(255,255,255,.9)') + ';font-weight:' + ((isSun2||isSat2)?'700':'500') + '">' + d2 + '<br><span style="font-size:7px;opacity:.8">' + dow2 + '</span></th>'
         }
-        extBody += '<th style="padding:2px;text-align:center;width:28px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:white;background:rgba(0,0,0,.2)">근</th>'
-        extBody += '<th style="padding:2px;width:26px;border-left:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2)"></th></tr>'
+        dateHdr += '<th style="padding:2px;text-align:center;width:28px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:white;background:rgba(0,0,0,.2)">근</th>'
+        dateHdr += '<th style="padding:2px;width:26px;border-left:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2)"></th></tr>'
+        groupRows += dateHdr
+
         if (eg.workers.length === 0) {
-          extBody += '<tr><td colspan="' + (days+3) + '" style="padding:8px;text-align:center;background:' + eg.bg + ';color:' + eg.color + ';font-size:10px;font-style:italic">등록된 ' + eg.label + '이 없습니다</td></tr>'
+          groupRows += '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="' + (grpContentStyle === 'none' ? 'display:none' : '') + '"><td colspan="' + (days+3) + '" style="padding:8px;text-align:center;background:' + eg.bg + ';color:' + eg.color + ';font-size:10px;font-style:italic">등록된 ' + eg.label + '이 없습니다</td></tr>'
           return
         }
-        // 외부인력 행 — 외부인력 전용 이벤트 핸들러
+
+        // 직원 행
         eg.workers.forEach(function(w, widx) {
           const rowBg2 = widx % 2 === 0 ? '#ffffff' : eg.bg
           let wCells = '', wWorkDays = 0
           for (let d2 = 1; d2 <= days; d2++) {
-            const ds2 = year + '-' + mm + '-' + String(d2).padStart(2,'0')
-            const extKey = w.id + '_' + ds2
-            const extEntry = extSchedMap[extKey] || {}
+            const ds2      = year + '-' + mm + '-' + String(d2).padStart(2,'0')
+            const extEntry = extSchedMap[w.id + '_' + ds2] || {}
             const extCode  = extEntry.shift_type || extEntry.shift_code || ''
             const dow2     = getDayOfWeek(year, month, d2)
             const isSun2   = dow2 === '일', isSat2 = dow2 === '토'
-            const ds2Off   = allOffSet.has(ds2)
-            const cellBg2  = isSun2 ? 'background:#fff8f8;' : isSat2 ? 'background:#fffbf0;' : ds2Off ? 'background:#fefce8;' : 'background:' + rowBg2 + ';'
+            const cellBg2  = isSun2 ? 'background:#fff8f8;' : isSat2 ? 'background:#fffbf0;' : allOffSet.has(ds2) ? 'background:#fefce8;' : 'background:' + rowBg2 + ';'
             const borderCol2 = isSun2 ? '#fecaca' : isSat2 ? '#fde68a' : '#e5e7eb'
             if (extCode) wWorkDays++
-            // 긴 코드(morning/afternoon/full_12h 등) 약어 처리
             const extLabel = extCode.length > 3 ? extCode.substring(0,3) : extCode
             const sp2 = extCode
               ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:7px;font-weight:700;background:' + eg.color + '22;color:' + eg.color + ';border:1px solid ' + eg.color + '44;overflow:hidden;white-space:nowrap" title="' + extCode + '">' + extLabel + '</span>'
               : '<span style="color:#d1d5db;font-size:9px">·</span>'
             wCells += '<td class="ext-cell" style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;overflow:hidden;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
-              ' data-shift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' +
-              sp2 + '</td>'
+              ' data-shift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' + sp2 + '</td>'
           }
-          extBody += '<tr style="border-bottom:1px solid ' + eg.border + '"' +
+          groupRows +=
+            '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="border-bottom:1px solid ' + eg.border + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '"' +
             ' onmouseover="this.style.background=\'' + eg.color + '10\'"' +
             ' onmouseout="this.style.background=\'\'">' +
             '<td style="padding:2px 5px;position:sticky;left:0;background:' + rowBg2 + ';z-index:4;min-width:' + NAME_W + 'px;width:' + NAME_W + 'px;border-right:2px solid ' + eg.color + '33">' +
@@ -14384,36 +14432,35 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
             '<span style="display:inline-flex;align-items:center;font-size:8px;padding:0 4px;border-radius:3px;background:' + eg.color + '22;color:' + eg.color + ';font-weight:700">' + eg.label + '</span>' +
             '</td>' + wCells +
             '<td style="padding:1px 2px;text-align:center;background:#fff7ed;border-left:2px solid #fed7aa;font-size:10px;font-weight:700;color:' + eg.color + '">' + wWorkDays + '</td>' +
-            '<td style="padding:1px;background:' + rowBg2 + ';border-left:1px solid ' + eg.border + '"></td>' +
-            '</tr>'
+            '<td style="padding:1px;background:' + rowBg2 + ';border-left:1px solid ' + eg.border + '"></td></tr>'
         })
+
         // 합계 행
-        let extTotalCells = ''
-        let wTotalAll = 0
+        let extTotalCells = '', wTotalAll = 0
         for (let d2 = 1; d2 <= days; d2++) {
-          const ds2 = year + '-' + mm + '-' + String(d2).padStart(2,'0')
+          const ds2  = year + '-' + mm + '-' + String(d2).padStart(2,'0')
           const cnt2 = eg.workers.filter(function(w) {
             const e2 = extSchedMap[w.id + '_' + ds2] || {}
-            return e2 && (e2.shift_type || e2.shift_code)
+            return e2.shift_type || e2.shift_code
           }).length
           wTotalAll += cnt2
           const dow2 = getDayOfWeek(year, month, d2)
           const isSun2 = dow2==='일', isSat2 = dow2==='토'
-          extTotalCells += '<td style="padding:1px;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;background:' + eg.bg + ';border-left:1px solid ' + (isSun2?'#fecaca':isSat2?'#fde68a':eg.border) + '">'
-          extTotalCells += '<span style="font-size:9px;font-weight:700;color:' + (cnt2>0?eg.color:'#d1d5db') + '">' + (cnt2||'') + '</span></td>'
+          extTotalCells +=
+            '<td style="padding:1px;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;background:' + eg.bg + ';border-left:1px solid ' + (isSun2?'#fecaca':isSat2?'#fde68a':eg.border) + '">' +
+            '<span style="font-size:9px;font-weight:700;color:' + (cnt2>0?eg.color:'#d1d5db') + '">' + (cnt2||'') + '</span></td>'
         }
-        extBody += '<tr style="border-bottom:2px solid ' + eg.color + '44;background:' + eg.bg + '">' +
+        groupRows +=
+          '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="border-bottom:2px solid ' + eg.color + '44;background:' + eg.bg + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '">' +
           '<td style="padding:2px 5px;position:sticky;left:0;background:' + eg.bg + ';z-index:2;border-right:2px solid ' + eg.color + '44">' +
           '<span style="font-size:9px;font-weight:800;color:' + eg.color + '">' + eg.label + ' 합계</span></td>' +
           extTotalCells +
           '<td style="padding:1px 2px;text-align:center;background:' + eg.bg + ';border-left:2px solid ' + eg.color + '44;font-size:10px;font-weight:800;color:' + eg.color + '">' + wTotalAll + '</td>' +
           '<td style="padding:1px;background:' + eg.bg + '"></td></tr>'
       })
-      if (!extBody) return ''
-      return '<tr><td colspan="' + (days+3) + '" style="padding:4px 8px;background:#fff7ed;border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa">' +
-        '<span style="font-size:11px;font-weight:800;color:#ea580c"><i class="fas fa-people-carry" style="margin-right:5px"></i>외부인력 (파출 / 알바)</span>' +
-        '<span style="font-size:9px;color:#9ca3af;margin-left:6px">파출 ' + dispatchW.length + '명 · 알바 ' + parttimeW.length + '명</span>' +
-        '</td></tr>' + extBody
+
+      if (!groupRows) return ''
+      return masterHeader + groupRows
     }
 
     // 요약 칩
@@ -14473,7 +14520,8 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
       '        <span style="font-size:9px;color:#6b7280;margin-left:4px">드래그·Ctrl+C/V·Ctrl+Z·더블클릭·우클릭(OT) 모두 지원</span>\n' +
       '      </div>\n    </div>\n' +
       '    <div style="overflow-x:auto;border-radius:8px;border:2px solid #166534;box-shadow:0 2px 8px rgba(22,101,52,.1)">\n' +
-      '      <table id="schedDesignTable" style="min-width:' + (NAME_W + days*CW + 56) + 'px;border-collapse:collapse;font-size:11px;table-layout:fixed">\n' +
+      '      <table id="schedDesignTable" style="width:100%;min-width:' + (NAME_W + days*CW + 56) + 'px;border-collapse:collapse;font-size:11px;table-layout:fixed">\n' +
+      '        <colgroup><col style="width:' + NAME_W + 'px;min-width:' + NAME_W + 'px">' + Array.from({length:days},()=>'<col style="width:' + CW + 'px;min-width:' + CW + 'px">').join('') + '<col style="width:28px;min-width:28px"><col style="width:26px;min-width:26px"></colgroup>\n' +
       '        <thead style="position:sticky;top:0;z-index:20">' + buildDesignDateHeader() + '</thead>\n' +
       '        <tbody>' + tableBody + '</tbody>\n' +
       '      </table>\n    </div>\n' +
