@@ -16774,6 +16774,40 @@ function renderAnalysisTabSimple(ad, year, month) {
     }
   })
 
+  // ── OT 발생 직원 집계 ────────────────────────────────────────
+  const otByEmp = monthly.otByEmp || {}
+  const otEntries = Object.entries(otByEmp)
+    .filter(([, hrs]) => hrs > 0)
+    .sort((a, b) => b[1] - a[1])
+  const otCount = otEntries.length
+
+  // ── 직원별 이달 근무 요약 (sched_map 기반) ───────────────────
+  const sm   = scheduleMonthData?.sched_map || {}
+  const REST_CODES_S = new Set(['휴','연','경조','병가','반차','대체','오전','오후'])
+  const ANNUAL_CODES = new Set(['연'])
+  const empsForSummary = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
+
+  // 연차 잔여 맵 (scheduleLeavesData 기반)
+  const leaveMap = {}
+  ;(scheduleLeavesData || []).forEach(l => { leaveMap[l.employee_id] = l })
+
+  const empSummaryRows = empsForSummary.map(e => {
+    let workDays = 0, restDays = 0, annualUsed = 0
+    for (let d = 1; d <= days; d++) {
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const entry = sm[`${e.id}_${ds}`] || {}
+      const code  = entry.shift_code || ''
+      if (!code || code === '-') continue
+      if (ANNUAL_CODES.has(code)) { annualUsed++; restDays++ }
+      else if (REST_CODES_S.has(code)) restDays++
+      else workDays++
+    }
+    const leaveRow      = leaveMap[e.id]
+    const annualRemain  = leaveRow?.remaining_days ?? '-'
+    const otHrs         = otByEmp[e.name] || 0
+    return { name: e.name, position: e.position_name || '', workDays, restDays, annualUsed, annualRemain, otHrs }
+  })
+
   const riskLevel = shortCount > 5 ? 'high' : shortCount > 0 ? 'mid' : 'ok'
   const clusterLevel = clusterCount > 5 ? 'high' : clusterCount > 0 ? 'mid' : 'ok'
 
@@ -16825,6 +16859,95 @@ function renderAnalysisTabSimple(ad, year, month) {
           <div class="text-2xl font-bold ${c.color}">${c.value}<span class="text-xs ml-0.5 font-normal">${c.unit}</span></div>
         </div>`).join('')}
     </div>
+
+    <!-- OT 요약 배너 (발생 직원 있을 때만) -->
+    ${otCount > 0 ? `
+    <div class="bg-amber-50 border border-amber-200 rounded-2xl overflow-hidden">
+      <!-- 헤더 (클릭으로 펼침/접기) -->
+      <button onclick="this.closest('.ot-summary-card').querySelector('.ot-detail').classList.toggle('hidden')"
+        class="ot-summary-card w-full" style="display:block;background:none;border:none;padding:0;cursor:pointer;text-align:left">
+        <div class="ot-summary-card px-5 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-clock text-amber-600 text-sm"></i>
+            </div>
+            <div>
+              <div class="font-bold text-amber-800 text-sm">OT 발생 직원 <span class="text-amber-600">${otCount}명</span></div>
+              <div class="text-xs text-amber-600 mt-0.5">${otEntries.slice(0,3).map(([n]) => n).join(', ')}${otCount > 3 ? ` 외 ${otCount-3}명` : ''}</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-amber-500 bg-amber-100 px-2 py-1 rounded-md">탭하여 상세 보기</span>
+            <i class="fas fa-chevron-down text-amber-400 text-xs"></i>
+          </div>
+        </div>
+      </button>
+      <!-- 펼침 상세 (기본 숨김) -->
+      <div class="ot-detail hidden border-t border-amber-100">
+        <div class="px-5 py-3 space-y-2">
+          ${otEntries.map(([name, hrs]) => `
+          <div class="flex items-center justify-between py-1.5 border-b border-amber-50 last:border-0">
+            <span class="text-sm font-medium text-gray-700"><i class="fas fa-user text-amber-400 mr-2 text-xs"></i>${name}</span>
+            <span class="text-sm font-bold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full">${hrs}시간</span>
+          </div>`).join('')}
+        </div>
+        <div class="px-5 pb-3 text-xs text-amber-500">
+          <i class="fas fa-info-circle mr-1"></i>비용 상세는 관리자 인력비 탭에서 확인하세요.
+        </div>
+      </div>
+    </div>` : `
+    <div class="bg-green-50 border border-green-100 rounded-2xl px-5 py-3 flex items-center gap-3">
+      <i class="fas fa-clock text-green-500"></i>
+      <span class="text-sm text-green-700 font-medium">이달 OT 발생 직원 없음</span>
+    </div>`}
+
+    <!-- 직원별 이달 근무 요약 표 -->
+    ${empSummaryRows.length > 0 ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 border-b bg-gray-50 flex items-center gap-2">
+        <i class="fas fa-table text-gray-500 text-sm"></i>
+        <span class="font-bold text-gray-700 text-sm">직원별 이달 근무 요약</span>
+        <span class="text-xs text-gray-400 ml-1">${year}년 ${month}월</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">이름</th>
+              <th class="px-3 py-2.5 text-center text-xs text-green-600 font-semibold">근무일</th>
+              <th class="px-3 py-2.5 text-center text-xs text-red-500 font-semibold">휴무일</th>
+              <th class="px-3 py-2.5 text-center text-xs text-yellow-600 font-semibold">연차잔여</th>
+              <th class="px-3 py-2.5 text-center text-xs text-amber-600 font-semibold">OT</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${empSummaryRows.map((r, idx) => `
+            <tr class="border-b ${idx % 2 === 0 ? '' : 'bg-gray-50/50'} hover:bg-blue-50/30">
+              <td class="px-4 py-2.5">
+                <div class="font-medium text-gray-800 text-sm">${r.name}</div>
+                ${r.position ? `<div class="text-xs text-gray-400">${r.position}</div>` : ''}
+              </td>
+              <td class="px-3 py-2.5 text-center">
+                <span class="font-bold text-green-700">${r.workDays}</span><span class="text-xs text-gray-400 ml-0.5">일</span>
+              </td>
+              <td class="px-3 py-2.5 text-center">
+                <span class="text-red-500">${r.restDays}</span><span class="text-xs text-gray-400 ml-0.5">일</span>
+              </td>
+              <td class="px-3 py-2.5 text-center">
+                ${r.annualRemain === '-'
+                  ? `<span class="text-gray-300 text-xs">-</span>`
+                  : `<span class="font-medium ${r.annualRemain <= 2 ? 'text-red-600' : 'text-gray-700'}">${r.annualRemain}</span><span class="text-xs text-gray-400 ml-0.5">일</span>`}
+              </td>
+              <td class="px-3 py-2.5 text-center">
+                ${r.otHrs > 0
+                  ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold"><i class="fas fa-clock text-[10px]"></i>${r.otHrs}h</span>`
+                  : `<span class="text-gray-300 text-xs">-</span>`}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
 
     <!-- 파출/알바 현황 (있을 때만) -->
     ${extWorkers.length > 0 ? `
@@ -16879,7 +17002,7 @@ function renderAnalysisTabSimple(ad, year, month) {
     <!-- 안내 문구 -->
     <div class="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-600">
       <i class="fas fa-info-circle mr-1"></i>
-      상세 분석 데이터(일별 집계, 주별 통계, OT 현황)는 관리자에게 문의하세요.
+      상세 분석 데이터(일별 집계, 주별 통계, 비용 현황)는 관리자에게 문의하세요.
     </div>
   </div>`
 }
