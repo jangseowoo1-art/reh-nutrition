@@ -12335,9 +12335,7 @@ async function reloadScheduleMonth() {
       tc.innerHTML = renderMonthlyScheduleTab()
       setTimeout(initExtWorkerEvents, 0)
       setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 300)
-      setTimeout(() => {
-        if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} }
-      }, 400)
+      setTimeout(() => { if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} } }, 400)
     } else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
   }
 }
@@ -12563,9 +12561,7 @@ function renderScheduleTab(content) {
   // 관리자 뷰 요약 패널 (관리자 뷰 상태일 때만)
   setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 200)
   // 스티키 바 & 우측 패널 초기화
-  setTimeout(() => {
-    if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} }
-  }, 350)
+  setTimeout(() => { if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} } }, 350)
   // 관리자 전용: 병원 선택 드롭다운 초기화
   if (App.role === 'admin') setTimeout(initSchedHospitalSelector, 0)
 }
@@ -14208,19 +14204,9 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
 
     const CW = 22
     const NAME_W = 90
-    // 인라인 현황 컬럼 너비 정의
-    const STAT_W = 120  // 상태 요약 컬럼 (이름셀 내 확장)
-
-    // 오늘 날짜 계산 (현황 표시용)
-    const _today = new Date()
-    const _todayStr = year + '-' + mm + '-' + String(_today.getDate()).padStart(2,'0')
-    const _isCurrentMonth = (_today.getFullYear() === year && _today.getMonth() + 1 === month)
 
     function buildDesignDateHeader() {
-      let cells = '<th style="padding:3px 6px;text-align:left;width:' + (NAME_W + STAT_W) + 'px;min-width:' + (NAME_W + STAT_W) + 'px;position:sticky;left:0;background:#1e3a2f;z-index:30;border-right:2px solid rgba(255,255,255,.2);font-size:10px;color:rgba(255,255,255,.9)">' +
-        '<span style="display:inline-block;width:' + NAME_W + 'px">이름</span>' +
-        '<span style="display:inline-block;font-size:8px;color:rgba(255,255,255,.7);vertical-align:middle">근·휴·연·잔·OT</span>' +
-        '</th>'
+      let cells = '<th style="padding:3px 6px;text-align:left;width:' + NAME_W + 'px;min-width:' + NAME_W + 'px;position:sticky;left:0;background:#1e3a2f;z-index:30;border-right:2px solid rgba(255,255,255,.2);font-size:10px;color:rgba(255,255,255,.9)">이름</th>'
       for (let d = 1; d <= days; d++) {
         const dow = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
@@ -14270,90 +14256,24 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
           '<div style="display:inline-flex;flex-direction:column;align-items:center">' + sp + otBadge + '</div></td>'
       }).join('')
 
-      let workDays = 0, leaveDays = 0, offDays = 0, otHours = 0, todayCode = ''
+      let workDays = 0, leaveDays = 0
       for (let d = 1; d <= days; d++) {
-        const ds = year + '-' + mm + '-' + String(d).padStart(2,'0')
-        const sched = schedMap[emp.id + '_' + ds] || {}
-        const code = sched.shift_code || ''
-        if (ds === _todayStr) todayCode = code
-        if (!code || code === '-') continue
+        const code = (schedMap[emp.id + '_' + year + '-' + mm + '-' + String(d).padStart(2,'0')] || {}).shift_code || ''
         if (code === '연') leaveDays++
-        else if (REST_CODES.has(code)) offDays++
-        else { workDays++; if (sched.overtime_hours > 0) otHours += sched.overtime_hours }
+        else if (code && code !== '-' && !REST_CODES.has(code)) workDays++
       }
-
-      // 연차 잔여 계산
-      const empLeave = (leaveMap || {})[emp.id] || {}
-      const annualTot = empLeave.annual?.total ?? null
-      const annualCarried = empLeave.annual?.allowance_paid ? 0 : (empLeave.annual?.carried_over_days ?? 0)
-      const annualEffective = annualTot !== null ? annualTot + annualCarried : null
-      const annualRemain = annualEffective !== null ? annualEffective - (empLeave.annual?.used ?? 0) : null
-
-      // 오늘 상태
-      let todayStatus = 'none'
-      if (_isCurrentMonth) {
-        if (todayCode === '연') todayStatus = 'leave'
-        else if (REST_CODES.has(todayCode)) todayStatus = 'off'
-        else if (todayCode && todayCode !== '-') todayStatus = 'working'
-      }
-      const ST_DOT = { working:'#22c55e', leave:'#f59e0b', off:'#f87171', none:'#e2e8f0' }
-      const ST_TIP = { working:'근무중', leave:'연차', off:'휴무', none:'' }
-      const dotColor = ST_DOT[todayStatus]
-      const tip = ST_TIP[todayStatus]
-
-      // 오늘 근무조 배지 (현재월 + 근무중일 때)
-      const todayCodeBadge = (_isCurrentMonth && todayStatus === 'working' && todayCode)
-        ? '<span style="padding:0 3px;border-radius:2px;background:#166534;color:white;font-size:8px;font-weight:800;flex-shrink:0;white-space:nowrap">' + todayCode + '</span>'
-        : ''
-
-      // 인라인 칩 함수
-      const chip = function(bg, fg, txt) {
-        return '<span style="padding:0 3px;border-radius:2px;background:' + bg + ';color:' + fg + ';font-size:8px;font-weight:700;white-space:nowrap">' + txt + '</span>'
-      }
-
-      // 상태 칩 조합
-      const chips = [
-        chip('#dcfce7','#15803d', '근' + workDays),
-        offDays   > 0 ? chip('#fee2e2','#b91c1c', '휴' + offDays)   : '',
-        leaveDays > 0 ? chip('#fef9c3','#a16207', '연' + leaveDays) : '',
-        annualRemain !== null ? chip('#f1f5f9','#475569', '잔' + annualRemain) : '',
-        otHours   > 0 ? chip('#ede9fe','#5b21b6', 'OT' + otHours + 'h') : ''
-      ].filter(Boolean).join(' ')
-
-      const pos = (emp.position_name || emp.position || '').replace(/\(.+\)/,'').slice(0,5)
-
-      // sticky 이름+현황 셀 (NAME_W + STAT_W 합산 너비)
-      const nameCell =
-        '<td style="padding:2px 4px;position:sticky;left:0;background:' + rowBg + ';z-index:4;' +
-        'min-width:' + (NAME_W + STAT_W) + 'px;width:' + (NAME_W + STAT_W) + 'px;' +
-        'border-right:2px solid ' + grpColor + '44;cursor:pointer;overflow:hidden"' +
-        ' onclick="openEmpStatsModal(' + emp.id + ',\'' + emp.name.replace(/'/g,'') + '\')" title="클릭: 개인 상세">' +
-
-        '<div style="display:flex;align-items:center;gap:3px;min-width:0">' +
-          // 상태 점
-          (_isCurrentMonth
-            ? '<span style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';flex-shrink:0" title="' + tip + '"></span>'
-            : '') +
-          // 이름
-          '<span style="font-size:11px;font-weight:700;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:' + (NAME_W - 10) + 'px" title="' + emp.name + '">' + emp.name + '</span>' +
-          // 오늘 근무조 배지
-          todayCodeBadge +
-          // 직위 배지
-          '<span style="padding:0 3px;border-radius:2px;background:#e5e7eb;color:#6b7280;font-size:8px;white-space:nowrap;flex-shrink:0">' + pos + '</span>' +
-        '</div>' +
-
-        // 하단 한 줄: 상태 칩들
-        '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px;align-items:center">' +
-          chips +
-        '</div>' +
-
-        '</td>'
 
       return '<tr id="design-emprow-' + emp.id + '" style="border-bottom:1px solid #e5e7eb"' +
         ' onmouseover="this.style.background=\'' + grpColor + '18\'"' +
         ' onmouseout="this.style.background=\'\'">' +
-        nameCell +
+        '<td style="padding:2px 5px;position:sticky;left:0;background:' + rowBg + ';z-index:4;min-width:' + NAME_W + 'px;width:' + NAME_W + 'px;border-right:2px solid ' + grpColor + '44;cursor:pointer"' +
+        ' onclick="openEmpStatsModal(' + emp.id + ',\'' + emp.name.replace(/'/g,'') + '\')" title="클릭: 개인 상세">' +
+        '<div style="font-size:11px;font-weight:700;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + emp.name + '">' + emp.name + '</div>' +
+        '<div style="font-size:9px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (emp.position_name||emp.position||'').replace(/\(.+\)/,'') + '</div>' +
+        '</td>' +
         empCells +
+        '<td id="design-workdays-' + emp.id + '" style="padding:1px 2px;text-align:center;background:#f0fdf4;border-left:2px solid #bbf7d0;font-size:10px;font-weight:700;color:#166534;min-width:28px">' + workDays + '</td>' +
+        '<td id="design-leave-' + emp.id + '" style="padding:1px 2px;text-align:center;background:#fefce8;border-left:1px solid #fde68a;font-size:10px;font-weight:600;color:#92400e;min-width:26px">' + (leaveDays||'·') + '</td>' +
         '</tr>'
     }
 
@@ -14375,10 +14295,11 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         cells += '<span style="font-size:9px;font-weight:700;color:' + col + '">' + cnt + '</span></td>'
       }
       return '<tr style="border-bottom:2px solid ' + grp.color + '55;background:' + grp.bg + '">' +
-        '<td style="padding:2px 5px;position:sticky;left:0;background:' + grp.bg + ';z-index:2;min-width:' + (NAME_W+STAT_W) + 'px;width:' + (NAME_W+STAT_W) + 'px;border-right:2px solid ' + grp.color + '44">' +
+        '<td style="padding:2px 5px;position:sticky;left:0;background:' + grp.bg + ';z-index:2;border-right:2px solid ' + grp.color + '44">' +
         '<span style="font-size:9px;font-weight:800;color:' + grp.color + '">' + grp.label + ' ' + grp.members.length + '명 합계</span>' +
-        '<span style="font-size:9px;font-weight:700;color:' + grp.color + ';margin-left:8px">총 ' + total + '일</span>' +
         '</td>' + cells +
+        '<td style="padding:1px 2px;text-align:center;background:' + grp.bg + ';border-left:2px solid ' + grp.color + '44;font-size:10px;font-weight:800;color:' + grp.color + '">' + total + '</td>' +
+        '<td style="padding:1px;background:' + grp.bg + ';border-left:1px solid ' + grp.color + '22"></td>' +
         '</tr>'
     }
 
@@ -14398,11 +14319,12 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
       }
       const grandTotal = dailyWorking.reduce(function(a,b){return a+b},0)
       return '<tr style="background:#1e3a2f;border-top:3px solid #166534">' +
-        '<td style="padding:3px 5px;position:sticky;left:0;background:#1e3a2f;z-index:2;min-width:' + (NAME_W+STAT_W) + 'px;width:' + (NAME_W+STAT_W) + 'px;border-right:2px solid #166534">' +
+        '<td style="padding:3px 5px;position:sticky;left:0;background:#1e3a2f;z-index:2;border-right:2px solid #166534">' +
         '<span style="font-size:10px;font-weight:800;color:#86efac">전체 합계</span>' +
-        '<span style="font-size:9px;color:#4ade80;margin-left:8px">총 ' + grandTotal + '일</span>' +
         (target > 0 ? '<div style="font-size:8px;color:#4ade80">목표 ' + target + '명</div>' : '') +
         '</td>' + cells +
+        '<td style="padding:2px;text-align:center;background:#166534;border-left:2px solid #14532d;font-size:11px;font-weight:800;color:white">' + grandTotal + '</td>' +
+        '<td style="padding:2px;background:#1e3a2f;border-left:1px solid rgba(255,255,255,.2)"></td>' +
         '</tr>'
     }
 
@@ -14466,13 +14388,14 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
 
         // 날짜 헤더 행
         let dateHdr = '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="background:' + eg.color + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '">'
-        dateHdr += '<th style="padding:2px 5px;text-align:left;width:' + (NAME_W+STAT_W) + 'px;min-width:' + (NAME_W+STAT_W) + 'px;position:sticky;left:0;background:' + eg.color + ';z-index:10;border-right:2px solid rgba(255,255,255,.3);font-size:9px;color:white">이름</th>'
+        dateHdr += '<th style="padding:2px 5px;text-align:left;width:' + NAME_W + 'px;min-width:' + NAME_W + 'px;position:sticky;left:0;background:' + eg.color + ';z-index:10;border-right:2px solid rgba(255,255,255,.3);font-size:9px;color:white">이름</th>'
         for (let d2 = 1; d2 <= days; d2++) {
           const dow2 = getDayOfWeek(year, month, d2)
           const isSun2 = dow2==='일', isSat2 = dow2==='토'
           dateHdr += '<th style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;border-left:1px solid rgba(255,255,255,.15);' + ((isSun2||isSat2)?'background:rgba(0,0,0,.15);':'') + 'font-size:8px;color:' + (isSun2?'#fca5a5':isSat2?'#93c5fd':'rgba(255,255,255,.9)') + ';font-weight:' + ((isSun2||isSat2)?'700':'500') + '">' + d2 + '<br><span style="font-size:7px;opacity:.8">' + dow2 + '</span></th>'
         }
-        dateHdr += '</tr>'
+        dateHdr += '<th style="padding:2px;text-align:center;width:28px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:white;background:rgba(0,0,0,.2)">근</th>'
+        dateHdr += '<th style="padding:2px;width:26px;border-left:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2)"></th></tr>'
         groupRows += dateHdr
 
         if (eg.workers.length === 0) {
@@ -14512,15 +14435,12 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
             '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="border-bottom:1px solid ' + eg.border + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '"' +
             ' onmouseover="this.style.background=\'' + eg.color + '10\'"' +
             ' onmouseout="this.style.background=\'\'">' +
-            '<td style="padding:2px 4px;position:sticky;left:0;background:' + rowBg2 + ';z-index:4;min-width:' + (NAME_W+STAT_W) + 'px;width:' + (NAME_W+STAT_W) + 'px;border-right:2px solid ' + eg.color + '33;overflow:hidden">' +
-            '<div style="display:flex;align-items:center;gap:3px">' +
-            '<span style="font-size:10px;font-weight:700;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:' + (NAME_W-10) + 'px" title="' + (w.name||'이름없음') + '">' + (w.name||'이름없음') + '</span>' +
-            '<span style="padding:0 3px;border-radius:2px;background:' + eg.color + '22;color:' + eg.color + ';font-size:8px;font-weight:700;white-space:nowrap;flex-shrink:0">' + eg.label + '</span>' +
-            '</div>' +
-            '<div style="margin-top:2px">' +
-            '<span style="padding:0 3px;border-radius:2px;background:#dcfce7;color:#15803d;font-size:8px;font-weight:700">근' + wWorkDays + '</span>' +
-            '</div>' +
-            '</td>' + wCells + '</tr>'
+            '<td style="padding:2px 5px;position:sticky;left:0;background:' + rowBg2 + ';z-index:4;min-width:' + NAME_W + 'px;width:' + NAME_W + 'px;border-right:2px solid ' + eg.color + '33">' +
+            '<div style="font-size:10px;font-weight:700;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (w.name||'이름없음') + '">' + (w.name||'이름없음') + '</div>' +
+            '<span style="display:inline-flex;align-items:center;font-size:8px;padding:0 4px;border-radius:3px;background:' + eg.color + '22;color:' + eg.color + ';font-weight:700">' + eg.label + '</span>' +
+            '</td>' + wCells +
+            '<td style="padding:1px 2px;text-align:center;background:#fff7ed;border-left:2px solid #fed7aa;font-size:10px;font-weight:700;color:' + eg.color + '">' + wWorkDays + '</td>' +
+            '<td style="padding:1px;background:' + rowBg2 + ';border-left:1px solid ' + eg.border + '"></td></tr>'
         })
 
         // 합계 행
@@ -14540,11 +14460,11 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
         }
         groupRows +=
           '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="border-bottom:2px solid ' + eg.color + '44;background:' + eg.bg + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '">' +
-          '<td style="padding:2px 5px;position:sticky;left:0;background:' + eg.bg + ';z-index:2;min-width:' + (NAME_W+STAT_W) + 'px;width:' + (NAME_W+STAT_W) + 'px;border-right:2px solid ' + eg.color + '44">' +
-          '<span style="font-size:9px;font-weight:800;color:' + eg.color + '">' + eg.label + ' 합계</span>' +
-          '<span style="font-size:9px;font-weight:700;color:' + eg.color + ';margin-left:6px">총 ' + wTotalAll + '일</span>' +
-          '</td>' +
-          extTotalCells + '</tr>'
+          '<td style="padding:2px 5px;position:sticky;left:0;background:' + eg.bg + ';z-index:2;border-right:2px solid ' + eg.color + '44">' +
+          '<span style="font-size:9px;font-weight:800;color:' + eg.color + '">' + eg.label + ' 합계</span></td>' +
+          extTotalCells +
+          '<td style="padding:1px 2px;text-align:center;background:' + eg.bg + ';border-left:2px solid ' + eg.color + '44;font-size:10px;font-weight:800;color:' + eg.color + '">' + wTotalAll + '</td>' +
+          '<td style="padding:1px;background:' + eg.bg + '"></td></tr>'
       })
 
       if (!groupRows) return ''
@@ -14608,8 +14528,8 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
       '        <span style="font-size:9px;color:#6b7280;margin-left:4px">드래그·Ctrl+C/V·Ctrl+Z·더블클릭·우클릭(OT) 모두 지원</span>\n' +
       '      </div>\n    </div>\n' +
       '    <div style="overflow-x:auto;border-radius:8px;border:2px solid #166534;box-shadow:0 2px 8px rgba(22,101,52,.1)">\n' +
-      '      <table id="schedDesignTable" style="width:100%;min-width:' + (NAME_W + STAT_W + days*CW) + 'px;border-collapse:collapse;font-size:11px;table-layout:fixed">\n' +
-      '        <colgroup><col style="width:' + (NAME_W+STAT_W) + 'px;min-width:' + (NAME_W+STAT_W) + 'px">' + Array.from({length:days},()=>'<col style="width:' + CW + 'px;min-width:' + CW + 'px">').join('') + '</colgroup>\n' +
+      '      <table id="schedDesignTable" style="width:100%;min-width:' + (NAME_W + days*CW + 56) + 'px;border-collapse:collapse;font-size:11px;table-layout:fixed">\n' +
+      '        <colgroup><col style="width:' + NAME_W + 'px;min-width:' + NAME_W + 'px">' + Array.from({length:days},()=>'<col style="width:' + CW + 'px;min-width:' + CW + 'px">').join('') + '<col style="width:28px;min-width:28px"><col style="width:26px;min-width:26px"></colgroup>\n' +
       '        <thead style="position:sticky;top:0;z-index:20">' + buildDesignDateHeader() + '</thead>\n' +
       '        <tbody>' + tableBody + '</tbody>\n' +
       '      </table>\n    </div>\n' +
@@ -16120,17 +16040,16 @@ function renderMonthlyScheduleTab() {
 
     </div><!-- /스케줄 그리드 영역 -->
 
-    <!-- ③ 우측 고정 직원 상태 패널 (설계 모드에서는 완전 제거 — 직원 행 내 인라인 표시) -->
-    ${_schedViewMode !== 'design' ? `
-    <div id="schedRightEmpPanel" style="width:260px;flex-shrink:0;position:sticky;top:0;max-height:calc(100vh - 100px);overflow-y:auto;background:linear-gradient(180deg,#f0fdf4,#ffffff);border-radius:12px;border:1.5px solid #bbf7d0;box-shadow:0 2px 12px rgba(22,101,52,.1);font-size:11px">
+    <!-- ③ 우측 고정 직원 상태 패널 -->
+    <div id="schedRightEmpPanel" style="width:220px;flex-shrink:0;position:sticky;top:0;max-height:calc(100vh - 100px);overflow-y:auto;background:linear-gradient(180deg,#f0fdf4,#ffffff);border-radius:12px;border:1.5px solid #bbf7d0;box-shadow:0 2px 12px rgba(22,101,52,.1);font-size:11px">
       <!-- 헤더 -->
       <div style="padding:8px 10px;background:linear-gradient(135deg,#166534,#15803d);border-radius:10px 10px 0 0;position:sticky;top:0;z-index:5">
         <div style="font-size:11px;font-weight:800;color:#86efac;display:flex;align-items:center;gap:5px">
           <i class="fas fa-users" style="font-size:10px"></i>직원 현황
         </div>
-        <div style="font-size:9px;color:#4ade80;opacity:.8;margin-top:1px">실시간 반영 · 클릭: 상세</div>
+        <div style="font-size:9px;color:#4ade80;opacity:.8;margin-top:1px">클릭하면 개인 상세 보기</div>
       </div>
-      <!-- KPI 요약 -->
+      <!-- KPI 요약 (4칸 그리드) -->
       <div id="schedRightKpiRow" style="padding:6px 8px;display:grid;grid-template-columns:1fr 1fr;gap:4px;border-bottom:1px solid #dcfce7">
         <div style="background:#dcfce7;border-radius:6px;padding:4px 6px;text-align:center">
           <div style="font-size:14px;font-weight:800;color:#166534" id="srk-working">-</div>
@@ -16150,11 +16069,10 @@ function renderMonthlyScheduleTab() {
         </div>
       </div>
       <!-- 직원별 목록 -->
-      <div id="schedRightEmpList" style="padding:4px 0">
+      <div id="schedRightEmpList" style="padding:0">
         <div style="padding:8px;text-align:center;color:#94a3b8;font-size:10px">로딩 중...</div>
       </div>
     </div>
-    ` : ''}
 
   </div><!-- /메인 2-컬럼 레이아웃 -->
 
@@ -24149,17 +24067,20 @@ function updateSchedRightPanel() {
     return { emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain, todayCode }
   })
 
-  // KPI 업데이트
+  // KPI
   if (kpiWorking) kpiWorking.textContent = isCurrentMonth ? totalWorking : emps.length
   if (kpiLeave)   kpiLeave.textContent   = totalLeave  || empStats.filter(e => e.leaveDays > 0).length
   if (kpiOff)     kpiOff.textContent     = isCurrentMonth ? totalOff : '-'
   if (kpiOt)      kpiOt.textContent      = totalOtCnt
 
-  // 오늘 상태별 스타일
-  // (상태 스타일은 렌더링 루프 내 ST_DOT/ST_ICON으로 정의)
+  // 상태별 스타일
+  const ST_DOT   = { working:'#22c55e', leave:'#f59e0b', off:'#f87171', none:'#e2e8f0' }
+  const ST_LABEL = { working:'근무중',  leave:'연차',     off:'휴무',    none:''        }
+  const ST_BG    = { working:'#dcfce7', leave:'#fef9c3',  off:'#fee2e2', none:'#f3f4f6' }
+  const ST_COL   = { working:'#166534', leave:'#92400e',  off:'#b91c1c', none:'#9ca3af' }
 
   // 팀별 그룹핑
-  const TEAM_ORDER  = ['nutrition','cook']
+  const TEAM_ORDER  = ['nutrition', 'cook']
   const TEAM_LABEL  = { nutrition:'영양팀', cook:'조리팀' }
   const TEAM_COLOR  = { nutrition:'#be185d', cook:'#166534' }
   const TEAM_BG     = { nutrition:'#fdf2f8', cook:'#f0fdf4' }
@@ -24172,10 +24093,11 @@ function updateSchedRightPanel() {
     grouped[t].push(s)
   })
 
-  // 오늘 상태 스타일
-  const ST_DOT  = { working:'#22c55e', leave:'#f59e0b', off:'#f87171', none:'#e2e8f0' }
-  const ST_ICON = { working:'fa-briefcase', leave:'fa-umbrella-beach', off:'fa-bed', none:'fa-circle' }
-  const ST_TIP  = { working:'근무중', leave:'연차', off:'휴무', none:'-' }
+  const chip = (bg, fg, label, val) =>
+    `<div style="display:flex;flex-direction:column;align-items:center;background:${bg};border-radius:5px;padding:2px 5px;min-width:28px">
+      <span style="font-size:10px;font-weight:800;color:${fg};line-height:1.2">${val}</span>
+      <span style="font-size:8px;color:${fg};opacity:.75;line-height:1.1">${label}</span>
+    </div>`
 
   let html = ''
   const allTeams = [...new Set([...TEAM_ORDER, ...Object.keys(grouped)])]
@@ -24188,64 +24110,48 @@ function updateSchedRightPanel() {
     const tBg     = TEAM_BG[team]     || '#f9fafb'
     const tBorder = TEAM_BORDER[team] || '#e5e7eb'
 
-    // ── 팀 구분 헤더 ──────────────────────────────
-    html += `
-      <div style="padding:4px 10px;background:${tBg};border-top:2px solid ${tColor};border-bottom:1px solid ${tBorder};display:flex;align-items:center;gap:6px;position:sticky;top:0;z-index:3">
-        <span style="width:6px;height:6px;border-radius:50%;background:${tColor};flex-shrink:0"></span>
-        <span style="font-size:10px;font-weight:800;color:${tColor}">${tLabel}</span>
-        <span style="font-size:9px;color:${tColor}88;margin-left:2px">${list.length}명</span>
-      </div>`
+    html += `<div style="padding:3px 8px;background:${tBg};border-top:2px solid ${tColor};border-bottom:1px solid ${tBorder};display:flex;align-items:center;gap:5px">
+      <span style="width:6px;height:6px;border-radius:50%;background:${tColor};flex-shrink:0"></span>
+      <span style="font-size:10px;font-weight:800;color:${tColor}">${tLabel}</span>
+      <span style="font-size:9px;color:${tColor};opacity:.6">${list.length}명</span>
+    </div>`
 
     list.forEach(({ emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain, todayCode }) => {
-      const dotColor = ST_DOT[todayStatus]  || ST_DOT.none
-      const icon     = ST_ICON[todayStatus] || ST_ICON.none
-      const tip      = ST_TIP[todayStatus]  || '-'
-      const pos      = (emp.position_name || emp.position || '').replace(/\(.+\)/,'').slice(0,4)
+      const dotColor  = ST_DOT[todayStatus]
+      const stLabel   = ST_LABEL[todayStatus]
+      const stBg      = ST_BG[todayStatus]
+      const stCol     = ST_COL[todayStatus]
+      const pos = (emp.position_name || emp.position || '').replace(/\(.+\)/,'').slice(0,5)
 
-      // 오늘 근무조 코드 (현재 월 + 근무 상태일 때만)
-      const codeTag = (isCurrentMonth && todayStatus === 'working' && todayCode)
-        ? `<span style="padding:0 4px;border-radius:3px;background:#166534;color:white;font-size:9px;font-weight:800;flex-shrink:0">${todayCode}</span>`
-        : ''
-
-      // 통계 칩 — 한 줄 인라인
-      const chip = (bg, fg, txt) =>
-        `<span style="padding:1px 5px;border-radius:3px;background:${bg};color:${fg};font-size:9px;font-weight:700;white-space:nowrap">${txt}</span>`
-
-      const chips = [
-        chip('#dcfce7','#15803d', `근 ${workDays}`),
-        leaveDays > 0 ? chip('#fef9c3','#a16207', `연 ${leaveDays}`) : '',
-        offDays   > 0 ? chip('#fee2e2','#b91c1c', `휴 ${offDays}`)  : '',
-        otHours   > 0 ? chip('#ede9fe','#5b21b6', `OT ${otHours}h`) : '',
-        annualRemain !== null ? chip('#f1f5f9','#475569', `잔 ${annualRemain}`) : ''
-      ].filter(Boolean).join(' ')
+      // 오늘 근무조 배지
+      const todayBadge = (isCurrentMonth && todayStatus === 'working' && todayCode)
+        ? `<span style="padding:1px 4px;border-radius:3px;background:#166534;color:white;font-size:9px;font-weight:800">${todayCode}</span>`
+        : (isCurrentMonth && stLabel
+          ? `<span style="padding:1px 4px;border-radius:3px;background:${stBg};color:${stCol};font-size:9px;font-weight:700">${stLabel}</span>`
+          : '')
 
       html += `
-        <div onclick="try{openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'')}')}catch(e){}"
-          title="${tip}"
-          style="display:grid;grid-template-columns:auto 1fr;align-items:center;gap:0;border-bottom:1px solid #f1f5f9;cursor:pointer;transition:background .1s"
-          onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background=''">
+      <div onclick="try{openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'')}')}catch(e){}"
+        style="padding:5px 8px;border-bottom:1px solid #f1f5f9;cursor:pointer"
+        onmouseover="this.style.background='${tBg}'" onmouseout="this.style.background=''">
 
-          <!-- 왼쪽: 이름+직위 블록 -->
-          <div style="padding:6px 8px;min-width:0;border-right:1px solid #e5e7eb">
-            <div style="display:flex;align-items:center;gap:4px">
-              <!-- 오늘 상태 점 -->
-              ${isCurrentMonth
-                ? `<span style="width:7px;height:7px;border-radius:50%;background:${dotColor};flex-shrink:0" title="${tip}"></span>`
-                : ''}
-              <!-- 이름 -->
-              <span style="font-size:12px;font-weight:800;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:68px">${emp.name}</span>
-              <!-- 오늘 근무조 -->
-              ${codeTag}
-            </div>
-            <!-- 직위 -->
-            <div style="font-size:9px;color:#94a3b8;margin-top:1px;padding-left:${isCurrentMonth?'11px':'0'};white-space:nowrap">${pos}</div>
-          </div>
+        <!-- 1행: 상태점 + 이름 + 근무조/상태배지 + 직위 -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+          ${isCurrentMonth ? `<span style="width:7px;height:7px;border-radius:50%;background:${dotColor};flex-shrink:0"></span>` : ''}
+          <span style="font-size:12px;font-weight:800;color:#111827;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${emp.name}</span>
+          ${todayBadge}
+          <span style="font-size:9px;color:#94a3b8;flex-shrink:0;background:#f1f5f9;padding:1px 4px;border-radius:3px">${pos}</span>
+        </div>
 
-          <!-- 오른쪽: 통계 칩들 -->
-          <div style="padding:4px 6px;display:flex;flex-direction:column;gap:2px">
-            ${chips}
-          </div>
-        </div>`
+        <!-- 2행: 수치 칩들 (근무일·휴무·연차·잔여·OT) -->
+        <div style="display:flex;gap:3px;flex-wrap:wrap">
+          ${chip('#dcfce7','#15803d','근무',workDays+'일')}
+          ${offDays   > 0 ? chip('#fee2e2','#b91c1c','휴무',  offDays+'일')   : ''}
+          ${leaveDays > 0 ? chip('#fef9c3','#a16207','연차',  leaveDays+'일') : ''}
+          ${annualRemain !== null ? chip('#f1f5f9','#475569','잔여연차', annualRemain+'일') : ''}
+          ${otHours   > 0 ? chip('#ede9fe','#5b21b6','OT',    otHours+'h')    : ''}
+        </div>
+      </div>`
     })
   })
 
