@@ -247,6 +247,7 @@ function renderAll() {
     initBudgetGaugeChart(progressPct)
     initAnnualChart()
     initVendorChart(vendorOrders)
+    initLaborDonutChart(State.staffLabor)
   }, 100)
 }
 
@@ -1137,9 +1138,109 @@ function renderExecStaffLaborSection(d) {
           </div>
           <p style="font-size:11px;color:#9ca3af;margin-top:4px">권장 기준: 30% 이하 / 파출 ${fmtW2(lc.dispatchCost)}원 + 알바 ${fmtW2(lc.parttimeCost)}원</p>
         </div>
+
+        <!-- 인건비 구성 도넛 차트 -->
+        <div style="background:#f9fafb;border-radius:12px;padding:12px">
+          <p style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px">📊 인건비 구성 비율</p>
+          <div style="display:flex;align-items:center;gap:12px">
+            <canvas id="execLaborDonutChart" width="90" height="90" style="flex-shrink:0"></canvas>
+            <div style="flex:1;display:flex;flex-direction:column;gap:4px">
+              ${costItems.map(item => `
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="display:flex;align-items:center;gap:5px">
+                    <span style="width:8px;height:8px;border-radius:50%;background:${item.color};flex-shrink:0"></span>
+                    <span style="font-size:11px;color:#6b7280">${item.label}</span>
+                  </div>
+                  <span style="font-size:11px;font-weight:700;color:#374151">${item.ratio}%</span>
+                </div>`).join('')}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
+  </div>
+
+  <!-- 직원별 추가수당 명세 -->
+  ${(() => {
+    const byEmp = d.byEmployee || []
+    const showBase = d.showBaseSalary === true
+    if (byEmp.length === 0) return ''
+    const hasAddCost = byEmp.some(r => r.totalAddCost > 0)
+    return `
+  <div class="exec-card overflow-hidden" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <h3 style="font-weight:700;font-size:14px;color:#1f2937;display:flex;align-items:center;gap:8px">
+          <i class="fas fa-file-invoice-dollar" style="color:#f59e0b"></i>직원별 추가수당 명세
+        </h3>
+        <p style="font-size:11px;color:#9ca3af;margin-top:2px">OT·야간·휴일·주휴수당 — 기본급 외 추가 발생 비용</p>
+      </div>
+      ${!showBase ? '<span style="font-size:11px;padding:3px 10px;border-radius:99px;background:#f3f4f6;color:#9ca3af"><i class="fas fa-eye-slash" style="margin-right:4px"></i>기본급 비공개</span>' : ''}
+    </div>
+    <div style="overflow-x:auto;padding:0">
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="background:#fafafa;border-bottom:1px solid #e5e7eb">
+            <th style="padding:8px 14px;text-align:left;color:#6b7280;font-weight:600">직원</th>
+            <th style="padding:8px 10px;text-align:center;color:#6b7280;font-weight:600">근무일</th>
+            ${showBase ? '<th style="padding:8px 10px;text-align:right;color:#6b7280;font-weight:600">기본급</th>' : ''}
+            <th style="padding:8px 10px;text-align:center;color:#3b82f6;font-weight:600">OT시간</th>
+            <th style="padding:8px 10px;text-align:right;color:#3b82f6;font-weight:600">OT수당</th>
+            <th style="padding:8px 10px;text-align:center;color:#8b5cf6;font-weight:600">야간(h)</th>
+            <th style="padding:8px 10px;text-align:right;color:#8b5cf6;font-weight:600">야간수당</th>
+            <th style="padding:8px 10px;text-align:center;color:#ef4444;font-weight:600">휴일(h)</th>
+            <th style="padding:8px 10px;text-align:right;color:#ef4444;font-weight:600">휴일수당</th>
+            <th style="padding:8px 10px;text-align:right;color:#0d9488;font-weight:600">주휴수당</th>
+            <th style="padding:8px 10px;text-align:right;color:#1f2937;font-weight:700">추가합계</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${byEmp.map((r, i) => {
+            const addTotal = r.totalAddCost || 0
+            const hasAdd = addTotal > 0
+            return `
+          <tr style="border-bottom:1px solid #f3f4f6;background:${i%2===0?'#fff':'#fafafa'}">
+            <td style="padding:8px 14px">
+              <span style="font-weight:600;color:#1f2937">${r.empName || ''}</span>
+            </td>
+            <td style="padding:8px 10px;text-align:center;color:#6b7280">${r.workDays || 0}일</td>
+            ${showBase ? `<td style="padding:8px 10px;text-align:right;color:#374151">${fmtW2(r.estimatedMonthly)}원</td>` : ''}
+            <td style="padding:8px 10px;text-align:center;color:${(r.otHours||0)>0?'#2563eb':'#9ca3af'};font-weight:${(r.otHours||0)>0?'700':'400'}">${(r.otHours||0).toFixed(1)}h</td>
+            <td style="padding:8px 10px;text-align:right;color:${(r.otCost||0)>0?'#1d4ed8':'#9ca3af'}">${(r.otCost||0)>0?fmtW2(r.otCost)+'원':'-'}</td>
+            <td style="padding:8px 10px;text-align:center;color:${(r.nightHours||0)>0?'#7c3aed':'#9ca3af'}">${(r.nightHours||0).toFixed(1)}h</td>
+            <td style="padding:8px 10px;text-align:right;color:${(r.nightCost||0)>0?'#6d28d9':'#9ca3af'}">${(r.nightCost||0)>0?fmtW2(r.nightCost)+'원':'-'}</td>
+            <td style="padding:8px 10px;text-align:center;color:${(r.holidayHours||0)>0?'#dc2626':'#9ca3af'}">${(r.holidayHours||0).toFixed(1)}h</td>
+            <td style="padding:8px 10px;text-align:right;color:${(r.holidayCost||0)>0?'#b91c1c':'#9ca3af'}">${(r.holidayCost||0)>0?fmtW2(r.holidayCost)+'원':'-'}</td>
+            <td style="padding:8px 10px;text-align:right;color:${(r.weeklyHolidayCost||0)>0?'#0f766e':'#9ca3af'}">${(r.weeklyHolidayCost||0)>0?fmtW2(r.weeklyHolidayCost)+'원':'-'}</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:${hasAdd?'#d97706':'#9ca3af'}">${hasAdd?fmtW2(addTotal)+'원':'-'}</td>
+          </tr>`
+          }).join('')}
+        </tbody>
+        <tfoot>
+          <tr style="background:#fffbeb;border-top:2px solid #fde68a">
+            <td style="padding:8px 14px;font-weight:700;color:#92400e" colspan="${showBase?2:2}">합계</td>
+            ${showBase ? `<td style="padding:8px 10px;text-align:right;font-weight:700;color:#374151">${fmtW2(byEmp.reduce((s,r)=>s+(r.estimatedMonthly||0),0))}원</td>` : ''}
+            <td style="padding:8px 10px;text-align:center;font-weight:700;color:#2563eb">${byEmp.reduce((s,r)=>s+(r.otHours||0),0).toFixed(1)}h</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:#1d4ed8">${fmtW2(byEmp.reduce((s,r)=>s+(r.otCost||0),0))}원</td>
+            <td style="padding:8px 10px;text-align:center;font-weight:700;color:#7c3aed">${byEmp.reduce((s,r)=>s+(r.nightHours||0),0).toFixed(1)}h</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:#6d28d9">${fmtW2(byEmp.reduce((s,r)=>s+(r.nightCost||0),0))}원</td>
+            <td style="padding:8px 10px;text-align:center;font-weight:700;color:#dc2626">${byEmp.reduce((s,r)=>s+(r.holidayHours||0),0).toFixed(1)}h</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:#b91c1c">${fmtW2(byEmp.reduce((s,r)=>s+(r.holidayCost||0),0))}원</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:#0f766e">${fmtW2(byEmp.reduce((s,r)=>s+(r.weeklyHolidayCost||0),0))}원</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:#d97706">${fmtW2(byEmp.reduce((s,r)=>s+(r.totalAddCost||0),0))}원</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    ${hasAddCost ? `
+    <div style="padding:10px 16px;background:#fffbeb;border-top:1px solid #fde68a;font-size:11px;color:#92400e">
+      <i class="fas fa-lightbulb" style="margin-right:4px"></i>
+      추가수당 합계 <strong>${fmtW2(byEmp.reduce((s,r)=>s+(r.totalAddCost||0),0))}원</strong>은 
+      기본 급여 외 발생하는 비용입니다. 리엔에이치 스케줄 최적화를 통해 절감할 수 있습니다.
+    </div>` : ''}
   </div>`
+  })()}
+  `
 }
 
 // ── 운영진 전용 인력 근무현황 탭 ─────────────────────────────────
@@ -1522,6 +1623,57 @@ function renderExecRiskBanner(staffLabor, budget) {
       </div>`).join('')}
     </div>
   </div>`
+}
+
+// ── 인건비 구성 도넛 차트 ─────────────────────────────────────────
+function initLaborDonutChart(d) {
+  const canvas = document.getElementById('execLaborDonutChart')
+  if (!canvas || !d) return
+  const lc = d.laborCost || {}
+  const total = lc.total || 1
+  const data = [
+    { label: '기본급',  val: lc.baseSalary   || 0, color: '#818cf8' },
+    { label: 'OT수당',  val: lc.otCost        || 0, color: '#fbbf24' },
+    { label: '파출비',  val: lc.dispatchCost  || 0, color: '#fb923c' },
+    { label: '알바비',  val: lc.parttimeCost  || 0, color: '#facc15' },
+  ].filter(d => d.val > 0)
+  if (data.length === 0) return
+
+  // Chart.js 도넛 차트 (CDN 로드 확인)
+  if (typeof Chart === 'undefined') return
+  // 기존 차트 제거
+  const existing = Chart.getChart(canvas)
+  if (existing) existing.destroy()
+  new Chart(canvas, {
+    type: 'doughnut',
+    data: {
+      labels: data.map(d => d.label),
+      datasets: [{
+        data: data.map(d => d.val),
+        backgroundColor: data.map(d => d.color),
+        borderWidth: 2,
+        borderColor: '#fff',
+      }]
+    },
+    options: {
+      cutout: '65%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const pct = ((ctx.parsed / total) * 100).toFixed(1)
+              const val = ctx.parsed >= 10000
+                ? `${Math.round(ctx.parsed/10000)}만원`
+                : `${ctx.parsed.toLocaleString()}원`
+              return ` ${ctx.label}: ${val} (${pct}%)`
+            }
+          }
+        }
+      },
+      animation: { duration: 400 }
+    }
+  })
 }
 
 })()

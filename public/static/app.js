@@ -14923,10 +14923,12 @@ function renderMonthlyScheduleTab() {
   const _vAdmin = _schedViewMode === 'admin'
   const _vStaff = _schedViewMode === 'staff'
   const _vExec  = _schedViewMode === 'executive'
+  // 영양사(hospital)는 운영진 뷰 버튼 숨김 — 운영진 뷰는 /executive 페이지에서만 제공
+  const _showExecBtn = App.role !== 'hospital'
   const viewTabsHtml = '<div style="display:flex;gap:4px;margin-bottom:12px;padding:4px;background:#f9fafb;border-radius:12px;width:fit-content">' +
     '<button onclick="window.switchSchedView(&apos;admin&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vAdmin ? 'background:#166534;color:white;box-shadow:0 2px 8px rgba(22,101,52,.3)' : 'background:transparent;color:#6b7280') + '" title="입력·분석 전용 (관리자)"><i class="fas fa-table" style="margin-right:5px"></i>관리자 뷰</button>' +
     '<button onclick="window.switchSchedView(&apos;staff&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vStaff ? 'background:#2563eb;color:white;box-shadow:0 2px 8px rgba(37,99,235,.3)' : 'background:transparent;color:#6b7280') + '" title="직원 공유용 (급여 제외)"><i class="fas fa-user" style="margin-right:5px"></i>직원 공유 뷰</button>' +
-    '<button onclick="window.switchSchedView(&apos;executive&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vExec ? 'background:#7c3aed;color:white;box-shadow:0 2px 8px rgba(124,58,237,.3)' : 'background:transparent;color:#6b7280') + '" title="경영진 요약 (그래프·지표)"><i class="fas fa-chart-bar" style="margin-right:5px"></i>운영진 뷰</button>' +
+    (_showExecBtn ? '<button onclick="window.switchSchedView(&apos;executive&apos;)" style="padding:6px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:all .15s;' + (_vExec ? 'background:#7c3aed;color:white;box-shadow:0 2px 8px rgba(124,58,237,.3)' : 'background:transparent;color:#6b7280') + '" title="경영진 요약 (그래프·지표)"><i class="fas fa-chart-bar" style="margin-right:5px"></i>운영진 뷰</button>' : '') +
     '</div>'
 
   // ── 직원 공유 뷰 렌더 ──────────────────────────────────────
@@ -14935,8 +14937,10 @@ function renderMonthlyScheduleTab() {
   }
 
   // ── 운영진 요약 뷰 렌더 ────────────────────────────────────
+  // 영양사(hospital)가 운영진 뷰 상태이면 관리자 뷰로 자동 전환
   if (_schedViewMode === 'executive') {
-    return renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allOffSet, viewTabsHtml })
+    if (App.role === 'hospital') { _schedViewMode = 'admin' }
+    else { return renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allOffSet, viewTabsHtml }) }
   }
 
   return `
@@ -18611,6 +18615,33 @@ function renderWorkSettingsModal() {
             </div>
           </div>
         </div>
+
+        <!-- ⑥ 급여 공개 정책 -->
+        <div class="border border-gray-200 rounded-2xl overflow-hidden">
+          <h4 class="px-4 py-3 bg-gray-50 font-semibold text-sm text-gray-700 border-b border-gray-200">
+            <i class="fas fa-eye mr-1 text-gray-500"></i>⑥ 급여 공개 정책
+            <span class="ml-2 text-xs font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">운영진 대시보드</span>
+          </h4>
+          <div class="p-3 bg-gray-50 border border-gray-100 rounded-xl space-y-2 m-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-sm font-medium text-gray-800">직원 기본급 정보 공개</div>
+                <div class="text-xs text-gray-500 mt-0.5">운영진 대시보드 직원별 수당 명세에 기본급·예상 월급여를 표시합니다</div>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="ws_show_base_salary" class="sr-only peer">
+                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+            </div>
+            <div class="p-2 bg-indigo-50 rounded-lg text-xs text-indigo-700">
+              <i class="fas fa-info-circle mr-1"></i>
+              <strong>비공개(기본):</strong> OT수당·야간수당·외부인력비만 표시됩니다.<br>
+              <strong>공개:</strong> 기본급·예상 월급여 포함 전체 명세가 운영진에게 표시됩니다.<br>
+              병원 세무·급여 담당자와 상의 후 설정하세요.
+            </div>
+          </div>
+        </div>
+
         <div class="flex gap-3 pt-2">
           <button onclick="saveWorkSettings()" class="btn btn-primary flex-1 bg-orange-600 hover:bg-orange-700">
             <i class="fas fa-save mr-2"></i>저장
@@ -21625,6 +21656,8 @@ window.openWorkSettingsModal = async () => {
   if (mlRuleEl) mlRuleEl.checked = true
   const ratioRow = document.getElementById('ws_ml_ratio_row')
   if (ratioRow) ratioRow.classList.toggle('hidden', mlRule !== 'ratio')
+  // ⑥ 급여 공개 정책
+  setChk('ws_show_base_salary', ws.show_base_salary ?? '0')
   scheduleWorkSettings = ws
 
   // hospital(영양사) 역할은 읽기 전용 처리 - 모든 입력 요소 비활성화
@@ -21688,6 +21721,8 @@ window.saveWorkSettings = async () => {
     monthly_leave_attendance_ratio:  getVal('ws_ml_attendance_ratio') || '80',
     monthly_leave_max_days:          getVal('ws_ml_max_days') || '11',
     monthly_leave_auto_transition:   getChk('ws_ml_auto_transition'),
+    // ⑥ 급여 공개 정책
+    show_base_salary:                getChk('ws_show_base_salary'),
     // admin이면 현재 병원 ID 포함
     ...(App.role === 'admin' && App.currentHospitalId ? { hospitalId: App.currentHospitalId } : {})
   }

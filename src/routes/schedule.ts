@@ -4088,6 +4088,10 @@ const DEFAULT_WORK_SETTINGS: Record<string, string> = {
   monthly_leave_attendance_ratio:  '80',
   monthly_leave_max_days:          '11',
   monthly_leave_auto_transition:   '1',
+  // ── 급여 공개 정책 ───────────────────────────────────────────────
+  // '0' = 비공개 (기본) — 운영진 대시보드에서 기본급·월급여 컬럼 숨김
+  // '1' = 공개          — 운영진 대시보드에서 기본급·월급여 표시
+  show_base_salary:                '0',
 }
 
 schedule.get('/work-settings', async (c) => {

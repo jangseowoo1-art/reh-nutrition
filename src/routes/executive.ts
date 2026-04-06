@@ -393,7 +393,8 @@ executive.get('/staff-labor/:year/:month', async (c) => {
 
   // ── 1. 정규/계약 직원 현황 ────────────────────────────────────
   const employees = await c.env.DB.prepare(
-    `SELECT id, name, employment_type, section, base_salary, salary_type, ot_enabled
+    `SELECT id, name, employment_type, section, base_salary, salary_type, ot_enabled,
+            night_allowance_enabled, holiday_allowance_enabled
      FROM employees
      WHERE hospital_id = ? AND is_active = 1`
   ).bind(hospitalId).all<any>()
@@ -565,8 +566,132 @@ executive.get('/staff-labor/:year/:month', async (c) => {
     warnings.push({ type: 'ext_cost_high', level: 'warning', message: `외부인력 비용 비중이 ${extCostRatio.toFixed(1)}%로 높습니다 (권장: 30% 이하)` })
   }
 
+  // ── 10. 급여 공개 설정 로드 ───────────────────────────────────
+  const workSettingsForSalary = await c.env.DB.prepare(
+    `SELECT setting_value FROM hospital_work_settings WHERE hospital_id = ? AND setting_key = 'show_base_salary'`
+  ).bind(hospitalId).first<any>()
+  const showBaseSalary = (workSettingsForSalary?.setting_value ?? '0') === '1'
+
+  // ── 11. 직원별 수당 명세 집계 ────────────────────────────────
+  // (OT 시간·비용 / 야간수당 / 휴일수당 / 기본급) — 스케줄 일별 데이터 기반
+  const dailySchedsForEmp = await c.env.DB.prepare(
+    `SELECT ds.employee_id, ds.work_date, ds.shift_code, ds.overtime_hours,
+            ds.night_work_hours, ds.basic_work_hours, ds.holiday_work_hours,
+            ds.is_night_work, ds.leave_type,
+            e.name as emp_name, e.base_salary, e.salary_type,
+            e.ot_enabled, e.night_allowance_enabled, e.holiday_allowance_enabled
+     FROM daily_schedules ds
+     JOIN employees e ON ds.employee_id = e.id
+     WHERE ds.hospital_id = ?
+       AND strftime('%Y', ds.work_date) = ?
+       AND strftime('%m', ds.work_date) = printf('%02d', ?)
+     ORDER BY ds.employee_id, ds.work_date`
+  ).bind(hospitalId, String(y), m).all<any>()
+
+  const dailyList = dailySchedsForEmp.results || []
+
+  // 공휴일 Set
+  const holidayRows2 = await c.env.DB.prepare(
+    `SELECT holiday_date FROM holidays WHERE holiday_date LIKE ?`
+  ).bind(`${y}-${String(m).padStart(2,'0')}-%`).all<any>()
+  const holidaySet2 = new Set((holidayRows2.results || []).map((h: any) => h.holiday_date))
+
+  const REST_CODES2 = new Set(['휴','연','경조','병가','반차','대체'])
+
+  type EmpAllowance = {
+    empId: number; empName: string; baseSalary: number; salaryType: string
+    workDays: number; basicHours: number
+    otHours: number; otCost: number
+    nightHours: number; nightCost: number
+    holidayHours: number; holidayCost: number
+    weeklyHolidayDays: number; weeklyHolidayCost: number
+    totalAddCost: number; estimatedMonthly: number
+  }
+  const byEmpMap: Record<number, EmpAllowance> = {}
+
+  for (const emp of empList) {
+    const sal = emp.base_salary || 0
+    const estimated = emp.salary_type === 'annual' ? Math.round(sal / 12)
+                    : emp.salary_type === 'monthly' ? sal : 0
+    byEmpMap[emp.id] = {
+      empId: emp.id, empName: emp.name, baseSalary: sal, salaryType: emp.salary_type || 'monthly',
+      workDays: 0, basicHours: 0,
+      otHours: 0, otCost: 0, nightHours: 0, nightCost: 0,
+      holidayHours: 0, holidayCost: 0, weeklyHolidayDays: 0, weeklyHolidayCost: 0,
+      totalAddCost: 0, estimatedMonthly: estimated
+    }
+  }
+
+  // 일별 근무시간 맵 (주휴수당 계산용)
+  const dailyHoursForWeekly: Record<number, Record<string, number>> = {}
+
+  for (const s of dailyList) {
+    const rec = byEmpMap[s.employee_id]
+    if (!rec) continue
+    const code = s.shift_code || ''
+    if (s.leave_type || REST_CODES2.has(code)) continue
+
+    const otRate = otRateMap[s.employee_id] || 0
+    const hourly = otSettingsRows.results?.find((r: any) => r.employee_id === s.employee_id)?.hourly_wage || 0
+    const otRateVal = otSettingsRows.results?.find((r: any) => r.employee_id === s.employee_id)?.ot_rate || 1.5
+    const nightRateVal = otSettingsRows.results?.find((r: any) => r.employee_id === s.employee_id)?.night_rate || 0.5
+
+    const dow = new Date(s.work_date).getDay()
+    const isHoliday = dow === 0 || dow === 6 || holidaySet2.has(s.work_date)
+
+    const basicH   = s.basic_work_hours   > 0 ? s.basic_work_hours   : 8
+    const otH      = s.overtime_hours     > 0 ? s.overtime_hours      : 0
+    const nightH   = s.night_work_hours   > 0 ? s.night_work_hours    : (s.is_night_work ? 2 : 0)
+    const holidayH = s.holiday_work_hours > 0 ? s.holiday_work_hours  : (isHoliday ? basicH : 0)
+
+    rec.workDays++
+    rec.basicHours    += basicH
+    rec.otHours       += otH
+    rec.nightHours    += nightH
+    rec.holidayHours  += holidayH
+
+    if (otH > 0 && s.ot_enabled !== 0 && hourly > 0)
+      rec.otCost += Math.round(otH * hourly * otRateVal)
+    if (nightH > 0 && s.night_allowance_enabled !== 0 && hourly > 0)
+      rec.nightCost += Math.round(nightH * hourly * nightRateVal)
+    if (isHoliday && holidayH > 0 && s.holiday_allowance_enabled !== 0 && hourly > 0)
+      rec.holidayCost += Math.round(holidayH * hourly * 0.5)
+
+    if (!dailyHoursForWeekly[s.employee_id]) dailyHoursForWeekly[s.employee_id] = {}
+    dailyHoursForWeekly[s.employee_id][s.work_date] = basicH
+  }
+
+  // 주휴수당 계산 (calcWeeklyHolidayPay는 schedule.ts에 있으므로 여기서 직접 계산)
+  for (const empId of Object.keys(byEmpMap).map(Number)) {
+    const rec = byEmpMap[empId]
+    const dmap = dailyHoursForWeekly[empId] || {}
+    const hourly = otSettingsRows.results?.find((r: any) => r.employee_id === empId)?.hourly_wage || 0
+    // 주별 총 근무시간 15h 이상이면 주휴 1일 발생
+    let wkDays = 0
+    const daysInMonth = new Date(y, m, 0).getDate()
+    let weekHrs = 0
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      weekHrs += dmap[ds] || 0
+      const dow = new Date(ds).getDay()
+      if (dow === 0) { // 일요일 = 주 끝
+        if (weekHrs >= 15) wkDays++
+        weekHrs = 0
+      }
+    }
+    if (weekHrs >= 15) wkDays++ // 마지막 주 처리
+    rec.weeklyHolidayDays = wkDays
+    if (wkDays > 0 && hourly > 0)
+      rec.weeklyHolidayCost = Math.round(wkDays * 8 * hourly)
+    rec.totalAddCost = rec.otCost + rec.nightCost + rec.holidayCost + rec.weeklyHolidayCost
+  }
+
+  const byEmployee = Object.values(byEmpMap).filter(r => r.workDays > 0 || r.otHours > 0)
+
   return c.json({
     period: { year: y, month: m },
+    // 급여 공개 설정
+    showBaseSalary,
     // 인력 현황
     staffSummary: {
       total: totalEmp,
@@ -599,6 +724,8 @@ executive.get('/staff-labor/:year/:month', async (c) => {
       parttimeCost,
       total: totalLaborCost,
     },
+    // 직원별 수당 명세
+    byEmployee,
     // 경고
     warnings,
   })
