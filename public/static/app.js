@@ -12615,14 +12615,16 @@ function renderEmployeeTab() {
                     // 1년 미만 여부
                     const hired = emp.hire_date ? new Date(emp.hire_date) : null
                     const under1Y = hired ? ((new Date().getTime() - hired.getTime()) < 365.25*24*3600*1000) : false
-                    if (mlEnabled && under1Y && mlData) {
-                      const mlTotal  = mlData.monthly_total ?? 0
-                      const mlUsed   = mlData.monthly_used  ?? 0
+                    if (mlEnabled && under1Y) {
+                      // monthly_total이 null이면 auto_calc_days를 표시 (미저장 상태)
+                      const mlTotal  = mlData?.monthly_total ?? mlData?.auto_calc_days ?? 0
+                      const mlUsed   = mlData?.monthly_used  ?? 0
                       const mlRemain = mlTotal - mlUsed
+                      const isUnsaved = mlData?.monthly_total == null && mlTotal > 0
                       return `<div class="flex flex-col gap-0.5">
                         <div class="flex items-center gap-1">
                           <span class="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">월차</span>
-                          <span class="text-xs text-gray-700 font-semibold">${mlTotal}일</span>
+                          <span class="text-xs text-gray-700 font-semibold">${mlTotal}일${isUnsaved ? '<span class="text-xs text-orange-400 ml-0.5">*</span>' : ''}</span>
                           <span class="text-xs text-gray-400">잔${mlRemain}일</span>
                         </div>
                         ${annualTotal !== null ? `<div class="flex items-center gap-1">
@@ -15189,16 +15191,23 @@ function renderMonthlyScheduleTab() {
               const mlData2 = mlEnabled2 ? (window._monthlyLeavesData || []).find((m) => m.employee_id === emp.id) : null
               const hired2 = emp.hire_date ? new Date(emp.hire_date) : null
               const under1Y2 = hired2 ? ((new Date().getTime() - hired2.getTime()) < 365.25*24*3600*1000) : false
-              const mlTot2 = mlData2?.monthly_total ?? null
+              // monthly_total이 null이면 auto_calc_days 사용 (미저장 상태도 표시)
+              const mlTot2 = mlData2?.monthly_total ?? mlData2?.auto_calc_days ?? null
               const mlUsed2 = mlData2?.monthly_used ?? 0
               const mlRemain2 = mlTot2 !== null ? mlTot2 - mlUsed2 : null
+              const mlIsUnsaved2 = mlData2 && mlData2.monthly_total == null && mlTot2 !== null
               // 연차 셀 (월차 + 연차 통합 표시)
               let annualCell2 = ''
               if (mlEnabled2 && under1Y2 && mlTot2 !== null) {
-                annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${mlTot2}↗${mlRemain2}잔</div>`
-                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualUsed}↑${annualRemain2}잔</div>`
+                const unsavedMark = mlIsUnsaved2 ? '<span style="color:#f97316;font-size:8px">*</span>' : ''
+                annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${mlTot2}${unsavedMark}↗${mlRemain2}잔</div>`
+                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - (empLeave2.annual?.used ?? 0)}↑${annualRemain2}잔</div>`
+              } else if (mlEnabled2 && under1Y2) {
+                // 월차 데이터 없음 (입사 초기)
+                annualCell2 = `<div style="font-size:9px;color:#0f766e;opacity:.6">월차-</div>`
+                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - (empLeave2.annual?.used ?? 0)}↑${annualRemain2}잔</div>`
               } else if (annualEffective2 !== null) {
-                annualCell2 = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
+                annualCell2 = `<div style="font-size:11px;font-weight:700;color:#92400e">${empLeave2.annual?.used ?? 0}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
               } else {
                 annualCell2 = `<div style="font-size:10px;color:#d1d5db">-</div>`
               }

@@ -670,7 +670,7 @@ schedule.get('/employees/:id/leaves', async (c) => {
 
 schedule.post('/employees/:id/leaves', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 연차를 수동 설정할 수 있습니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '권한이 없습니다' }, 403)
   const emp = await c.env.DB.prepare(`SELECT * FROM employees WHERE id = ?`).bind(c.req.param('id')).first<any>()
   if (!emp) return c.json({ error: '직원을 찾을 수 없습니다' }, 404)
 
@@ -877,7 +877,7 @@ schedule.get('/monthly-leave/summary', async (c) => {
 // body: { year, month, employeeId? }  — 특정 월의 월차 발생 처리
 schedule.post('/monthly-leave/generate', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const body = await c.req.json().catch(() => ({}))
@@ -1057,7 +1057,7 @@ schedule.post('/monthly-leave/generate', async (c) => {
 // 개근 조건 없이 입사 다음달부터 이번달까지 무조건 자동 발생 (초기 도입용)
 schedule.post('/monthly-leave/backfill', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const body = await c.req.json().catch(() => ({}) as any)
@@ -1180,7 +1180,7 @@ schedule.post('/monthly-leave/backfill', async (c) => {
 // ── 월차 수동 조정 ──────────────────────────────────────────────
 schedule.post('/monthly-leave/adjust', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 수동 조정 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '관리자만 수동 조정 가능합니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const { employeeId, year, totalDays, usedDays, reason } = await c.req.json()
@@ -1271,7 +1271,7 @@ schedule.get('/employees/:id/monthly-leave', async (c) => {
 // ── 1년 도달 직원 연차 전환 처리 ────────────────────────────────
 schedule.post('/monthly-leave/transition', async (c) => {
   const user = c.get('user')
-  if (!isAdmin(user)) return c.json({ error: '관리자만 실행 가능합니다' }, 403)
+  if (!isNutritionist(user)) return c.json({ error: '권한이 없습니다' }, 403)
 
   const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const body = await c.req.json().catch(() => ({}))
