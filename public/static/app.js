@@ -14237,10 +14237,10 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         const cellBg = isSun ? 'background:#fff8f8;' : isSat ? 'background:#fffbf0;' : isOff ? 'background:#fefce8;' : 'background:' + rowBg + ';'
         const borderCol = isSun ? '#fecaca' : isSat ? '#fde68a' : '#e5e7eb'
         const sp = (code && code !== '-')
-          ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:3px;font-size:9px;font-weight:700;' + getDesignShiftStyle(code) + '">' + code + '</span>'
+          ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:9px;font-weight:700;overflow:hidden;' + getDesignShiftStyle(code) + '" title="' + code + '">' + code + '</span>'
           : '<span style="color:#d1d5db;font-size:9px">·</span>'
         const otBadge = otH > 0 ? '<div style="font-size:7px;color:#059669;line-height:1;margin-top:1px">OT' + otH + 'h</div>' : ''
-        return '<td style="padding:1px;text-align:center;' + cellBg + 'border-left:1px solid ' + borderCol + ';cursor:pointer;position:relative;user-select:none"' +
+        return '<td style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;overflow:hidden;' + cellBg + 'border-left:1px solid ' + borderCol + ';cursor:pointer;position:relative;user-select:none"' +
           ' onclick="schedCellClick(event,' + emp.id + ',\'' + ds + '\',this)"' +
           ' ondblclick="schedCellDblClick(event,' + emp.id + ',\'' + ds + '\',this)"' +
           ' onmousedown="schedDragStart(event,' + emp.id + ',\'' + ds + '\',this)"' +
@@ -14286,7 +14286,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         const col = ratio >= 0.8 ? grp.color : ratio >= 0.5 ? '#d97706' : '#dc2626'
         const dow = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
-        cells += '<td style="padding:1px;text-align:center;background:' + grp.bg + ';border-left:1px solid ' + (isSun?'#fecaca':isSat?'#fde68a':grp.color+'22') + '">'
+        cells += '<td style="padding:1px;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;background:' + grp.bg + ';border-left:1px solid ' + (isSun?'#fecaca':isSat?'#fde68a':grp.color+'22') + '">'
         cells += '<span style="font-size:9px;font-weight:700;color:' + col + '">' + cnt + '</span></td>'
       }
       return '<tr style="border-bottom:2px solid ' + grp.color + '55;background:' + grp.bg + '">' +
@@ -14307,7 +14307,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         const dow  = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
         const cellBg = isSun ? 'background:#1a3030;' : isSat ? 'background:#1a2f3a;' : 'background:#1e3a2f;'
-        cells += '<td style="padding:1px;text-align:center;' + cellBg + 'border-left:1px solid rgba(255,255,255,.12)">'
+        cells += '<td style="padding:1px;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;' + cellBg + 'border-left:1px solid rgba(255,255,255,.12)">'
         cells += '<span style="font-size:10px;font-weight:800;color:' + colT + '">' + cnt + '</span>'
         if (target > 0 && diff !== 0) cells += '<div style="font-size:7px;color:' + colT + ';line-height:1">' + (diff>0?'+'+diff:diff) + '</div>'
         cells += '</td>'
@@ -14367,10 +14367,12 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
             const cellBg2  = isSun2 ? 'background:#fff8f8;' : isSat2 ? 'background:#fffbf0;' : ds2Off ? 'background:#fefce8;' : 'background:' + rowBg2 + ';'
             const borderCol2 = isSun2 ? '#fecaca' : isSat2 ? '#fde68a' : '#e5e7eb'
             if (extCode) wWorkDays++
+            // 긴 코드(morning/afternoon/full_12h 등) 약어 처리
+            const extLabel = extCode.length > 3 ? extCode.substring(0,3) : extCode
             const sp2 = extCode
-              ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:3px;font-size:8px;font-weight:700;background:' + eg.color + '22;color:' + eg.color + ';border:1px solid ' + eg.color + '44">' + extCode + '</span>'
+              ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:7px;font-weight:700;background:' + eg.color + '22;color:' + eg.color + ';border:1px solid ' + eg.color + '44;overflow:hidden;white-space:nowrap" title="' + extCode + '">' + extLabel + '</span>'
               : '<span style="color:#d1d5db;font-size:9px">·</span>'
-            wCells += '<td class="ext-cell" style="padding:1px;text-align:center;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
+            wCells += '<td class="ext-cell" style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;overflow:hidden;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
               ' data-shift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' +
               sp2 + '</td>'
           }
@@ -14397,7 +14399,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
           wTotalAll += cnt2
           const dow2 = getDayOfWeek(year, month, d2)
           const isSun2 = dow2==='일', isSat2 = dow2==='토'
-          extTotalCells += '<td style="padding:1px;text-align:center;background:' + eg.bg + ';border-left:1px solid ' + (isSun2?'#fecaca':isSat2?'#fde68a':eg.border) + '">'
+          extTotalCells += '<td style="padding:1px;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;background:' + eg.bg + ';border-left:1px solid ' + (isSun2?'#fecaca':isSat2?'#fde68a':eg.border) + '">'
           extTotalCells += '<span style="font-size:9px;font-weight:700;color:' + (cnt2>0?eg.color:'#d1d5db') + '">' + (cnt2||'') + '</span></td>'
         }
         extBody += '<tr style="border-bottom:2px solid ' + eg.color + '44;background:' + eg.bg + '">' +
@@ -14471,7 +14473,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
       '        <span style="font-size:9px;color:#6b7280;margin-left:4px">드래그·Ctrl+C/V·Ctrl+Z·더블클릭·우클릭(OT) 모두 지원</span>\n' +
       '      </div>\n    </div>\n' +
       '    <div style="overflow-x:auto;border-radius:8px;border:2px solid #166534;box-shadow:0 2px 8px rgba(22,101,52,.1)">\n' +
-      '      <table id="schedDesignTable" style="width:100%;border-collapse:collapse;font-size:11px;table-layout:auto">\n' +
+      '      <table id="schedDesignTable" style="min-width:' + (NAME_W + days*CW + 56) + 'px;border-collapse:collapse;font-size:11px;table-layout:fixed">\n' +
       '        <thead style="position:sticky;top:0;z-index:20">' + buildDesignDateHeader() + '</thead>\n' +
       '        <tbody>' + tableBody + '</tbody>\n' +
       '      </table>\n    </div>\n' +
