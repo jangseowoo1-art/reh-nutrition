@@ -204,6 +204,9 @@ function renderAll() {
   const mealDiff = currentMealPrice - prevMealPrice
 
   content.innerHTML = `
+    <!-- 리스크 알림 배너 (스케줄 + 예산) -->
+    ${renderExecRiskBanner(State.staffLabor, budget)}
+
     <!-- KPI 카드 그리드 -->
     <div class="grid grid-cols-2 gap-4" style="grid-template-columns: repeat(2, 1fr)" id="kpiGrid">
       ${kpiCard('fa-wallet', '예산 사용', fmtW(budget.totalUsed), fmtW(budget.totalBudget), progressPct, progressColor(progressPct), 'gradient-blue')}
@@ -1461,6 +1464,64 @@ function renderExecStaffScheduleTab() {
     console.error('[renderExecStaffScheduleTab]', e)
     return `<div style="padding:20px;color:#b91c1c">인력 근무현황 렌더 오류: ${e.message}</div>`
   }
+}
+
+// ── 리스크 알림 배너 ────────────────────────────────────────────
+function renderExecRiskBanner(staffLabor, budget) {
+  const risks = []
+
+  // 1. 예산 초과 위험
+  const pct = budget?.progress || 0
+  if (pct >= 100) {
+    risks.push({ level: 'danger', icon: 'fa-exclamation-triangle', color: '#dc2626', bg: '#fef2f2', border: '#fecaca',
+      msg: `⚠️ 예산 ${pct.toFixed(1)}% 초과 사용 — 즉시 지출 검토가 필요합니다.` })
+  } else if (pct >= 85) {
+    risks.push({ level: 'warn', icon: 'fa-exclamation-circle', color: '#d97706', bg: '#fffbeb', border: '#fde68a',
+      msg: `주의: 예산 ${pct.toFixed(1)}% 사용 — 잔여 예산이 15% 미만입니다.` })
+  }
+
+  // 2. 인력 경고 (staffLabor warnings)
+  const warnings = staffLabor?.warnings || []
+  warnings.forEach(w => {
+    risks.push({ level: w.level || 'warn', icon: 'fa-user-minus',
+      color: w.level === 'danger' ? '#dc2626' : '#d97706',
+      bg: w.level === 'danger' ? '#fef2f2' : '#fffbeb',
+      border: w.level === 'danger' ? '#fecaca' : '#fde68a',
+      msg: w.message })
+  })
+
+  // 3. 인력 부족일 체크 (staffLabor shortageDays)
+  const shortageDays = staffLabor?.staffSummary?.shortageDays || 0
+  if (shortageDays > 0) {
+    risks.push({ level: shortageDays > 5 ? 'danger' : 'warn', icon: 'fa-users-slash',
+      color: shortageDays > 5 ? '#dc2626' : '#d97706',
+      bg: shortageDays > 5 ? '#fef2f2' : '#fffbeb',
+      border: shortageDays > 5 ? '#fecaca' : '#fde68a',
+      msg: `이번 달 인력 부족 ${shortageDays}일 — 파출·알바 확충 또는 스케줄 조정이 필요합니다.` })
+  }
+
+  if (risks.length === 0) {
+    return `<div class="exec-card p-3 flex items-center gap-3" style="background:#f0fdf4;border:1px solid #bbf7d0;margin-bottom:16px">
+      <i class="fas fa-check-circle" style="color:#16a34a;font-size:18px;flex-shrink:0"></i>
+      <div>
+        <span class="font-bold text-sm" style="color:#15803d">이번 달 운영 리스크 없음</span>
+        <span class="text-xs ml-2" style="color:#4ade80">예산·인력 모두 정상 범위</span>
+      </div>
+    </div>`
+  }
+
+  return `<div class="exec-card p-4" style="background:#fff7ed;border:1px solid #fed7aa;margin-bottom:16px">
+    <div style="font-weight:700;font-size:13px;color:#c2410c;margin-bottom:10px;display:flex;align-items:center;gap:6px">
+      <i class="fas fa-exclamation-triangle"></i> 운영 리스크 알림 (${risks.length}건)
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${risks.map(r => `
+      <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-radius:10px;background:${r.bg};border:1px solid ${r.border}">
+        <i class="fas ${r.icon}" style="color:${r.color};font-size:12px;margin-top:2px;flex-shrink:0"></i>
+        <span style="font-size:12px;color:${r.color};line-height:1.5">${r.msg}</span>
+      </div>`).join('')}
+    </div>
+  </div>`
 }
 
 })()

@@ -12405,29 +12405,32 @@ function renderScheduleTab(content) {
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'analysis' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
               <i class="fas fa-chart-bar mr-1"></i>운영분석
             </button>
-            ${App.role === 'admin' ? `<button onclick="switchScheduleTab('laborCost')"
+            ${isAdm ? `<button onclick="switchScheduleTab('laborCost')"
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'laborCost' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
               <i class="fas fa-won-sign mr-1"></i>인력비
             </button>` : ''}
           </div>
 
-          <!-- 그룹 3: 설정 -->
+          <!-- 그룹 3: 설정 (관리자만 전체 표시 / 영양사는 근무조 조회만) -->
           <div class="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
             <span class="text-[10px] text-gray-400 font-semibold mr-1 whitespace-nowrap">⚙️ 설정</span>
             <button onclick="switchScheduleTab('shifts')"
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'shifts' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
-              <i class="fas fa-clock mr-1"></i>근무조
+              <i class="fas fa-clock mr-1"></i>근무조${isAdm ? '' : ' <span style="font-size:9px;opacity:.6">(조회)</span>'}
             </button>
-            ${(isAdm || App.role === 'hospital') ? `
+            ${isAdm ? `
             <button onclick="openLaborCostSettings()"
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-orange-500 text-white hover:bg-orange-600">
               <i class="fas fa-cog mr-1"></i>단가
-            </button>` : ''}
-            ${(isAdm || App.role === 'hospital') ? `
+            </button>
             <button onclick="openWorkSettingsModal()"
-              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-gray-500 text-white hover:bg-gray-600" title="근무 환경 설정 (휴무패턴·법정근무시간)">
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-gray-500 text-white hover:bg-gray-600" title="근무 환경 설정">
               <i class="fas fa-sliders-h mr-1"></i>근무설정
-            </button>` : ''}
+            </button>` : `
+            <button onclick="openWorkSettingsModal()"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-gray-200 text-gray-500 hover:bg-gray-300" title="근무 환경 설정 (조회)">
+              <i class="fas fa-sliders-h mr-1"></i>근무설정
+            </button>`}
           </div>
 
           <!-- 그룹 4: 월간 스케줄 (강조) -->
@@ -12904,6 +12907,7 @@ function buildExtShiftLegendHtml(opts) {
 // ─── 근무조 설정 탭 ──────────────────────────────────────────
 function renderShiftsTab() {
   const shifts = scheduleShifts
+  const isAdm = App.role === 'admin'
   // 외부인력 근무유형 커스텀 설정 로드
   const extCfgRaw = localStorage.getItem('extShiftConfig')
   let extCfg = null
@@ -12923,9 +12927,9 @@ function renderShiftsTab() {
         <h3 class="font-bold text-gray-800">근무조 설정</h3>
         <p class="text-xs text-gray-400 mt-0.5">스케줄 표에서 사용할 근무조를 정의합니다</p>
       </div>
-      <button onclick="openShiftModal()" class="btn btn-primary btn-sm">
+      ${isAdm ? `<button onclick="openShiftModal()" class="btn btn-primary btn-sm">
         <i class="fas fa-plus mr-1"></i>근무조 추가
-      </button>
+      </button>` : `<span class="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-lg"><i class="fas fa-lock mr-1"></i>조회 전용</span>`}
     </div>
     ${shifts.length === 0 ? `
     <div class="p-12 text-center text-gray-400">
@@ -12942,7 +12946,7 @@ function renderShiftsTab() {
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">시간</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">대상팀</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">색상</th>
-            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500">관리</th>
+            ${isAdm ? `<th class="px-4 py-3 text-center text-xs font-semibold text-gray-500">관리</th>` : ''}
           </tr>
         </thead>
         <tbody>
@@ -12961,7 +12965,7 @@ function renderShiftsTab() {
               <span class="inline-block w-5 h-5 rounded" style="background-color:${s.color}"></span>
               <span class="text-xs text-gray-400 ml-1">${s.color}</span>
             </td>
-            <td class="px-4 py-3">
+            ${isAdm ? `<td class="px-4 py-3">
               <div class="flex items-center justify-center gap-1">
                 <button onclick="openShiftModal(${s.id})"
                   class="p-1.5 rounded hover:bg-blue-100 hover:text-blue-600 text-gray-400 transition-colors">
@@ -12972,7 +12976,7 @@ function renderShiftsTab() {
                   <i class="fas fa-trash text-xs"></i>
                 </button>
               </div>
-            </td>
+            </td>` : ''}
           </tr>`).join('')}
         </tbody>
       </table>
@@ -16449,6 +16453,9 @@ function renderAnalysisTab() {
   const ad    = scheduleAnalysisData
   if (!ad) return `<div class="bg-white rounded-2xl p-8 text-center text-gray-400">분석 데이터 로딩 중...</div>`
 
+  // 영양사(hospital) 역할은 간소화 뷰 표시
+  if (App.role === 'hospital') return renderAnalysisTabSimple(ad, year, month)
+
   const dateMap    = ad.date_map    || {}
   const monthly    = ad.monthly     || {}
   const shortDates = ad.short_dates || {}
@@ -16687,6 +16694,142 @@ function renderAnalysisTab() {
         ).join('')}
       </div>
     </div>` : ''}
+  </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 영양사(hospital) 전용 운영분석 간소화 뷰
+// ════════════════════════════════════════════════════════════════
+function renderAnalysisTabSimple(ad, year, month) {
+  const monthly    = ad.monthly     || {}
+  const shortDates = ad.short_dates || {}
+  const clusterDates = ad.cluster_dates || {}
+  const shortCount   = Object.keys(shortDates).length
+  const clusterCount = Object.keys(clusterDates).length
+
+  // 외부인력 집계
+  const extWorkers = scheduleExternalWorkers || []
+  const extMap = scheduleExtSchedMap || {}
+  const days = getDaysInMonth(year, month)
+  let extDispatchDays = 0, extParttimeDays = 0
+  extWorkers.forEach(w => {
+    for (let d = 1; d <= days; d++) {
+      const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const key = `${w.id}_${ds}`
+      if (extMap[key]?.shift_type || extMap[key]?.shift_code) {
+        if (w.worker_type === 'dispatch') extDispatchDays++
+        else extParttimeDays++
+      }
+    }
+  })
+
+  const riskLevel = shortCount > 5 ? 'high' : shortCount > 0 ? 'mid' : 'ok'
+  const clusterLevel = clusterCount > 5 ? 'high' : clusterCount > 0 ? 'mid' : 'ok'
+
+  const riskColor = riskLevel === 'high' ? '#dc2626' : riskLevel === 'mid' ? '#d97706' : '#16a34a'
+  const riskBg    = riskLevel === 'high' ? '#fef2f2' : riskLevel === 'mid' ? '#fffbeb' : '#f0fdf4'
+  const clusterColor = clusterLevel === 'high' ? '#dc2626' : clusterLevel === 'mid' ? '#d97706' : '#16a34a'
+  const clusterBg    = clusterLevel === 'high' ? '#fef2f2' : clusterLevel === 'mid' ? '#fffbeb' : '#f0fdf4'
+
+  return `
+  <div class="space-y-4">
+    <!-- 리스크 요약 배너 -->
+    ${(shortCount > 0 || clusterCount > 0) ? `
+    <div class="bg-red-50 border border-red-200 rounded-2xl p-4">
+      <div class="flex items-center gap-2 mb-2">
+        <i class="fas fa-exclamation-triangle text-red-600"></i>
+        <span class="font-bold text-red-700 text-sm">${month}월 운영 주의사항</span>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        ${shortCount > 0 ? `<span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:${riskBg};color:${riskColor};border:1px solid ${riskColor}30">
+          <i class="fas fa-user-minus text-xs"></i> 인력 부족일 <strong>${shortCount}일</strong>
+        </span>` : ''}
+        ${clusterCount > 0 ? `<span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:${clusterBg};color:${clusterColor};border:1px solid ${clusterColor}30">
+          <i class="fas fa-users-slash text-xs"></i> 휴무·연차 쏠림일 <strong>${clusterCount}일</strong>
+        </span>` : ''}
+      </div>
+    </div>` : `
+    <div class="bg-green-50 border border-green-200 rounded-2xl p-4 flex items-center gap-3">
+      <i class="fas fa-check-circle text-green-600 text-xl"></i>
+      <span class="font-bold text-green-700">${month}월 운영 이상 없음 — 인력 부족 및 연차 쏠림 없음</span>
+    </div>`}
+
+    <!-- 월간 핵심 수치 카드 -->
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+      ${[
+        { label:'총 근무', value: monthly.totalWork||0, unit:'건', color:'text-green-700', bg:'bg-green-50', icon:'fa-briefcase' },
+        { label:'총 휴무', value: monthly.totalRest||0, unit:'건', color:'text-red-600', bg:'bg-red-50', icon:'fa-bed' },
+        { label:'연차 사용', value: monthly.totalAnnual||0, unit:'건', color:'text-yellow-700', bg:'bg-yellow-50', icon:'fa-umbrella-beach' },
+        { label:'반차(오전)', value: monthly.totalHalfAM||0, unit:'건', color:'text-purple-700', bg:'bg-purple-50', icon:'fa-sun' },
+        { label:'반차(오후)', value: monthly.totalHalfPM||0, unit:'건', color:'text-blue-700', bg:'bg-blue-50', icon:'fa-moon' },
+        { label:'경조사', value: monthly.totalEvent||0, unit:'건', color:'text-pink-700', bg:'bg-pink-50', icon:'fa-heart' },
+      ].map(c => `
+        <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="w-8 h-8 rounded-lg ${c.bg} flex items-center justify-center">
+              <i class="fas ${c.icon} text-xs ${c.color}"></i>
+            </div>
+            <span class="text-xs text-gray-500">${c.label}</span>
+          </div>
+          <div class="text-2xl font-bold ${c.color}">${c.value}<span class="text-xs ml-0.5 font-normal">${c.unit}</span></div>
+        </div>`).join('')}
+    </div>
+
+    <!-- 파출/알바 현황 (있을 때만) -->
+    ${extWorkers.length > 0 ? `
+    <div class="bg-orange-50 border border-orange-200 rounded-2xl p-4">
+      <div class="font-bold text-orange-800 text-sm mb-3"><i class="fas fa-people-carry mr-2"></i>외부인력 현황</div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-white rounded-xl p-3 border border-orange-100 text-center">
+          <div class="text-xs text-orange-500 mb-1">파출 근무일</div>
+          <div class="text-xl font-bold text-orange-700">${extDispatchDays}<span class="text-xs ml-1">일</span></div>
+        </div>
+        <div class="bg-white rounded-xl p-3 border border-orange-100 text-center">
+          <div class="text-xs text-amber-500 mb-1">알바 근무일</div>
+          <div class="text-xl font-bold text-amber-700">${extParttimeDays}<span class="text-xs ml-1">일</span></div>
+        </div>
+      </div>
+    </div>` : ''}
+
+    <!-- 인력 부족 날짜 목록 -->
+    ${shortCount > 0 ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-red-100 overflow-hidden">
+      <div class="px-5 py-3 border-b border-red-100 bg-red-50 flex items-center gap-2">
+        <i class="fas fa-user-minus text-red-600"></i>
+        <span class="font-bold text-red-700 text-sm">인력 부족 날짜 (${shortCount}일)</span>
+      </div>
+      <div class="p-4 space-y-1.5 max-h-48 overflow-y-auto">
+        ${Object.entries(shortDates).map(([date, items]) =>
+          `<div class="flex items-center gap-2 py-1.5 border-b border-gray-50">
+            <span class="text-xs font-bold text-red-600 min-w-[70px]">📅 ${date}</span>
+            <span class="text-xs text-gray-600">${items.map(i => `${i.position} ${i.actual}/${i.required}명`).join(', ')}</span>
+          </div>`
+        ).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- 연차·휴무 쏠림 날짜 -->
+    ${clusterCount > 0 ? `
+    <div class="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden">
+      <div class="px-5 py-3 border-b border-orange-100 bg-orange-50 flex items-center gap-2">
+        <i class="fas fa-users-slash text-orange-600"></i>
+        <span class="font-bold text-orange-700 text-sm">휴무·연차 쏠림 날짜 (${clusterCount}일)</span>
+      </div>
+      <div class="p-4 space-y-1.5 max-h-48 overflow-y-auto">
+        ${Object.entries(clusterDates).map(([date, info]) =>
+          `<div class="flex items-center gap-2 py-1.5 border-b border-gray-50">
+            <span class="text-xs font-bold text-orange-600 min-w-[70px]">📅 ${date}</span>
+            <span class="text-xs text-gray-600">연차 ${info.annual}명, 휴무 ${info.rest}명</span>
+          </div>`
+        ).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- 안내 문구 -->
+    <div class="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-600">
+      <i class="fas fa-info-circle mr-1"></i>
+      상세 분석 데이터(일별 집계, 주별 통계, OT 현황)는 관리자에게 문의하세요.
+    </div>
   </div>`
 }
 
@@ -21271,6 +21414,35 @@ window.openWorkSettingsModal = async () => {
   const ratioRow = document.getElementById('ws_ml_ratio_row')
   if (ratioRow) ratioRow.classList.toggle('hidden', mlRule !== 'ratio')
   scheduleWorkSettings = ws
+
+  // hospital(영양사) 역할은 읽기 전용 처리 - 모든 입력 요소 비활성화
+  if (App.role === 'hospital') {
+    setTimeout(() => {
+      const m = document.getElementById('workSettingsModal')
+      if (!m) return
+      // 모든 입력 비활성화
+      m.querySelectorAll('input, select, textarea, button[onclick*="save"]').forEach(el => {
+        if (el.id === 'workSettingsModal' || el.closest('button[onclick*="hidden"]')) return
+        el.disabled = true
+        el.style.opacity = '0.6'
+        el.style.cursor = 'not-allowed'
+        el.style.pointerEvents = 'none'
+      })
+      // 저장 버튼 숨기기
+      m.querySelectorAll('button[onclick*="saveWorkSettings"]').forEach(btn => {
+        btn.style.display = 'none'
+      })
+      // 읽기 전용 배너 삽입
+      const contentArea = m.querySelector('.p-6')
+      if (contentArea && !contentArea.querySelector('#wsReadonlyBanner')) {
+        const banner = document.createElement('div')
+        banner.id = 'wsReadonlyBanner'
+        banner.className = 'bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700 flex items-center gap-2'
+        banner.innerHTML = '<i class="fas fa-lock text-blue-500"></i><span>조회 전용 — 설정 변경은 관리자(리엔에이치)에게 문의하세요.</span>'
+        contentArea.insertBefore(banner, contentArea.firstChild)
+      }
+    }, 50)
+  }
 }
 
 window.saveWorkSettings = async () => {
