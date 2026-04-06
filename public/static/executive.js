@@ -993,10 +993,15 @@ function renderExecStaffLaborSection(d) {
   const warnings = d.warnings || []
 
   const totalLC       = lc.total || 1
-  const baseRatio     = Math.round(((lc.baseSalary  || 0) / totalLC) * 100)
-  const otRatio       = Math.round(((lc.otCost      || 0) / totalLC) * 100)
-  const dispatchRatio = Math.round(((lc.dispatchCost|| 0) / totalLC) * 100)
-  const parttimeRatio = Math.round(((lc.parttimeCost|| 0) / totalLC) * 100)
+  // show_base_salary OFF 시 기본급을 제외한 합계를 표시용으로 계산
+  const showBase = d.showBaseSalary === true
+  const displayTotal  = showBase ? (lc.total || 0) : ((lc.otCost || 0) + (lc.dispatchCost || 0) + (lc.parttimeCost || 0))
+  const displayBase   = showBase ? totalLC : Math.max(displayTotal, 1)   // 비율 계산 분모
+
+  const baseRatio     = Math.round(((lc.baseSalary  || 0) / displayBase) * 100)
+  const otRatio       = Math.round(((lc.otCost      || 0) / displayBase) * 100)
+  const dispatchRatio = Math.round(((lc.dispatchCost|| 0) / displayBase) * 100)
+  const parttimeRatio = Math.round(((lc.parttimeCost|| 0) / displayBase) * 100)
   const extRatio      = dispatchRatio + parttimeRatio
 
   const dispatchDiff = (es.dispatchDays || 0) - (es.prevDispatchDays || 0)
@@ -1019,8 +1024,6 @@ function renderExecStaffLaborSection(d) {
         <i class="fas fa-check-circle" style="font-size:11px;color:#16a34a"></i>
         <span style="font-size:12px;color:#15803d">인력 운영이 정상 범위입니다</span>
       </div>`
-
-  const showBase = d.showBaseSalary === true
 
   const costItems = [
     ...(showBase ? [{ label:'기본급', val: lc.baseSalary || 0, ratio: baseRatio, color:'#818cf8' }] : []),
@@ -1108,7 +1111,7 @@ function renderExecStaffLaborSection(d) {
         <!-- 총 인건비 배너 -->
         <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:16px;color:white">
           <p style="font-size:11px;color:#c7d2fe;margin-bottom:4px">이번 달 총 인건비</p>
-          <p style="font-size:28px;font-weight:800">${fmtW2(lc.total)}<span style="font-size:14px;font-weight:400;margin-left:4px">원</span></p>
+          <p style="font-size:28px;font-weight:800">${fmtW2(displayTotal)}<span style="font-size:14px;font-weight:400;margin-left:4px">원</span></p>
           <p style="font-size:11px;color:#c7d2fe;margin-top:4px">${showBase ? '기본급 + OT + 파출 + 알바 합산' : 'OT + 파출 + 알바 합산 (기본급 비공개)'}</p>
         </div>
 
@@ -1638,14 +1641,20 @@ function initLaborDonutChart(d) {
   const canvas = document.getElementById('execLaborDonutChart')
   if (!canvas || !d) return
   const lc = d.laborCost || {}
-  const total = lc.total || 1
-  const data = [
-    { label: '기본급',  val: lc.baseSalary   || 0, color: '#818cf8' },
+  const showBase = d.showBaseSalary === true
+
+  // 기본급 비공개 시 기본급 항목 제외
+  const allItems = [
+    ...(showBase ? [{ label: '기본급', val: lc.baseSalary || 0, color: '#818cf8' }] : []),
     { label: 'OT수당',  val: lc.otCost        || 0, color: '#fbbf24' },
     { label: '파출비',  val: lc.dispatchCost  || 0, color: '#fb923c' },
     { label: '알바비',  val: lc.parttimeCost  || 0, color: '#facc15' },
-  ].filter(d => d.val > 0)
+  ]
+  const data = allItems.filter(item => item.val > 0)
   if (data.length === 0) return
+
+  // 분모: 표시 항목 합계
+  const displaySum = data.reduce((s, item) => s + item.val, 0) || 1
 
   // Chart.js 도넛 차트 (CDN 로드 확인)
   if (typeof Chart === 'undefined') return
@@ -1670,7 +1679,7 @@ function initLaborDonutChart(d) {
         tooltip: {
           callbacks: {
             label: ctx => {
-              const pct = ((ctx.parsed / total) * 100).toFixed(1)
+              const pct = ((ctx.parsed / displaySum) * 100).toFixed(1)
               const val = ctx.parsed >= 10000
                 ? `${Math.round(ctx.parsed/10000)}만원`
                 : `${ctx.parsed.toLocaleString()}원`
