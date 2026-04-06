@@ -15571,23 +15571,45 @@ function renderEmployeeModal() {
             </select>
           </div>
           <div>
-            <label class="text-sm font-medium text-gray-700">직위</label>
-            <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장"
-              list="ei_position_list"
-              value="${isEdit ? (emp?.position||emp?.position_name||'') : ''}">
-            <datalist id="ei_position_list">
-              <option value="영양사">
-              <option value="영양사(주임)">
-              <option value="영양사(대리)">
-              <option value="조리장">
-              <option value="조리사">
-              <option value="조리원">
-              <option value="셰프">
-              <option value="수석조리사">
-              <option value="전처리(조리)">
-              <option value="파트타이머">
-              <option value="매니저">
-            </datalist>
+            ${(()=>{
+              const PRESET_POS = ['총괄셰프','책임셰프','셰프','수석조리사','조리장','조리사','조리원','전처리(조리)','매니저','파트타이머',
+                '영양팀장','수석영양사','선임영양사','영양사','후임영양사','영양사(주임)','영양사(대리)','영양사(계약직)']
+              const curPos = isEdit ? (emp?.position||emp?.position_name||'') : ''
+              const isCustom = curPos && !PRESET_POS.includes(curPos)
+              const sel = v => curPos===v?'selected':''
+              return `
+            <label class="text-sm font-medium text-gray-700">직위 <span class="text-red-500">*</span></label>
+            <select id="ei_position" class="form-input mt-1" onchange="(function(s){const c=document.getElementById('ei_position_custom');if(c){c.classList.toggle('hidden',s.value!=='기타')};})(this)">
+              <option value="" ${!curPos?'selected':''}>-- 선택 --</option>
+              <optgroup label="🍳 조리팀">
+                <option value="총괄셰프"    ${sel('총괄셰프')}>총괄셰프</option>
+                <option value="책임셰프"    ${sel('책임셰프')}>책임셰프</option>
+                <option value="셰프"        ${sel('셰프')}>셰프</option>
+                <option value="수석조리사"  ${sel('수석조리사')}>수석조리사</option>
+                <option value="조리장"      ${sel('조리장')}>조리장</option>
+                <option value="조리사"      ${sel('조리사')}>조리사</option>
+                <option value="조리원"      ${sel('조리원')}>조리원</option>
+                <option value="전처리(조리)"${sel('전처리(조리)')}>전처리(조리)</option>
+                <option value="매니저"      ${sel('매니저')}>매니저</option>
+                <option value="파트타이머"  ${sel('파트타이머')}>파트타이머</option>
+              </optgroup>
+              <optgroup label="🥗 영양팀">
+                <option value="영양팀장"      ${sel('영양팀장')}>영양팀장</option>
+                <option value="수석영양사"    ${sel('수석영양사')}>수석영양사</option>
+                <option value="선임영양사"    ${sel('선임영양사')}>선임영양사</option>
+                <option value="영양사"        ${sel('영양사')}>영양사</option>
+                <option value="후임영양사"    ${sel('후임영양사')}>후임영양사</option>
+                <option value="영양사(주임)"  ${sel('영양사(주임)')}>영양사(주임)</option>
+                <option value="영양사(대리)"  ${sel('영양사(대리)')}>영양사(대리)</option>
+                <option value="영양사(계약직)"${sel('영양사(계약직)')}>영양사(계약직)</option>
+              </optgroup>
+              <option value="기타" ${isCustom?'selected':''}>기타(직접입력)</option>
+            </select>
+            <input type="text" id="ei_position_custom"
+              class="form-input mt-1 ${isCustom?'':'hidden'}"
+              placeholder="직위명 직접 입력"
+              value="${isCustom?curPos:''}">`
+            })()}
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">고용형태</label>
@@ -21535,7 +21557,7 @@ window.saveEmployeeCard = async (empId) => {
   const body = {
     name,
     team: document.getElementById('ei_team')?.value || 'cook',
-    position: document.getElementById('ei_position')?.value || '',
+    position: (() => { const sel = document.getElementById('ei_position')?.value || ''; return sel === '기타' ? (document.getElementById('ei_position_custom')?.value?.trim() || '기타') : sel })(),
     empNumber: document.getElementById('ei_empNumber')?.value || '',
     birthDate: document.getElementById('ei_birthDate')?.value || '',
     hireDate: document.getElementById('ei_hireDate')?.value || '',
@@ -23246,21 +23268,33 @@ function renderAdminStaffContent(content) {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위</label>
-            <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장"
-              list="aem_position_list">
-            <datalist id="aem_position_list">
-              <option value="영양사">
-              <option value="영양사(주임)">
-              <option value="영양사(대리)">
-              <option value="조리장">
-              <option value="조리사">
-              <option value="조리원">
-              <option value="셰프">
-              <option value="수석조리사">
-              <option value="전처리(조리)">
-              <option value="파트타이머">
-              <option value="매니저">
-            </datalist>
+            <select id="aem_position" class="form-input mt-1" onchange="(function(s){const c=document.getElementById('aem_position_custom');if(c){c.classList.toggle('hidden',s.value!=='기타')};})(this)">
+              <option value="">-- 선택 --</option>
+              <optgroup label="🍳 조리팀">
+                <option value="총괄셰프">총괄셰프</option>
+                <option value="책임셰프">책임셰프</option>
+                <option value="셰프">셰프</option>
+                <option value="수석조리사">수석조리사</option>
+                <option value="조리장">조리장</option>
+                <option value="조리사">조리사</option>
+                <option value="조리원">조리원</option>
+                <option value="전처리(조리)">전처리(조리)</option>
+                <option value="매니저">매니저</option>
+                <option value="파트타이머">파트타이머</option>
+              </optgroup>
+              <optgroup label="🥗 영양팀">
+                <option value="영양팀장">영양팀장</option>
+                <option value="수석영양사">수석영양사</option>
+                <option value="선임영양사">선임영양사</option>
+                <option value="영양사">영양사</option>
+                <option value="후임영양사">후임영양사</option>
+                <option value="영양사(주임)">영양사(주임)</option>
+                <option value="영양사(대리)">영양사(대리)</option>
+                <option value="영양사(계약직)">영양사(계약직)</option>
+              </optgroup>
+              <option value="기타">기타(직접입력)</option>
+            </select>
+            <input type="text" id="aem_position_custom" class="form-input mt-1 hidden" placeholder="직위명 직접 입력">
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">고용형태</label>
@@ -23332,10 +23366,15 @@ window.openAdminEmpAddModal = () => {
   document.getElementById('adminEmpModalTitle').innerHTML = '<i class="fas fa-id-card mr-2"></i>직원 추가'
   document.getElementById('aem_btnLabel').textContent = '추가'
   // 폼 초기화
-  ;['aem_name','aem_empNumber','aem_position','aem_phone','aem_emergencyContact','aem_address','aem_note'].forEach(id => {
+  ;['aem_name','aem_empNumber','aem_phone','aem_emergencyContact','aem_address','aem_note'].forEach(id => {
     const el = document.getElementById(id)
     if (el) el.value = ''
   })
+  // 직위 드롭다운 초기화
+  const _posSelReset = document.getElementById('aem_position')
+  if (_posSelReset) _posSelReset.value = ''
+  const _posCustomReset = document.getElementById('aem_position_custom')
+  if (_posCustomReset) { _posCustomReset.value = ''; _posCustomReset.classList.add('hidden') }
   ;['aem_birthDate','aem_hireDate','aem_healthCertExpire','aem_healthExamDate'].forEach(id => {
     const el = document.getElementById(id)
     if (el) el.value = ''
@@ -23362,7 +23401,24 @@ window.openAdminEmpEditModal = async (empId) => {
   setVal('aem_name', emp.name)
   setVal('aem_empNumber', emp.emp_number)
   setVal('aem_team', emp.team || 'cook')
-  setVal('aem_position', emp.position || emp.position_name || '')
+  // 직위 드롭다운 세팅 (기존값이 목록에 없으면 '기타' 선택 + custom 입력창에 표시)
+  ;(()=>{
+    const PRESET_POS_AEM = ['총괄셰프','책임셰프','셰프','수석조리사','조리장','조리사','조리원','전처리(조리)','매니저','파트타이머','영양팀장','수석영양사','선임영양사','영양사','후임영양사','영양사(주임)','영양사(대리)','영양사(계약직)']
+    const posVal = emp.position || emp.position_name || ''
+    const selEl = document.getElementById('aem_position')
+    const customEl = document.getElementById('aem_position_custom')
+    if (!selEl) return
+    if (PRESET_POS_AEM.includes(posVal)) {
+      selEl.value = posVal
+      if (customEl) { customEl.value = ''; customEl.classList.add('hidden') }
+    } else if (posVal) {
+      selEl.value = '기타'
+      if (customEl) { customEl.value = posVal; customEl.classList.remove('hidden') }
+    } else {
+      selEl.value = ''
+      if (customEl) { customEl.value = ''; customEl.classList.add('hidden') }
+    }
+  })()
   setVal('aem_employmentType', emp.employment_type || 'full')
   setVal('aem_birthDate', emp.birth_date)
   setVal('aem_hireDate', emp.hire_date)
@@ -23390,7 +23446,7 @@ window.saveAdminEmployee = async () => {
     name,
     empNumber: document.getElementById('aem_empNumber')?.value || '',
     team: document.getElementById('aem_team')?.value || 'cook',
-    position: document.getElementById('aem_position')?.value || '',
+    position: (() => { const s = document.getElementById('aem_position')?.value || ''; return s === '기타' ? (document.getElementById('aem_position_custom')?.value?.trim() || '기타') : s })(),
     employmentType: document.getElementById('aem_employmentType')?.value || 'full',
     birthDate: document.getElementById('aem_birthDate')?.value || '',
     hireDate: document.getElementById('aem_hireDate')?.value || '',
