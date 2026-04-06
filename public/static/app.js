@@ -24024,7 +24024,7 @@ function updateSchedRightPanel() {
 
   const sm   = scheduleMonthData?.sched_map || {}
   const lm   = scheduleMonthData?.leave_map || {}
-  const emps = scheduleEmployees || []
+  const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
   const year = App.currentYear, month = App.currentMonth
   const days = new Date(year, month, 0).getDate()
   const REST_CODES = new Set(['휴','연','경조','병가'])
@@ -24047,7 +24047,6 @@ function updateSchedRightPanel() {
       else { workDays++; if (sched?.overtime_hours > 0) otHours += sched.overtime_hours }
     }
 
-    // 오늘 상태 (현재 월이 아니어도 workDays로 표시하되 오늘 아이콘은 생략)
     let todayStatus = 'none'
     if (isCurrentMonth) {
       if (todayCode === '연') todayStatus = 'leave'
@@ -24065,39 +24064,97 @@ function updateSchedRightPanel() {
     const annualEffective = annualTot !== null ? annualTot + annualCarried : null
     const annualRemain = annualEffective !== null ? annualEffective - (empLeave.annual?.used ?? 0) : null
 
-    return { emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain }
+    return { emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain, todayCode }
   })
 
-  // KPI — 현재 월이면 오늘 기준, 아니면 월 전체 집계로 표시
+  // KPI 업데이트
   if (kpiWorking) kpiWorking.textContent = isCurrentMonth ? totalWorking : emps.length
   if (kpiLeave)   kpiLeave.textContent   = totalLeave  || empStats.filter(e => e.leaveDays > 0).length
   if (kpiOff)     kpiOff.textContent     = isCurrentMonth ? totalOff : '-'
   if (kpiOt)      kpiOt.textContent      = totalOtCnt
 
-  const stIcon = { working:'fa-briefcase', leave:'fa-umbrella-beach', off:'fa-bed', none:'fa-minus' }
-  const stBg   = { working:'#dcfce7', leave:'#fef3c7', off:'#fee2e2', none:'#f3f4f6' }
-  const stCol  = { working:'#166534', leave:'#92400e', off:'#b91c1c', none:'#9ca3af' }
+  // 오늘 상태별 스타일
+  const stIcon  = { working:'fa-briefcase', leave:'fa-umbrella-beach', off:'fa-bed', none:'fa-circle' }
+  const stBg    = { working:'#dcfce7', leave:'#fef9c3', off:'#fee2e2', none:'#f1f5f9' }
+  const stColor = { working:'#15803d', leave:'#a16207', off:'#b91c1c', none:'#cbd5e1' }
+  const stLabel = { working:'근무', leave:'연차', off:'휴무', none:'' }
 
-  listEl.innerHTML = empStats.map(({ emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain }) => {
-    const ic = stIcon[todayStatus], bg = stBg[todayStatus], col = stCol[todayStatus]
-    const chips = [
-      `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#dcfce7;color:#166534;font-weight:600">근${workDays}</span>`,
-      offDays  > 0 ? `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#fee2e2;color:#b91c1c;font-weight:600">휴${offDays}</span>` : '',
-      leaveDays > 0 ? `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#fef3c7;color:#92400e;font-weight:600">연${leaveDays}</span>` : '',
-      otHours   > 0 ? `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#ede9fe;color:#5b21b6;font-weight:600">OT${otHours}h</span>` : '',
-      annualRemain !== null ? `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#fef9c3;color:#713f12;font-weight:600">잔${annualRemain}</span>` : ''
-    ].filter(Boolean).join('')
-    return `<div onclick="try{openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'')}')}catch(e){}"
-      style="padding:4px 8px;border-bottom:1px solid #f0fdf4;cursor:pointer"
-      onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background=''">
-      <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">
-        <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:${bg};color:${col};font-size:7px;flex-shrink:0"><i class="fas ${ic}"></i></span>
-        <span style="font-size:11px;font-weight:700;color:#111827;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${emp.name}</span>
-        <span style="font-size:9px;color:#9ca3af;flex-shrink:0">${(emp.position_name||emp.position||'').slice(0,4)}</span>
-      </div>
-      <div style="display:flex;gap:3px;flex-wrap:wrap">${chips}</div>
+  // 그룹별 분류 (팀 구분)
+  const teamOrder = ['nutrition','cook']
+  const teamLabel = { nutrition:'영양팀', cook:'조리팀' }
+  const teamColor = { nutrition:'#be185d', cook:'#166534' }
+  const teamBg    = { nutrition:'#fdf2f8', cook:'#f0fdf4' }
+
+  // 팀별 그룹핑
+  const grouped = {}
+  empStats.forEach(s => {
+    const t = s.emp.team || 'cook'
+    if (!grouped[t]) grouped[t] = []
+    grouped[t].push(s)
+  })
+
+  let html = ''
+  const teams = [...new Set([...teamOrder, ...Object.keys(grouped)])]
+  teams.forEach(team => {
+    const list = grouped[team]
+    if (!list || list.length === 0) return
+    const tLabel = teamLabel[team] || team
+    const tColor = teamColor[team] || '#374151'
+    const tBg    = teamBg[team]   || '#f9fafb'
+
+    // 팀 헤더
+    html += `<div style="padding:3px 8px;background:${tBg};border-top:2px solid ${tColor}33;border-bottom:1px solid ${tColor}22;display:flex;align-items:center;gap:5px">
+      <span style="font-size:9px;font-weight:800;color:${tColor}">${tLabel}</span>
+      <span style="font-size:9px;color:${tColor}99">${list.length}명</span>
     </div>`
-  }).join('') || '<div style="padding:10px;text-align:center;color:#94a3b8;font-size:10px">직원 없음</div>'
+
+    list.forEach(({ emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain, todayCode }) => {
+      const ic  = stIcon[todayStatus]
+      const bg  = stBg[todayStatus]
+      const col = stColor[todayStatus]
+      const stLbl = stLabel[todayStatus]
+
+      // 오늘 코드 배지 (근무 중일 때만)
+      const todayBadge = (isCurrentMonth && todayCode && todayCode !== '-' && todayStatus === 'working')
+        ? `<span style="font-size:8px;padding:1px 4px;border-radius:3px;background:#166534;color:white;font-weight:700;margin-left:2px">${todayCode}</span>`
+        : ''
+
+      // 상태 아이콘 (오늘 상태)
+      const statusDot = isCurrentMonth
+        ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:${bg};color:${col};font-size:7px;flex-shrink:0" title="${stLbl}"><i class="fas ${ic}"></i></span>`
+        : ''
+
+      // 직위 (최대 5자)
+      const pos = (emp.position_name || emp.position || '').replace(/\(.+\)/,'').slice(0,5)
+
+      // 통계 칩들 — 크고 명확하게
+      const chipStyle = (bg2, fg2) => `display:inline-flex;align-items:center;gap:2px;padding:2px 6px;border-radius:4px;background:${bg2};color:${fg2};font-size:10px;font-weight:700`
+      const chips = [
+        `<span style="${chipStyle('#dcfce7','#15803d')}"><i class="fas fa-briefcase" style="font-size:8px"></i> ${workDays}일</span>`,
+        leaveDays > 0 ? `<span style="${chipStyle('#fef9c3','#a16207')}"><i class="fas fa-umbrella-beach" style="font-size:8px"></i> ${leaveDays}일</span>` : '',
+        offDays   > 0 ? `<span style="${chipStyle('#fee2e2','#b91c1c')}"><i class="fas fa-bed" style="font-size:8px"></i> ${offDays}일</span>` : '',
+        otHours   > 0 ? `<span style="${chipStyle('#ede9fe','#5b21b6')}">OT ${otHours}h</span>` : '',
+        annualRemain !== null ? `<span style="${chipStyle('#fef3c7','#92400e')}">잔여 ${annualRemain}일</span>` : ''
+      ].filter(Boolean).join('')
+
+      html += `
+        <div onclick="try{openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'')}')}catch(e){}"
+          style="padding:6px 8px;border-bottom:1px solid #f0f9ff;cursor:pointer;transition:background .12s"
+          onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background=''">
+          <!-- 이름 + 직위 + 오늘 상태 -->
+          <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">
+            ${statusDot}
+            <span style="font-size:12px;font-weight:800;color:#111827;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${emp.name}</span>
+            ${todayBadge}
+            <span style="font-size:9px;color:#94a3b8;flex-shrink:0;background:#f1f5f9;padding:1px 4px;border-radius:3px">${pos}</span>
+          </div>
+          <!-- 통계 칩 -->
+          <div style="display:flex;gap:3px;flex-wrap:wrap;padding-left:${isCurrentMonth?'21px':'0'}">${chips}</div>
+        </div>`
+    })
+  })
+
+  listEl.innerHTML = html || '<div style="padding:12px;text-align:center;color:#94a3b8;font-size:11px">직원 없음</div>'
 }
 
 
