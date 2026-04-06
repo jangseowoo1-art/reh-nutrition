@@ -16140,7 +16140,7 @@ function renderLeavesTab() {
             : under1Year && autoCalcDays > 0
               ? `<div class="flex flex-col items-center gap-0.5">
                   <span class="text-sm font-bold text-teal-600">${autoCalcDays}일</span>
-                  <span class="text-xs text-gray-400">미저장·수정 후 확정</span>
+                  <span class="text-xs text-gray-400">자동발생 예정 · 수정가능</span>
                 </div>`
               : under1Year
                 ? `<span class="text-xs text-gray-400">-</span>`
@@ -16196,13 +16196,10 @@ function renderLeavesTab() {
       <div class="px-5 py-4 border-b border-teal-100 bg-teal-50 flex items-center justify-between flex-wrap gap-2">
         <div>
           <h3 class="font-bold text-teal-800"><i class="fas fa-calendar-plus mr-2 text-teal-600"></i>${year}년 월차 현황 <span class="text-xs font-normal text-teal-600 ml-1">(1년 미만 근무자)</span></h3>
-          <p class="text-xs text-teal-600 mt-0.5">입사 다음달부터 이번달까지 1달=1일 자동 발생 · 최대 ${scheduleWorkSettings?.monthly_leave_max_days || 11}일 · <strong>전체 월차 자동발생</strong> 버튼으로 일괄 처리</p>
+          <p class="text-xs text-teal-600 mt-0.5">입사 다음달부터 매달 1일 자동 발생 · 최대 ${scheduleWorkSettings?.monthly_leave_max_days || 11}일 · 1년 만료 시 연차 자동 전환</p>
         </div>
         <div class="flex gap-2 flex-wrap">
-          ${isAdm ? `
-          <button onclick="runMonthlyLeaveBackfill()" class="px-3 py-1.5 rounded-lg text-xs bg-teal-600 text-white hover:bg-teal-700">
-            <i class="fas fa-bolt mr-1"></i>전체 월차 자동발생
-          </button>` : ''}
+          
         </div>
       </div>
       <!-- 월차 요약 카드 -->
@@ -17039,21 +17036,27 @@ window.switchScheduleTab = async (tab) => {
       scheduleLeavesData = Array.isArray(raw) ? raw : (raw?.employees ? raw.employees : [])
       if (Array.isArray(emps)) scheduleEmployees = emps
       scheduleLeaveHistorySummary = histSummary
-      // 월차 + 초기 셋업 상태도 함께 갱신
+      // 월차 데이터 갱신
       await loadMonthlyLeaveData()
 
-      // ── 1년 도달 직원 자동 연차 전환 (조용히 처리) ──────────
       if (App.role === 'admin' || App.role === 'hospital') {
+        const hospQuery = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+        // ── 미발생 월차 소급 자동처리 (조용히) ──────────────
         try {
-          const hospQuery = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+          const backfillRes = await api('POST', `/api/schedule/monthly-leave/backfill${hospQuery}`, {}).catch(() => null)
+          if (backfillRes?.summary?.granted > 0) {
+            await loadMonthlyLeaveData()
+          }
+        } catch(e) {}
+        // ── 1년 도달 직원 자동 연차 전환 (조용히) ───────────
+        try {
           const transRes = await api('POST', `/api/schedule/monthly-leave/transition${hospQuery}`, {}).catch(() => null)
           if (transRes?.transitioned?.length > 0) {
-            // 전환된 직원이 있으면 연차 데이터 재로드 + 토스트
-            const cnt = transRes.transitioned.length
-            showToast(`🎉 ${cnt}명 1년 근속 달성 → 연차(${transRes.transitioned[0]?.legalDays || 15}일~) 자동 부여`, 'success')
+            const names = transRes.transitioned.map(t => t.name).join(', ')
+            showToast(`🎉 ${names} — 1년 근속 달성, 연차 자동 부여 완료`, 'success')
             scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
           }
-        } catch(e) { /* 전환 실패해도 탭 렌더링은 정상 진행 */ }
+        } catch(e) {}
       }
     } else if (tab === 'analysis') {
       scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null)
