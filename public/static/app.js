@@ -15515,8 +15515,11 @@ function renderMonthlyScheduleTab() {
                 <div style="font-size:9px;opacity:0.8">${dow}</div>
               </th>`
             }).join('')}
-            <th style="padding:6px 4px;min-width:40px;text-align:center;border-left:3px solid #14532d;border-bottom:3px solid #14532d;background:#0f3d25;font-size:10px">근무</th>
-            <th style="padding:6px 4px;min-width:35px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:10px">연차</th>
+            <th style="padding:6px 4px;min-width:32px;text-align:center;border-left:3px solid #14532d;border-bottom:3px solid #14532d;background:#0f3d25;font-size:9px">근무일</th>
+            <th style="padding:6px 4px;min-width:28px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:9px">휴무</th>
+            <th style="padding:6px 4px;min-width:32px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:9px">연차</th>
+            <th style="padding:6px 4px;min-width:32px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:9px">잔여</th>
+            <th style="padding:6px 4px;min-width:28px;text-align:center;border-left:1px solid rgba(255,255,255,0.2);border-bottom:3px solid #14532d;background:#0f3d25;font-size:9px">OT</th>
           </tr>
           <!-- 부여휴무 행 -->
           <tr style="background:#1e3a2f;border-bottom:2px solid #14532d">
@@ -15560,12 +15563,12 @@ function renderMonthlyScheduleTab() {
               </td>`
             }).join('')}
             <td style="padding:5px;text-align:center;background:#0f3d25;border-left:3px solid #14532d;font-weight:700;color:#86efac;font-size:11px">${(og?.summary?.grand_total||0)}일</td>
-            <td style="padding:5px;text-align:center;background:#0f3d25;border-left:1px solid rgba(255,255,255,0.15);font-size:10px;color:#4ade80">-</td>
+            <td colspan="4" style="padding:5px;text-align:center;background:#0f3d25;border-left:1px solid rgba(255,255,255,0.15);font-size:10px;color:#4ade80"></td>
           </tr>
         </thead>
         <tbody>
           ${emps.length === 0 ? `
-          <tr><td colspan="${days+3}" class="text-center py-12 text-gray-400">
+          <tr><td colspan="${days+6}" class="text-center py-12 text-gray-400">
             <i class="fas fa-users text-4xl mb-3 block"></i>
             직원을 먼저 등록하세요 (인사카드 탭)
           </td></tr>
@@ -15618,8 +15621,11 @@ function renderMonthlyScheduleTab() {
               return `<tr style="background:${hColor}">
                 <th style="padding:5px 10px;text-align:left;min-width:100px;position:sticky;left:0;background:${hColor};z-index:15;color:white;font-size:11px;font-weight:700;border-right:2px solid rgba(255,255,255,.3)">이름/직위</th>
                 ${dayThs}
-                <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:2px solid rgba(255,255,255,.3)">근무</th>
-                <th style="padding:3px 4px;min-width:36px;text-align:center;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.2)">연차</th>
+                <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:2px solid rgba(255,255,255,.3)">근무일</th>
+                <th style="padding:3px 4px;min-width:28px;text-align:center;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.2)">휴무</th>
+                <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.2)">연차</th>
+                <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.2)">잔여</th>
+                <th style="padding:3px 4px;min-width:28px;text-align:center;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.2)">OT</th>
               </tr>`
             }
 
@@ -15638,14 +15644,14 @@ function renderMonthlyScheduleTab() {
               return `<tr>
                 <th style="padding:2px 10px;position:sticky;left:0;background:${hColor}bb;z-index:15;color:rgba(255,255,255,.8);font-size:9px;border-right:2px solid rgba(255,255,255,.2)">요일</th>
                 ${dowThs}
-                <th colspan="2" style="border-left:2px solid rgba(255,255,255,.2);background:${hColor}bb"></th>
+                <th colspan="5" style="border-left:2px solid rgba(255,255,255,.2);background:${hColor}bb;font-size:8px;color:rgba(255,255,255,.7);text-align:center;padding:1px 2px">현황</th>
               </tr>`
             }
 
             // 직원 행 렌더러 (기존 로직 재사용)
             function renderEmpRowInGroup(emp, empIdx, grp) {
               const rowBg = empIdx % 2 === 0 ? 'white' : grp.headerBg
-              let workDayCount = 0, annualUsed = 0, leaveUsed = 0
+              let workDayCount = 0, annualUsed = 0, leaveUsed = 0, totalOtHours = 0
               const REST_CODES2 = new Set(['휴','연','경조','병가'])
               const ws2 = scheduleWorkSettings || {}
               const maxConsec2 = parseInt(ws2.consecutive_max_days || '6')
@@ -15707,6 +15713,7 @@ function renderMonthlyScheduleTab() {
                 if (code && code !== '-') { spanStyle2 = getShiftStyle(code); spanText2 = code }
                 else { spanStyle2 = 'background:#f9fafb;color:#d1d5db'; spanText2 = '·' }
                 const otH2 = sched?.overtime_hours || 0
+                if (otH2 > 0) totalOtHours += otH2
                 const isNightW2 = sched?.is_night_work || false
                 const isTempS2 = sched?.is_temp_staff || false
                 const extraIcon2 = otH2>0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH2}h</div>`
@@ -15809,12 +15816,29 @@ function renderMonthlyScheduleTab() {
                   })()}
                 </td>
                 ${cells}
-                <td id="workdays-${emp.id}" style="padding:4px 3px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;min-width:38px">
+                <td id="workdays-${emp.id}" style="padding:3px 2px;text-align:center;background:#f0fdf4;border-left:3px solid #d1fae5;min-width:32px">
                   <div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div>
-                  <div style="font-size:9px;color:#4ade80;opacity:.8">근무</div>
+                  <div style="font-size:8px;color:#4ade80;opacity:.8">근무</div>
                 </td>
-                <td id="annual-${emp.id}" style="padding:4px 3px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;min-width:40px">
-                  ${annualCell2}
+                <td style="padding:3px 2px;text-align:center;background:#fff1f2;border-left:1px solid #fecaca;min-width:28px">
+                  <div style="font-size:12px;font-weight:700;color:#b91c1c">${leaveUsed||0}</div>
+                  <div style="font-size:8px;color:#ef4444;opacity:.8">휴무</div>
+                </td>
+                <td id="annual-${emp.id}" style="padding:3px 2px;text-align:center;background:#fef9c3;border-left:1px solid #fde68a;min-width:32px">
+                  <div style="font-size:12px;font-weight:700;color:#92400e">${annualUsed||0}</div>
+                  <div style="font-size:8px;color:#b45309;opacity:.8">연차</div>
+                </td>
+                <td style="padding:3px 2px;text-align:center;background:#fef3c7;border-left:1px solid #fde68a;min-width:32px">
+                  ${annualRemain2 !== null
+                    ? `<div style="font-size:12px;font-weight:700;color:#92400e">${annualRemain2}</div><div style="font-size:8px;color:#b45309;opacity:.8">잔여</div>`
+                    : `<div style="font-size:10px;color:#d1d5db">-</div>`
+                  }
+                </td>
+                <td style="padding:3px 2px;text-align:center;background:#faf5ff;border-left:1px solid #e9d5ff;min-width:28px">
+                  ${totalOtHours > 0
+                    ? `<div style="font-size:11px;font-weight:700;color:#7c3aed">${totalOtHours}h</div><div style="font-size:8px;color:#7c3aed;opacity:.7">OT</div>`
+                    : `<div style="font-size:10px;color:#d1d5db">-</div>`
+                  }
                 </td>
               </tr>`
             }
@@ -15824,7 +15848,7 @@ function renderMonthlyScheduleTab() {
             schedGroups.forEach(grp => {
               // 그룹 구분 헤더 (큰 섹션 분리)
               allGroupHtml += `<tr>
-                <td colspan="${days+3}" style="padding:0">
+                <td colspan="${days+6}" style="padding:0">
                   <div style="background:#ffffff;border-top:3px solid ${grp.headerColor};border-bottom:1px solid #e2e8f0;padding:5px 14px;display:flex;align-items:center;gap:8px">
                     <i class="fas ${grp.icon}" style="color:${grp.headerColor};font-size:12px"></i>
                     <span style="font-size:12px;font-weight:800;color:${grp.headerColor}">${grp.label}</span>
@@ -15874,7 +15898,7 @@ function renderMonthlyScheduleTab() {
                   <td style="padding:2px;text-align:center;background:${grp.headerBg};border-left:3px solid ${grp.headerColor}44">
                     <span style="font-size:10px;font-weight:800;color:${grp.headerColor}">${totalWorkDaysGrp}</span>
                   </td>
-                  <td style="padding:2px;background:${grp.headerBg};border-left:1px solid ${grp.headerColor}22"></td>
+                  <td colspan="4" style="padding:2px;background:${grp.headerBg};border-left:1px solid ${grp.headerColor}22"></td>
                 </tr>`
               }
             })
@@ -16039,40 +16063,6 @@ function renderMonthlyScheduleTab() {
   </div>
 
     </div><!-- /스케줄 그리드 영역 -->
-
-    <!-- ③ 우측 고정 직원 상태 패널 -->
-    <div id="schedRightEmpPanel" style="width:220px;flex-shrink:0;position:sticky;top:0;max-height:calc(100vh - 100px);overflow-y:auto;background:linear-gradient(180deg,#f0fdf4,#ffffff);border-radius:12px;border:1.5px solid #bbf7d0;box-shadow:0 2px 12px rgba(22,101,52,.1);font-size:11px">
-      <!-- 헤더 -->
-      <div style="padding:8px 10px;background:linear-gradient(135deg,#166534,#15803d);border-radius:10px 10px 0 0;position:sticky;top:0;z-index:5">
-        <div style="font-size:11px;font-weight:800;color:#86efac;display:flex;align-items:center;gap:5px">
-          <i class="fas fa-users" style="font-size:10px"></i>직원 현황
-        </div>
-        <div style="font-size:9px;color:#4ade80;opacity:.8;margin-top:1px">클릭하면 개인 상세 보기</div>
-      </div>
-      <!-- KPI 요약 (4칸 그리드) -->
-      <div id="schedRightKpiRow" style="padding:6px 8px;display:grid;grid-template-columns:1fr 1fr;gap:4px;border-bottom:1px solid #dcfce7">
-        <div style="background:#dcfce7;border-radius:6px;padding:4px 6px;text-align:center">
-          <div style="font-size:14px;font-weight:800;color:#166534" id="srk-working">-</div>
-          <div style="font-size:9px;color:#4ade80">근무중</div>
-        </div>
-        <div style="background:#fef3c7;border-radius:6px;padding:4px 6px;text-align:center">
-          <div style="font-size:14px;font-weight:800;color:#92400e" id="srk-leave">-</div>
-          <div style="font-size:9px;color:#b45309">연차</div>
-        </div>
-        <div style="background:#fee2e2;border-radius:6px;padding:4px 6px;text-align:center">
-          <div style="font-size:14px;font-weight:800;color:#b91c1c" id="srk-off">-</div>
-          <div style="font-size:9px;color:#ef4444">휴무</div>
-        </div>
-        <div style="background:#ede9fe;border-radius:6px;padding:4px 6px;text-align:center">
-          <div style="font-size:14px;font-weight:800;color:#5b21b6" id="srk-ot">-</div>
-          <div style="font-size:9px;color:#7c3aed">OT</div>
-        </div>
-      </div>
-      <!-- 직원별 목록 -->
-      <div id="schedRightEmpList" style="padding:0">
-        <div style="padding:8px;text-align:center;color:#94a3b8;font-size:10px">로딩 중...</div>
-      </div>
-    </div>
 
   </div><!-- /메인 2-컬럼 레이아웃 -->
 
