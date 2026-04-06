@@ -14135,7 +14135,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
     const mm = String(month).padStart(2,'0')
 
     // 외부인력(파출/알바) 데이터
-    const extWorkers   = md?.ext_workers || []
+    const extWorkers   = (md?.ext_workers || md?.external_workers || scheduleExternalWorkers) || []
     const extSchedMap  = scheduleExtSchedMap || {}
     const canEditExt   = (App.role === 'admin' || App.role === 'hospital')
     const dispatchW    = extWorkers.filter(w => w.worker_type === 'dispatch')
@@ -14336,7 +14336,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         // 섹션 헤더
         extBody += '<tr><td colspan="' + (days+3) + '" style="padding:3px 8px;background:' + eg.bg + ';border-top:2px solid ' + eg.color + ';border-bottom:1px solid ' + eg.border + '">'
         extBody += '<span style="font-size:10px;font-weight:800;color:' + eg.color + '"><i class="fas fa-user-clock" style="margin-right:4px"></i>' + eg.label + ' ' + eg.workers.length + '명</span>'
-        if (canEditExt) extBody += '<button onclick="showAddExtWorkerModal(\'' + eg.type + '\')" style="margin-left:6px;padding:1px 6px;border-radius:4px;background:' + eg.color + '22;border:1px solid ' + eg.color + '55;color:' + eg.color + ';font-size:9px;font-weight:700;cursor:pointer">+ ' + eg.label + ' 추가</button>'
+        if (canEditExt) extBody += '<button class="ext-add-btn" data-stype="' + eg.type + '" style="margin-left:6px;padding:1px 6px;border-radius:4px;background:' + eg.color + '22;border:1px solid ' + eg.color + '55;color:' + eg.color + ';font-size:9px;font-weight:700;cursor:pointer">+ ' + eg.label + ' 추가</button>'
         extBody += '</td></tr>'
         // 날짜 헤더
         extBody += '<tr style="background:' + eg.color + '">'
@@ -14371,13 +14371,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
               ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:3px;font-size:8px;font-weight:700;background:' + eg.color + '22;color:' + eg.color + ';border:1px solid ' + eg.color + '44">' + extCode + '</span>'
               : '<span style="color:#d1d5db;font-size:9px">·</span>'
             wCells += '<td class="ext-cell" style="padding:1px;text-align:center;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
-              ' onclick="extCellClick(event,\'' + w.id + '\',\'' + ds2 + '\',this,\'' + eg.type + '\')"' +
-              ' ondblclick="extCellDblClick(event,\'' + w.id + '\',\'' + ds2 + '\',this,\'' + eg.type + '\')"' +
-              ' onmousedown="extDragStart(event,\'' + w.id + '\',\'' + ds2 + '\',this)"' +
-              ' onmousemove="extDragMove(event,\'' + w.id + '\',\'' + ds2 + '\',this)"' +
-              ' onmouseup="extDragEnd(event)"' +
-              ' oncontextmenu="event.preventDefault();openExtDetailModal(\'' + w.id + '\',\'' + ds2 + '\',\'' + (w.name||'').replace(/'/g,'') + '\',this)"' +
-              ' data-shift="' + extCode + '" data-wid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '">' +
+              ' data-shift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' +
               sp2 + '</td>'
           }
           extBody += '<tr style="border-bottom:1px solid ' + eg.border + '"' +
@@ -20699,11 +20693,12 @@ function initExtWorkerEvents() {
 
   // 이전 리스너 제거 후 재등록 (중복 방지)
   if (tc._extEvtBound) {
-    tc.removeEventListener('click',     tc._extEvtHandler)
-    tc.removeEventListener('dblclick',  tc._extDblHandler)
-    tc.removeEventListener('mousedown', tc._extMdHandler)
-    tc.removeEventListener('mousemove', tc._extMmHandler)
-    tc.removeEventListener('mouseup',   tc._extMuHandler)
+    tc.removeEventListener('click',       tc._extEvtHandler)
+    tc.removeEventListener('dblclick',    tc._extDblHandler)
+    tc.removeEventListener('mousedown',   tc._extMdHandler)
+    tc.removeEventListener('mousemove',   tc._extMmHandler)
+    tc.removeEventListener('mouseup',     tc._extMuHandler)
+    if (tc._extCtxHandler) tc.removeEventListener('contextmenu', tc._extCtxHandler)
   }
 
   tc._extEvtHandler = function(e) {
@@ -20792,11 +20787,29 @@ function initExtWorkerEvents() {
     if (_extIsDragging) { _extDragEnd() }
   }
 
-  tc.addEventListener('click',     tc._extEvtHandler)
-  tc.addEventListener('dblclick',  tc._extDblHandler)  // 한 번만 등록
-  tc.addEventListener('mousedown', tc._extMdHandler)
-  tc.addEventListener('mousemove', tc._extMmHandler)
-  tc.addEventListener('mouseup',   tc._extMuHandler)
+  // contextmenu: 외부인력 셀 우클릭 → 인라인 입력 열기 (드롭다운 선택)
+  if (tc._extCtxHandler) tc.removeEventListener('contextmenu', tc._extCtxHandler)
+  tc._extCtxHandler = function(e) {
+    const cell = e.target.closest('.ext-cell')
+    if (!cell) return
+    e.preventDefault(); e.stopPropagation()
+    if (!(App.role === 'admin' || App.role === 'hospital')) return
+    const wid  = parseInt(cell.dataset.extid)
+    const date = cell.dataset.date
+    const key  = _extCellKey(cell)
+    _extSelectedCells.clear()
+    _extSelectedCells.add(key)
+    _extAnchorKey = key
+    _extUpdateSelectStyle()
+    _extOpenInlineInput(wid, date, cell, null)
+  }
+
+  tc.addEventListener('click',       tc._extEvtHandler)
+  tc.addEventListener('dblclick',    tc._extDblHandler)  // 한 번만 등록
+  tc.addEventListener('mousedown',   tc._extMdHandler)
+  tc.addEventListener('mousemove',   tc._extMmHandler)
+  tc.addEventListener('mouseup',     tc._extMuHandler)
+  tc.addEventListener('contextmenu', tc._extCtxHandler)
   tc._extEvtBound = true
 }
 
