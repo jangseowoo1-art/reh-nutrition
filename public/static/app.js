@@ -15565,25 +15565,16 @@ function renderEmployeeModal() {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">팀 <span class="text-red-500">*</span></label>
-            <select id="ei_team" class="form-input mt-1" onchange="updateEmpPositionOptions()">
+            <select id="ei_team" class="form-input mt-1">
               <option value="cook" ${(!isEdit||emp?.team==='cook')?'selected':''}>조리팀</option>
               <option value="nutrition" ${(isEdit&&emp?.team==='nutrition')?'selected':''}>영양팀</option>
             </select>
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위</label>
-            <select id="ei_positionId" class="form-input mt-1">
-              <option value="">직접입력</option>
-              ${schedulePositions.map(p => `
-                <option value="${p.id}" ${isEdit&&emp?.position_id==p.id?'selected':''}>${p.name} (${p.team==='cook'?'조리':'영양'})</option>
-              `).join('')}
-            </select>
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
             <input type="text" id="ei_position" class="form-input mt-1" placeholder="조리장"
               list="ei_position_list"
-              value="${isEdit ? (emp?.position||'') : ''}">
+              value="${isEdit ? (emp?.position||emp?.position_name||'') : ''}">
             <datalist id="ei_position_list">
               <option value="영양사">
               <option value="영양사(주임)">
@@ -21544,7 +21535,6 @@ window.saveEmployeeCard = async (empId) => {
   const body = {
     name,
     team: document.getElementById('ei_team')?.value || 'cook',
-    positionId: document.getElementById('ei_positionId')?.value || null,
     position: document.getElementById('ei_position')?.value || '',
     empNumber: document.getElementById('ei_empNumber')?.value || '',
     birthDate: document.getElementById('ei_birthDate')?.value || '',
@@ -23256,13 +23246,6 @@ function renderAdminStaffContent(content) {
           </div>
           <div>
             <label class="text-sm font-medium text-gray-700">직위</label>
-            <select id="aem_positionId" class="form-input mt-1">
-              <option value="">직접입력</option>
-              ${schedulePositions.map(p => `<option value="${p.id}">${p.name} (${p.team==='cook'?'조리':'영양'})</option>`).join('')}
-            </select>
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-700">직위명 (직접입력)</label>
             <input type="text" id="aem_position" class="form-input mt-1" placeholder="조리장"
               list="aem_position_list">
             <datalist id="aem_position_list">
@@ -23379,8 +23362,7 @@ window.openAdminEmpEditModal = async (empId) => {
   setVal('aem_name', emp.name)
   setVal('aem_empNumber', emp.emp_number)
   setVal('aem_team', emp.team || 'cook')
-  setVal('aem_positionId', emp.position_id || '')
-  setVal('aem_position', emp.position)
+  setVal('aem_position', emp.position || emp.position_name || '')
   setVal('aem_employmentType', emp.employment_type || 'full')
   setVal('aem_birthDate', emp.birth_date)
   setVal('aem_hireDate', emp.hire_date)
@@ -23408,7 +23390,6 @@ window.saveAdminEmployee = async () => {
     name,
     empNumber: document.getElementById('aem_empNumber')?.value || '',
     team: document.getElementById('aem_team')?.value || 'cook',
-    positionId: document.getElementById('aem_positionId')?.value || null,
     position: document.getElementById('aem_position')?.value || '',
     employmentType: document.getElementById('aem_employmentType')?.value || 'full',
     birthDate: document.getElementById('aem_birthDate')?.value || '',
