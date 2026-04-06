@@ -12336,9 +12336,6 @@ async function reloadScheduleMonth() {
       setTimeout(initExtWorkerEvents, 0)
       setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 300)
       setTimeout(() => {
-        // 우측 패널: 설계 모드에서는 숨김
-        const rp = document.getElementById('schedRightEmpPanel')
-        if (rp) rp.style.display = (_schedViewMode === 'design') ? 'none' : ''
         if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} }
       }, 400)
     } else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
@@ -12567,8 +12564,6 @@ function renderScheduleTab(content) {
   setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 200)
   // 스티키 바 & 우측 패널 초기화
   setTimeout(() => {
-    const rp = document.getElementById('schedRightEmpPanel')
-    if (rp) rp.style.display = (_schedViewMode === 'design') ? 'none' : ''
     if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} }
   }, 350)
   // 관리자 전용: 병원 선택 드롭다운 초기화
@@ -13676,9 +13671,6 @@ window.switchSchedView = function(mode) {
     setTimeout(() => {
       try { initExtWorkerEvents() } catch(e) {}
       try { _syncToolbarToggleBtn() } catch(e) {}
-      // 우측 패널: 설계 모드에서는 숨김, 다른 모드에서는 표시
-      const rightPanel = document.getElementById('schedRightEmpPanel')
-      if (rightPanel) rightPanel.style.display = (mode === 'design') ? 'none' : ''
       if (mode === 'admin') {
         try { renderAdminSummaryPanel() } catch(e) { console.warn('[switchSchedView] adminSummary 오류:', e) }
         try { updateSchedStickyBar() } catch(e) {}
@@ -16128,7 +16120,8 @@ function renderMonthlyScheduleTab() {
 
     </div><!-- /스케줄 그리드 영역 -->
 
-    <!-- ③ 우측 고정 직원 상태 패널 (설계 모드에서는 숨김 — 직원 행 내 인라인 표시) -->
+    <!-- ③ 우측 고정 직원 상태 패널 (설계 모드에서는 완전 제거 — 직원 행 내 인라인 표시) -->
+    ${_schedViewMode !== 'design' ? `
     <div id="schedRightEmpPanel" style="width:260px;flex-shrink:0;position:sticky;top:0;max-height:calc(100vh - 100px);overflow-y:auto;background:linear-gradient(180deg,#f0fdf4,#ffffff);border-radius:12px;border:1.5px solid #bbf7d0;box-shadow:0 2px 12px rgba(22,101,52,.1);font-size:11px">
       <!-- 헤더 -->
       <div style="padding:8px 10px;background:linear-gradient(135deg,#166534,#15803d);border-radius:10px 10px 0 0;position:sticky;top:0;z-index:5">
@@ -16161,6 +16154,7 @@ function renderMonthlyScheduleTab() {
         <div style="padding:8px;text-align:center;color:#94a3b8;font-size:10px">로딩 중...</div>
       </div>
     </div>
+    ` : ''}
 
   </div><!-- /메인 2-컬럼 레이아웃 -->
 
