@@ -1020,8 +1020,10 @@ function renderExecStaffLaborSection(d) {
         <span style="font-size:12px;color:#15803d">인력 운영이 정상 범위입니다</span>
       </div>`
 
+  const showBase = d.showBaseSalary === true
+
   const costItems = [
-    { label:'기본급',       val: lc.baseSalary   || 0, ratio: baseRatio,     color:'#818cf8' },
+    ...(showBase ? [{ label:'기본급', val: lc.baseSalary || 0, ratio: baseRatio, color:'#818cf8' }] : []),
     { label:'초과근무(OT)', val: lc.otCost        || 0, ratio: otRatio,       color:'#fbbf24' },
     { label:'파출비',       val: lc.dispatchCost  || 0, ratio: dispatchRatio, color:'#fb923c' },
     { label:'알바비',       val: lc.parttimeCost  || 0, ratio: parttimeRatio, color:'#facc15' },
@@ -1107,7 +1109,7 @@ function renderExecStaffLaborSection(d) {
         <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:16px;color:white">
           <p style="font-size:11px;color:#c7d2fe;margin-bottom:4px">이번 달 총 인건비</p>
           <p style="font-size:28px;font-weight:800">${fmtW2(lc.total)}<span style="font-size:14px;font-weight:400;margin-left:4px">원</span></p>
-          <p style="font-size:11px;color:#c7d2fe;margin-top:4px">기본급 + OT + 파출 + 알바 합산</p>
+          <p style="font-size:11px;color:#c7d2fe;margin-top:4px">${showBase ? '기본급 + OT + 파출 + 알바 합산' : 'OT + 파출 + 알바 합산 (기본급 비공개)'}</p>
         </div>
 
         <!-- 항목별 막대 -->
@@ -1248,6 +1250,7 @@ function renderExecStaffScheduleTab() {
   try {
     const md = State.scheduleMonth
     const sl = State.staffLabor
+    const showBase = sl?.showBaseSalary === true   // 급여 공개 설정
     const year = State.year
     const month = State.month
     if (!md) return `<div style="text-align:center;padding:40px;color:#9ca3af"><i class="fas fa-spinner fa-spin" style="font-size:24px;margin-bottom:12px;display:block"></i>근무 데이터 로딩 중...</div>`
@@ -1396,7 +1399,7 @@ function renderExecStaffScheduleTab() {
         ${dateRow}
         <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white;border-left:2px solid rgba(255,255,255,.3)">근무</th>
         <th style="padding:3px 4px;min-width:32px;text-align:center;font-size:9px;color:white">휴무</th>
-        <th style="padding:3px 4px;min-width:70px;text-align:right;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.3)">예상급여</th>
+        ${showBase ? '<th style="padding:3px 4px;min-width:70px;text-align:right;font-size:9px;color:white;border-left:1px solid rgba(255,255,255,.3)">예상급여</th>' : ''}
       </tr>
       <tr style="background:${grp.color}cc">
         <th style="padding:2px 8px;position:sticky;left:0;background:${grp.color}dd;z-index:5;color:rgba(255,255,255,.8);font-size:9px;border-right:2px solid rgba(255,255,255,.3)">직위</th>
@@ -1422,8 +1425,8 @@ function renderExecStaffScheduleTab() {
           return `<td style="padding:1px;text-align:center;background:${cellBg};border-left:1px solid ${bc};vertical-align:middle">${badge}</td>`
         }).join('')
 
-        const salStr = emp.estimatedSalary!=null ? `<span style="font-size:10px;font-weight:700;color:${grp.color}">${emp.estimatedSalary.toLocaleString()}원</span>` : '<span style="font-size:10px;color:#d1d5db">-</span>'
-        const salTypeLabel = {monthly:'월급',hourly:'시급',annual:'연봉'}[emp.salary_type||'monthly']||''
+        const salStr = showBase && emp.estimatedSalary!=null ? `<span style="font-size:10px;font-weight:700;color:${grp.color}">${emp.estimatedSalary.toLocaleString()}원</span>` : '<span style="font-size:10px;color:#d1d5db">-</span>'
+        const salTypeLabel = showBase ? ({monthly:'월급',hourly:'시급',annual:'연봉'}[emp.salary_type||'monthly']||'') : ''
 
         html += `<tr style="border-bottom:1px solid ${grp.border}">
           <td style="padding:4px 8px;min-width:80px;position:sticky;left:0;background:${rowBg};z-index:5;border-right:2px solid ${grp.border}">
@@ -1437,10 +1440,10 @@ function renderExecStaffScheduleTab() {
           <td style="padding:2px 3px;text-align:center;background:#fffbeb;border-left:1px solid #fde68a">
             <div style="font-size:12px;font-weight:900;color:#b45309">${emp.offDays}</div>
           </td>
-          <td style="padding:3px 8px;text-align:right;background:#fafafa;border-left:1px solid #e5e7eb">
+          ${showBase ? `<td style="padding:3px 8px;text-align:right;background:#fafafa;border-left:1px solid #e5e7eb">
             ${salStr}
             <div style="font-size:8px;color:#9ca3af">${salTypeLabel}</div>
-          </td>
+          </td>` : ''}
         </tr>`
       })
       return html
@@ -1529,7 +1532,7 @@ function renderExecStaffScheduleTab() {
         <div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border-radius:10px;padding:10px;text-align:center">
           <div style="font-size:22px;font-weight:900">${extWorkers.length}</div><div style="font-size:9px;opacity:.85">외부인력</div>
         </div>
-        ${totalSalary>0?`<div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:10px;padding:10px;text-align:center">
+        ${showBase && totalSalary>0?`<div style="background:linear-gradient(135deg,#92400e,#b45309);color:white;border-radius:10px;padding:10px;text-align:center">
           <div style="font-size:16px;font-weight:900">${Math.round(totalSalary/10000)}만</div><div style="font-size:9px;opacity:.85">총 예상급여</div>
         </div>`:''}
       </div>
@@ -1548,8 +1551,8 @@ function renderExecStaffScheduleTab() {
         ${extSection}
       </div>
 
-      <!-- 예상 급여 상세 (운영진 전용) -->
-      ${salaryRows?`
+      <!-- 예상 급여 상세 (운영진 전용 - 급여 공개 설정 ON일 때만) -->
+      ${showBase && salaryRows?`
       <div style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:14px">
         <div style="font-size:13px;font-weight:700;color:#1f2937;margin-bottom:10px"><i class="fas fa-won-sign" style="margin-right:6px;color:#92400e"></i>직원별 예상 급여 (운영진 전용)</div>
         ${salaryRows}
@@ -1558,7 +1561,12 @@ function renderExecStaffScheduleTab() {
           <span style="font-size:14px;font-weight:900;color:#92400e">${totalSalary.toLocaleString()}원</span>
         </div>`:''}
         <div style="margin-top:8px;padding:8px 12px;background:#fffbeb;border-radius:8px;font-size:10px;color:#92400e"><i class="fas fa-info-circle" style="margin-right:4px"></i>급여는 기본급(월급/시급/연봉 기준)만 산출한 예상치입니다. 수당·공제·세금 별도.</div>
-      </div>`:''}
+      </div>`:(!showBase && salaryRows?`
+      <div style="background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;padding:14px;text-align:center">
+        <i class="fas fa-eye-slash" style="color:#94a3b8;font-size:20px;margin-bottom:8px;display:block"></i>
+        <p style="font-size:13px;font-weight:600;color:#64748b;margin:0">급여 정보 비공개</p>
+        <p style="font-size:11px;color:#94a3b8;margin:6px 0 0">스케줄 → 근무 설정 → 급여 공개 정책에서 변경 가능합니다</p>
+      </div>`:'')}
     </div>
     <style>@media print{nav,button{display:none!important}body{background:white!important}div[style*="linear-gradient"]{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style>`
   } catch(e) {
