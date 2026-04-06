@@ -13667,7 +13667,10 @@ window.switchSchedView = function(mode) {
         try { updateSchedStickyBar() } catch(e) {}
         try { updateSchedRightPanel() } catch(e) {}
       }
-      // 설계 모드: 초기 셀 카운트 반영 (추가 작업 없음 — 정적 렌더)
+      if (mode === 'design') {
+        // 설계 모드: 외부인력 이벤트 재초기화 (extCellClick, extDragStart 등 동작하려면 필요)
+        try { initExtWorkerEvents() } catch(e) {}
+      }
     }, 150)
   } catch(e) {
     console.error('[switchSchedView] 오류:', e)
@@ -14126,135 +14129,156 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
   try {
     const year  = App.currentYear, month = App.currentMonth
     const ws    = scheduleWorkSettings || {}
-    const og    = scheduleOffGrants
+    const md    = scheduleMonthData
     const REST_CODES = new Set(['휴','연','경조','병가'])
     const target = parseInt(ws.daily_required_staff || ws.target_staff || '0') || 0
+    const mm = String(month).padStart(2,'0')
 
-    // 근무조 스타일 (설계 모드용 — 더 작게)
+    // 외부인력(파출/알바) 데이터
+    const extWorkers   = md?.ext_workers || []
+    const extSchedMap  = scheduleExtSchedMap || {}
+    const canEditExt   = (App.role === 'admin' || App.role === 'hospital')
+    const dispatchW    = extWorkers.filter(w => w.worker_type === 'dispatch')
+    const parttimeW    = extWorkers.filter(w => w.worker_type === 'parttime')
+
+    // 근무조 스타일 (설계 모드 — 압축형)
+    const _shiftColorCache = {}
     function getDesignShiftStyle(code) {
+      if (_shiftColorCache[code]) return _shiftColorCache[code]
       if (!code || code === '-') return 'background:#f3f4f6;color:#d1d5db'
       const sf = shifts.find(s => s.shift_code === code)
-      if (sf?.color) return `background:${sf.color}22;color:${sf.color};border:1px solid ${sf.color}55`
-      const map = { '연':'background:#fef3c7;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
-        '오전':'background:#ede9fe;color:#5b21b6','오후':'background:#dbeafe;color:#1d4ed8',
-        '경조':'background:#fce7f3;color:#9d174d','OT':'background:#d1fae5;color:#065f46' }
-      return map[code] || 'background:#f0fdf4;color:#166534'
+      let r
+      if (sf && sf.color) r = 'background:' + sf.color + '22;color:' + sf.color + ';border:1px solid ' + sf.color + '55'
+      else {
+        const map = { '연':'background:#fef3c7;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
+          '경조':'background:#fce7f3;color:#9d174d','병가':'background:#ffe4e6;color:#be123c',
+          'OT':'background:#d1fae5;color:#065f46','오전':'background:#ede9fe;color:#5b21b6','오후':'background:#dbeafe;color:#1d4ed8' }
+        r = map[code] || 'background:#f0fdf4;color:#166534'
+      }
+      _shiftColorCache[code] = r
+      return r
     }
 
-    // 직위 그룹 (renderMonthlyScheduleTab와 동일 구조)
+    // 직위 그룹
     const GROUPS = [
-      { key:'nutritionist', label:'영양사',    color:'#be185d', bg:'#fdf2f8', filter: e => e.team === 'nutrition' },
-      { key:'chef',         label:'조리장/셰프', color:'#92400e', bg:'#fffbeb', filter: e => e.team !== 'nutrition' && /(장|셰프|chef|수석)/i.test(e.position_name||e.position||'') },
-      { key:'cook',         label:'조리사',    color:'#166534', bg:'#f0fdf4', filter: e => e.team !== 'nutrition' && /(조리사)/.test(e.position_name||e.position||'') },
-      { key:'assistant',    label:'조리원',    color:'#1d4ed8', bg:'#eff6ff', filter: e => e.team !== 'nutrition' && /(조리원)/.test(e.position_name||e.position||'') },
-      { key:'manager',      label:'매니저',    color:'#6d28d9', bg:'#f5f3ff', filter: e => e.team !== 'nutrition' && /(매니저|manager)/i.test(e.position_name||e.position||'') },
-      { key:'parttime',     label:'파트타이머', color:'#0891b2', bg:'#ecfeff', filter: e => e.team !== 'nutrition' && /(파트|파트타이|part)/i.test(e.position_name||e.position||'') },
+      { key:'nutritionist', label:'영양사',    color:'#be185d', bg:'#fdf2f8', filter: function(e){ return e.team === 'nutrition' } },
+      { key:'chef',         label:'조리장/셰프', color:'#92400e', bg:'#fffbeb', filter: function(e){ return e.team !== 'nutrition' && /(장|셰프|chef|수석)/i.test(e.position_name||e.position||'') } },
+      { key:'cook',         label:'조리사',    color:'#166534', bg:'#f0fdf4', filter: function(e){ return e.team !== 'nutrition' && /(조리사)/.test(e.position_name||e.position||'') } },
+      { key:'assistant',    label:'조리원',    color:'#1d4ed8', bg:'#eff6ff', filter: function(e){ return e.team !== 'nutrition' && /(조리원)/.test(e.position_name||e.position||'') } },
+      { key:'manager',      label:'매니저',    color:'#6d28d9', bg:'#f5f3ff', filter: function(e){ return e.team !== 'nutrition' && /(매니저|manager)/i.test(e.position_name||e.position||'') } },
+      { key:'parttime',     label:'파트타이머', color:'#0891b2', bg:'#ecfeff', filter: function(e){ return e.team !== 'nutrition' && /(파트|파트타이|part)/i.test(e.position_name||e.position||'') } },
       { key:'other',        label:'조리팀 기타', color:'#374151', bg:'#f9fafb', filter: null }
     ]
     const assigned = new Set()
     const groups = []
-    GROUPS.forEach(g => {
-      const members = emps.filter(e => {
+    GROUPS.forEach(function(g) {
+      const members = emps.filter(function(e) {
         if (assigned.has(e.id)) return false
         const match = g.filter ? g.filter(e) : true
         if (match) { assigned.add(e.id); return true }
         return false
       })
-      if (members.length > 0) groups.push({ ...g, members })
+      if (members.length > 0) groups.push(Object.assign({}, g, { members: members }))
     })
 
-    // ── 전체 일별 근무 인원 집계 (상단 요약 바용)
-    const dailyWorking = Array.from({ length: days }, (_, i) => {
-      const d   = i + 1
-      const ds  = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    // 전체 일별 근무 인원 집계
+    const dailyWorking = Array.from({ length: days }, function(_, i) {
+      const d  = i + 1
+      const ds = year + '-' + mm + '-' + String(d).padStart(2,'0')
       let cnt = 0
-      emps.forEach(emp => {
-        const code = schedMap[`${emp.id}_${ds}`]?.shift_code || ''
+      emps.forEach(function(emp) {
+        const code = (schedMap[emp.id + '_' + ds] || {}).shift_code || ''
         if (code && code !== '-' && !REST_CODES.has(code)) cnt++
+      })
+      extWorkers.forEach(function(w) {
+        const e2 = extSchedMap[w.id + '_' + ds]
+        if (e2 && (e2.shift_type || e2.shift_code)) cnt++
       })
       return cnt
     })
-    const maxDaily = Math.max(...dailyWorking, target, 1)
 
-    // ── 날짜 헤더 (1회만, 전체 공유) ─────────────────────────
-    const CW = 20  // 날짜 셀 너비(px) — 압축
-    const NAME_W = 88 // 이름 열 너비
+    const CW = 22
+    const NAME_W = 90
 
     function buildDesignDateHeader() {
-      let cells = `<th style="padding:3px 6px;text-align:left;width:${NAME_W}px;min-width:${NAME_W}px;position:sticky;left:0;background:#1e3a2f;z-index:30;border-right:2px solid #14532d;font-size:10px;color:#86efac">이름</th>`
+      let cells = '<th style="padding:3px 6px;text-align:left;width:' + NAME_W + 'px;min-width:' + NAME_W + 'px;position:sticky;left:0;background:#1e3a2f;z-index:30;border-right:2px solid rgba(255,255,255,.2);font-size:10px;color:rgba(255,255,255,.9)">이름</th>'
       for (let d = 1; d <= days; d++) {
         const dow = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
-        const isWknd = isSun || isSat
-        const isOff = allOffSet.has(`${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
+        const ds = year + '-' + mm + '-' + String(d).padStart(2,'0')
+        const isOff = allOffSet.has(ds)
         const cnt = dailyWorking[d - 1]
         const diff = target > 0 ? cnt - target : 0
-        const barCol = diff < 0 ? '#fca5a5' : diff > 0 ? '#4ade80' : '#86efac'
-        const h = Math.max(2, Math.round((cnt / maxDaily) * 14))
-        cells += `<th style="padding:1px 0;text-align:center;width:${CW}px;min-width:${CW}px;
-          color:${isSun?'#fca5a5':isSat?'#93c5fd':isOff?'#fbbf24':'rgba(255,255,255,.85)'};
-          border-left:1px solid ${isSun?'#fca5a5':isSat?'#93c5fd':'rgba(255,255,255,.15)'};
-          ${isWknd||isOff?'background:#1a4030;':''}vertical-align:bottom" title="${d}일(${dow}) 근무${cnt}명">
-          <div style="display:flex;flex-direction:column;align-items:center;gap:0">
-            <div style="width:${CW-2}px;height:${h}px;background:${barCol};border-radius:1px;opacity:.7;margin-bottom:1px"></div>
-            <span style="font-size:9px;line-height:1.2;font-weight:${isWknd?'700':'500'}">${d}</span>
-            <span style="font-size:8px;line-height:1.1;opacity:.75">${dow}</span>
-          </div>
-        </th>`
+        const numCol = diff < 0 ? '#fca5a5' : diff > 0 ? '#86efac' : 'rgba(255,255,255,.9)'
+        const dateTxtCol = isSun ? '#fca5a5' : isSat ? '#93c5fd' : isOff ? '#fbbf24' : 'rgba(255,255,255,.9)'
+        const wkndBg = (isSun || isSat || isOff) ? 'background:rgba(0,0,0,.15);' : ''
+        cells += '<th style="padding:2px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;border-left:1px solid rgba(255,255,255,.12);' + wkndBg + '" title="' + d + '일(' + dow + ') 근무' + cnt + '명">'
+        cells += '<div style="font-size:9px;font-weight:' + (isSun||isSat?'800':'600') + ';color:' + dateTxtCol + ';line-height:1.3">' + d + '</div>'
+        cells += '<div style="font-size:8px;color:' + dateTxtCol + ';opacity:.8;line-height:1.1">' + dow + '</div>'
+        if (target > 0) cells += '<div style="font-size:8px;font-weight:700;color:' + numCol + ';line-height:1.1">' + cnt + '</div>'
+        cells += '</th>'
       }
-      cells += `<th style="padding:2px 3px;text-align:center;width:30px;min-width:30px;border-left:2px solid #14532d;font-size:9px;color:#86efac;background:#0f3d25">근</th>`
-      cells += `<th style="padding:2px 3px;text-align:center;width:26px;min-width:26px;border-left:1px solid rgba(255,255,255,.2);font-size:9px;color:#fbbf24;background:#0f3d25">연</th>`
-      return `<tr style="background:#166534">${cells}</tr>`
+      cells += '<th style="padding:2px 3px;text-align:center;width:28px;min-width:28px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:rgba(255,255,255,.9);background:rgba(0,0,0,.2)">근</th>'
+      cells += '<th style="padding:2px 3px;text-align:center;width:26px;min-width:26px;border-left:1px solid rgba(255,255,255,.15);font-size:9px;color:#fbbf24;background:rgba(0,0,0,.2)">연</th>'
+      return '<tr style="background:#166534">' + cells + '</tr>'
     }
 
-    // ── 직원 행 (설계 모드 — 최소 클릭 입력 허용) ─────────────
+    // 직원 행 — 관리자 뷰와 동일한 이벤트 핸들러 (드래그·더블클릭·우클릭)
     function buildDesignEmpRow(emp, rowBg, grpColor) {
-      const empCells = Array.from({ length: days }, (_, i) => {
+      const empCells = Array.from({ length: days }, function(_, i) {
         const d    = i + 1
-        const ds   = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-        const sched = schedMap[`${emp.id}_${ds}`]
-        const code  = sched?.shift_code || ''
+        const ds   = year + '-' + mm + '-' + String(d).padStart(2,'0')
+        const sched = schedMap[emp.id + '_' + ds] || {}
+        const code  = sched.shift_code || ''
+        const otH   = sched.overtime_hours || 0
         const isOff = allOffSet.has(ds)
         const dow   = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
-        const cellBg = isSun ? '#fff8f8' : isSat ? '#fffdf0' : isOff ? '#fffef0' : rowBg
-        const sp = code && code !== '-'
-          ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;font-size:9px;font-weight:700;${getDesignShiftStyle(code)}">${code}</span>`
-          : `<span style="color:#e5e7eb;font-size:9px">·</span>`
-        // 클릭 시 선택된 빠른 코드 적용 (단순 클릭 입력만 허용)
-        return `<td style="padding:1px;text-align:center;background:${cellBg};border-left:1px solid ${isSun?'#fecaca':isSat?'#fde68a':'#e5e7eb'};cursor:pointer"
-          onclick="schedDesignCellClick(event,${emp.id},'${ds}',this)"
-          data-shift="${code}" data-empid="${emp.id}" data-date="${ds}">${sp}</td>`
+        const cellBg = isSun ? 'background:#fff8f8;' : isSat ? 'background:#fffbf0;' : isOff ? 'background:#fefce8;' : 'background:' + rowBg + ';'
+        const borderCol = isSun ? '#fecaca' : isSat ? '#fde68a' : '#e5e7eb'
+        const sp = (code && code !== '-')
+          ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:3px;font-size:9px;font-weight:700;' + getDesignShiftStyle(code) + '">' + code + '</span>'
+          : '<span style="color:#d1d5db;font-size:9px">·</span>'
+        const otBadge = otH > 0 ? '<div style="font-size:7px;color:#059669;line-height:1;margin-top:1px">OT' + otH + 'h</div>' : ''
+        return '<td style="padding:1px;text-align:center;' + cellBg + 'border-left:1px solid ' + borderCol + ';cursor:pointer;position:relative;user-select:none"' +
+          ' onclick="schedCellClick(event,' + emp.id + ',\'' + ds + '\',this)"' +
+          ' ondblclick="schedCellDblClick(event,' + emp.id + ',\'' + ds + '\',this)"' +
+          ' onmousedown="schedDragStart(event,' + emp.id + ',\'' + ds + '\',this)"' +
+          ' onmousemove="schedDragMove(event,' + emp.id + ',\'' + ds + '\',this)"' +
+          ' onmouseup="schedDragEnd(event)"' +
+          ' oncontextmenu="event.preventDefault();openSchedDetailModal(' + emp.id + ',\'' + ds + '\',\'' + emp.name.replace(/'/g,'') + '\',this)"' +
+          ' data-shift="' + code + '" data-ot="' + otH + '" data-empid="' + emp.id + '" data-date="' + ds + '">' +
+          '<div style="display:inline-flex;flex-direction:column;align-items:center">' + sp + otBadge + '</div></td>'
       }).join('')
 
-      // 근무일 / 연차 집계
       let workDays = 0, leaveDays = 0
       for (let d = 1; d <= days; d++) {
-        const code = schedMap[`${emp.id}_${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`]?.shift_code || ''
+        const code = (schedMap[emp.id + '_' + year + '-' + mm + '-' + String(d).padStart(2,'0')] || {}).shift_code || ''
         if (code === '연') leaveDays++
         else if (code && code !== '-' && !REST_CODES.has(code)) workDays++
       }
 
-      return `<tr style="border-bottom:1px solid #e5e7eb" onmouseover="this.style.background='${grpColor}15'" onmouseout="this.style.background=''">
-        <td style="padding:2px 6px;position:sticky;left:0;background:${rowBg};z-index:2;min-width:${NAME_W}px;width:${NAME_W}px;border-right:2px solid ${grpColor}33">
-          <div style="font-size:11px;font-weight:700;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${emp.name}">${emp.name}</div>
-          <div style="font-size:9px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${emp.position_name||emp.position||''}</div>
-        </td>
-        ${empCells}
-        <td style="padding:1px 2px;text-align:center;background:#f0fdf4;border-left:2px solid #bbf7d0;font-size:10px;font-weight:700;color:#166534">${workDays}</td>
-        <td style="padding:1px 2px;text-align:center;background:#fefce8;border-left:1px solid #fde68a;font-size:10px;font-weight:600;color:#92400e">${leaveDays||'·'}</td>
-      </tr>`
+      return '<tr id="design-emprow-' + emp.id + '" style="border-bottom:1px solid #e5e7eb"' +
+        ' onmouseover="this.style.background=\'' + grpColor + '18\'"' +
+        ' onmouseout="this.style.background=\'\'">' +
+        '<td style="padding:2px 5px;position:sticky;left:0;background:' + rowBg + ';z-index:4;min-width:' + NAME_W + 'px;width:' + NAME_W + 'px;border-right:2px solid ' + grpColor + '44;cursor:pointer"' +
+        ' onclick="openEmpStatsModal(' + emp.id + ',\'' + emp.name.replace(/'/g,'') + '\')" title="클릭: 개인 상세">' +
+        '<div style="font-size:11px;font-weight:700;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + emp.name + '">' + emp.name + '</div>' +
+        '<div style="font-size:9px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (emp.position_name||emp.position||'').replace(/\(.+\)/,'') + '</div>' +
+        '</td>' +
+        empCells +
+        '<td id="design-workdays-' + emp.id + '" style="padding:1px 2px;text-align:center;background:#f0fdf4;border-left:2px solid #bbf7d0;font-size:10px;font-weight:700;color:#166534;min-width:28px">' + workDays + '</td>' +
+        '<td id="design-leave-' + emp.id + '" style="padding:1px 2px;text-align:center;background:#fefce8;border-left:1px solid #fde68a;font-size:10px;font-weight:600;color:#92400e;min-width:26px">' + (leaveDays||'·') + '</td>' +
+        '</tr>'
     }
 
-    // ── 그룹 요약 행 ──────────────────────────────────────────
     function buildDesignGroupSummary(grp) {
       const REST = new Set(['휴','연','경조','병가','-'])
-      let cells = ''
-      let total = 0
+      let cells = '', total = 0
       for (let d = 1; d <= days; d++) {
-        const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-        const cnt = grp.members.filter(e => {
-          const c = schedMap[`${e.id}_${ds}`]?.shift_code || ''
+        const ds  = year + '-' + mm + '-' + String(d).padStart(2,'0')
+        const cnt = grp.members.filter(function(e) {
+          const c = (schedMap[e.id + '_' + ds] || {}).shift_code || ''
           return c && !REST.has(c)
         }).length
         total += cnt
@@ -14262,160 +14286,225 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         const col = ratio >= 0.8 ? grp.color : ratio >= 0.5 ? '#d97706' : '#dc2626'
         const dow = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
-        cells += `<td style="padding:1px;text-align:center;background:${grp.bg};border-left:1px solid ${isSun?'#fecaca':isSat?'#fde68a':'${grp.color}22'}">
-          <span style="font-size:9px;font-weight:700;color:${col}">${cnt}</span>
-        </td>`
+        cells += '<td style="padding:1px;text-align:center;background:' + grp.bg + ';border-left:1px solid ' + (isSun?'#fecaca':isSat?'#fde68a':grp.color+'22') + '">'
+        cells += '<span style="font-size:9px;font-weight:700;color:' + col + '">' + cnt + '</span></td>'
       }
-      return `<tr style="border-bottom:2px solid ${grp.color}66;background:${grp.bg}">
-        <td style="padding:2px 6px;position:sticky;left:0;background:${grp.bg};z-index:2;border-right:2px solid ${grp.color}55">
-          <span style="font-size:9px;font-weight:800;color:${grp.color}">${grp.label} ${grp.members.length}명 합계</span>
-        </td>
-        ${cells}
-        <td style="padding:1px 2px;text-align:center;background:${grp.bg};border-left:2px solid ${grp.color}44;font-size:10px;font-weight:800;color:${grp.color}">${total}</td>
-        <td style="padding:1px;background:${grp.bg};border-left:1px solid ${grp.color}22"></td>
-      </tr>`
+      return '<tr style="border-bottom:2px solid ' + grp.color + '55;background:' + grp.bg + '">' +
+        '<td style="padding:2px 5px;position:sticky;left:0;background:' + grp.bg + ';z-index:2;border-right:2px solid ' + grp.color + '44">' +
+        '<span style="font-size:9px;font-weight:800;color:' + grp.color + '">' + grp.label + ' ' + grp.members.length + '명 합계</span>' +
+        '</td>' + cells +
+        '<td style="padding:1px 2px;text-align:center;background:' + grp.bg + ';border-left:2px solid ' + grp.color + '44;font-size:10px;font-weight:800;color:' + grp.color + '">' + total + '</td>' +
+        '<td style="padding:1px;background:' + grp.bg + ';border-left:1px solid ' + grp.color + '22"></td>' +
+        '</tr>'
     }
 
-    // ── 전체 일별 합계 행 ─────────────────────────────────────
     function buildDesignTotalRow() {
       let cells = ''
       for (let d = 1; d <= days; d++) {
         const cnt  = dailyWorking[d - 1]
         const diff = target > 0 ? cnt - target : 0
-        const col  = diff < 0 ? '#b91c1c' : diff > 0 ? '#166534' : '#1d4ed8'
-        const bg   = diff < 0 ? '#fee2e2' : diff > 0 ? '#dcfce7' : '#dbeafe'
+        const colT  = diff < 0 ? '#fca5a5' : diff > 0 ? '#4ade80' : '#86efac'
         const dow  = getDayOfWeek(year, month, d)
         const isSun = dow === '일', isSat = dow === '토'
-        cells += `<td style="padding:1px;text-align:center;background:${isSun?'#fef2f2':isSat?'#fffbeb':bg};border-left:1px solid ${isSun?'#fecaca':isSat?'#fde68a':'#93c5fd'}">
-          <span style="font-size:10px;font-weight:800;color:${col}">${cnt}</span>
-          ${target > 0 && diff !== 0 ? `<div style="font-size:7px;color:${col};line-height:1">${diff > 0 ? '+'+diff : diff}</div>` : ''}
-        </td>`
+        const cellBg = isSun ? 'background:#1a3030;' : isSat ? 'background:#1a2f3a;' : 'background:#1e3a2f;'
+        cells += '<td style="padding:1px;text-align:center;' + cellBg + 'border-left:1px solid rgba(255,255,255,.12)">'
+        cells += '<span style="font-size:10px;font-weight:800;color:' + colT + '">' + cnt + '</span>'
+        if (target > 0 && diff !== 0) cells += '<div style="font-size:7px;color:' + colT + ';line-height:1">' + (diff>0?'+'+diff:diff) + '</div>'
+        cells += '</td>'
       }
-      const grandTotal = dailyWorking.reduce((a,b)=>a+b,0)
-      return `<tr style="background:#1e3a2f;border-top:3px solid #166534">
-        <td style="padding:3px 6px;position:sticky;left:0;background:#1e3a2f;z-index:2;border-right:2px solid #166534">
-          <span style="font-size:10px;font-weight:800;color:#86efac">전체 합계</span>
-          ${target > 0 ? `<div style="font-size:8px;color:#4ade80">목표 ${target}명/일</div>` : ''}
-        </td>
-        ${cells}
-        <td style="padding:2px;text-align:center;background:#166534;border-left:2px solid #14532d;font-size:11px;font-weight:800;color:white">${grandTotal}</td>
-        <td style="padding:2px;background:#1e3a2f;border-left:1px solid rgba(255,255,255,.2)"></td>
-      </tr>`
+      const grandTotal = dailyWorking.reduce(function(a,b){return a+b},0)
+      return '<tr style="background:#1e3a2f;border-top:3px solid #166534">' +
+        '<td style="padding:3px 5px;position:sticky;left:0;background:#1e3a2f;z-index:2;border-right:2px solid #166534">' +
+        '<span style="font-size:10px;font-weight:800;color:#86efac">전체 합계</span>' +
+        (target > 0 ? '<div style="font-size:8px;color:#4ade80">목표 ' + target + '명</div>' : '') +
+        '</td>' + cells +
+        '<td style="padding:2px;text-align:center;background:#166534;border-left:2px solid #14532d;font-size:11px;font-weight:800;color:white">' + grandTotal + '</td>' +
+        '<td style="padding:2px;background:#1e3a2f;border-left:1px solid rgba(255,255,255,.2)"></td>' +
+        '</tr>'
     }
 
-    // ── 상단 요약 칩 (숫자 중심) ──────────────────────────────
-    const totalEmps   = emps.length
-    const avgWorkCnt  = dailyWorking.length ? Math.round(dailyWorking.reduce((a,b)=>a+b,0)/dailyWorking.length) : 0
-    const today       = new Date()
-    const todayDay    = (today.getFullYear()===year && today.getMonth()+1===month) ? today.getDate() : null
-    const todayCnt    = todayDay ? dailyWorking[todayDay-1] : null
-    const groupChips  = groups.map(g =>
-      `<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;background:${g.bg};border:1px solid ${g.color}44;font-size:10px;font-weight:700;color:${g.color}">${g.label} ${g.members.length}명</span>`
-    ).join('')
+    // 파출/알바 섹션
+    function buildDesignExtSection() {
+      if (extWorkers.length === 0 && !canEditExt) return ''
+      let extBody = ''
+      const extGroups = [
+        { workers: dispatchW, type:'dispatch', label:'파출', color:'#ea580c', bg:'#fff7ed', border:'#fed7aa' },
+        { workers: parttimeW, type:'parttime', label:'알바', color:'#7c3aed', bg:'#faf5ff', border:'#e9d5ff' }
+      ]
+      extGroups.forEach(function(eg) {
+        if (eg.workers.length === 0 && !canEditExt) return
+        // 섹션 헤더
+        extBody += '<tr><td colspan="' + (days+3) + '" style="padding:3px 8px;background:' + eg.bg + ';border-top:2px solid ' + eg.color + ';border-bottom:1px solid ' + eg.border + '">'
+        extBody += '<span style="font-size:10px;font-weight:800;color:' + eg.color + '"><i class="fas fa-user-clock" style="margin-right:4px"></i>' + eg.label + ' ' + eg.workers.length + '명</span>'
+        if (canEditExt) extBody += '<button onclick="showAddExtWorkerModal(\'' + eg.type + '\')" style="margin-left:6px;padding:1px 6px;border-radius:4px;background:' + eg.color + '22;border:1px solid ' + eg.color + '55;color:' + eg.color + ';font-size:9px;font-weight:700;cursor:pointer">+ ' + eg.label + ' 추가</button>'
+        extBody += '</td></tr>'
+        // 날짜 헤더
+        extBody += '<tr style="background:' + eg.color + '">'
+        extBody += '<th style="padding:2px 5px;text-align:left;width:' + NAME_W + 'px;min-width:' + NAME_W + 'px;position:sticky;left:0;background:' + eg.color + ';z-index:10;border-right:2px solid rgba(255,255,255,.3);font-size:9px;color:white">이름</th>'
+        for (let d2 = 1; d2 <= days; d2++) {
+          const dow2 = getDayOfWeek(year, month, d2)
+          const isSun2 = dow2==='일', isSat2 = dow2==='토'
+          extBody += '<th style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;border-left:1px solid rgba(255,255,255,.15);' + ((isSun2||isSat2)?'background:rgba(0,0,0,.15);':'') + 'font-size:8px;color:' + (isSun2?'#fca5a5':isSat2?'#93c5fd':'rgba(255,255,255,.9)') + ';font-weight:' + ((isSun2||isSat2)?'700':'500') + '">' + d2 + '<br><span style="font-size:7px;opacity:.8">' + dow2 + '</span></th>'
+        }
+        extBody += '<th style="padding:2px;text-align:center;width:28px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:white;background:rgba(0,0,0,.2)">근</th>'
+        extBody += '<th style="padding:2px;width:26px;border-left:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2)"></th></tr>'
+        if (eg.workers.length === 0) {
+          extBody += '<tr><td colspan="' + (days+3) + '" style="padding:8px;text-align:center;background:' + eg.bg + ';color:' + eg.color + ';font-size:10px;font-style:italic">등록된 ' + eg.label + '이 없습니다</td></tr>'
+          return
+        }
+        // 외부인력 행 — 외부인력 전용 이벤트 핸들러
+        eg.workers.forEach(function(w, widx) {
+          const rowBg2 = widx % 2 === 0 ? '#ffffff' : eg.bg
+          let wCells = '', wWorkDays = 0
+          for (let d2 = 1; d2 <= days; d2++) {
+            const ds2 = year + '-' + mm + '-' + String(d2).padStart(2,'0')
+            const extKey = w.id + '_' + ds2
+            const extEntry = extSchedMap[extKey] || {}
+            const extCode  = extEntry.shift_type || extEntry.shift_code || ''
+            const dow2     = getDayOfWeek(year, month, d2)
+            const isSun2   = dow2 === '일', isSat2 = dow2 === '토'
+            const ds2Off   = allOffSet.has(ds2)
+            const cellBg2  = isSun2 ? 'background:#fff8f8;' : isSat2 ? 'background:#fffbf0;' : ds2Off ? 'background:#fefce8;' : 'background:' + rowBg2 + ';'
+            const borderCol2 = isSun2 ? '#fecaca' : isSat2 ? '#fde68a' : '#e5e7eb'
+            if (extCode) wWorkDays++
+            const sp2 = extCode
+              ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:3px;font-size:8px;font-weight:700;background:' + eg.color + '22;color:' + eg.color + ';border:1px solid ' + eg.color + '44">' + extCode + '</span>'
+              : '<span style="color:#d1d5db;font-size:9px">·</span>'
+            wCells += '<td class="ext-cell" style="padding:1px;text-align:center;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
+              ' onclick="extCellClick(event,\'' + w.id + '\',\'' + ds2 + '\',this,\'' + eg.type + '\')"' +
+              ' ondblclick="extCellDblClick(event,\'' + w.id + '\',\'' + ds2 + '\',this,\'' + eg.type + '\')"' +
+              ' onmousedown="extDragStart(event,\'' + w.id + '\',\'' + ds2 + '\',this)"' +
+              ' onmousemove="extDragMove(event,\'' + w.id + '\',\'' + ds2 + '\',this)"' +
+              ' onmouseup="extDragEnd(event)"' +
+              ' oncontextmenu="event.preventDefault();openExtDetailModal(\'' + w.id + '\',\'' + ds2 + '\',\'' + (w.name||'').replace(/'/g,'') + '\',this)"' +
+              ' data-shift="' + extCode + '" data-wid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '">' +
+              sp2 + '</td>'
+          }
+          extBody += '<tr style="border-bottom:1px solid ' + eg.border + '"' +
+            ' onmouseover="this.style.background=\'' + eg.color + '10\'"' +
+            ' onmouseout="this.style.background=\'\'">' +
+            '<td style="padding:2px 5px;position:sticky;left:0;background:' + rowBg2 + ';z-index:4;min-width:' + NAME_W + 'px;width:' + NAME_W + 'px;border-right:2px solid ' + eg.color + '33">' +
+            '<div style="font-size:10px;font-weight:700;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (w.name||'이름없음') + '">' + (w.name||'이름없음') + '</div>' +
+            '<span style="display:inline-flex;align-items:center;font-size:8px;padding:0 4px;border-radius:3px;background:' + eg.color + '22;color:' + eg.color + ';font-weight:700">' + eg.label + '</span>' +
+            '</td>' + wCells +
+            '<td style="padding:1px 2px;text-align:center;background:#fff7ed;border-left:2px solid #fed7aa;font-size:10px;font-weight:700;color:' + eg.color + '">' + wWorkDays + '</td>' +
+            '<td style="padding:1px;background:' + rowBg2 + ';border-left:1px solid ' + eg.border + '"></td>' +
+            '</tr>'
+        })
+        // 합계 행
+        let extTotalCells = ''
+        let wTotalAll = 0
+        for (let d2 = 1; d2 <= days; d2++) {
+          const ds2 = year + '-' + mm + '-' + String(d2).padStart(2,'0')
+          const cnt2 = eg.workers.filter(function(w) {
+            const e2 = extSchedMap[w.id + '_' + ds2] || {}
+            return e2 && (e2.shift_type || e2.shift_code)
+          }).length
+          wTotalAll += cnt2
+          const dow2 = getDayOfWeek(year, month, d2)
+          const isSun2 = dow2==='일', isSat2 = dow2==='토'
+          extTotalCells += '<td style="padding:1px;text-align:center;background:' + eg.bg + ';border-left:1px solid ' + (isSun2?'#fecaca':isSat2?'#fde68a':eg.border) + '">'
+          extTotalCells += '<span style="font-size:9px;font-weight:700;color:' + (cnt2>0?eg.color:'#d1d5db') + '">' + (cnt2||'') + '</span></td>'
+        }
+        extBody += '<tr style="border-bottom:2px solid ' + eg.color + '44;background:' + eg.bg + '">' +
+          '<td style="padding:2px 5px;position:sticky;left:0;background:' + eg.bg + ';z-index:2;border-right:2px solid ' + eg.color + '44">' +
+          '<span style="font-size:9px;font-weight:800;color:' + eg.color + '">' + eg.label + ' 합계</span></td>' +
+          extTotalCells +
+          '<td style="padding:1px 2px;text-align:center;background:' + eg.bg + ';border-left:2px solid ' + eg.color + '44;font-size:10px;font-weight:800;color:' + eg.color + '">' + wTotalAll + '</td>' +
+          '<td style="padding:1px;background:' + eg.bg + '"></td></tr>'
+      })
+      if (!extBody) return ''
+      return '<tr><td colspan="' + (days+3) + '" style="padding:4px 8px;background:#fff7ed;border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa">' +
+        '<span style="font-size:11px;font-weight:800;color:#ea580c"><i class="fas fa-people-carry" style="margin-right:5px"></i>외부인력 (파출 / 알바)</span>' +
+        '<span style="font-size:9px;color:#9ca3af;margin-left:6px">파출 ' + dispatchW.length + '명 · 알바 ' + parttimeW.length + '명</span>' +
+        '</td></tr>' + extBody
+    }
 
-    // ── 빠른 코드 버튼 (설계 모드 전용 — 클릭해 선택 후 셀 클릭 시 적용) ──
-    const quickBtns = shifts.map(s =>
-      `<button onclick="window._designActiveCode='${s.shift_code}';document.querySelectorAll('.design-code-btn').forEach(b=>b.style.outline='none');this.style.outline='2px solid ${s.color}'"
-        class="design-code-btn"
-        style="padding:2px 7px;border-radius:4px;border:1.5px solid ${s.color}55;background:${s.color}22;color:${s.color};font-size:10px;font-weight:700;cursor:pointer"
-        title="${s.shift_name||s.shift_code}">${s.shift_code}</button>`
-    ).join('')
-    const defBtns = ['연','휴','OT'].map(c => {
-      const col = c==='연'?'#b45309':c==='휴'?'#b91c1c':'#065f46'
-      return `<button onclick="window._designActiveCode='${c}';document.querySelectorAll('.design-code-btn').forEach(b=>b.style.outline='none');this.style.outline='2px solid ${col}'"
-        class="design-code-btn"
-        style="padding:2px 7px;border-radius:4px;border:1.5px solid ${col}55;background:${col}15;color:${col};font-size:10px;font-weight:700;cursor:pointer">${c}</button>`
+    // 요약 칩
+    const totalEmps  = emps.length
+    const avgWorkCnt = dailyWorking.length ? Math.round(dailyWorking.reduce(function(a,b){return a+b},0)/dailyWorking.length) : 0
+    const today      = new Date()
+    const todayDay   = (today.getFullYear()===year && today.getMonth()+1===month) ? today.getDate() : null
+    const todayCnt   = todayDay ? dailyWorking[todayDay-1] : null
+    const groupChips = groups.map(function(g) {
+      return '<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;background:' + g.bg + ';border:1px solid ' + g.color + '55;font-size:10px;font-weight:700;color:' + g.color + '">' + g.label + ' ' + g.members.length + '명</span>'
     }).join('')
-    const clearBtn = `<button onclick="window._designActiveCode='';document.querySelectorAll('.design-code-btn').forEach(b=>b.style.outline='none')"
-      style="padding:2px 7px;border-radius:4px;border:1.5px solid #e5e7eb;background:#f9fafb;color:#6b7280;font-size:10px;font-weight:700;cursor:pointer" title="입력 취소">✕</button>`
 
-    // ── 테이블 HTML 조합 ──────────────────────────────────────
+    // 빠른 코드 버튼
+    const quickBtns = shifts.map(function(s) {
+      return '<button onclick="window._designActiveCode=\'' + s.shift_code + '\';document.querySelectorAll(\'.design-code-btn\').forEach(function(b){b.style.outline=\'none\'});this.style.outline=\'2px solid ' + s.color + '\'" class="design-code-btn" style="padding:2px 7px;border-radius:4px;border:1.5px solid ' + s.color + '55;background:' + s.color + '22;color:' + s.color + ';font-size:10px;font-weight:700;cursor:pointer" title="' + (s.shift_name||s.shift_code) + '">' + s.shift_code + '</button>'
+    }).join('')
+    const defCodes = [['연','#b45309'],['휴','#b91c1c'],['OT','#065f46']]
+    const defBtns = defCodes.map(function(cv) {
+      const c = cv[0], col = cv[1]
+      return '<button onclick="window._designActiveCode=\'' + c + '\';document.querySelectorAll(\'.design-code-btn\').forEach(function(b){b.style.outline=\'none\'});this.style.outline=\'2px solid ' + col + '\'" class="design-code-btn" style="padding:2px 7px;border-radius:4px;border:1.5px solid ' + col + '55;background:' + col + '15;color:' + col + ';font-size:10px;font-weight:700;cursor:pointer">' + c + '</button>'
+    }).join('')
+    const clearBtn = '<button onclick="window._designActiveCode=\'\';document.querySelectorAll(\'.design-code-btn\').forEach(function(b){b.style.outline=\'none\'})" style="padding:2px 7px;border-radius:4px;border:1.5px solid #e5e7eb;background:#f9fafb;color:#6b7280;font-size:10px;font-weight:700;cursor:pointer" title="선택 해제">✕</button>'
+
+    // 테이블 본문
     let tableBody = ''
-    groups.forEach(grp => {
-      // 그룹 섹션 헤더 (1줄)
-      tableBody += `<tr>
-        <td colspan="${days+3}" style="padding:3px 10px;background:${grp.bg};border-top:2px solid ${grp.color};border-bottom:1px solid ${grp.color}44">
-          <span style="font-size:11px;font-weight:800;color:${grp.color}">${grp.label}</span>
-          <span style="font-size:9px;color:#9ca3af;margin-left:6px">${grp.members.length}명</span>
-        </td>
-      </tr>`
-      // 직원 행
-      grp.members.forEach((emp, idx) => {
-        const rowBg = idx % 2 === 0 ? '#ffffff' : grp.bg + '66'
+    groups.forEach(function(grp) {
+      tableBody += '<tr><td colspan="' + (days+3) + '" style="padding:3px 8px;background:' + grp.bg + ';border-top:2px solid ' + grp.color + ';border-bottom:1px solid ' + grp.color + '33">'
+      tableBody += '<span style="font-size:11px;font-weight:800;color:' + grp.color + '">' + grp.label + '</span>'
+      tableBody += '<span style="font-size:9px;color:#9ca3af;margin-left:6px">' + grp.members.length + '명</span>'
+      tableBody += '</td></tr>'
+      grp.members.forEach(function(emp, idx) {
+        const rowBg = idx % 2 === 0 ? '#ffffff' : grp.bg + '88'
         tableBody += buildDesignEmpRow(emp, rowBg, grp.color)
       })
-      // 그룹 합계 행
       tableBody += buildDesignGroupSummary(grp)
     })
     tableBody += buildDesignTotalRow()
+    tableBody += buildDesignExtSection()
 
-    return `
-    <!-- 설계 모드 헤더 -->
-    <div style="margin-bottom:8px">
-      ${viewTabsHtml}
-      <!-- 요약 칩 -->
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;padding:6px 10px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">
-        <span style="font-size:11px;font-weight:800;color:#166534"><i class="fas fa-drafting-compass" style="margin-right:4px"></i>${year}년 ${month}월 설계 모드</span>
-        <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#dcfce7;color:#166534;font-weight:700">전체 ${totalEmps}명</span>
-        ${todayCnt !== null ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#dbeafe;color:#1d4ed8;font-weight:700">오늘 ${todayCnt}명</span>` : ''}
-        <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#f3f4f6;color:#374151;font-weight:700">일평균 ${avgWorkCnt}명</span>
-        ${target > 0 ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#fef3c7;color:#92400e;font-weight:700">목표 ${target}명/일</span>` : ''}
-        <span style="font-size:9px;color:#9ca3af;margin-left:4px">|</span>
-        ${groupChips}
-      </div>
-      <!-- 빠른 코드 입력 (클릭→셀 클릭으로 입력) -->
-      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:4px 8px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;margin-bottom:4px">
-        <span style="font-size:9px;color:#166534;font-weight:700;margin-right:2px"><i class="fas fa-pencil-alt" style="margin-right:3px"></i>코드 선택 후 셀 클릭:</span>
-        ${quickBtns}${defBtns}${clearBtn}
-        <span style="font-size:9px;color:#9ca3af;margin-left:6px">※ 드래그·복붙·상세편집은 관리자 뷰에서</span>
-      </div>
-    </div>
+    const extChip = extWorkers.length > 0
+      ? '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#fff7ed;color:#ea580c;font-weight:700;border:1px solid #fed7aa">파출 ' + dispatchW.length + ' · 알바 ' + parttimeW.length + '</span>'
+      : ''
 
-    <!-- 설계 모드 테이블 (압축, 전체 너비) -->
-    <div style="overflow-x:auto;border-radius:8px;border:2px solid #166534;box-shadow:0 2px 8px rgba(22,101,52,.1)">
-      <table id="schedDesignTable" style="width:100%;border-collapse:collapse;font-size:11px;table-layout:auto">
-        <thead style="position:sticky;top:0;z-index:20">
-          ${buildDesignDateHeader()}
-        </thead>
-        <tbody>${tableBody}</tbody>
-      </table>
-    </div>
-    <div style="margin-top:6px;display:flex;align-items:center;gap:8px;font-size:9px;color:#6b7280">
-      <i class="fas fa-info-circle" style="color:#166534"></i>
-      상단 바 높이 = 해당 날짜 근무인원 · 셀 클릭 시 선택된 코드 적용 · 관리자 뷰에서 상세 편집 가능
-    </div>`
+    return '\n    <!-- ★ 설계 모드 (드래그·복붙·Ctrl+Z·OT·파출알바 모두 지원) -->\n' +
+      '    <div style="margin-bottom:8px">\n      ' + viewTabsHtml + '\n' +
+      '      <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:5px;padding:5px 8px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">\n' +
+      '        <span style="font-size:11px;font-weight:800;color:#166534"><i class="fas fa-drafting-compass" style="margin-right:4px"></i>' + year + '년 ' + month + '월</span>\n' +
+      '        <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#dcfce7;color:#166534;font-weight:700">전체 ' + totalEmps + '명</span>\n' +
+      (todayCnt !== null ? '        <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#dbeafe;color:#1d4ed8;font-weight:700">오늘 ' + todayCnt + '명</span>\n' : '') +
+      '        <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#f3f4f6;color:#374151;font-weight:700">일평균 ' + avgWorkCnt + '명</span>\n' +
+      (target > 0 ? '        <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:#fef3c7;color:#92400e;font-weight:700">목표 ' + target + '명/일</span>\n' : '') +
+      '        <span style="font-size:9px;color:#d1d5db">|</span>' + groupChips + extChip +
+      '      </div>\n' +
+      '      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:4px 8px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;margin-bottom:4px">\n' +
+      '        <span style="font-size:9px;color:#166534;font-weight:700"><i class="fas fa-edit" style="margin-right:3px"></i>편집:</span>\n' +
+      '        ' + quickBtns + defBtns + clearBtn + '\n' +
+      '        <span style="font-size:9px;color:#6b7280;margin-left:4px">드래그·Ctrl+C/V·Ctrl+Z·더블클릭·우클릭(OT) 모두 지원</span>\n' +
+      '      </div>\n    </div>\n' +
+      '    <div style="overflow-x:auto;border-radius:8px;border:2px solid #166534;box-shadow:0 2px 8px rgba(22,101,52,.1)">\n' +
+      '      <table id="schedDesignTable" style="width:100%;border-collapse:collapse;font-size:11px;table-layout:auto">\n' +
+      '        <thead style="position:sticky;top:0;z-index:20">' + buildDesignDateHeader() + '</thead>\n' +
+      '        <tbody>' + tableBody + '</tbody>\n' +
+      '      </table>\n    </div>\n' +
+      '    <div style="margin-top:4px;display:flex;align-items:center;gap:8px;font-size:9px;color:#6b7280">\n' +
+      '      <i class="fas fa-info-circle" style="color:#166534"></i>\n' +
+      '      드래그=자동채우기 · Ctrl+C/V=복붙 · Ctrl+Z/Y=실행취소/다시실행 · 더블클릭=직접입력 · 우클릭=OT·야간 상세 · 이름클릭=개인상세\n' +
+      '    </div>'
 
   } catch(e) {
     console.error('[renderSchedDesignMode]', e)
-    return `<div style="padding:20px;color:#b91c1c">${viewTabsHtml}<p>설계 모드 렌더 오류: ${e.message}</p></div>`
+    return '<div style="padding:20px;color:#b91c1c">' + viewTabsHtml + '<p>설계 모드 렌더 오류: ' + e.message + '</p></div>'
   }
 }
 
-// ── 설계 모드 셀 클릭 핸들러 ──────────────────────────────────
+// 설계 모드 셀 클릭 핸들러 (빠른 코드 버튼 선택 후 클릭 시 보조용)
 window.schedDesignCellClick = function(ev, empId, date, cell) {
   const code = window._designActiveCode || ''
-  if (!code) return  // 코드 미선택 시 무시
-  // 기존 _applyCodeNoPush / schedApplyCodeToCell 재사용
+  if (!code) return
   try {
     const oldCode = cell.dataset.shift || ''
-    _undoPushBatch([{ empId: String(empId), date, oldCode, newCode: code }])
+    _undoPushBatch([{ empId: String(empId), date: date, oldCode: oldCode, newCode: code }])
     _applyCodeDOM(empId, date, cell, code)
     _queueSave(empId, date, code)
     schedRecalcRow(empId)
-    // 설계 모드 셀 비주얼 즉시 반영
-    const sf = (scheduleShifts||[]).find(s => s.shift_code === code)
-    let sp
-    if (code && code !== '-') {
-      const style = sf?.color ? `background:${sf.color}22;color:${sf.color};border:1px solid ${sf.color}55`
-        : ({'연':'background:#fef3c7;color:#92400e','휴':'background:#fee2e2;color:#b91c1c','OT':'background:#d1fae5;color:#065f46'}[code] || 'background:#f0fdf4;color:#166534')
-      sp = `<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;font-size:9px;font-weight:700;${style}">${code}</span>`
-    } else {
-      sp = `<span style="color:#e5e7eb;font-size:9px">·</span>`
-    }
-    cell.innerHTML = sp
-    cell.dataset.shift = code
   } catch(e) { console.warn('[schedDesignCellClick]', e) }
 }
+
 
 // ── 직원 공유 뷰 렌더 함수 ────────────────────────────────────
 function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSet, offLabelMap, getShiftStyle, viewTabsHtml }) {
@@ -23120,9 +23209,14 @@ function _applyCodeDOM(empId, date, cell, code) {
   cell.dataset.shift = isEmpty ? '' : code
   const span = cell.querySelector('span')
   if (span) {
+    // 설계 모드(schedDesignTable)와 일반 모드 구분하여 크기 적용
+    const inDesignTable = !!cell.closest('#schedDesignTable')
+    const sz = inDesignTable ? '20px' : '26px'
+    const fz = inDesignTable ? '9px' : '11px'
+    const fw = inDesignTable ? '700' : (isEmpty ? '600' : '700')
     span.style.cssText = isEmpty
-      ? 'display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;background:#f9fafb;color:#d1d5db'
-      : `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:700;background:${col}22;color:${col}`
+      ? `display:inline-flex;align-items:center;justify-content:center;width:${sz};height:${sz};border-radius:4px;font-size:${fz};font-weight:${fw};background:#f9fafb;color:#d1d5db`
+      : `display:inline-flex;align-items:center;justify-content:center;width:${sz};height:${sz};border-radius:4px;font-size:${fz};font-weight:700;background:${col}22;color:${col}`
     span.textContent = isEmpty ? '·' : code
   }
   if (!scheduleMonthData) scheduleMonthData = { sched_map:{}, leave_map:{} }
@@ -23684,6 +23778,9 @@ function schedRecalcRow(empId) {
   if (wdEl) {
     wdEl.innerHTML = `<div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div><div style="font-size:9px;color:#4ade80;opacity:0.8">근무</div>`
   }
+  // 설계 모드 근무일 셀도 동시 업데이트
+  const wdDesignEl = document.getElementById(`design-workdays-${empId}`)
+  if (wdDesignEl) wdDesignEl.textContent = workDayCount
 
   // ── 우측 연차 셀 업데이트 ─────────────────────────────
   const anEl = document.getElementById(`annual-${empId}`)
