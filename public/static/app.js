@@ -14416,9 +14416,17 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
             const cellBg2  = isSun2 ? 'background:#fff8f8;' : isSat2 ? 'background:#fffbf0;' : allOffSet.has(ds2) ? 'background:#fefce8;' : 'background:' + rowBg2 + ';'
             const borderCol2 = isSun2 ? '#fecaca' : isSat2 ? '#fde68a' : '#e5e7eb'
             if (extCode) wWorkDays++
-            const extLabel = extCode.length > 3 ? extCode.substring(0,3) : extCode
+            // 영어 키 → 한글 레이블 변환
+            const EXT_KO = { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
+            const extDisplayLabel = EXT_KO[extCode] || (extCode.length > 3 ? extCode.substring(0,3) : extCode)
+            // 배지 배경/글자색: EXT_COLORS 맵 우선, 없으면 그룹 색상 사용
+            const EXT_BG  = { morning:'#fff7ed', afternoon:'#fef3c7', full_9h:'#ffedd5', full_12h:'#fee2e2' }
+            const EXT_FG  = { morning:'#c2410c', afternoon:'#b45309', full_9h:'#ea580c', full_12h:'#dc2626' }
+            const badgeBg = EXT_BG[extCode] ? EXT_BG[extCode] : eg.color + '22'
+            const badgeFg = EXT_FG[extCode] ? EXT_FG[extCode] : eg.color
+            const badgeBorder = EXT_FG[extCode] ? EXT_FG[extCode] + '55' : eg.color + '44'
             const sp2 = extCode
-              ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:7px;font-weight:700;background:' + eg.color + '22;color:' + eg.color + ';border:1px solid ' + eg.color + '44;overflow:hidden;white-space:nowrap" title="' + extCode + '">' + extLabel + '</span>'
+              ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:7px;font-weight:700;background:' + badgeBg + ';color:' + badgeFg + ';border:1px solid ' + badgeBorder + ';overflow:hidden;white-space:nowrap" title="' + extCode + '">' + extDisplayLabel + '</span>'
               : '<span style="color:#d1d5db;font-size:9px">·</span>'
             wCells += '<td class="ext-cell" style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;overflow:hidden;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
               ' data-shift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' + sp2 + '</td>'
@@ -15314,7 +15322,8 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
 // ─── 월간 스케줄 탭 ──────────────────────────────────────────
 function renderMonthlyScheduleTab() {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
-  const emps = scheduleEmployees
+  // 퇴사자 및 비활성 직원 제외
+  const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
   const shifts = scheduleShifts
 
   // 근무조 색상 맵
