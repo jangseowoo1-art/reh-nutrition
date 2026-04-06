@@ -12352,8 +12352,55 @@ function renderScheduleTab(content) {
     { id: 'schedule',  label: '월간 스케줄', icon: 'fa-calendar-alt' }
   ]
 
+  // 관리자 병원 선택 배너 HTML
+  const adminHospitalBanner = isAdm ? `
+  <div id="schedAdminHospBanner" class="bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden">
+    <div class="px-5 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3 flex-1 min-w-0">
+        <div class="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center flex-shrink-0">
+          <i class="fas fa-hospital text-white text-sm"></i>
+        </div>
+        <div class="flex items-center gap-2 flex-1 min-w-0">
+          <span class="text-white font-semibold text-sm whitespace-nowrap">📋 병원 선택</span>
+          <select id="schedHospitalSelect"
+            onchange="schedAdminChangeHospital(this.value)"
+            class="flex-1 max-w-xs text-sm border-0 rounded-lg px-3 py-1.5 bg-white/90 focus:ring-2 focus:ring-white focus:outline-none text-gray-700 font-medium">
+            <option value="">-- 병원을 선택하세요 --</option>
+          </select>
+        </div>
+      </div>
+      <div class="text-xs text-white/70 hidden md:block flex-shrink-0">
+        <i class="fas fa-info-circle mr-1"></i>병원 선택 후 스케줄·인력비·분석 데이터가 표시됩니다
+      </div>
+    </div>
+    ${!App.currentHospitalId ? `
+    <div class="px-5 py-6 text-center">
+      <div class="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center mx-auto mb-4">
+        <i class="fas fa-hospital text-blue-300 text-2xl"></i>
+      </div>
+      <p class="font-semibold text-gray-600 mb-1">병원을 선택해주세요</p>
+      <p class="text-sm text-gray-400">위의 드롭다운에서 관리할 병원을 선택하면<br>해당 병원의 스케줄·인력비·분석 데이터가 표시됩니다.</p>
+      <div class="mt-4 grid grid-cols-3 gap-3 max-w-sm mx-auto">
+        <div class="bg-blue-50 rounded-xl p-3 text-center">
+          <i class="fas fa-calendar-alt text-blue-400 text-lg mb-1 block"></i>
+          <span class="text-xs text-blue-600 font-medium">월간 스케줄</span>
+        </div>
+        <div class="bg-green-50 rounded-xl p-3 text-center">
+          <i class="fas fa-won-sign text-green-400 text-lg mb-1 block"></i>
+          <span class="text-xs text-green-600 font-medium">인력비 분석</span>
+        </div>
+        <div class="bg-orange-50 rounded-xl p-3 text-center">
+          <i class="fas fa-cog text-orange-400 text-lg mb-1 block"></i>
+          <span class="text-xs text-orange-600 font-medium">단가·설정</span>
+        </div>
+      </div>
+    </div>` : ''}
+  </div>` : ''
+
   content.innerHTML = `
   <div class="space-y-4">
+    ${adminHospitalBanner}
+    ${isAdm && !App.currentHospitalId ? '' : `
     <!-- 탭 헤더 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       <!-- 1줄: 타이틀 + 월이동 + 탭 전환 버튼 -->
@@ -12494,6 +12541,7 @@ function renderScheduleTab(content) {
       ${tab === 'shifts'    ? renderShiftsTab() : ''}
     </div>
   </div>
+  `}
 
   ${renderEmployeeModal()}
   ${renderShiftModal()}
@@ -12510,6 +12558,8 @@ function renderScheduleTab(content) {
   setTimeout(_syncToolbarToggleBtn, 0)
   // 관리자 뷰 요약 패널 (관리자 뷰 상태일 때만)
   setTimeout(() => { if (_schedViewMode === 'admin') { try { renderAdminSummaryPanel() } catch(e){} } }, 200)
+  // 관리자 전용: 병원 선택 드롭다운 초기화
+  if (App.role === 'admin') setTimeout(initSchedHospitalSelector, 0)
 }
 
 // ─── 인사카드 탭 ─────────────────────────────────────────────
@@ -17976,6 +18026,37 @@ window.schedMoveToToday = async () => {
   await reloadScheduleMonth()
   const content = document.getElementById('pageContent')
   renderScheduleTab(content)
+}
+
+// ── 관리자 전용: 스케줄 페이지 병원 선택 ──────────────────────
+window.schedAdminChangeHospital = async function(hospitalId) {
+  App.currentHospitalId = hospitalId ? parseInt(hospitalId) : null
+  scheduleTab = 'schedule'
+  await renderSchedule()
+  // 드롭다운 선택값 복원 (renderSchedule 후 DOM 재생성되므로)
+  setTimeout(() => {
+    const sel = document.getElementById('schedHospitalSelect')
+    if (sel && hospitalId) sel.value = hospitalId
+  }, 100)
+}
+
+// 관리자 병원 선택 드롭다운 초기화 (renderScheduleTab 후 호출)
+async function initSchedHospitalSelector() {
+  if (App.role !== 'admin') return
+  const sel = document.getElementById('schedHospitalSelect')
+  if (!sel) return
+
+  // 이미 로드된 병원 목록 재사용 or 새로 로드
+  let hospitals = App._adminHospitals || []
+  if (!hospitals.length) {
+    const list = await api('GET', '/api/admin/hospitals').catch(() => [])
+    hospitals = list || []
+    App._adminHospitals = hospitals
+  }
+
+  // 드롭다운 옵션 채우기
+  sel.innerHTML = `<option value="">-- 병원을 선택하세요 --</option>` +
+    hospitals.map(h => `<option value="${h.id}" ${h.id == App.currentHospitalId ? 'selected' : ''}>${h.name}</option>`).join('')
 }
 
 // ════════════════════════════════════════════════════════════════
