@@ -15972,6 +15972,15 @@ function renderLeavesTab() {
       const used  = lv?.used_days  ?? 0
       // 이월연차: carried_over_days (수당지급 전이면 표시, 지급 완료면 0)
       const carriedOver = lv?.allowance_paid ? 0 : (lv?.carried_over_days ?? 0)
+      // 이 직원의 월차 잔여 확인 (1년 미만이면 mlByEmp에서 읽음)
+      const mlEmpData = mlByEmp[emp.id]
+      const mlRemainForAnnual = (() => {
+        if (!mlEmpData) return null
+        if (!mlEmpData.under1Year) return null // 이미 연차 전환됨
+        const mt = mlEmpData.monthly_total ?? mlEmpData.auto_calc_days ?? 0
+        const mu = mlEmpData.monthly_used ?? 0
+        return mt - mu
+      })()
       // 실제 유효 연차 = 이월연차 + 부여연차
       const effectiveTotal = total !== null ? total + carriedOver : null
       const remain = effectiveTotal !== null ? effectiveTotal - used : null
@@ -16022,7 +16031,12 @@ function renderLeavesTab() {
                 <span class="text-sm font-bold text-gray-800">${total}일</span>
                 ${carriedOver > 0 ? `<span class="text-xs text-amber-600 font-bold">합계 ${effectiveTotal}일</span>` : ''}
                </div>`
-            : `<span class="text-xs text-orange-600 font-bold">미부여</span>`}
+            : `<div class="flex flex-col items-center gap-0.5">
+                <span class="text-xs text-orange-600 font-bold">미부여</span>
+                ${mlRemainForAnnual !== null && mlRemainForAnnual > 0
+                  ? `<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 text-xs font-bold"><i class="fas fa-calendar-plus" style="font-size:9px"></i> 월차 ${mlRemainForAnnual}일</span>`
+                  : ''}
+               </div>`}
         </td>
         <td class="px-3 py-3 text-center">
           <span class="text-sm font-bold ${used > 0 ? 'text-blue-700' : 'text-gray-400'}">${used}일</span>
@@ -16061,9 +16075,7 @@ function renderLeavesTab() {
         </td>
         <td class="px-3 py-3 text-center">
           ${isAdm ? `<button onclick="openLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}',${total??legal},${used},${carriedOver},${allowancePaid?1:0},'${allowancePaidAt}')"
-            class="px-2 py-1 rounded text-xs bg-blue-600 text-white hover:bg-blue-700">수정</button>
-          ${total === null ? `<button onclick="autoGrantLeave(${emp.id},${legal})"
-            class="ml-1 px-2 py-1 rounded text-xs bg-green-600 text-white hover:bg-green-700">자동부여</button>` : ''}` : '-'}
+            class="px-2 py-1 rounded text-xs bg-blue-600 text-white hover:bg-blue-700">수정</button>` : '-'}
         </td>
       </tr>`
     }
@@ -16259,8 +16271,8 @@ function renderLeavesTab() {
           <h3 class="font-bold text-gray-800">${year}년 연차 현황</h3>
           <p class="text-xs text-gray-400 mt-0.5">법정 연차 = 입사 1년 미만:월1개, 1년 이상:15일+근속증가(최대25일)</p>
         </div>
-        ${App.role === 'admin' ? `<button onclick="autoGrantAllLeaves()" class="px-3 py-1.5 rounded-lg text-xs bg-green-600 text-white hover:bg-green-700">
-          <i class="fas fa-magic mr-1"></i>미부여 전체 자동부여
+        ${isAdm ? `<button onclick="runAnnualLeaveTransition()" class="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-700">
+          <i class="fas fa-exchange-alt mr-1"></i>연차 자동 전환 실행
         </button>` : ''}
       </div>
       <div class="overflow-x-auto">
@@ -17048,6 +17060,20 @@ window.switchScheduleTab = async (tab) => {
       scheduleLeaveHistorySummary = histSummary
       // 월차 + 초기 셋업 상태도 함께 갱신
       await loadMonthlyLeaveData()
+
+      // ── 1년 도달 직원 자동 연차 전환 (조용히 처리) ──────────
+      if (App.role === 'admin' || App.role === 'hospital') {
+        try {
+          const hospQuery = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+          const transRes = await api('POST', `/api/schedule/monthly-leave/transition${hospQuery}`, {}).catch(() => null)
+          if (transRes?.transitioned?.length > 0) {
+            // 전환된 직원이 있으면 연차 데이터 재로드 + 토스트
+            const cnt = transRes.transitioned.length
+            showToast(`🎉 ${cnt}명 1년 근속 달성 → 연차(${transRes.transitioned[0]?.legalDays || 15}일~) 자동 부여`, 'success')
+            scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+          }
+        } catch(e) { /* 전환 실패해도 탭 렌더링은 정상 진행 */ }
+      }
     } else if (tab === 'analysis') {
       scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}`).catch(() => null)
     } else if (tab === 'laborCost') {
@@ -17403,6 +17429,25 @@ window.runMonthlyLeaveTransition = async () => {
     const content = document.getElementById('pageContent')
     renderScheduleTab(content)
   }
+}
+
+// 연차 탭 - 수동으로 1년 도달 직원 연차 전환 실행
+window.runAnnualLeaveTransition = async () => {
+  const hospQuery = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+  showToast('전환 처리 중...', 'info')
+  const res = await api('POST', `/api/schedule/monthly-leave/transition${hospQuery}`, {}).catch(() => null)
+  if (!res) { showToast('오류 발생', 'error'); return }
+  const transitioned = res.transitioned || []
+  if (transitioned.length === 0) {
+    showToast('현재 연차 전환 대상이 없습니다 (1년 도달 직원 없음)', 'info')
+    return
+  }
+  const names = transitioned.map(t => `${t.name}(${t.legalDays}일)`).join(', ')
+  showToast(`✅ ${transitioned.length}명 연차 자동 부여 완료: ${names}`, 'success')
+  scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+  await loadMonthlyLeaveData()
+  const content = document.getElementById('pageContent')
+  renderScheduleTab(content)
 }
 
 // 직원 1명 월차 발생
