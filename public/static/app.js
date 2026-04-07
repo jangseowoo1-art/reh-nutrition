@@ -43,7 +43,7 @@ const CALC_ENGINE = (() => {
   //         carried:   이월 연차 일수
   // ─────────────────────────────────────────────
   function calcAnnualRemain(empLeave) {
-    if (!empLeave) return { effective: null, used: 0, remain: null, carried: 0 }
+    if (!empLeave) return { total: null, effective: null, used: 0, remain: null, carried: 0 }
 
     // 구조 A: leaveMap[empId].annual
     const hasNested = empLeave.annual !== undefined
@@ -16823,6 +16823,12 @@ function renderLeavesTab() {
   const cookEmps  = activeEmps.filter(e => e.team === 'cook' || !e.team)
   const nutriEmps = activeEmps.filter(e => e.team === 'nutrition')
 
+  // ── 월차 데이터 (renderRows 이전에 정의 — scope 오류 방지) ──
+  const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
+  const monthlyLeavesData = Array.isArray(window._monthlyLeavesData) ? window._monthlyLeavesData : []
+  const mlByEmp = {}
+  for (const ml of monthlyLeavesData) mlByEmp[ml.employee_id] = ml
+
   function renderRows(teamEmps, teamKey) {
     if (!teamEmps.length) return ''
     const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
@@ -16839,13 +16845,24 @@ function renderLeavesTab() {
       const pctColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
       // 이 직원의 월차 잔여 확인 (1년 미만이면 mlByEmp에서 읽음)
       const mlEmpData = mlByEmp[emp.id]
+      // 1년 미만 여부 판단 (현재 시점 기준)
+      const _isUnder1Y = (() => {
+        if (!emp.hire_date) return false
+        const hd = new Date(emp.hire_date)
+        return (Date.now() - hd.getTime()) < 365.25 * 24 * 3600 * 1000
+      })()
       const mlRemainForAnnual = (() => {
         if (!mlEmpData) return null
-        if (!mlEmpData.under1Year) return null // 이미 연차 전환됨
+        // under1Year 플래그가 있으면 우선, 없으면 프론트에서 계산한 값 사용
+        const isUnder = mlEmpData.under1Year ?? _isUnder1Y
+        if (!isUnder) return null // 이미 연차 전환됨
         const mt = mlEmpData.monthly_total ?? mlEmpData.auto_calc_days ?? 0
         const mu = mlEmpData.monthly_used ?? 0
         return mt - mu
       })()
+      // 1년 미만 직원의 월차 사용일수 (annual used와 별도 표시)
+      const mlUsedForDisplay = _isUnder1Y ? (mlEmpData?.monthly_used ?? 0) : null
+      const mlTotalForDisplay = _isUnder1Y ? (mlEmpData?.monthly_total ?? mlEmpData?.auto_calc_days ?? null) : null
       // 연차수당 지급 여부
       const allowancePaid = lv?.allowance_paid ? true : false
       const allowancePaidAt = lv?.allowance_paid_at || ''
@@ -16891,15 +16908,24 @@ function renderLeavesTab() {
                 <span class="text-sm font-bold text-gray-800">${total}일</span>
                 ${carriedOver > 0 ? `<span class="text-xs text-amber-600 font-bold">합계 ${effectiveTotal}일</span>` : ''}
                </div>`
-            : `<div class="flex flex-col items-center gap-0.5">
-                <span class="text-xs text-orange-600 font-bold">미부여</span>
-                ${mlRemainForAnnual !== null && mlRemainForAnnual > 0
-                  ? `<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 text-xs font-bold"><i class="fas fa-calendar-plus" style="font-size:9px"></i> 월차 ${mlRemainForAnnual}일</span>`
-                  : ''}
-               </div>`}
+            : _isUnder1Y
+              ? `<div class="flex flex-col items-center gap-0.5">
+                  <span class="inline-block px-1.5 py-0.5 rounded text-xs bg-teal-100 text-teal-700 font-bold">1년미만</span>
+                  ${mlTotalForDisplay !== null
+                    ? `<span class="text-xs text-teal-600 font-bold">월차 ${mlTotalForDisplay}일</span>`
+                    : `<span class="text-xs text-gray-400">미부여</span>`}
+                 </div>`
+              : `<div class="flex flex-col items-center gap-0.5">
+                  <span class="text-xs text-orange-600 font-bold">미부여</span>
+                 </div>`}
         </td>
         <td class="px-3 py-3 text-center">
-          <span class="text-sm font-bold ${used > 0 ? 'text-blue-700' : 'text-gray-400'}">${used}일</span>
+          ${_isUnder1Y && mlTotalForDisplay !== null
+            ? `<div class="flex flex-col items-center">
+                <span class="text-sm font-bold ${mlUsedForDisplay > 0 ? 'text-teal-700' : 'text-gray-400'}">${mlUsedForDisplay}일</span>
+                <span class="text-xs text-gray-400">월차</span>
+               </div>`
+            : `<span class="text-sm font-bold ${used > 0 ? 'text-blue-700' : 'text-gray-400'}">${used}일</span>`}
         </td>
         <td class="px-3 py-3 text-center text-xs">
           ${halfAM > 0 || halfPM > 0
@@ -16912,21 +16938,37 @@ function renderLeavesTab() {
             : `<span class="text-gray-300">-</span>`}
         </td>
         <td class="px-3 py-3 text-center">
-          ${remain !== null
-            ? `<span class="text-sm font-bold ${remain <= 3 ? 'text-red-600' : remain <= 7 ? 'text-yellow-600' : 'text-green-700'}">${remain}일</span>`
-            : `<span class="text-xs text-gray-400">-</span>`}
+          ${_isUnder1Y && mlRemainForAnnual !== null
+            ? `<span class="text-sm font-bold ${mlRemainForAnnual <= 1 ? 'text-red-600' : mlRemainForAnnual <= 3 ? 'text-yellow-600' : 'text-teal-700'}">${mlRemainForAnnual}일</span>`
+            : remain !== null
+              ? `<span class="text-sm font-bold ${remain <= 3 ? 'text-red-600' : remain <= 7 ? 'text-yellow-600' : 'text-green-700'}">${remain}일</span>`
+              : `<span class="text-xs text-gray-400">-</span>`}
         </td>
         <td class="px-3 py-3 text-center text-xs">
           ${dday ? `<span class="px-1.5 py-0.5 rounded-full text-xs font-bold ${dday.startsWith('D-') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${dday}</span>` : '-'}
         </td>
         <td class="px-3 py-3">
-          ${effectiveTotal !== null ? `
-          <div class="flex items-center gap-2">
-            <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:50px">
-              <div class="${pctColor} h-2 rounded-full transition-all" style="width:${Math.min(pct,100)}%"></div>
-            </div>
-            <span class="text-xs text-gray-500">${pct}%</span>
-          </div>` : ''}
+          ${(() => {
+            if (_isUnder1Y && mlTotalForDisplay !== null && mlTotalForDisplay > 0) {
+              const mp = Math.round((mlUsedForDisplay||0) / mlTotalForDisplay * 100)
+              const mc = mp >= 80 ? 'bg-red-500' : mp >= 50 ? 'bg-yellow-500' : 'bg-teal-500'
+              return `<div class="flex items-center gap-2">
+                <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:50px">
+                  <div class="${mc} h-2 rounded-full transition-all" style="width:${Math.min(mp,100)}%"></div>
+                </div>
+                <span class="text-xs text-gray-500">${mp}%</span>
+              </div>`
+            }
+            if (effectiveTotal !== null) {
+              return `<div class="flex items-center gap-2">
+                <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:50px">
+                  <div class="${pctColor} h-2 rounded-full transition-all" style="width:${Math.min(pct,100)}%"></div>
+                </div>
+                <span class="text-xs text-gray-500">${pct}%</span>
+              </div>`
+            }
+            return ''
+          })()}
         </td>
         <td class="px-3 py-3 text-center">
           ${allowancePaid && allowancePaidAt
@@ -16948,12 +16990,6 @@ function renderLeavesTab() {
   const statUnassigned = emps.filter(e => e.hire_date).length - statAssigned
   const statTotalDays  = annualLeaves.reduce((a,l) => a + (l.total_days||0), 0)
   const statUsedDays   = annualLeaves.reduce((a,l) => a + (l.used_days||0), 0)
-
-  // ── 월차 데이터 로드 (글로벌 캐시 또는 별도 로드) ─────────────
-  const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
-  const monthlyLeavesData = Array.isArray(window._monthlyLeavesData) ? window._monthlyLeavesData : []
-  const mlByEmp = {}
-  for (const ml of monthlyLeavesData) mlByEmp[ml.employee_id] = ml
 
   // 월차 통계 — DB 저장값 기준 (미저장은 auto_calc_days로 표시)
   const mlEmps      = monthlyLeavesData.filter(m => m.under1Year)
