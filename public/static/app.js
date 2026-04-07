@@ -15989,14 +15989,23 @@ function renderMonthlyScheduleTab() {
               // ✅ CALC_ENGINE: calcMonthlyLeaveRemain
               const ml2 = CALC_ENGINE.calcMonthlyLeaveRemain(mlEnabled2 ? mlData2 : null, emp.hire_date)
               // 연차 셀 (월차 + 연차 통합 표시)
+              // auto_calc_days: monthly-leave/summary API에서 내려온 자동계산 월차 발생일수
+              const autoCalcDays2 = mlData2?.auto_calc_days ?? 0
               let annualCell2 = ''
-              if (mlEnabled2 && ml2.isUnder1Y && ml2.total !== null) {
+              if (mlEnabled2 && ml2.isUnder1Y) {
+                // 1년 미만 직원: 월차 기준 표시
+                const mlTotal2 = ml2.total ?? (autoCalcDays2 > 0 ? autoCalcDays2 : null)
+                const mlRemain2 = mlTotal2 !== null ? mlTotal2 - (ml2.used ?? 0) : null
                 const unsavedMark = ml2.isUnsaved ? '<span style="color:#f97316;font-size:8px">*</span>' : ''
-                annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${ml2.total}${unsavedMark}↗${ml2.remain}잔</div>`
-                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - _annUsed2}↑${annualRemain2}잔</div>`
-              } else if (mlEnabled2 && ml2.isUnder1Y) {
-                annualCell2 = `<div style="font-size:9px;color:#0f766e;opacity:.6">월차-</div>`
-                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - _annUsed2}↑${annualRemain2}잔</div>`
+                if (mlTotal2 !== null) {
+                  annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${mlTotal2}${unsavedMark}↗${mlRemain2}잔</div>`
+                } else {
+                  annualCell2 = `<div style="font-size:9px;color:#0f766e;opacity:.6">월차-</div>`
+                }
+                // 연차도 있으면 추가 표시
+                if (annualEffective2 !== null) {
+                  annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2}↗${annualRemain2}잔</div>`
+                }
               } else if (annualEffective2 !== null) {
                 annualCell2 = `<div style="font-size:11px;font-weight:700;color:#92400e">${_annUsed2}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
               } else {
@@ -16053,10 +16062,32 @@ function renderMonthlyScheduleTab() {
                   <div style="font-size:8px;color:#b45309;opacity:.8">연차</div>
                 </td>
                 <td id="annual-remain-${emp.id}" style="padding:3px 2px;text-align:center;background:#fef3c7;border-left:1px solid #fde68a;min-width:32px">
-                  ${annualRemain2 !== null
-                    ? `<div style="font-size:12px;font-weight:700;color:#92400e">${annualRemain2}</div><div style="font-size:8px;color:#b45309;opacity:.8">잔여</div>`
-                    : `<div style="font-size:10px;color:#d1d5db">-</div>`
-                  }
+                  ${(() => {
+                    // 1년 미만 + 월차 활성화: 월차 잔여 표시
+                    if (mlEnabled2 && ml2.isUnder1Y) {
+                      const mlRem = ml2.remain ?? 0
+                      const mlTot = ml2.total ?? 0
+                      const mlColor = mlRem <= 1 ? '#dc2626' : mlRem <= 3 ? '#d97706' : '#0f766e'
+                      if (mlTot > 0) {
+                        return `<div style="font-size:12px;font-weight:700;color:${mlColor}">${mlRem}</div>
+                                <div style="font-size:8px;color:#0f766e;opacity:.8">월잔</div>`
+                      }
+                      // 월차 미발생: auto_calc 기반
+                      const autoRem = (mlData2?.auto_calc_days ?? 0)
+                      if (autoRem > 0) {
+                        return `<div style="font-size:12px;font-weight:700;color:#0f766e">${autoRem}</div>
+                                <div style="font-size:8px;color:#0f766e;opacity:.6">월차↗</div>`
+                      }
+                      return `<div style="font-size:10px;color:#d1d5db">-</div>`
+                    }
+                    // 1년 이상: 연차 잔여
+                    if (annualRemain2 !== null) {
+                      const remColor = annualRemain2 <= 3 ? '#dc2626' : annualRemain2 <= 7 ? '#d97706' : '#92400e'
+                      return `<div style="font-size:12px;font-weight:700;color:${remColor}">${annualRemain2}</div>
+                              <div style="font-size:8px;color:#b45309;opacity:.8">잔여</div>`
+                    }
+                    return `<div style="font-size:10px;color:#d1d5db">-</div>`
+                  })()}
                 </td>
                 <td id="ot-hours-${emp.id}" style="padding:3px 2px;text-align:center;background:#faf5ff;border-left:1px solid #e9d5ff;min-width:28px">
                   ${totalOtHours > 0
