@@ -16786,10 +16786,10 @@ function renderLeavesTab() {
     for (const emp of teamEmps) {
       const legal = calcLegal(emp)
       const lv    = leaveByEmp[emp.id]
-      const total = lv?.total_days ?? null
-      const used  = lv?.used_days  ?? 0
-      // 이월연차: carried_over_days (수당지급 전이면 표시, 지급 완료면 0)
-      const carriedOver = lv?.allowance_paid ? 0 : (lv?.carried_over_days ?? 0)
+      // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함 — 이전: total_days/carried_over 직접 계산)
+      const { total, effective: effectiveTotal, used, remain, carried: carriedOver } = CALC_ENGINE.calcAnnualRemain(lv)
+      const pct   = effectiveTotal ? Math.round(used / effectiveTotal * 100) : 0
+      const pctColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
       // 이 직원의 월차 잔여 확인 (1년 미만이면 mlByEmp에서 읽음)
       const mlEmpData = mlByEmp[emp.id]
       const mlRemainForAnnual = (() => {
@@ -16799,11 +16799,6 @@ function renderLeavesTab() {
         const mu = mlEmpData.monthly_used ?? 0
         return mt - mu
       })()
-      // 실제 유효 연차 = 이월연차 + 부여연차
-      const effectiveTotal = total !== null ? total + carriedOver : null
-      const remain = effectiveTotal !== null ? effectiveTotal - used : null
-      const pct   = effectiveTotal ? Math.round(used / effectiveTotal * 100) : 0
-      const pctColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
       // 연차수당 지급 여부
       const allowancePaid = lv?.allowance_paid ? true : false
       const allowancePaidAt = lv?.allowance_paid_at || ''
