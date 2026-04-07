@@ -1011,7 +1011,9 @@ async function renderDashboard() {
   const mealPriceNoStaff = data.mealPriceNoStaff || 0
   const mealPriceNoSupply = data.mealPriceNoSupply || 0
   const targetMealPrice = data.settings?.meal_price || 0
-  const mpOver = targetMealPrice > 0 && mealPriceTotal > targetMealPrice
+  // 가중평균 목표 식단가: API에서 계산된 값 (카테고리 있으면 가중평균, 없으면 settings.meal_price)
+  const effectiveTargetPrice = data.projection?.weightedAvgTargetPrice || targetMealPrice || 0
+  const mpOver = effectiveTargetPrice > 0 && mealPriceTotal > effectiveTargetPrice
   const overBudget = data.overBudgetVendors || []
 
   // 전월 비교 계산 헬퍼
@@ -1240,10 +1242,42 @@ async function renderDashboard() {
         </div>
         <span class="text-xs text-gray-500 font-semibold">월말 예상 식단가</span>
       </div>
-      <div class="text-lg font-bold ${proj.projectedMealPriceDiff > 0 ? 'text-red-600' : 'text-gray-800'}">
-        ${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}
-      </div>
-      <div class="text-xs text-gray-400 mt-1">현재: ${fmt(data.mealPriceTotal||0)}원 · 목표: ${fmt(proj.targetMealPrice||0)}원</div>
+      ${(() => {
+        const catProjs = proj.catProjections || []
+        const mainCatProjs = catProjs.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+        if (mainCatProjs.length > 0) {
+          // 카테고리별 + 전체 표시
+          const catRows = mainCatProjs.map(c => {
+            const catColor = getCategoryColorHex ? getCategoryColorHex(c.category_key) : '#6b7280'
+            const isOver = c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice
+            const prColor = isOver ? '#dc2626' : '#1d4ed8'
+            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #f3f4f6">
+              <div style="display:flex;align-items:center;gap:4px">
+                <span style="width:7px;height:7px;border-radius:50%;background:${catColor};display:inline-block;flex-shrink:0"></span>
+                <span style="font-size:11px;font-weight:600;color:#374151">${c.category_name}</span>
+              </div>
+              <div style="text-align:right">
+                <span style="font-size:13px;font-weight:800;color:${c.projectedMealPrice>0?prColor:'#9ca3af'}">${c.projectedMealPrice>0?fmt(c.projectedMealPrice)+'원':'집계중'}</span>
+                ${c.targetPrice > 0 ? `<div style="font-size:9px;color:#9ca3af">목표: ${fmt(c.targetPrice)}원</div>` : ''}
+              </div>
+            </div>`
+          }).join('')
+          const overallColor = proj.projectedMealPriceDiff > 0 ? '#dc2626' : '#16a34a'
+          return `<div style="margin-bottom:6px">${catRows}</div>
+          <div style="border-top:2px solid #e5e7eb;padding-top:6px;display:flex;align-items:center;justify-content:space-between">
+            <span style="font-size:11px;font-weight:700;color:#374151">전체 평균</span>
+            <div style="text-align:right">
+              <div class="text-lg font-bold" style="color:${proj.projectedMonthEndMealPrice>0?overallColor:'#9ca3af'}">${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}</div>
+              ${proj.weightedAvgTargetPrice > 0 ? `<div style="font-size:9px;color:#9ca3af">가중평균 목표: ${fmt(proj.weightedAvgTargetPrice)}원</div>` : ''}
+            </div>
+          </div>`
+        }
+        // 카테고리 없는 경우: 기존 단일 표시
+        return `<div class="text-lg font-bold ${proj.projectedMealPriceDiff > 0 ? 'text-red-600' : 'text-gray-800'}">
+          ${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}
+        </div>
+        <div class="text-xs text-gray-400 mt-1">현재: ${fmt(data.mealPriceTotal||0)}원 · 목표: ${fmt(proj.targetMealPrice||0)}원</div>`
+      })()}
       ${proj.projectedMealPriceDiff !== 0 && proj.projectedMonthEndMealPrice > 0 ? `
       <div class="text-xs font-semibold mt-1 ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-600'}">
         ${proj.projectedMealPriceDiff > 0 ? '▲' : '▼'} ${fmt(Math.abs(proj.projectedMealPriceDiff))}원
@@ -1699,7 +1733,7 @@ async function renderDashboard() {
       <div class="mt-3 space-y-2">
         <div class="flex items-center justify-between mb-1">
           <span class="text-xs font-semibold text-gray-600"><i class="fas fa-utensils mr-1 text-blue-400"></i>식단가 현황</span>
-          ${targetMealPrice>0?`<span class="text-xs text-gray-400">목표: ${fmt(targetMealPrice)}원/식</span>`:''}
+          ${effectiveTargetPrice>0?`<span class="text-xs text-gray-400">목표: ${fmt(effectiveTargetPrice)}원/식${data.projection?.weightedAvgTargetPrice>0?' (가중평균)':''}</span>`:''}
         </div>
         <div class="flex items-center justify-between p-2.5 ${mpOver?'bg-red-50 border border-red-200':'bg-blue-50'} rounded-xl">
           <div>
@@ -1739,11 +1773,18 @@ async function renderDashboard() {
             }, 0))
           : 0
 
-        const catCards = catsToRender.map(cat => {
+        // budget_include_keys 없는 보조 카테고리(항암 보호자, 경관식 등) 제거
+        const catsToRenderFiltered = catsToRender.filter(cat => {
+          if (cat.budgetKeys !== undefined) return (cat.budgetKeys||[]).length > 0
+          // catDietPricesData 폴백 데이터: targetPrice > 0 또는 monthBudget > 0인 경우만
+          return (cat.targetPrice||0) > 0 || (cat.monthBudget||0) > 0
+        })
+        if (catsToRenderFiltered.length === 0) return ''
+
+        const catCards = catsToRenderFiltered.map(cat => {
           const color = getCategoryColorHex(cat.category_key)
-          // 목표 식단가 일원화: monthly_settings.meal_price 사용 (cat.targetPrice=예산역산값은 참고용)
-          const targetP = targetMealPrice || 0
-          const catRefPrice = cat.targetPrice || 0
+          // 카테고리별 고유 목표 식단가: cat.targetPrice (병원 설정값, ref_meal_price 우선)
+          const targetP = cat.targetPrice || 0
           const monthBudget = cat.monthBudget || 0
           const catMonthAmt = cat.monthAmt || 0
           // 월 식단가: 백엔드 formula 계산값 우선, 없으면 mealCustomTotals 기반 폴백
@@ -1793,15 +1834,27 @@ async function renderDashboard() {
               <span style="font-size:9px;color:#6b7280">월 식단가 vs 목표</span>
               <span style="font-size:10px;font-weight:700;color:${priceColorM2}">${isOverM2?'▲ +'+fmt(monthDietPrice2-targetP)+'원 초과':'▼ '+fmt(targetP-monthDietPrice2)+'원 여유'}</span>
             </div>` : ''}
-            ${catRefPrice > 0 ? `<div style="margin-top:4px;font-size:8px;color:#a78bfa;border-top:1px dashed ${color}20;padding-top:4px">예산역산 참고값: ${fmt(catRefPrice)}원/식 (월예산÷해당식수)</div>` : ''}
           </div>`
         }).join('')
+        // 가중평균 목표: 주요 카테고리만 (budget_include_keys 있는 것)
+        const weightedTarget2Recalc = (() => {
+          const mainCats = catsToRenderFiltered.filter(c => (c.budgetKeys||[]).length > 0 || (c.targetPrice||0) > 0)
+          const totalBudgetW2 = mainCats.reduce((s,c) => s + (c.monthBudget||0), 0)
+          if (totalBudgetW2 > 0) {
+            return Math.round(mainCats.reduce((s,c) => {
+              const w = (c.monthBudget||0) / totalBudgetW2
+              return s + (c.targetPrice||0) * w
+            }, 0))
+          }
+          // 예산 없을 때: API에서 계산한 가중평균 사용
+          return data.projection?.weightedAvgTargetPrice || weightedTarget2 || 0
+        })()
         return `<div style="border-top:1px solid #e5e7eb;margin-top:10px;padding-top:10px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <span style="font-size:12px;font-weight:700;color:#374151"><i class="fas fa-layer-group" style="color:#8b5cf6;margin-right:4px;font-size:11px"></i>환자군별 식단가 현황</span>
-            ${weightedTarget2 > 0 ? `<span style="font-size:10px;color:#6b7280">가중평균 목표: <strong style="color:#1f2937">${fmt(weightedTarget2)}원/식</strong></span>` : ''}
+            ${weightedTarget2Recalc > 0 ? `<span style="font-size:10px;color:#6b7280">가중평균 목표: <strong style="color:#1f2937">${fmt(weightedTarget2Recalc)}원/식</strong></span>` : ''}
           </div>
-          <div style="font-size:9px;color:#9ca3af;margin-bottom:6px"><i class="fas fa-info-circle"></i> 선택한 예산항목 ÷ 선택한 식수항목 기준 (카테고리별 계산 기준 적용)</div>
+          <div style="font-size:9px;color:#9ca3af;margin-bottom:6px"><i class="fas fa-info-circle"></i> 카테고리별 설정 목표 기준 (항암/요양 등 각 카테고리 개별 목표 적용)</div>
           ${catCards}
         </div>`
       })()}
@@ -1837,9 +1890,9 @@ async function renderDashboard() {
           return totalM > 0 ? Math.round(totalO / totalM) : 0
         })()
 
-        // ② 목표 식단가: monthly_settings.meal_price 일원화 (8,000원 기준)
-        // category_order_settings.target_meal_price(예산역산값)는 참고값으로만 사용, 목표로 사용 안 함
-        const dbWeightedTarget = targetMealPrice || 0
+        // ② 목표 식단가: 카테고리 가중평균 목표 우선, 없으면 monthly_settings.meal_price
+        // weightedAvgTargetPrice = Σ(카테고리별목표 × 예산비중) - 병원 설정의 카테고리별 목표 반영
+        const dbWeightedTarget = (data.projection?.weightedAvgTargetPrice || 0) || targetMealPrice || 0
 
         const dbWDiff = dbWeightedCurrent > 0 && dbWeightedTarget > 0 ? dbWeightedCurrent - dbWeightedTarget : null
         const dbWOver = dbWDiff !== null && dbWDiff > 0
@@ -1884,7 +1937,7 @@ async function renderDashboard() {
           <div style="font-size:9px;color:#9ca3af;margin-bottom:6px">${panelDesc}</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0px">
             <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid #e9d5ff">
-              <div style="font-size:10px;color:#6b7280;margin-bottom:3px">목표 <span style="font-size:8px;color:#9ca3af">(월 설정)</span></div>
+              <div style="font-size:10px;color:#6b7280;margin-bottom:3px">목표 <span style="font-size:8px;color:#9ca3af">(${activeCats.length > 1 ? '카테고리 가중평균' : '설정값'})</span></div>
               <div style="font-size:15px;font-weight:800;color:${dbWeightedTarget>0?'#7c3aed':'#d1d5db'}">${dbWeightedTarget>0?fmt(dbWeightedTarget)+'원/식':'미설정'}</div>
             </div>
             <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid ${dbWeightedCurrent>0?dbWColor+'60':'#e5e7eb'}">
@@ -1909,9 +1962,11 @@ async function renderDashboard() {
             <tbody>
               ${catPriceList.map(cat => {
                 const color = getCategoryColorHex(cat.category_key)
-                // 목표 식단가 일원화: monthly_settings.meal_price 사용
-                const targetP = targetMealPrice || 0
-                const catRefP = cat.targetPrice || 0  // 예산역산 참고값
+                // 카테고리별 고유 목표 식단가: cat.targetPrice (병원 설정값 = ref_meal_price 우선)
+                // budget_include_keys 없는 보조 카테고리는 목표 없음
+                const hasBudgetKeys = (cat.budgetKeys||[]).length > 0
+                if (!hasBudgetKeys) return ''  // 미설정 카테고리 완전 제거
+                const targetP = cat.targetPrice || 0  // 카테고리별 설정 목표 식단가
                 const actualP = cat._dietPrice || 0
                 const diff = targetP > 0 && actualP > 0 ? actualP - targetP : null
                 const diffPct = diff !== null && targetP > 0 ? ((diff / targetP) * 100).toFixed(1) : null
@@ -1923,7 +1978,6 @@ async function renderDashboard() {
                       <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>
                       <span style="font-weight:600;color:#374151">${cat.category_name}</span>
                     </span>
-                    ${catRefP > 0 ? `<div style="font-size:8px;color:#a78bfa;margin-top:1px">예산역산: ${fmt(catRefP)}원</div>` : ''}
                   </td>
                   <td style="padding:6px 8px;text-align:right;color:#7c3aed;font-weight:600">${targetP > 0 ? fmt(targetP)+'원' : '<span style="color:#d1d5db">미설정</span>'}</td>
                   <td style="padding:6px 8px;text-align:right;font-weight:700;color:${actualP>0?(diff!==null&&diff>0?'#dc2626':'#1d4ed8'):'#d1d5db'}">${actualP > 0 ? fmt(actualP)+'원' : '미입력'}</td>
@@ -2565,6 +2619,10 @@ async function renderOrders() {
   // ── 마감 완료 달 읽기전용 처리 ──
   const _ordersReadOnly = isReadOnly(App.currentYear, App.currentMonth)
 
+  // 가중평균 목표 식단가: API에서 계산된 값 우선, 없으면 프론트에서 계산
+  const weightedAvgTargetMealPrice = dashData?.projection?.weightedAvgTargetPrice || targetMealPrice
+  window._weightedAvgTargetMealPrice = weightedAvgTargetMealPrice
+
   content.innerHTML = `
   ${_ordersReadOnly ? readOnlyBanner() : ''}
   <!-- ── 식단가 실시간 패널 ── -->
@@ -2574,11 +2632,11 @@ async function renderOrders() {
       <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt(initTotalMeals)}</strong>식</span>
     </div>
     <div class="grid grid-cols-3 gap-3">
-      <div id="mpCard-total" class="rounded-xl p-3 ${targetMealPrice > 0 && dashData?.mealPriceTotal > targetMealPrice ? 'bg-red-50 border-2 border-red-300' : 'bg-blue-50'}">
+      <div id="mpCard-total" class="rounded-xl p-3 ${weightedAvgTargetMealPrice > 0 && dashData?.mealPriceTotal > weightedAvgTargetMealPrice ? 'bg-red-50 border-2 border-red-300' : 'bg-blue-50'}">
         <div class="text-xs text-blue-600 mb-1 font-medium">전체 식단가</div>
         <div class="text-lg font-bold" id="mpVal-total">${fmt(dashData?.mealPriceTotal||0)}<span class="text-xs font-normal ml-0.5">원/식</span></div>
-        ${targetMealPrice > 0 ? `<div class="text-xs text-gray-400">목표: ${fmt(targetMealPrice)}원</div>` : ''}
-        <div class="text-xs font-semibold mt-1" id="mpDiff-total">${targetMealPrice > 0 && dashData?.mealPriceTotal > 0 ? (dashData.mealPriceTotal > targetMealPrice ? `<span class="text-red-500">▲ +${fmt(dashData.mealPriceTotal-targetMealPrice)}원 초과</span>` : `<span class="text-green-600">▼ ${fmt(targetMealPrice-dashData.mealPriceTotal)}원 여유</span>`) : ''}</div>
+        ${weightedAvgTargetMealPrice > 0 ? `<div class="text-xs text-gray-400">목표: ${fmt(weightedAvgTargetMealPrice)}원</div>` : ''}
+        <div class="text-xs font-semibold mt-1" id="mpDiff-total">${weightedAvgTargetMealPrice > 0 && dashData?.mealPriceTotal > 0 ? (dashData.mealPriceTotal > weightedAvgTargetMealPrice ? `<span class="text-red-500">▲ +${fmt(dashData.mealPriceTotal-weightedAvgTargetMealPrice)}원 초과</span>` : `<span class="text-green-600">▼ ${fmt(weightedAvgTargetMealPrice-dashData.mealPriceTotal)}원 여유</span>`) : ''}</div>
       </div>
       <div class="bg-purple-50 rounded-xl p-3">
         <div class="text-xs text-purple-600 mb-1 font-medium">직원식 제외</div>
@@ -2689,10 +2747,10 @@ async function renderOrders() {
       return `<div style="border-top:1px solid #e5e7eb;margin-top:10px;padding-top:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <span style="font-size:11px;font-weight:700;color:#374151"><i class="fas fa-layer-group" style="color:#8b5cf6;margin-right:4px"></i>환자군별 월 식단가</span>
-          ${weightedTarget > 0 ? `<span style="font-size:10px;color:#6b7280">가중평균 목표: <strong style="color:#1f2937">${fmt(weightedTarget)}원/식</strong></span>` : ''}
+          ${(weightedAvgTargetMealPrice||weightedTarget) > 0 ? `<span style="font-size:10px;color:#6b7280">가중평균 목표: <strong style="color:#1f2937">${fmt(weightedAvgTargetMealPrice||weightedTarget)}원/식</strong></span>` : ''}
         </div>
         <div style="font-size:9px;color:#9ca3af;margin-bottom:6px;display:flex;align-items:center;gap:4px">
-          <i class="fas fa-info-circle"></i> 선택한 예산항목 ÷ 선택한 식수항목 기준
+          <i class="fas fa-info-circle"></i> 카테고리별 설정 목표 기준
         </div>
         ${catRows}
       </div>`
@@ -6096,7 +6154,7 @@ function updateBudgetProgressPanel() {
     } else {
       mp1 = 0; mp2 = 0; mp3 = 0
     }
-    const tgt = ms.targetMealPrice
+    const tgt = window._weightedAvgTargetMealPrice || ms.targetMealPrice || 0
 
     const mp1El = document.getElementById('mpVal-total')
     const mp2El = document.getElementById('mpVal-nostaff')

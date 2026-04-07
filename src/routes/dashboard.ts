@@ -683,17 +683,19 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   const catDietPrices = (patientCatsDash.results||[]).map((cat:any) => {
     const s3 = catSetMap3[cat.id] || {}
-    // targetPrice: ref_meal_price(관리자 설정 기준값) 우선, 없으면 monthly_settings.meal_price, 최후에 target_meal_price(예산역산)
-    const targetPrice = s3.ref_meal_price || settings?.meal_price || s3.target_meal_price || 0
-    const monthBudget = s3.monthly_budget || 0
-    const workDays = s3.working_days || workingDays
-    const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
-
-    // formula 설정 파싱
+    // formula 설정 파싱 (먼저 budgetKeys 확인해야 targetPrice 폴백 결정에 사용)
     let budgetKeys: string[] = []
     let mealsKeys: string[] = []
     try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
     try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+    const isMainCategory = budgetKeys.length > 0  // 주요 환자군 여부
+
+    // targetPrice: 주요 카테고리(budgetKeys 있음)는 ref_meal_price 우선
+    // 보조 카테고리(budgetKeys 없음)는 monthly_settings.meal_price 폴백 사용 안 함 (0으로 처리)
+    const targetPrice = s3.ref_meal_price || s3.target_meal_price || (isMainCategory ? (settings?.meal_price || 0) : 0)
+    const monthBudget = s3.monthly_budget || 0
+    const workDays = s3.working_days || workingDays
+    const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
 
     // formula 설정이 없으면 기존 방식 (해당 카테고리 발주 ÷ 카테고리+직원+보호자)
     const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
@@ -866,11 +868,68 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // 목표 식단가 (settings에서)
   const targetMealPrice = settings?.meal_price || 0
 
-  // 예상 식단가 vs 목표 차이
-  const projectedMealPriceDiff = targetMealPrice > 0
-    ? Math.round(projectedMonthEndMealPrice - targetMealPrice) : 0
-  const projectedMealPriceDiffPct = targetMealPrice > 0
-    ? parseFloat(((projectedMonthEndMealPrice - targetMealPrice) / targetMealPrice * 100).toFixed(1)) : 0
+  // ── 카테고리별 가중평균 목표 식단가 계산 ──
+  // 병원 설정의 카테고리별 목표 식단가(ref_meal_price) 기준
+  // 가중평균 = Σ(카테고리별목표 × 해당예산비중)
+  const activeCatDietPricesForTarget = catDietPrices.filter(c =>
+    (c.budgetKeys||[]).length > 0  // 예산 포함 키가 있는 주요 카테고리만
+  )
+  const totalCatBudgetForTarget = activeCatDietPricesForTarget.reduce((s, c) => s + (c.monthBudget||0), 0)
+  let weightedAvgTargetPrice = 0
+  if (activeCatDietPricesForTarget.length > 0) {
+    if (totalCatBudgetForTarget > 0) {
+      weightedAvgTargetPrice = Math.round(
+        activeCatDietPricesForTarget.reduce((s, c) => {
+          const w = (c.monthBudget||0) / totalCatBudgetForTarget
+          return s + (c.targetPrice||0) * w
+        }, 0)
+      )
+    } else if (activeCatDietPricesForTarget.length > 0) {
+      // 예산 없을 때: 단순 평균
+      weightedAvgTargetPrice = Math.round(
+        activeCatDietPricesForTarget.reduce((s, c) => s + (c.targetPrice||0), 0)
+        / activeCatDietPricesForTarget.length
+      )
+    }
+  }
+  // 가중평균 목표 없으면 settings.meal_price 폴백
+  const effectiveTargetMealPrice = weightedAvgTargetPrice > 0 ? weightedAvgTargetPrice : targetMealPrice
+
+  // ── 카테고리별 월말 예상 식단가 계산 ──
+  const catProjections = activeCatDietPricesForTarget.map(cat => {
+    // 카테고리별 일평균 발주액
+    const catDailyAvgUsed = orderDayCnt > 0 ? (cat.monthAmt || 0) / orderDayCnt
+      : (elapsedDays > 0 ? (cat.monthAmt || 0) / elapsedDays : 0)
+    // 카테고리별 월말 예상 발주액
+    const catProjectedAmt = isCurrentMonthForProj && elapsedDays < daysInMonth
+      ? (cat.monthAmt || 0) + catDailyAvgUsed * (daysInMonth - elapsedDays)
+      : (cat.monthAmt || 0)
+    // 카테고리별 일평균 식수
+    const catDailyAvgMeals = mealDayCnt > 0 ? (cat.monthMeals || 0) / mealDayCnt : 0
+    // 카테고리별 월말 예상 식수
+    const catProjectedMeals = isCurrentMonthForProj && mealDayCnt > 0 && elapsedDays < daysInMonth
+      ? (cat.monthMeals || 0) + catDailyAvgMeals * (daysInMonth - elapsedDays)
+      : (cat.monthMeals || 0)
+    // 카테고리별 월말 예상 식단가
+    const catProjectedMealPrice = catProjectedMeals > 0
+      ? Math.round(catProjectedAmt / catProjectedMeals)
+      : (cat.monthDietPrice || 0)
+    return {
+      id: cat.id,
+      category_key: cat.category_key,
+      category_name: cat.category_name,
+      targetPrice: cat.targetPrice || 0,
+      projectedMealPrice: catProjectedMealPrice,
+      projectedAmt: Math.round(catProjectedAmt),
+      projectedMeals: Math.round(catProjectedMeals)
+    }
+  })
+
+  // 예상 식단가 vs 목표 차이 (가중평균 목표 기준)
+  const projectedMealPriceDiff = effectiveTargetMealPrice > 0
+    ? Math.round(projectedMonthEndMealPrice - effectiveTargetMealPrice) : 0
+  const projectedMealPriceDiffPct = effectiveTargetMealPrice > 0
+    ? parseFloat(((projectedMonthEndMealPrice - effectiveTargetMealPrice) / effectiveTargetMealPrice * 100).toFixed(1)) : 0
 
   // ══════════════════════════════════════════════════════════════
   // 2.3 예산 소진 예상일
@@ -1125,15 +1184,18 @@ dashboard.get('/summary/:year/:month', async (c) => {
     projection: {
       projectedTotalUsed: Math.round(projectedTotalUsed),
       projectedTotalMeals: Math.round(projectedTotalMeals),
-      projectedMonthEndMealPrice,      // 월말 예상 식단가
-      targetMealPrice,                 // 목표 식단가
+      projectedMonthEndMealPrice,      // 월말 예상 식단가 (전체 가중평균)
+      targetMealPrice: effectiveTargetMealPrice,  // 목표 식단가 (가중평균 목표 우선)
+      weightedAvgTargetPrice,          // 카테고리 가중평균 목표 식단가
+      settingsTargetMealPrice: targetMealPrice,   // monthly_settings.meal_price (원본)
       projectedMealPriceDiff,          // 목표 대비 차이 (원)
       projectedMealPriceDiffPct,       // 목표 대비 차이 (%)
       elapsedDays,                     // 경과일
       daysInMonth,                     // 월 총일수
       dailyAvgUsed: Math.round(dailyAvgUsed),   // 일평균 발주액
       dailyAvgMeals: Math.round(dailyAvgMeals), // 일평균 식수
-      isCurrentMonth: isCurrentMonthForProj
+      isCurrentMonth: isCurrentMonthForProj,
+      catProjections                   // 카테고리별 월말 예상 식단가
     },
     // ── 2.3 예산 소진 예상일 ──
     budgetDepletion: {
