@@ -267,7 +267,7 @@ schedule.get('/employees', async (c) => {
       query = `SELECT e.*, p.name as position_name, p.team as position_team
                FROM employees e
                LEFT JOIN employee_positions p ON e.position_id = p.id
-               WHERE e.hospital_id = ?
+               WHERE e.hospital_id = ? AND e.is_active = 1
                ORDER BY e.team, p.sort_order, e.hire_date, e.name`
       params = [hospitalId]
     } else {
@@ -703,7 +703,7 @@ schedule.get('/leaves/all', async (c) => {
      FROM employee_leaves l
      JOIN employees e ON l.employee_id = e.id
      LEFT JOIN employee_positions p ON e.position_id = p.id
-     WHERE l.hospital_id = ? AND l.year = ?
+     WHERE l.hospital_id = ? AND l.year = ? AND e.is_active = 1
      ORDER BY e.team, p.sort_order, e.hire_date, e.name`
   ).bind(hospitalId, year).all<any>()
 

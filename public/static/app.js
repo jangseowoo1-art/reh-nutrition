@@ -12473,38 +12473,57 @@ async function renderSchedule() {
   const hq  = hId ? `&hospitalId=${hId}` : ''
   const hqs = hId ? `?hospitalId=${hId}` : ''
 
-  // 모든 데이터 병렬 로드
-  const [empData, shiftData, posData, leaveAlerts, offGrants, monthData, leavesData, analysisData, mealStats, workSettingsData, holidayPolicySummaryData, monthlyLeaveSummary] = await Promise.all([
+  // ── 1차 로드: 스케줄 편집에 필수인 핵심 API (빠른 첫 렌더) ──
+  const [empData, shiftData, posData, monthData, workSettingsData, leavesData] = await Promise.all([
     api('GET', `/api/schedule/employees${hqs ? hqs + '&' : '?'}yearMonth=${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}`).catch(() => []),
     api('GET', `/api/schedule/shifts${hqs}`).catch(() => []),
     api('GET', `/api/schedule/positions${hqs}`).catch(() => []),
-    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
-    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
     api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hq}`).catch(() => []),
-    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/work-settings${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
-    api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hq}`).catch(() => []),
   ])
 
   scheduleEmployees = empData || []
   scheduleShifts = shiftData || []
   schedulePositions = posData || []
-  scheduleLeaveAlerts = leaveAlerts || []
-  scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
   scheduleExternalWorkers = (monthData?.external_workers) || []
   scheduleExtSchedMap = (monthData?.ext_sched_map) || {}
-  scheduleLeavesData = leavesData || []
-  scheduleAnalysisData = analysisData || null
-  scheduleMealStats = mealStats || null
   scheduleWorkSettings = workSettingsData || null
-  scheduleHolidayPolicySummary = holidayPolicySummaryData || null
-  window._monthlyLeavesData = monthlyLeaveSummary || []
+  scheduleLeavesData = leavesData || []
 
+  // 1차 렌더 — 스케줄 편집 탭을 즉시 표시
   renderScheduleTab(content)
+
+  // ── 2차 로드: 부가 데이터 백그라운드 로드 후 조용히 갱신 ──
+  Promise.all([
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
+  ]).then(([leaveAlerts, offGrants, analysisData, mealStats, holidayPolicySummaryData, monthlyLeaveSummary]) => {
+    scheduleLeaveAlerts = leaveAlerts || []
+    scheduleOffGrants = offGrants || null
+    scheduleAnalysisData = analysisData || null
+    scheduleMealStats = mealStats || null
+    scheduleHolidayPolicySummary = holidayPolicySummaryData || null
+    window._monthlyLeavesData = monthlyLeaveSummary || []
+
+    // 현재 스케줄 탭이 열려 있으면 부여휴무·알림·공휴일 패널만 조용히 갱신
+    const offPanel = document.getElementById('offGrantsPanel')
+    if (offPanel && scheduleTab === 'schedule') {
+      // 부여휴무 패널 재렌더 (off-grants 데이터 반영)
+      const newOffHtml = renderOffGrantsPanel()
+      offPanel.outerHTML = newOffHtml
+    }
+    // 연차 알림 배지 갱신
+    const alertBadge = document.getElementById('schedLeaveAlertBadge')
+    if (alertBadge) {
+      alertBadge.textContent = scheduleLeaveAlerts.length > 0 ? scheduleLeaveAlerts.length : ''
+    }
+  }).catch(() => {})
 }
 
 // 월 이동 후 스케줄·부여휴무·연차알림 재로드
@@ -12519,24 +12538,15 @@ async function reloadScheduleMonth() {
   const hq  = hId ? `&hospitalId=${hId}` : ''   // 기존 쿼리에 추가용
   const hqs = hId ? `?hospitalId=${hId}` : ''   // 쿼리가 없는 경로용
 
-  const [offGrants, monthData, leaveAlerts, analysisData, mealStats, holidayPolicySum, monthlyLeaveSummary] = await Promise.all([
-    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+  // ── 1차 로드: 스케줄 편집 핵심 API (빠른 재렌더) ──
+  const [monthData, leavesData] = await Promise.all([
     api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
-    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
-    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
-    api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hq}`).catch(() => []),
   ])
-  scheduleOffGrants = offGrants || null
   scheduleMonthData = monthData || null
   scheduleExternalWorkers = (monthData?.external_workers) || []
   scheduleExtSchedMap = (monthData?.ext_sched_map) || {}
-  scheduleLeaveAlerts = leaveAlerts || []
-  scheduleAnalysisData = analysisData || null
-  scheduleMealStats = mealStats || null
-  scheduleHolidayPolicySummary = holidayPolicySum || null
-  window._monthlyLeavesData = monthlyLeaveSummary || []
+  scheduleLeavesData = leavesData || []
   if (tc) {
     if (scheduleTab === 'schedule') {
       tc.innerHTML = renderMonthlyScheduleTab()
@@ -12545,6 +12555,29 @@ async function reloadScheduleMonth() {
       setTimeout(() => { if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} } }, 400)
     } else if (scheduleTab === 'analysis') tc.innerHTML = renderAnalysisTab()
   }
+
+  // ── 2차 로드: 부가 데이터 백그라운드 로드 ──
+  Promise.all([
+    api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
+    api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
+    api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
+    api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
+  ]).then(([offGrants, leaveAlerts, analysisData, mealStats, holidayPolicySum, monthlyLeaveSummary]) => {
+    scheduleOffGrants = offGrants || null
+    scheduleLeaveAlerts = leaveAlerts || []
+    scheduleAnalysisData = analysisData || null
+    scheduleMealStats = mealStats || null
+    scheduleHolidayPolicySummary = holidayPolicySum || null
+    window._monthlyLeavesData = monthlyLeaveSummary || []
+    // 부여휴무 패널 조용히 갱신
+    const offPanel = document.getElementById('offGrantsPanel')
+    if (offPanel && scheduleTab === 'schedule') {
+      const newOffHtml = renderOffGrantsPanel()
+      offPanel.outerHTML = newOffHtml
+    }
+  }).catch(() => {})
 }
 
 function renderScheduleTab(content) {
@@ -13404,7 +13437,7 @@ function renderOffGrantsPanel() {
   const policyReview   = sm.policy_review_signal === true
 
   return `
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
+  <div id="offGrantsPanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
       <div class="flex items-center gap-2">
         <i class="fas fa-calendar-check text-blue-500"></i>
@@ -16475,44 +16508,23 @@ function renderEmployeeModal() {
             ${(()=>{
               let workParts = []
               try { workParts = isEdit ? (JSON.parse(emp?.work_parts||'[]') || []) : [] } catch(e) { workParts = [] }
-              const PART_GROUPS = [
-                {
-                  groupLabel: '기본 파트',
-                  parts: [
-                    {key:'cooking',   label:'조리'},
-                    {key:'serving',   label:'배식'},
-                    {key:'washing',   label:'세척'},
-                    {key:'nutrition', label:'영양'},
-                    {key:'breakfast', label:'조식'},
-                    {key:'lunch',     label:'중식'},
-                    {key:'dinner',    label:'석식'},
-                  ]
-                },
-                {
-                  groupLabel: '전처리',
-                  groupKey: 'preprocess',
-                  parts: [
-                    {key:'preprocess_cooking',   label:'전처리-조리'},
-                    {key:'preprocess_serving',   label:'전처리-배식'},
-                    {key:'preprocess_washing',   label:'전처리-세척'},
-                    {key:'preprocess_nutrition', label:'전처리-영양'},
-                    {key:'preprocess_breakfast', label:'전처리-조식'},
-                    {key:'preprocess_lunch',     label:'전처리-중식'},
-                    {key:'preprocess_dinner',    label:'전처리-석식'},
-                  ]
-                }
+              const PARTS = [
+                {key:'cooking',    label:'조리'},
+                {key:'serving',    label:'배식'},
+                {key:'washing',    label:'세척'},
+                {key:'nutrition',  label:'영양'},
+                {key:'breakfast',  label:'조식'},
+                {key:'lunch',      label:'중식'},
+                {key:'dinner',     label:'석식'},
+                {key:'preprocess', label:'전처리'},
               ]
-              return PART_GROUPS.map(grp => `
-                <div class="mb-3">
-                  <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">${grp.groupLabel}</div>
-                  <div class="flex gap-4 flex-wrap pl-2">
-                    ${grp.parts.map(p => `<label class="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" id="ei_wp_${p.key}" class="w-4 h-4 text-blue-600"
-                        ${workParts.includes(p.key)?'checked':''}>
-                      <span class="text-sm text-gray-700">${p.label}</span>
-                    </label>`).join('')}
-                  </div>
-                </div>`).join('')
+              return `<div class="flex gap-4 flex-wrap">
+                ${PARTS.map(p => `<label class="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" id="ei_wp_${p.key}" class="w-4 h-4 text-blue-600"
+                    ${workParts.includes(p.key)?'checked':''}>
+                  <span class="text-sm text-gray-700">${p.label}</span>
+                </label>`).join('')}
+              </div>`
             })()}
           </div>
 
@@ -16783,9 +16795,11 @@ function renderLeavesTab() {
   // 초기 셋업 배너 제거 — '전체 월차 자동발생' 버튼으로 통합
   const setupBanner = ''
 
-  // leave map by empId
+  // leave map by empId — annual 타입만 저장 (monthly로 덮어쓰기 방지)
   const leaveByEmp = {}
-  for (const l of leaves) leaveByEmp[l.employee_id] = l
+  for (const l of leaves) {
+    if (l.leave_type === 'annual') leaveByEmp[l.employee_id] = l
+  }
 
   // 직원별 법정 연차 계산
   function calcLegal(emp) {
@@ -16804,8 +16818,10 @@ function renderLeavesTab() {
     return Math.min(base + extra, 25)
   }
 
-  const cookEmps  = emps.filter(e => e.team === 'cook' || !e.team)
-  const nutriEmps = emps.filter(e => e.team === 'nutrition')
+  // 비활성/삭제 직원 제외, hire_date 없는 직원도 연차탭에서 제외
+  const activeEmps = emps.filter(e => e.is_active !== 0)
+  const cookEmps  = activeEmps.filter(e => e.team === 'cook' || !e.team)
+  const nutriEmps = activeEmps.filter(e => e.team === 'nutrition')
 
   function renderRows(teamEmps, teamKey) {
     if (!teamEmps.length) return ''
@@ -16926,11 +16942,12 @@ function renderLeavesTab() {
     return html
   }
 
-  // 전체 통계
-  const statAssigned  = leaves.length
-  const statUnassigned= emps.length - statAssigned
-  const statTotalDays = leaves.reduce((a,l) => a + (l.total_days||0), 0)
-  const statUsedDays  = leaves.reduce((a,l) => a + (l.used_days||0), 0)
+  // 전체 통계 (annual 타입만 집계)
+  const annualLeaves   = leaves.filter(l => l.leave_type === 'annual')
+  const statAssigned   = annualLeaves.filter(l => l.total_days > 0).length
+  const statUnassigned = emps.filter(e => e.hire_date).length - statAssigned
+  const statTotalDays  = annualLeaves.reduce((a,l) => a + (l.total_days||0), 0)
+  const statUsedDays   = annualLeaves.reduce((a,l) => a + (l.used_days||0), 0)
 
   // ── 월차 데이터 로드 (글로벌 캐시 또는 별도 로드) ─────────────
   const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
@@ -22763,11 +22780,8 @@ window.saveEmployeeCard = async (empId) => {
   const name = document.getElementById('ei_name')?.value?.trim()
   if (!name) { showToast('이름은 필수입니다', 'error'); return }
 
-  const workParts = [
-    'cooking','serving','washing','nutrition','breakfast','lunch','dinner',
-    'preprocess_cooking','preprocess_serving','preprocess_washing',
-    'preprocess_nutrition','preprocess_breakfast','preprocess_lunch','preprocess_dinner'
-  ].filter(p => document.getElementById(`ei_wp_${p}`)?.checked)
+  const workParts = ['cooking','serving','washing','nutrition','breakfast','lunch','dinner','preprocess']
+    .filter(p => document.getElementById(`ei_wp_${p}`)?.checked)
 
   const body = {
     name,
