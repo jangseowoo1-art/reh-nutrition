@@ -17540,7 +17540,9 @@ function renderAnalysisTabSimple(ad, year, month) {
       else workDays++
     }
     const leaveRow      = leaveMap[e.id]
-    const annualRemain  = leaveRow?.remaining_days ?? '-'
+    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함 — 이전: remaining_days 직접 참조)
+    const { remain: _annR } = CALC_ENGINE.calcAnnualRemain(leaveRow)
+    const annualRemain  = _annR !== null ? _annR : '-'
     const otHrs         = otByEmp[e.name] || 0
     return { name: e.name, position: e.position_name || '', workDays, restDays, annualUsed, annualRemain, otHrs }
   })
@@ -23983,34 +23985,14 @@ function schedRecalcRow(empId) {
   const og  = scheduleOffGrants
   const ws  = scheduleWorkSettings || {}
 
-  let workDayCount = 0, annualUsed = 0
-  let maxConsecFound = 0, curConsec = 0
-  let weeklyHoursMap = {}, maxWeeklyHours = 0
-
-  // 근무조 시간 계산 헬퍼 — ✅ CALC_ENGINE 위임
-  const calcShiftHrs = (code) => CALC_ENGINE.calcShiftHrs(code, scheduleShifts || [])
-
-  for (let d = 1; d <= days; d++) {
-    const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-    const sched   = sm[`${empId}_${dateStr}`]
-    const code    = sched?.shift_code || ''
-    const ltype   = sched?.leave_type || ''
-    if (!code || code === '-') { curConsec = 0; continue }
-    if (code === '연' || ltype === 'annual') { annualUsed += 1; curConsec = 0 }
-    else if (REST_CODES.has(code) || ltype) { curConsec = 0 }
-    else {
-      workDayCount += 1
-      curConsec++
-      if (curConsec > maxConsecFound) maxConsecFound = curConsec
-      // 주간 근무시간 집계
-      const dt = new Date(dateStr)
-      const startOfYear = new Date(dt.getFullYear(), 0, 1)
-      const weekNum = Math.ceil(((dt - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7)
-      if (!weeklyHoursMap[weekNum]) weeklyHoursMap[weekNum] = 0
-      weeklyHoursMap[weekNum] += calcShiftHrs(code)
-      if (weeklyHoursMap[weekNum] > maxWeeklyHours) maxWeeklyHours = weeklyHoursMap[weekNum]
-    }
-  }
+  // ✅ CALC_ENGINE.calcWorkSummary: 인라인 루프 → 단일 엔진 호출
+  const emp = (scheduleEmployees || []).find(e => e.id === empId) || { id: empId }
+  const summary = CALC_ENGINE.calcWorkSummary(emp, days, App.currentYear, App.currentMonth, sm, lm, scheduleShifts || [])
+  const workDayCount   = summary.workDays
+  const annualUsed     = summary.annualDays
+  const maxConsecFound = summary.maxConsecDays
+  const weeklyHoursMap = summary.weeklyHoursMap
+  const maxWeeklyHours = Math.max(...Object.values(weeklyHoursMap), 0)
 
   // ── 우측 근무일 셀 업데이트 ────────────────────────────
   const wdEl = document.getElementById(`workdays-${empId}`)
@@ -24202,18 +24184,15 @@ function updateSchedRightPanel() {
   let totalWorking = 0, totalLeave = 0, totalOff = 0, totalOtCnt = 0
 
   const empStats = emps.map(emp => {
-    let workDays = 0, offDays = 0, leaveDays = 0, otHours = 0, todayCode = ''
-    for (let d = 1; d <= days; d++) {
-      const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-      const sched = sm[`${emp.id}_${ds}`]
-      const code  = sched?.shift_code || ''
-      if (ds === todayStr) todayCode = code
-      if (!code || code === '-') continue
-      if (code === '연') leaveDays++
-      else if (REST_CODES.has(code)) offDays++
-      else { workDays++; if (sched?.overtime_hours > 0) otHours += sched.overtime_hours }
-    }
+    // ✅ CALC_ENGINE.calcWorkSummary: 직원 근무 요약 단일 엔진 활용
+    const summary = CALC_ENGINE.calcWorkSummary(emp, days, year, month, sm, lm, scheduleShifts || [])
+    const { workDays, leaveDays, annualRemain } = summary
+    const offDays  = summary.leaveDays  // REST_CODES 기반 휴무
+    const otHours  = summary.otHours
 
+    // 오늘 상태 계산
+    const todayDs   = `${year}-${String(month).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
+    const todayCode = sm[`${emp.id}_${todayDs}`]?.shift_code || ''
     let todayStatus = 'none'
     if (isCurrentMonth) {
       if (todayCode === '연') todayStatus = 'leave'
@@ -24224,10 +24203,6 @@ function updateSchedRightPanel() {
     else if (todayStatus === 'leave') totalLeave++
     else if (todayStatus === 'off')   totalOff++
     if (otHours > 0) totalOtCnt++
-
-    const empLeave = lm[emp.id] || {}
-    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
-    const { remain: annualRemain } = CALC_ENGINE.calcAnnualRemain(empLeave)
 
     return { emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain, todayCode }
   })
