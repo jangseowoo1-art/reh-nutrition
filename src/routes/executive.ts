@@ -283,6 +283,15 @@ executive.get('/summary/:year/:month', async (c) => {
     : totalMeals  // 카테고리 없으면 totalMeals 기반
   const currentMealPrice = execTotalMealsForPrice > 0 ? Math.round(totalUsed / execTotalMealsForPrice) : 0
 
+  // 소모품 발주 합계 (식단가 제외 업체)
+  const supplyTotal = (vendorOrders.results || [])
+    .filter((v: any) => v.category === 'supply')
+    .reduce((s: number, v: any) => s + (v.total_used || 0), 0)
+  // 총 운영원가: 식재료 + 소모품 + 카드
+  const mealPriceOperating = execTotalMealsForPrice > 0
+    ? Math.round((totalUsed + supplyTotal + cardTotal) / execTotalMealsForPrice)
+    : 0
+
   // 13. 검수 현황 (납품 대비 검수 완료)
   const inspectionStats = await c.env.DB.prepare(
     `SELECT
@@ -305,6 +314,7 @@ executive.get('/summary/:year/:month', async (c) => {
       progress,
       targetMealPrice,
       currentMealPrice,
+      mealPriceOperating,  // 총 운영원가 (식재료+소모품+카드) ÷ 식수
     },
     mealStats: {
       totalMeals,

@@ -1010,6 +1010,7 @@ async function renderDashboard() {
   const mealPriceTotal = data.mealPriceTotal || mealPrice
   const mealPriceNoStaff = data.mealPriceNoStaff || 0
   const mealPriceNoSupply = data.mealPriceNoSupply || 0
+  const mealPriceOperating = data.mealPriceOperating || 0  // 총 운영원가 (식재료+소모품+카드)
   const targetMealPrice = data.settings?.meal_price || 0
   // 가중평균 목표 식단가: API에서 계산된 값 (카테고리 있으면 가중평균, 없으면 settings.meal_price)
   const effectiveTargetPrice = data.projection?.weightedAvgTargetPrice || targetMealPrice || 0
@@ -1745,11 +1746,19 @@ async function renderDashboard() {
         </div>
         <div class="flex items-center justify-between p-2.5 ${mpOver?'bg-red-50 border border-red-200':'bg-blue-50'} rounded-xl">
           <div>
-            <span class="text-xs font-medium ${mpOver?'text-red-600':'text-blue-600'}">전체 식단가</span>
+            <span class="text-xs font-medium ${mpOver?'text-red-600':'text-blue-600'}">${catDietPricesData.length >= 2 ? '식단가 (소모품 자동 제외)' : '전체 식단가'}</span>
             ${mpOver?`<span class="text-xs text-red-500 ml-1 font-bold">▲초과</span>`:''}
           </div>
           <span class="font-bold text-lg ${mpOver?'text-red-600':'text-blue-700'}">${totalMeals>0?fmt(mealPriceTotal):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
         </div>
+        ${catDietPricesData.length >= 2 ? `
+        <div class="flex items-center justify-between p-2.5 bg-teal-50 rounded-xl">
+          <div>
+            <span class="text-xs font-medium text-teal-700">총 운영원가 (식재료+소모품+카드)</span>
+            ${mealPriceOperating>mealPriceTotal?`<span class="text-xs text-teal-500 ml-1">+${fmt(mealPriceOperating-mealPriceTotal)}원/식</span>`:''}
+          </div>
+          <span class="font-bold text-teal-800">${totalMeals>0?fmt(mealPriceOperating):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
+        </div>` : `
         <div class="flex items-center justify-between p-2.5 bg-purple-50 rounded-xl">
           <span class="text-xs font-medium text-purple-600">직원식 제외</span>
           <span class="font-bold text-purple-700">${totalMeals>0?fmt(mealPriceNoStaff):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
@@ -1757,7 +1766,7 @@ async function renderDashboard() {
         <div class="flex items-center justify-between p-2.5 bg-orange-50 rounded-xl">
           <span class="text-xs font-medium text-orange-600">소모품 제외</span>
           <span class="font-bold text-orange-700">${totalMeals>0?fmt(mealPriceNoSupply):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
-        </div>
+        </div>`}
       </div>
 
       <!-- 환자군별 식단가 현황 -->
@@ -1813,6 +1822,8 @@ async function renderDashboard() {
               <div style="display:flex;align-items:center;gap:5px">
                 <span style="width:9px;height:9px;border-radius:50%;background:${color};display:inline-block"></span>
                 <span style="font-size:12px;font-weight:700;color:${color}">${cat.category_name}</span>
+                ${cat.catIncludeSupply ? `<span style="font-size:8px;background:#ccfbf1;color:#0f766e;padding:1px 4px;border-radius:4px;font-weight:600">🗃소모품포함</span>` : ''}
+                ${cat.catIncludeCard ? `<span style="font-size:8px;background:#dbeafe;color:#1d4ed8;padding:1px 4px;border-radius:4px;font-weight:600">💳카드포함</span>` : ''}
               </div>
               ${targetP > 0 ? `<span style="font-size:9px;color:#9ca3af">목표: ${fmt(targetP)}원/식</span>` : ''}
             </div>
@@ -8630,6 +8641,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   const mpTotalByMonth   = Array(12).fill(0)
   const mpNoStaffByMonth = Array(12).fill(0)
   const mpNoSupplyByMonth= Array(12).fill(0)
+  const mpOperatingByMonth = Array(12).fill(0)  // 총 운영원가 (식재료+소모품+카드)
 
   // ① 전체 식단가: 카테고리가 있으면 예산비중 가중평균, 없으면 총금액÷총식수
   // data.annualCatDietPrices = [{id, category_key, category_name, monthlyDietPrices:[{month,monthAmt,monthMeals,dietPrice}]}]
@@ -8695,6 +8707,12 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       // ③ 소모품 제외 식단가
       if (tmForPrice > 0) {
         mpNoSupplyByMonth[i] = Math.round((used - supCost) / tmForPrice)
+      }
+      // ④ 총 운영원가 (식재료+소모품+카드)
+      // supplyAnnual에 card_total이 있으면 사용, 없으면 supply만 합산
+      const cardMonthCost = (data.supplyAnnual||[]).find(m => parseInt(m.month)-1 === i)?.total_card || 0
+      if (tmForPrice > 0) {
+        mpOperatingByMonth[i] = Math.round((used + supCost + cardMonthCost) / tmForPrice)
       }
     }
   }
@@ -8928,39 +8946,51 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
   <div id="anaContent-monthly">
     <!-- 전월 대비 식단가 비교 카드 -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-      ${[
-        { label:'전체 식단가', cur: mpTotalByMonth[App.currentMonth-1], prev: mpTotalByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'blue' },
-        { label:'직원식 제외', cur: mpNoStaffByMonth[App.currentMonth-1], prev: mpNoStaffByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'purple' },
-        { label:'소모품 제외', cur: mpNoSupplyByMonth[App.currentMonth-1], prev: mpNoSupplyByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'orange' }
-      ].map(item => {
-        const diff = item.cur - item.prev
-        const pct = item.prev>0 ? (diff/item.prev*100).toFixed(1) : null
-        const up = diff > 0
-        return `
-        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-          <div class="text-xs text-gray-500 mb-2">${item.label} · 전월 대비</div>
-          <div class="flex items-end justify-between">
-            <div>
-              <div class="text-2xl font-bold text-${item.color}-600">${item.cur>0?fmt(item.cur):'집계중'}<span class="text-sm font-normal ml-1">원/식</span></div>
-              <div class="text-xs text-gray-400 mt-1">전월: ${item.prev>0?fmt(item.prev)+'원':'자료없음'}</div>
+      ${(() => {
+        const hasCats = annualCatPrices.length >= 2
+        const items = hasCats ? [
+          { label:'식단가 (소모품 자동 제외)', cur: mpTotalByMonth[App.currentMonth-1], prev: mpTotalByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'blue' },
+          ...annualCatPrices.filter(c => (c.budgetKeys||[]).length > 0 || c.catIncludeSupply || c.catIncludeCard).slice(0,1).map(c => {
+            const md = (c.monthlyDietPrices||[]).find(d=>d.month===App.currentMonth)||{}
+            const mdPrev = (c.monthlyDietPrices||[]).find(d=>d.month===(App.currentMonth-1>0?App.currentMonth-1:12))||{}
+            return { label: c.category_name + (c.catIncludeSupply?' (소모품포함)':'') + (c.catIncludeCard?' (카드포함)':''), cur: md.dietPrice||0, prev: mdPrev.dietPrice||0, color:'indigo' }
+          }),
+          { label:'총 운영원가 (식재료+소모품+카드)', cur: mpOperatingByMonth[App.currentMonth-1], prev: mpOperatingByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'teal' }
+        ] : [
+          { label:'전체 식단가', cur: mpTotalByMonth[App.currentMonth-1], prev: mpTotalByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'blue' },
+          { label:'직원식 제외', cur: mpNoStaffByMonth[App.currentMonth-1], prev: mpNoStaffByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'purple' },
+          { label:'소모품 제외', cur: mpNoSupplyByMonth[App.currentMonth-1], prev: mpNoSupplyByMonth[App.currentMonth-2>=0?App.currentMonth-2:11], color:'orange' }
+        ]
+        return items.map(item => {
+          const diff = item.cur - item.prev
+          const pct = item.prev>0 ? (diff/item.prev*100).toFixed(1) : null
+          const up = diff > 0
+          return `
+          <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+            <div class="text-xs text-gray-500 mb-2">${item.label} · 전월 대비</div>
+            <div class="flex items-end justify-between">
+              <div>
+                <div class="text-2xl font-bold text-${item.color}-600">${item.cur>0?fmt(item.cur):'집계중'}<span class="text-sm font-normal ml-1">원/식</span></div>
+                <div class="text-xs text-gray-400 mt-1">전월: ${item.prev>0?fmt(item.prev)+'원':'자료없음'}</div>
+              </div>
+              ${pct!==null&&item.cur>0?`
+              <div class="text-right">
+                <div class="text-lg font-bold ${up?'text-red-500':'text-green-600'}">${up?'▲':'▼'}${Math.abs(diff).toLocaleString()}원</div>
+                <div class="text-xs ${up?'text-red-400':'text-green-500'}">${up?'+':''}${pct}%</div>
+              </div>`:''}
             </div>
-            ${pct!==null&&item.cur>0?`
-            <div class="text-right">
-              <div class="text-lg font-bold ${up?'text-red-500':'text-green-600'}">${up?'▲':'▼'}${Math.abs(diff).toLocaleString()}원</div>
-              <div class="text-xs ${up?'text-red-400':'text-green-500'}">${up?'+':''}${pct}%</div>
-            </div>`:''}
-          </div>
-          <div class="mt-2 h-1 bg-gray-100 rounded-full overflow-hidden">
-            <div class="h-full rounded-full bg-${item.color}-400" style="width:${item.cur>0&&item.prev>0?Math.min((item.cur/item.prev)*100,150).toFixed(0):50}%"></div>
-          </div>
-        </div>`
-      }).join('')}
+            <div class="mt-2 h-1 bg-gray-100 rounded-full overflow-hidden">
+              <div class="h-full rounded-full bg-${item.color}-400" style="width:${item.cur>0&&item.prev>0?Math.min((item.cur/item.prev)*100,150).toFixed(0):50}%"></div>
+            </div>
+          </div>`
+        }).join('')
+      })()}
     </div>
 
     <!-- 월간 상세 비교 차트 -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-utensils text-blue-500 mr-1"></i>식단가 3종 월별 추이 (당해 + 전년)</h3>
+        <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-utensils text-blue-500 mr-1"></i>${annualCatPrices.length >= 2 ? '카테고리별 식단가 + 총운영원가 추이' : '식단가 3종 월별 추이 (당해 + 전년)'}</h3>
         <canvas id="chart-mpMonthly" height="220"></canvas>
       </div>
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
@@ -9047,6 +9077,49 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
         </div>
       </div>
     </div>
+    ${annualCatPrices.length >= 2 ? `
+    <!-- 카테고리별 월별 식단가 추이 테이블 (카테고리 2개 이상 병원) -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mt-4">
+      <h3 class="font-bold text-gray-700 text-sm mb-3"><i class="fas fa-layer-group text-indigo-500 mr-1"></i>카테고리별 월별 식단가 추이</h3>
+      <div class="text-xs text-gray-400 mb-2">소모품 자동 제외 기준 · 소모품/카드 포함 설정 카테고리는 배지로 표시</div>
+      <div class="overflow-x-auto">
+        <table class="text-xs w-full" style="border-collapse:separate;border-spacing:0;border:1px solid #e0e7ff;border-radius:8px;overflow:hidden">
+          <thead>
+            <tr class="bg-indigo-50">
+              <th class="text-left pl-3 py-1.5 sticky left-0 bg-indigo-50 z-10" style="border-right:2px solid #c7d2fe;min-width:110px">구분</th>
+              ${months.map(m=>`<th class="text-right pr-2 py-1.5 text-indigo-700" style="border-right:1px solid #e0e7ff;min-width:52px">${m}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${annualCatPrices.filter(c=>(c.budgetKeys||[]).length>0||c.catIncludeSupply||c.catIncludeCard).map((cat,ri) => {
+              const color = cat.catIncludeSupply ? '#0f766e' : cat.catIncludeCard ? '#1d4ed8' : '#4338ca'
+              return `<tr style="${ri%2===0?'background:#f5f3ff':'background:white'}">
+                <td class="pl-3 py-1.5 font-semibold sticky left-0 z-10" style="min-width:110px;background:${ri%2===0?'#f5f3ff':'white'};border-right:2px solid #c7d2fe;color:${color}">
+                  ${cat.category_name}
+                  ${cat.catIncludeSupply?'<span style="font-size:8px;background:#ccfbf1;color:#0f766e;padding:1px 3px;border-radius:3px;margin-left:2px">소모품</span>':''}
+                  ${cat.catIncludeCard?'<span style="font-size:8px;background:#dbeafe;color:#1d4ed8;padding:1px 3px;border-radius:3px;margin-left:2px">카드</span>':''}
+                </td>
+                ${months.map((_,mi) => {
+                  const md = (cat.monthlyDietPrices||[]).find(d=>d.month===mi+1)||{}
+                  const dp = md.dietPrice||0
+                  return `<td class="text-right pr-2 py-1.5" style="border-right:1px solid #e0e7ff;color:${dp>0?color:'#9ca3af'}">${dp>0?fmt(dp):'-'}</td>`
+                }).join('')}
+              </tr>`
+            }).join('')}
+            <!-- 총 운영원가 행 -->
+            <tr style="background:#f0fdfa;border-top:2px solid #99f6e4">
+              <td class="pl-3 py-1.5 font-bold sticky left-0 z-10" style="min-width:110px;background:#f0fdfa;border-right:2px solid #5eead4;color:#0f766e">총 운영원가</td>
+              ${mpOperatingByMonth.map((v,i) => `<td class="text-right pr-2 py-1.5 font-semibold" style="border-right:1px solid #ccfbf1;color:${v>0?'#0f766e':'#9ca3af'}">${v>0?fmt(v):'-'}</td>`).join('')}
+            </tr>
+            <!-- 전체 식단가 (소모품 제외) 행 -->
+            <tr style="background:#eff6ff;border-top:2px solid #bfdbfe">
+              <td class="pl-3 py-1.5 font-bold sticky left-0 z-10" style="min-width:110px;background:#eff6ff;border-right:2px solid #93c5fd;color:#1d4ed8">전체 식단가</td>
+              ${mpTotalByMonth.map((v,i) => `<td class="text-right pr-2 py-1.5 font-semibold" style="border-right:1px solid #bfdbfe;color:${v>0?'#1d4ed8':'#9ca3af'}">${v>0?fmt(v):'-'}</td>`).join('')}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
   </div>
   <!-- 식재료 단가 분석: 거래명세서 분석 > 식재료 단가 탭에서 확인하세요 -->`
   // 식재료 단가 분석 섹션은 비교분석 탭에서 완전 제거됨 → 거래명세서 분석 > 식재료 단가 분석 탭 이용
@@ -9357,8 +9430,26 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
       labels:months,
       datasets:[
         { label:'전체식단가', data:mpTotalByMonth, borderColor:'#2563eb', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
-        { label:'직원제외',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
-        { label:'소모품제외', data:mpNoSupplyByMonth, borderColor:'#f59e0b', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+        // 카테고리 2개 이상: 카테고리별 식단가 추이 추가
+        ...(() => {
+          if (annualCatPrices.length < 2) return [
+            { label:'직원제외',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+            { label:'소모품제외', data:mpNoSupplyByMonth, borderColor:'#f59e0b', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+          ]
+          const catColors = ['#059669','#7c3aed','#db2777','#b45309','#0891b2']
+          return [
+            ...annualCatPrices.filter(c=>(c.budgetKeys||[]).length>0 || c.catIncludeSupply || c.catIncludeCard).slice(0,3).map((cat,ci) => ({
+              label: cat.category_name + (cat.catIncludeSupply?'(소모품)':'') + (cat.catIncludeCard?'(카드)':''),
+              data: Array(12).fill(0).map((_,i) => {
+                const md = (cat.monthlyDietPrices||[]).find(d=>d.month===i+1)||{}
+                return md.dietPrice || 0
+              }),
+              borderColor: catColors[ci % catColors.length],
+              borderWidth: 2, pointRadius: 3, fill: false, tension: 0.3, borderDash: [4,2]
+            })),
+            { label:'총운영원가', data:mpOperatingByMonth, borderColor:'#0f766e', borderWidth:1.5, pointRadius:3, fill:false, tension:0.3, borderDash:[6,3] }
+          ]
+        })(),
         { label:`${parseInt(App.currentYear)-1}년 식단가`, data:prevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[5,3] },
         { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
       ]
@@ -27450,8 +27541,9 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
     let mealsKeys = []
     try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
     try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
-
-    // 예산 항목 선택지 구성
+    // 소모품/카드 포함 여부 (신규 컬럼)
+    const catIncludeSupply = cat.budget_include_supply === 1
+    const catIncludeCard = cat.budget_include_card === 1
     const budgetOptions = cats.map(c => ({
       key: c.category_key, label: c.category_name + ' 예산'
     }))
@@ -27600,6 +27692,23 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             </div>` : ''}
           </div>
           <!-- 저장 버튼 -->
+          <!-- 소모품/카드 발주 포함 설정 (카테고리 식단가에 반영) -->
+          <div class="border border-teal-200 bg-teal-50 rounded-lg p-2 mt-2">
+            <div class="text-xs font-semibold text-teal-700 mb-1.5"><i class="fas fa-box mr-1"></i>소모품 · 카드 발주 식단가 반영</div>
+            <div class="text-xs text-gray-500 mb-1.5">체크 시 이 카테고리 식단가에 해당 발주금액이 포함됩니다.<br>
+              <span class="text-amber-600 font-medium">※ 소모품은 최대 1개 카테고리에만 반영 권장 (중복 시 과대계상)</span>
+            </div>
+            <div class="flex gap-3">
+              <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" id="catIncludeSupply-${cat.id}" ${catIncludeSupply ? 'checked' : ''}>
+                <span class="text-teal-700 font-medium">🗃 소모품 발주 포함</span>
+              </label>
+              <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" id="catIncludeCard-${cat.id}" ${catIncludeCard ? 'checked' : ''}>
+                <span class="text-blue-700 font-medium">💳 카드 발주 포함</span>
+              </label>
+            </div>
+          </div>
           <button type="button" onclick="saveCategoryFormula(${cat.id}, ${window._adminHospitalId})"
             class="w-full py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 mt-1">
             <i class="fas fa-save mr-1"></i>현재 식단가 기준 저장
@@ -28018,9 +28127,15 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
   const mealsChecks = document.querySelectorAll(`.meals-include-cb[data-cat="${catId}"]:checked`)
   const mealsKeys = mealsChecks.length > 0 ? Array.from(mealsChecks).map(cb => cb.value) : null
 
+  // 소모품/카드 포함 여부 수집
+  const includeSupply = document.getElementById(`catIncludeSupply-${catId}`)?.checked ? 1 : 0
+  const includeCard = document.getElementById(`catIncludeCard-${catId}`)?.checked ? 1 : 0
+
   const res = await api('PUT', `/api/admin/hospitals/${hid}/patient-categories/${catId}/formula`, {
     budget_include_keys: budgetKeys,
-    meals_include_keys: mealsKeys
+    meals_include_keys: mealsKeys,
+    budget_include_supply: includeSupply,
+    budget_include_card: includeCard
   })
 
   if (res?.success) {
@@ -28031,13 +28146,17 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
     if (idx >= 0) {
       cats[idx].budget_include_keys = budgetKeys ? JSON.stringify(budgetKeys) : null
       cats[idx].meals_include_keys = mealsKeys ? JSON.stringify(mealsKeys) : null
+      cats[idx].budget_include_supply = includeSupply
+      cats[idx].budget_include_card = includeCard
     }
     // 미리보기 표시
     const preview = document.getElementById(`formulaPreview-${catId}`)
     if (preview) {
       const budgetLabel = budgetKeys ? budgetKeys.join(', ') + ' 예산' : '전체 예산'
       const mealsLabel = mealsKeys ? mealsKeys.join(', ') + ' 식수' : '전체 식수'
-      preview.textContent = `계산식: (${budgetLabel}) ÷ (${mealsLabel})`
+      const supplyLabel = includeSupply ? ' + 소모품' : ''
+      const cardLabel = includeCard ? ' + 카드' : ''
+      preview.textContent = `계산식: (${budgetLabel}${supplyLabel}${cardLabel}) ÷ (${mealsLabel})`
       preview.classList.remove('hidden')
     }
   } else {

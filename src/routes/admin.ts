@@ -1683,18 +1683,21 @@ adminRouter.get('/hospitals/:id/patient-categories', async (c) => {
   return c.json(cats.results || [])
 })
 
-// 카테고리별 식단가 계산 기준 저장 (budget_include_keys, meals_include_keys)
+// 카테고리별 식단가 계산 기준 저장 (budget_include_keys, meals_include_keys, budget_include_supply, budget_include_card)
 adminRouter.put('/hospitals/:id/patient-categories/:catId/formula', async (c) => {
   const { id, catId } = c.req.param()
-  const { budget_include_keys, meals_include_keys } = await c.req.json() as any
+  const { budget_include_keys, meals_include_keys, budget_include_supply, budget_include_card } = await c.req.json() as any
 
   await c.env.DB.prepare(`
     UPDATE hospital_patient_categories
-    SET budget_include_keys = ?, meals_include_keys = ?
+    SET budget_include_keys = ?, meals_include_keys = ?,
+        budget_include_supply = ?, budget_include_card = ?
     WHERE hospital_id = ? AND id = ?
   `).bind(
     budget_include_keys ? JSON.stringify(budget_include_keys) : null,
     meals_include_keys ? JSON.stringify(meals_include_keys) : null,
+    budget_include_supply ? 1 : 0,
+    budget_include_card ? 1 : 0,
     id, catId
   ).run()
 

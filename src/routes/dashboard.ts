@@ -82,7 +82,9 @@ dashboard.get('/summary/:year/:month', async (c) => {
     todayMealRow,
     orderDayCountRow,
     prev3MonthsData,
-    supplyExcludeConfig
+    supplyExcludeConfig,
+    todaySupplyRow,
+    todayCardRow
   ] = await Promise.all([
     // 업체별 발주 합계 (BETWEEN으로 인덱스 활용)
     c.env.DB.prepare(
@@ -295,7 +297,20 @@ dashboard.get('/summary/:year/:month', async (c) => {
     // 소모품/카드 제외 계산 기준 설정
     c.env.DB.prepare(
       `SELECT supply_exclude_keys FROM hospital_info WHERE hospital_id = ?`
-    ).bind(hospitalId).first<any>()
+    ).bind(hospitalId).first<any>(),
+
+    // 오늘 소모품 발주 합계 (extra_include_keys='supply' 카테고리용)
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(d.total_amount),0) as total
+       FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+       WHERE d.hospital_id=? AND d.order_date=? AND v.category='supply'`
+    ).bind(hospitalId, today).first<any>(),
+
+    // 오늘 카드 발주 합계 (extra_include_keys='card' 카테고리용)
+    c.env.DB.prepare(
+      `SELECT COALESCE(SUM(amount),0) as total FROM card_expenses
+       WHERE hospital_id=? AND expense_date=?`
+    ).bind(hospitalId, today).first<any>()
   ])
 
   // 커스텀 필드별 월 합계 계산
@@ -469,6 +484,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
     : 0
 
   const supplyCardUsed = supplyUsed + cardExcluded + eventExcluded + otherExcluded
+
+  // extra_include_keys용: 소모품/카드 월별·오늘 합계 (카테고리별 가산에 사용)
+  const monthSupplyTotal = (vendors.results || [])
+    .filter((v: any) => v.category === 'supply')
+    .reduce((s: number, v: any) => s + (v.total_used || 0), 0)
+  const monthCardTotal = cardExpensesUsed
+  const todaySupplyTotal = todaySupplyRow?.total || 0
+  const todayCardTotal = todayCardRow?.total || 0
+
   // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
   const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
   // ② 직원식 제외 식단가:
@@ -694,8 +718,13 @@ dashboard.get('/summary/:year/:month', async (c) => {
     // formula 설정 파싱 (먼저 budgetKeys 확인해야 targetPrice 폴백 결정에 사용)
     let budgetKeys: string[] = []
     let mealsKeys: string[] = []
+    let extraIncludeKeys: string[] = []
     try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
     try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+    try { extraIncludeKeys = JSON.parse(cat.extra_include_keys || 'null') || [] } catch(e) {}
+    // 카테고리별 소모품/카드 반영 여부 (신규: budget_include_supply, budget_include_card 컬럼)
+    const catIncludeSupply = cat.budget_include_supply === 1
+    const catIncludeCard = cat.budget_include_card === 1
     const isMainCategory = budgetKeys.length > 0  // 주요 환자군 여부
 
     // targetPrice: 주요 카테고리(budgetKeys 있음)는 ref_meal_price 우선
@@ -718,6 +747,9 @@ dashboard.get('/summary/:year/:month', async (c) => {
     } else {
       monthAmt = catMonthMap2[cat.id] || 0
     }
+    // extra_include_keys 가산: 소모품(supply), 카드(card) 등의 월 합계를 식단가에 포함
+    if (extraIncludeKeys.includes('supply') || catIncludeSupply) monthAmt += monthSupplyTotal
+    if (extraIncludeKeys.includes('card') || catIncludeCard) monthAmt += monthCardTotal
 
     // ── 이번 달 식수 계산 (meals_include_keys 기반) ──
     let monthMeals: number
@@ -742,6 +774,9 @@ dashboard.get('/summary/:year/:month', async (c) => {
     } else {
       todayAmt = catTodayMap2[cat.id] || 0
     }
+    // extra_include_keys 가산: 오늘 소모품/카드 발주금액 포함
+    if (extraIncludeKeys.includes('supply') || catIncludeSupply) todayAmt += todaySupplyTotal
+    if (extraIncludeKeys.includes('card') || catIncludeCard) todayAmt += todayCardTotal
 
     // ── 오늘 식수 계산 (meals_include_keys 기반) ──
     let todayCatMeals: number
@@ -764,7 +799,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
       mealPrice: monthDietPrice,  // 보고서 PAGE3 호환 필드 (monthDietPrice와 동일)
       todayCatMeals, todayDietPrice, catRatio,
       prevTargetPrice, prevMonthBudget,
-      budgetKeys, mealsKeys,
+      budgetKeys, mealsKeys, extraIncludeKeys,
+      catIncludeSupply, catIncludeCard,
       refMealPrice: s3.ref_meal_price || 0,  // 관리자 설정 기준 식단가
       settingsMealPrice: settings?.meal_price || 0  // monthly_settings 기준 식단가
     }
@@ -818,6 +854,31 @@ dashboard.get('/summary/:year/:month', async (c) => {
       formulaMealPriceTotal = Math.round(totalUsed / totalMealsForFormula)
     }
   }
+
+  // ── 총 운영원가: 식재료 + 소모품 + 카드 (카테고리 수 관계없이 항상 계산) ────
+  // mealPriceOperating = (전체발주 + 소모품 + 카드) ÷ 전체식수
+  // catDietPrices에서 소모품/카드를 포함한 카테고리는 이미 monthAmt에 반영됨
+  // 여기서는 catIncludeSupply/catIncludeCard가 없는 경우를 위한 별도 총 운영원가 계산
+  const operatingTotalUsed = totalUsed + monthSupplyTotal + monthCardTotal
+  const totalMealsForOp = activeCatDietPrices.length >= 1
+    ? (() => {
+        const catStaffInc = activeCatDietPrices.some(c => (c.mealsKeys || []).some((k: string) => k.startsWith('st_key_') || k === 'staff'))
+        const catGuardInc = activeCatDietPrices.some(c => (c.mealsKeys || []).includes('guardian'))
+        const totalCatMeals2 = activeCatDietPrices.reduce((s, c) => s + c.monthMeals, 0)
+        return totalCatMeals2 + (catStaffInc ? 0 : (ms.total_staff||0)) + (catGuardInc ? 0 : (ms.total_guardian||0))
+      })()
+    : (totalMealsForPrice || 0)
+  const mealPriceOperating = totalMealsForOp > 0 ? Math.round(operatingTotalUsed / totalMealsForOp) : 0
+  // 카테고리별 운영원가 (카테고리 식단가 + 소모품/카드가 미반영된 카테고리에 대한 보조 지표)
+  const catOperatingPrices = catDietPrices.map(c => {
+    if (c.catIncludeSupply || c.catIncludeCard) return { ...c, operatingDietPrice: c.monthDietPrice }
+    // 소모품/카드 미포함 카테고리: 운영원가 = (catAmt + 소모품비례 + 카드비례) / catMeals
+    const supplyShare = totalMealsForOp > 0 ? Math.round(monthSupplyTotal * (c.monthMeals / totalMealsForOp)) : 0
+    const cardShare = totalMealsForOp > 0 ? Math.round(monthCardTotal * (c.monthMeals / totalMealsForOp)) : 0
+    const opAmt = c.monthAmt + supplyShare + cardShare
+    const opPrice = c.monthMeals > 0 ? Math.round(opAmt / c.monthMeals) : 0
+    return { ...c, operatingDietPrice: opPrice }
+  })
 
   // ══════════════════════════════════════════════════════════════
   // 2.2 월말 예상 식단가 자동 계산
@@ -1175,9 +1236,10 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealPriceRaw: mealPriceTotal,            // 기존 총발주÷총식수 방식 (참고용)
     mealPriceNoStaff,
     mealPriceNoSupply,
+    mealPriceOperating,                      // 총 운영원가 (식재료+소모품+카드) ÷ 식수
     supplyExcludeKeys,  // 병원별 소모품 제외 설정 (프론트엔드 라벨 표시용)
     totalMeals,
-    catDietPrices,
+    catDietPrices: catOperatingPrices,       // catIncludeSupply/catIncludeCard + operatingDietPrice 포함
     todayMeals: todayPatientMeals,  // 오늘 전체 식수 (직원+보호자+환자군)
     prevMonth: {
       month: prevMonth, year: parseInt(prevYear2),
@@ -1425,11 +1487,27 @@ dashboard.get('/annual/:year', async (c) => {
   const annualCatDietPrices = (annualCats.results || []).map((cat: any) => {
     let budgetKeys: string[] = []
     let mealsKeys: string[] = []
+    let extraIncludeKeys: string[] = []
     try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
     try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
+    try { extraIncludeKeys = JSON.parse(cat.extra_include_keys || 'null') || [] } catch(e) {}
+    // 카테고리별 소모품/카드 반영 여부
+    const catIncludeSupply = cat.budget_include_supply === 1
+    const catIncludeCard = cat.budget_include_card === 1
     const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
 
-    const monthlyDietPrices: Array<{month: number, monthAmt: number, monthMeals: number, dietPrice: number}> = []
+    // extra_include_keys용 연간 소모품/카드 월별 합계 맵
+    const annualSupplyMap: Record<string, number> = {}
+    ;(supplyAnnual.results || []).forEach((r: any) => {
+      annualSupplyMap[String(parseInt(r.month))] = r.total_supply || 0
+    })
+    // 연간 카드 월별 합계 맵 (supplyAnnual에 card_total이 있으면 사용)
+    const annualCardMap: Record<string, number> = {}
+    ;(supplyAnnual.results || []).forEach((r: any) => {
+      annualCardMap[String(parseInt(r.month))] = r.total_card || 0
+    })
+
+    const monthlyDietPrices: Array<{month: number, monthAmt: number, monthMeals: number, dietPrice: number, operatingDietPrice: number}> = []
     for (let m = 1; m <= 12; m++) {
       const mStr = String(m)
       // 발주금액
@@ -1442,6 +1520,9 @@ dashboard.get('/annual/:year', async (c) => {
       } else {
         monthAmt = catOrderMap[cat.id]?.[mStr] || 0
       }
+      // extra_include_keys 및 catIncludeSupply/catIncludeCard 가산 (연간)
+      if (extraIncludeKeys.includes('supply') || catIncludeSupply) monthAmt += (annualSupplyMap[mStr] || 0)
+      if (extraIncludeKeys.includes('card') || catIncludeCard) monthAmt += (annualCardMap[mStr] || 0)
       // 식수
       let monthMeals: number
       const mCustom = monthCustomTotals[mStr] || {}
@@ -1461,7 +1542,12 @@ dashboard.get('/annual/:year', async (c) => {
         monthMeals = (mCustom[defaultCatKey] || 0) + mStaff + mGuardian
       }
       const dietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
-      monthlyDietPrices.push({ month: m, monthAmt, monthMeals, dietPrice })
+      // 운영원가: 소모품/카드 미반영 카테고리는 식재료+소모품+카드 합산
+      const opSupply = (catIncludeSupply || extraIncludeKeys.includes('supply')) ? 0 : (annualSupplyMap[mStr] || 0)
+      const opCard = (catIncludeCard || extraIncludeKeys.includes('card')) ? 0 : (annualCardMap[mStr] || 0)
+      const opAmt = monthAmt + opSupply + opCard
+      const operatingDietPrice = monthMeals > 0 ? Math.round(opAmt / monthMeals) : 0
+      monthlyDietPrices.push({ month: m, monthAmt, monthMeals, dietPrice, operatingDietPrice })
     }
     return {
       id: cat.id,
@@ -1470,6 +1556,9 @@ dashboard.get('/annual/:year', async (c) => {
       monthlyBudget: cat.monthly_budget || 0,
       budgetKeys,
       mealsKeys,
+      extraIncludeKeys,
+      catIncludeSupply,
+      catIncludeCard,
       monthlyDietPrices
     }
   })
