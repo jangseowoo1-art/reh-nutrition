@@ -2,6 +2,212 @@
 //  병원 급식 예산 관리 - 메인 앱 JS v2.0
 // ══════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════
+//  CALC_ENGINE — 중앙 계산 엔진 (Single Source of Truth)
+//  ※ 이 객체의 함수만 사용하고 각 페이지에서 인라인 계산 금지
+//
+//  [영향 범위]
+//  · calcAnnualRemain  → 스케줄 편집뷰, 연차탭, 관리자대시보드,
+//                        운영진뷰, 보고서(PDF/XLSX), 우측패널, 직원모달
+//  · REST_CODES_SET    → 모든 스케줄 뷰(편집/설계/운영진/직원),
+//                        연차·휴무 집계, 외부인력 집계
+//  · calcShiftHrs      → 스케줄 편집뷰, 운영진뷰, 우측패널, 보고서
+//  · calcBudgetPct     → 발주입력, 영양사대시보드, 관리자대시보드,
+//                        인사이트패널, 경영대시보드
+//  · getShiftCore      → 스케줄 편집뷰, 설계모드 (UI 표현 레이어만 분리)
+// ══════════════════════════════════════════════════════════════
+const CALC_ENGINE = (() => {
+
+  // ─────────────────────────────────────────────
+  //  1. REST_CODES_SET  (휴무로 분류되는 shift 코드 집합)
+  //     기준: 연·휴·경조·병가 → 근무일수에서 제외
+  //     ※ '-' 는 미입력(공란)으로 별도 처리 — 이 Set에 포함하지 않음
+  // ─────────────────────────────────────────────
+  const REST_CODES_SET = new Set(['연', '휴', '경조', '병가'])
+
+  // ─────────────────────────────────────────────
+  //  2. calcAnnualRemain(empLeave)
+  //     연차 잔여일 계산 — 이월연차(carried_over_days) 포함
+  //
+  //  [입력] empLeave: leaveMap[empId] 또는 scheduleLeavesData 행
+  //         두 가지 구조 모두 처리:
+  //         A) { annual: { total, used, carried_over_days, allowance_paid } }
+  //            → 스케줄/운영진/보고서의 leaveMap 구조
+  //         B) { total_days, used_days, carried_over_days, allowance_paid }
+  //            → scheduleLeavesData / openEmpStatsModal 구조
+  //
+  //  [반환] { effective, used, remain, carried }
+  //         effective: 실질 연차 총일수 (total + carried)
+  //         used:      사용 일수
+  //         remain:    잔여 일수 (null = 데이터 없음)
+  //         carried:   이월 연차 일수
+  // ─────────────────────────────────────────────
+  function calcAnnualRemain(empLeave) {
+    if (!empLeave) return { effective: null, used: 0, remain: null, carried: 0 }
+
+    // 구조 A: leaveMap[empId].annual
+    const hasNested = empLeave.annual !== undefined
+    const src = hasNested ? empLeave.annual : empLeave
+
+    const total    = src?.total ?? src?.total_days ?? null
+    const used     = src?.used  ?? src?.used_days  ?? 0
+    const carried  = (src?.allowance_paid) ? 0 : (src?.carried_over_days ?? 0)
+    const effective = total !== null ? total + carried : null
+    const remain    = effective !== null ? effective - used : null
+
+    return { effective, used, remain, carried }
+  }
+
+  // ─────────────────────────────────────────────
+  //  3. calcMonthlyLeaveRemain(mlData, hireDate)
+  //     월차 잔여일 계산 (1년 미만 직원)
+  //
+  //  [입력] mlData:    _monthlyLeavesData 항목
+  //         hireDate:  emp.hire_date (string)
+  //  [반환] { total, used, remain, isUnsaved, isUnder1Y }
+  // ─────────────────────────────────────────────
+  function calcMonthlyLeaveRemain(mlData, hireDate) {
+    const hired    = hireDate ? new Date(hireDate) : null
+    const isUnder1Y = hired
+      ? (Date.now() - hired.getTime()) < 365.25 * 24 * 3600 * 1000
+      : false
+    if (!isUnder1Y || !mlData) {
+      return { total: null, used: 0, remain: null, isUnsaved: false, isUnder1Y }
+    }
+    const total     = mlData.monthly_total ?? mlData.auto_calc_days ?? null
+    const used      = mlData.monthly_used  ?? 0
+    const remain    = total !== null ? total - used : null
+    const isUnsaved = mlData.monthly_total == null && total !== null
+    return { total, used, remain, isUnsaved, isUnder1Y }
+  }
+
+  // ─────────────────────────────────────────────
+  //  4. calcShiftHrs(code, shifts)
+  //     shift 코드 → 근무 시간(h) 계산
+  //     · 빈 코드 / '-' / REST_CODES_SET → 0
+  //     · shifts 배열에서 start_time/end_time 조회
+  //     · 야간(end < start) 자동 처리
+  //     · shifts 미매칭 → 기본 8h
+  // ─────────────────────────────────────────────
+  function calcShiftHrs(code, shifts) {
+    if (!code || code === '-' || REST_CODES_SET.has(code)) return 0
+    const sf = (shifts || scheduleShifts || []).find(s => s.shift_code === code)
+    if (sf?.start_time && sf?.end_time) {
+      const [sh, sm] = sf.start_time.split(':').map(Number)
+      const [eh, em] = sf.end_time.split(':').map(Number)
+      let hrs = (eh * 60 + em - sh * 60 - sm) / 60
+      if (hrs < 0) hrs += 24
+      return Math.max(0, hrs - 1) // 휴게시간 1h 차감
+    }
+    return 8
+  }
+
+  // ─────────────────────────────────────────────
+  //  5. calcBudgetPct(used, budget)
+  //     예산 사용률(%) 계산
+  //     · budget = 0 또는 null → 0 반환
+  //     · 소수점 없이 정수 반환
+  // ─────────────────────────────────────────────
+  function calcBudgetPct(used, budget) {
+    if (!budget || budget <= 0) return 0
+    return Math.round((used || 0) / budget * 100)
+  }
+
+  // ─────────────────────────────────────────────
+  //  6. getBudgetColor(pct)
+  //     예산 사용률 → 색상 코드 반환
+  //     · ≥100% → 빨강 / ≥80% → 주황 / 미만 → 초록
+  // ─────────────────────────────────────────────
+  function getBudgetColor(pct) {
+    if (pct >= 100) return '#dc2626'
+    if (pct >= 80)  return '#d97706'
+    return '#16a34a'
+  }
+
+  // ─────────────────────────────────────────────
+  //  7. getShiftCore(code, shifts)
+  //     shift 코드의 핵심 속성 반환 (계산 엔진 — UI 표현 제외)
+  //     · bg, fg: 배경/전경 색상
+  //     · hrs:    근무 시간
+  //     · isRest: 휴무 코드 여부
+  //     ※ UI 표현(설계모드/편집모드 border·크기 등)은 각 뷰에서 분리 처리
+  // ─────────────────────────────────────────────
+  function getShiftCore(code, shifts) {
+    const isRest = !code || code === '-' || REST_CODES_SET.has(code)
+    const hrs    = calcShiftHrs(code, shifts)
+    const sf     = (shifts || scheduleShifts || []).find(s => s.shift_code === code)
+    const bg     = sf?.color       || (isRest ? '#f9fafb' : '#e0f2fe')
+    const fg     = sf?.text_color  || (isRest ? '#d1d5db' : '#0369a1')
+    return { bg, fg, hrs, isRest, shiftData: sf || null }
+  }
+
+  // ─────────────────────────────────────────────
+  //  8. calcWorkSummary(empId, days, year, month, schedMap, leaveMap)
+  //     직원 한 명의 월간 근무 요약 계산
+  //     [반환] { workDays, leaveDays, annualDays, otHours,
+  //              annualRemain, maxConsecDays, weeklyHoursMap }
+  // ─────────────────────────────────────────────
+  function calcWorkSummary(emp, days, year, month, schedMap, leaveMap, shifts) {
+    let workDays = 0, leaveDays = 0, annualDays = 0, otHours = 0
+    let maxConsec = 0, curConsec = 0
+    const weeklyHoursMap = {}
+
+    for (let d = 1; d <= days; d++) {
+      const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const sched   = schedMap[`${emp.id}_${dateStr}`]
+      const code    = sched?.shift_code || ''
+      const ltype   = sched?.leave_type || ''
+      const ot      = sched?.overtime_hours || 0
+
+      if (code && code !== '-') {
+        if (code === '연' || ltype === 'annual') annualDays++
+        else if (REST_CODES_SET.has(code) || ltype) leaveDays++
+        else {
+          workDays++
+          otHours += ot
+          curConsec++
+          if (curConsec > maxConsec) maxConsec = curConsec
+          // 주차별 시간 누적
+          const d2 = new Date(dateStr)
+          const soy = new Date(d2.getFullYear(), 0, 1)
+          const wk  = Math.ceil(((d2 - soy) / 86400000 + soy.getDay() + 1) / 7)
+          weeklyHoursMap[wk] = (weeklyHoursMap[wk] || 0) + calcShiftHrs(code, shifts)
+        }
+      } else {
+        curConsec = 0
+      }
+    }
+
+    const annual = calcAnnualRemain(leaveMap ? leaveMap[emp.id] : null)
+    return {
+      workDays, leaveDays, annualDays, otHours,
+      annualRemain: annual.remain,
+      annualEffective: annual.effective,
+      annualUsed: annual.used,
+      annualCarried: annual.carried,
+      maxConsecDays: maxConsec,
+      weeklyHoursMap
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  //  Public API
+  // ─────────────────────────────────────────────
+  return {
+    REST_CODES_SET,
+    calcAnnualRemain,
+    calcMonthlyLeaveRemain,
+    calcShiftHrs,
+    calcBudgetPct,
+    getBudgetColor,
+    getShiftCore,
+    calcWorkSummary
+  }
+})()
+
+// 하위 호환 단축 참조 (기존 코드에서 직접 사용하는 경우 대비)
+const _CE = CALC_ENGINE
+
 const App = {
   token: localStorage.getItem('token'),
   role: localStorage.getItem('role'),
@@ -1283,7 +1489,7 @@ async function renderDashboard() {
           </thead>
           <tbody>
             ${vendors.map(v => {
-              const pct = v.monthly_budget > 0 ? ((v.total_used / v.monthly_budget) * 100) : null
+              const pct = CALC_ENGINE.calcBudgetPct(v.total_used, v.monthly_budget) || null // ✅ CALC_ENGINE
               const remaining = v.monthly_budget - v.total_used
               const over = v.monthly_budget > 0 && v.total_used > v.monthly_budget
               return `<tr>
@@ -1370,7 +1576,7 @@ async function renderDashboard() {
         const budget = settings.monthly_budget || 0
         const taxable = (monthly.taxable || 0) + (includeNullCat ? nullCatTaxable : 0)
         const exempt = (monthly.exempt || 0) + (includeNullCat ? nullCatExempt : 0)
-        const pct = budget > 0 ? Math.round(used / budget * 100) : null
+        const pct = CALC_ENGINE.calcBudgetPct(used, budget) || null // ✅ CALC_ENGINE
         const over = pct !== null && pct >= 100
         const warn = pct !== null && pct >= 80 && !over
         const catColor = getCategoryColorHex(cat.category_key)
@@ -1551,7 +1757,7 @@ async function renderDashboard() {
           const isWarnM2 = targetP > 0 && monthDietPrice2 >= targetP * 0.9 && !isOverM2
           const priceColorM2 = isOverM2 ? '#dc2626' : isWarnM2 ? '#d97706' : color
           const prevTargetP = cat.prevTargetPrice || 0
-          const budgetPct = monthBudget > 0 ? Math.round(catMonthAmt / monthBudget * 100) : null
+          const budgetPct = CALC_ENGINE.calcBudgetPct(catMonthAmt, monthBudget) || null // ✅ CALC_ENGINE
           return `<div style="border:1px solid ${color}30;border-radius:10px;padding:8px 10px;background:${color}06;margin-bottom:6px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
               <div style="display:flex;align-items:center;gap:5px">
@@ -1844,7 +2050,7 @@ async function renderDashboard() {
           const totalL = foodWasteData.reduce((s,w)=>s+(w.waste_amount||0),0)
           const totalCost = foodWasteData.reduce((s,w)=>s+(w.waste_cost||0),0)
           const wasteBudget = data?.settings?.food_waste_budget || 0
-          const budgetPct = wasteBudget > 0 ? Math.round(totalCost/wasteBudget*100) : 0
+          const budgetPct = CALC_ENGINE.calcBudgetPct(totalCost, wasteBudget) // ✅ CALC_ENGINE
           const costOverBudget = wasteBudget > 0 && totalCost > wasteBudget
           return `
           <div class="space-y-1.5">
@@ -2039,8 +2245,8 @@ async function renderDashboard() {
         // 해당 카테고리 업체들
         const cvs = vendors.filter(v => getCategoryLabel(v.category) === label && v.total_used > 0)
         const budgetTotal = cvs.reduce((s, v) => s + (v.monthly_budget||0), 0)
-        const budgetPct = budgetTotal > 0 ? Math.round(amt/budgetTotal*100) : null
-        const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+        const budgetPct = CALC_ENGINE.calcBudgetPct(amt, budgetTotal) || null // ✅ CALC_ENGINE
+        const budColor = budgetPct === null ? '#9ca3af' : CALC_ENGINE.getBudgetColor(budgetPct)
         return `<div style="display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #f9fafb">
           <div style="width:8px;height:8px;border-radius:2px;background:${pieColors[i]};flex-shrink:0"></div>
           <div style="flex:1;min-width:0">
@@ -2064,8 +2270,8 @@ async function renderDashboard() {
         <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:4px">🏆 TOP 발주 업체</div>
         ${top3.map((v, i) => {
           const pct = totalUsed > 0 ? ((v.total_used/totalUsed)*100).toFixed(1) : 0
-          const budgetPct = v.monthly_budget > 0 ? Math.round(v.total_used/v.monthly_budget*100) : null
-          const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+          const budgetPct = CALC_ENGINE.calcBudgetPct(v.total_used, v.monthly_budget) || null // ✅ CALC_ENGINE
+          const budColor = budgetPct === null ? '#9ca3af' : CALC_ENGINE.getBudgetColor(budgetPct)
           const medal = i===0?'🥇':i===1?'🥈':'🥉'
           return `<div style="display:flex;align-items:center;gap:5px;padding:3px 5px;background:#f9fafb;border-radius:5px;margin-bottom:2px">
             <span style="font-size:12px">${medal}</span>
@@ -2083,7 +2289,7 @@ async function renderDashboard() {
         <div style="font-size:10px;font-weight:700;color:#1f2937;margin-bottom:4px">📦 카테고리별 현황</div>
         ${cats.map((cat, i) => {
           const pct = totalUsed > 0 ? ((cat.total/totalUsed)*100).toFixed(1) : 0
-          const budgetPct = cat.budget > 0 ? Math.round(cat.total/cat.budget*100) : null
+          const budgetPct = CALC_ENGINE.calcBudgetPct(cat.total, cat.budget) || null // ✅ CALC_ENGINE
           const barColor = budgetPct !== null && budgetPct >= 100 ? '#ef4444' : budgetPct !== null && budgetPct >= 80 ? '#f59e0b' : pieColors[i%pieColors.length]
           return `<div style="margin-bottom:4px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
@@ -2108,7 +2314,7 @@ async function renderDashboard() {
         <div style="font-size:9px;font-weight:700;color:#dc2626;margin-bottom:3px">⚠️ 예산 초과 (${overBudget.length}개)</div>
         ${overBudget.map(v => {
           const over = v.total_used - v.monthly_budget
-          const pct = Math.round(v.total_used/v.monthly_budget*100)
+          const pct = CALC_ENGINE.calcBudgetPct(v.total_used, v.monthly_budget) // ✅ CALC_ENGINE
           return `<div style="display:flex;justify-content:space-between;font-size:9px;color:#374151;padding:1px 0">
             <span style="font-weight:600">${v.name}</span>
             <span style="color:#dc2626;font-weight:700">+${fmtMan(over)} (${pct}%)</span>
@@ -2340,7 +2546,7 @@ async function renderOrders() {
   const curWeekData = weeklyData.find(w => w.isCurWeek)
   const weekBudget = curWeekData ? curWeekData.wBudget : (dailyBudget * 5)
 
-  const monthPct = totalBudget > 0 ? Math.round(monthTotal / totalBudget * 100) : 0
+  const monthPct = CALC_ENGINE.calcBudgetPct(monthTotal, totalBudget) // ✅ CALC_ENGINE
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
   const weekPct = weekBudget > 0 ? Math.round(weekTotal / weekBudget * 100) : 0
 
@@ -2575,8 +2781,8 @@ async function renderOrders() {
         // A안: 실적 비율 (전체 발주 중 이 카테고리 비중) - 2개 이상일 때만
         const aPct = grandAmt > 0 ? Math.round(amt/grandAmt*100) : 0
         // B안: 예산 달성률 (카테고리 목표 대비)
-        const bPct = budget > 0 ? Math.round(amt/budget*100) : null
-        const bColor = bPct===null?'#9ca3af':bPct>=100?'#dc2626':bPct>=80?'#d97706':color
+        const bPct = CALC_ENGINE.calcBudgetPct(amt, budget) || null // ✅ CALC_ENGINE
+        const bColor = bPct===null?'#9ca3af':CALC_ENGINE.getBudgetColor(bPct)||color
         return `<div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">
           <span style="display:inline-block;background:${color};color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:28px;text-align:center;white-space:nowrap">${cat.category_name}</span>
           <div style="flex:1;display:flex;flex-direction:column;gap:2px">
@@ -2745,7 +2951,7 @@ async function renderOrders() {
             const vOrders = (orderList || []).filter(o => o.vendor_id === v.id)
             vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
           }
-          const pctNum = v.monthly_budget > 0 ? Math.round(vTotal / v.monthly_budget * 100) : null
+          const pctNum = CALC_ENGINE.calcBudgetPct(vTotal, v.monthly_budget) || null // ✅ CALC_ENGINE
           const over = pctNum !== null && pctNum >= 100
           const warn = pctNum !== null && pctNum >= 80 && !over
           const remain = v.monthly_budget > 0 ? v.monthly_budget - vTotal : null
@@ -5615,7 +5821,7 @@ function updateBudgetProgressPanel() {
     })
   }
 
-  const monthPct = totalBudget > 0 ? Math.round(monthTotal / totalBudget * 100) : 0
+  const monthPct = CALC_ENGINE.calcBudgetPct(monthTotal, totalBudget) // ✅ CALC_ENGINE
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
   const weekPct  = weekBudget  > 0 ? Math.round(weekTotal  / weekBudget  * 100) : 0
 
@@ -5800,7 +6006,7 @@ function updateBudgetProgressPanel() {
         }
       })
     }
-    const vPct = v.monthly_budget > 0 ? Math.round(vMonthTotal / v.monthly_budget * 100) : null
+    const vPct = CALC_ENGINE.calcBudgetPct(vMonthTotal, v.monthly_budget) || null // ✅ CALC_ENGINE
     const vOver = vPct !== null && vPct >= 100
     const vWarn = vPct !== null && vPct >= 80 && !vOver
     // 상단 요약 카드 업데이트
@@ -6517,7 +6723,7 @@ function updateInsightPanel() {
                 label(ctx2) {
                   const v = sortedVendors[ctx2.dataIndex]
                   const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
-                  const budgetPct = v.monthly_budget > 0 ? Math.round(v.amt/v.monthly_budget*100) : null
+                  const budgetPct = CALC_ENGINE.calcBudgetPct(v.amt, v.monthly_budget) || null // ✅ CALC_ENGINE
                   return [`${v.name}: ${v.amt.toLocaleString()}원 (${pct}%)`, budgetPct !== null ? `목표 대비: ${budgetPct}%` : '목표 미설정']
                 }
               }
@@ -6532,8 +6738,8 @@ function updateInsightPanel() {
       if (legendEl) {
         legendEl.innerHTML = sortedVendors.map((v, rank) => {
           const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
-          const budgetPct = v.monthly_budget > 0 ? Math.round(v.amt/v.monthly_budget*100) : null
-          const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+          const budgetPct = CALC_ENGINE.calcBudgetPct(v.amt, v.monthly_budget) || null // ✅ CALC_ENGINE
+          const budColor = budgetPct === null ? '#9ca3af' : CALC_ENGINE.getBudgetColor(budgetPct)
           const rankBadge = rank < 3 ? `<span style="font-size:8px;font-weight:800;color:white;background:${rank===0?'#f59e0b':rank===1?'#6b7280':'#cd7c30'};padding:0 3px;border-radius:3px;margin-right:2px;flex-shrink:0">${rank+1}</span>` : `<span style="font-size:8px;color:#9ca3af;width:14px;text-align:center;flex-shrink:0">${rank+1}</span>`
           return `<div style="display:flex;align-items:center;gap:3px;margin-bottom:3px;font-size:9px">
             ${rankBadge}
@@ -6560,8 +6766,8 @@ function updateInsightPanel() {
           <tbody>
             ${sortedVendors.map((v, rank) => {
               const pct = grandV > 0 ? Math.round(v.amt/grandV*100) : 0
-              const budgetPct = v.monthly_budget > 0 ? Math.round(v.amt/v.monthly_budget*100) : null
-              const budColor = budgetPct === null ? '#9ca3af' : budgetPct >= 100 ? '#dc2626' : budgetPct >= 80 ? '#f59e0b' : '#10b981'
+              const budgetPct = CALC_ENGINE.calcBudgetPct(v.amt, v.monthly_budget) || null // ✅ CALC_ENGINE
+              const budColor = budgetPct === null ? '#9ca3af' : CALC_ENGINE.getBudgetColor(budgetPct)
               const rankEmoji = rank===0?'🥇':rank===1?'🥈':rank===2?'🥉':`${rank+1}`
               return `<tr style="border-bottom:1px solid #eff6ff">
                 <td style="padding:3px 4px;text-align:center;font-weight:700">${rankEmoji}</td>
@@ -6890,7 +7096,7 @@ function updateDayTotal(date) {
     const summRatioEl = document.getElementById(`dayRatioCell-${date}`)
     if (summRatioEl) {
       const budgetAdj = budget2 && !isCovered2 ? budget2.dailyBudget * multidays2 : 0
-      const grandPct2 = budgetAdj > 0 ? Math.round(grandTotal / budgetAdj * 100) : null
+      const grandPct2 = CALC_ENGINE.calcBudgetPct(grandTotal, budgetAdj) || null // ✅ CALC_ENGINE
       const dOver2 = grandPct2!==null&&grandPct2>=100; const dWarn2 = grandPct2!==null&&grandPct2>=80&&!dOver2
       const dColor2 = dOver2?'#dc2626':dWarn2?'#d97706':(grandTotal>0?'#166534':'#6b7280')
       summRatioEl.innerHTML = `<div style="font-size:9px;color:#9ca3af;margin-bottom:1px">일별 발주</div><div style="font-size:11px;font-weight:700;color:${dColor2}">${grandTotal>0?fmtMan(grandTotal):'<span style="color:#d1d5db">-</span>'}</div>${grandPct2!==null?`<div style="font-size:9px;color:${dColor2};font-weight:600">${grandPct2}%${dOver2?' 🚨':dWarn2?' ⚠️':''}</div>`:(grandTotal>0&&budgetAdj===0?'<div style="font-size:8px;color:#d1d5db">목표 미설정</div>':'')}${budgetAdj>0?`<div style="font-size:8px;color:#9ca3af">/${fmtMan(budgetAdj)}</div>`:''}`
@@ -6900,7 +7106,7 @@ function updateDayTotal(date) {
     const detailRatioEl = document.getElementById(`dayRatioCell-detail-${date}`)
     if (detailRatioEl) {
       const budgetAdj3 = budget2 && !isCovered2 ? budget2.dailyBudget * multidays2 : 0
-      const grandPct3 = budgetAdj3 > 0 ? Math.round(grandTotal / budgetAdj3 * 100) : null
+      const grandPct3 = CALC_ENGINE.calcBudgetPct(grandTotal, budgetAdj3) || null // ✅ CALC_ENGINE
       const dOver3 = grandPct3!==null&&grandPct3>=100; const dWarn3 = grandPct3!==null&&grandPct3>=80&&!dOver3
       const dColor3 = dOver3?'#dc2626':dWarn3?'#d97706':(grandTotal>0?'#166534':'#6b7280')
       detailRatioEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:${dColor3}">${grandTotal>0?fmtMan(grandTotal):'-'}</div>${grandPct3!==null?`<div style="font-size:9px;color:${dColor3};font-weight:600">${grandPct3}%${dOver3?' 🚨':dWarn3?' ⚠️':''}</div>`:''}`
@@ -11506,7 +11712,7 @@ async function renderAdminDashboard() {
             <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-store mr-1 text-red-400"></i>예산 초과 업체</div>
             <div class="flex flex-wrap gap-1.5">
               ${overVendors.map(v => {
-                const pct = Math.round(v.used/v.monthly_budget*100)
+                const pct = CALC_ENGINE.calcBudgetPct(v.used, v.monthly_budget) // ✅ CALC_ENGINE
                 const over = v.used - v.monthly_budget
                 return `<div class="bg-red-50 border border-red-200 rounded-lg px-2 py-1.5 text-xs">
                   <div class="font-semibold text-red-700">${v.name}</div>
@@ -11906,7 +12112,7 @@ window.showCalcDetail = async function(hospitalId, hospitalName) {
             </thead>
             <tbody>
               ${vendors.map((v,i) => {
-                const pct = v.monthly_budget>0 ? Math.round((v.total_used||0)/v.monthly_budget*100) : null
+                const pct = CALC_ENGINE.calcBudgetPct(v.total_used || 0, v.monthly_budget) || null // ✅ CALC_ENGINE
                 const over = pct!==null && pct>=100
                 return `<tr style="border-top:1px solid #f1f5f9;background:${i%2===0?'white':'#fafafa'}">
                   <td style="padding:7px 12px;color:#374151">${v.name}</td>
@@ -11921,7 +12127,7 @@ window.showCalcDetail = async function(hospitalId, hospitalName) {
                 <td style="padding:9px 12px;font-weight:700;color:#1e40af">업체별 합계</td>
                 <td style="padding:9px 12px;text-align:right;font-weight:800;color:#1e40af;font-size:13px">${fmt(vendorTotal)}원</td>
                 <td style="padding:9px 12px;text-align:right;font-weight:700;color:#6b7280">${settings.total_budget>0?fmt(settings.total_budget)+'원':'-'}</td>
-                <td style="padding:9px 12px;text-align:right;font-weight:700;color:${settings.total_budget>0&&vendorTotal>settings.total_budget?'#dc2626':'#16a34a'}">${settings.total_budget>0?Math.round(vendorTotal/settings.total_budget*100)+'%':'-'}</td>
+                <td style="padding:9px 12px;text-align:right;font-weight:700;color:${settings.total_budget>0&&vendorTotal>settings.total_budget?'#dc2626':'#16a34a'}">${settings.total_budget>0?CALC_ENGINE.calcBudgetPct(vendorTotal,settings.total_budget)+'%':'-'}</td>
               </tr>
               <tr style="border-top:2px solid #dbeafe;background:#dbeafe">
                 <td style="padding:9px 12px;font-weight:700;color:#1e3a8a">실제 총 발주 (전체)</td>
@@ -12079,7 +12285,7 @@ function renderAdminCompareChart(hospitals) {
               label: ctx => `${ctx.dataset.label}: ${fmt(ctx.raw)}원`,
               afterLabel: ctx => {
                 if (ctx.datasetIndex === 0 && budget[ctx.dataIndex] > 0) {
-                  const pct = Math.round(used[ctx.dataIndex]/budget[ctx.dataIndex]*100)
+                  const pct = CALC_ENGINE.calcBudgetPct(used[ctx.dataIndex], budget[ctx.dataIndex]) // ✅ CALC_ENGINE
                   return `달성률: ${pct}%`
                 }
                 return ''
@@ -12667,23 +12873,17 @@ function renderEmployeeTab() {
                     const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
                     const mlData = (window._monthlyLeavesData || []).find((m) => m.employee_id === emp.id)
                     const leavesRow = (scheduleLeavesData || []).find((l) => l.employee_id === emp.id)
-                    const annualTotal = leavesRow?.total_days ?? null
-                    const annualUsed  = leavesRow?.used_days  ?? 0
-                    const annualRemain = annualTotal !== null ? annualTotal - annualUsed : null
+                    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함 — 이전 코드는 carried_over 누락 버그)
+                    const { effective: annualTotal, used: annualUsed, remain: annualRemain } =
+                      CALC_ENGINE.calcAnnualRemain(leavesRow)
                     // 1년 미만 여부
-                    const hired = emp.hire_date ? new Date(emp.hire_date) : null
-                    const under1Y = hired ? ((new Date().getTime() - hired.getTime()) < 365.25*24*3600*1000) : false
-                    if (mlEnabled && under1Y) {
-                      // monthly_total이 null이면 auto_calc_days를 표시 (미저장 상태)
-                      const mlTotal  = mlData?.monthly_total ?? mlData?.auto_calc_days ?? 0
-                      const mlUsed   = mlData?.monthly_used  ?? 0
-                      const mlRemain = mlTotal - mlUsed
-                      const isUnsaved = mlData?.monthly_total == null && mlTotal > 0
+                    const ml = CALC_ENGINE.calcMonthlyLeaveRemain(mlData, emp.hire_date)
+                    if (mlEnabled && ml.isUnder1Y) {
                       return `<div class="flex flex-col gap-0.5">
                         <div class="flex items-center gap-1">
                           <span class="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">월차</span>
-                          <span class="text-xs text-gray-700 font-semibold">${mlTotal}일${isUnsaved ? '<span class="text-xs text-orange-400 ml-0.5">*</span>' : ''}</span>
-                          <span class="text-xs text-gray-400">잔${mlRemain}일</span>
+                          <span class="text-xs text-gray-700 font-semibold">${ml.total ?? 0}일${ml.isUnsaved ? '<span class="text-xs text-orange-400 ml-0.5">*</span>' : ''}</span>
+                          <span class="text-xs text-gray-400">잔${ml.remain ?? 0}일</span>
                         </div>
                         ${annualTotal !== null ? `<div class="flex items-center gap-1">
                           <span class="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">연차</span>
@@ -13695,20 +13895,9 @@ function renderAdminSummaryPanel() {
   const ws = scheduleWorkSettings || {}
   const year = App.currentYear, month = App.currentMonth
   const days = new Date(year, month, 0).getDate()
-  const REST_CODES = new Set(['연','휴','경조','병가'])
+  const REST_CODES = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
 
-  function calcShiftHrs(code) {
-    if (!code || code==='-' || REST_CODES.has(code)) return 0
-    const sf = shifts.find(s=>s.shift_code===code)
-    if (sf?.start_time && sf?.end_time) {
-      const [sh,sm2]=sf.start_time.split(':').map(Number)
-      const [eh,em]=sf.end_time.split(':').map(Number)
-      let hrs=(eh*60+em-sh*60-sm2)/60
-      if(hrs<0)hrs+=24
-      return Math.max(0,hrs-1)
-    }
-    return 8
-  }
+  const calcShiftHrs = (code) => CALC_ENGINE.calcShiftHrs(code, shifts) // ✅ CALC_ENGINE
 
   // 직원별 집계
   const empData = emps.map(emp => {
@@ -13831,7 +14020,7 @@ function renderAdminSummaryPanel() {
   const extSchedMap2 = scheduleExtSchedMap || {}
   const requiredCount = parseInt(ws.required_staff_count || '0')
   const requiredCountWeekend = parseInt(ws.required_staff_count_weekend || '0')
-  const REST_CODES2 = new Set(['연','휴','경조','병가'])
+  const REST_CODES2 = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
 
   // 날짜별 정규/파출/알바 카운트
   const dailyCounts = []
@@ -14135,7 +14324,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
     const year  = App.currentYear, month = App.currentMonth
     const ws    = scheduleWorkSettings || {}
     const md    = scheduleMonthData
-    const REST_CODES = new Set(['휴','연','경조','병가'])
+    const REST_CODES = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
     const target = parseInt(ws.daily_required_staff || ws.target_staff || '0') || 0
     const mm = String(month).padStart(2,'0')
 
@@ -14151,10 +14340,12 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
     function getDesignShiftStyle(code) {
       if (_shiftColorCache[code]) return _shiftColorCache[code]
       if (!code || code === '-') return 'background:#f3f4f6;color:#d1d5db'
-      const sf = shifts.find(s => s.shift_code === code)
+      // ✅ CALC_ENGINE.getShiftCore: 핵심 속성 활용
+      const core = CALC_ENGINE.getShiftCore(code, shifts)
       let r
-      if (sf && sf.color) r = 'background:' + sf.color + '22;color:' + sf.color + ';border:1px solid ' + sf.color + '55'
-      else {
+      if (core.shiftData?.color) {
+        r = `background:${core.shiftData.color}22;color:${core.shiftData.color};border:1px solid ${core.shiftData.color}55`
+      } else {
         const map = { '연':'background:#fef3c7;color:#92400e','휴':'background:#fee2e2;color:#b91c1c',
           '경조':'background:#fce7f3;color:#9d174d','병가':'background:#ffe4e6;color:#be123c',
           'OT':'background:#d1fae5;color:#065f46','오전':'background:#ede9fe;color:#5b21b6','오후':'background:#dbeafe;color:#1d4ed8' }
@@ -14278,7 +14469,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
     }
 
     function buildDesignGroupSummary(grp) {
-      const REST = new Set(['휴','연','경조','병가','-'])
+      const REST = new Set([...CALC_ENGINE.REST_CODES_SET, '-']) // ✅ CALC_ENGINE + '-'
       let cells = '', total = 0
       for (let d = 1; d <= days; d++) {
         const ds  = year + '-' + mm + '-' + String(d).padStart(2,'0')
@@ -14569,7 +14760,7 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
   const sm = md?.sched_map || {}
   const holidays = md?.holidays || []
   const holidaySet = new Set(holidays.map(h => h.date || h))
-  const REST_CODES = new Set(['연','휴','경조','병가'])
+  const REST_CODES = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
 
   function getCodeBadge(code, isSun, isSat, isHoliday) {
     if (!code || code === '-') return ''
@@ -14896,7 +15087,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
   const extSchedMap = scheduleExtSchedMap || {}
   const holidays = md?.holidays || []
   const holidaySet = new Set(holidays.map(h => h.date||h))
-  const REST_CODES = new Set(['연','휴','경조','병가'])
+  const REST_CODES = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
   const shiftColorMap = {}
   shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
 
@@ -15338,8 +15529,14 @@ function renderMonthlyScheduleTab() {
 
   function getShiftStyle(code) {
     if (!code || code === '-') return 'background:#f9fafb;color:#9ca3af'
+    // ✅ CALC_ENGINE.getShiftCore: 핥심 속성 활용
     if (shiftColorMap[code]) {
       const hex = shiftColorMap[code]
+      return `background:${hex}22;color:${hex};font-weight:700`
+    }
+    const core = CALC_ENGINE.getShiftCore(code, scheduleShifts || [])
+    if (core.shiftData?.color) {
+      const hex = core.shiftData.color
       return `background:${hex}22;color:${hex};font-weight:700`
     }
     const defMap = {
@@ -15652,7 +15849,7 @@ function renderMonthlyScheduleTab() {
             function renderEmpRowInGroup(emp, empIdx, grp) {
               const rowBg = empIdx % 2 === 0 ? 'white' : grp.headerBg
               let workDayCount = 0, annualUsed = 0, leaveUsed = 0, totalOtHours = 0
-              const REST_CODES2 = new Set(['휴','연','경조','병가'])
+              const REST_CODES2 = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
               const ws2 = scheduleWorkSettings || {}
               const maxConsec2 = parseInt(ws2.consecutive_max_days || '6')
               const weeklyMaxHours2 = parseFloat(ws2.weekly_max_hours || '52')
@@ -15749,32 +15946,25 @@ function renderMonthlyScheduleTab() {
               }).join('')
 
               const empLeave2 = leaveMap[emp.id] || {}
-              const annualTot2 = empLeave2.annual?.total ?? null
-              const annualCarried2 = empLeave2.annual?.allowance_paid ? 0 : (empLeave2.annual?.carried_over_days ?? 0)
-              const annualEffective2 = annualTot2 !== null ? annualTot2 + annualCarried2 : null
-              const annualRemain2 = annualEffective2 !== null ? (annualEffective2 - (empLeave2.annual?.used ?? 0)) : null
+              // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
+              const { effective: annualEffective2, used: _annUsed2, remain: annualRemain2 } =
+                CALC_ENGINE.calcAnnualRemain(empLeave2)
               // 월차 데이터
               const mlEnabled2 = scheduleWorkSettings?.monthly_leave_enabled !== '0'
               const mlData2 = mlEnabled2 ? (window._monthlyLeavesData || []).find((m) => m.employee_id === emp.id) : null
-              const hired2 = emp.hire_date ? new Date(emp.hire_date) : null
-              const under1Y2 = hired2 ? ((new Date().getTime() - hired2.getTime()) < 365.25*24*3600*1000) : false
-              // monthly_total이 null이면 auto_calc_days 사용 (미저장 상태도 표시)
-              const mlTot2 = mlData2?.monthly_total ?? mlData2?.auto_calc_days ?? null
-              const mlUsed2 = mlData2?.monthly_used ?? 0
-              const mlRemain2 = mlTot2 !== null ? mlTot2 - mlUsed2 : null
-              const mlIsUnsaved2 = mlData2 && mlData2.monthly_total == null && mlTot2 !== null
+              // ✅ CALC_ENGINE: calcMonthlyLeaveRemain
+              const ml2 = CALC_ENGINE.calcMonthlyLeaveRemain(mlEnabled2 ? mlData2 : null, emp.hire_date)
               // 연차 셀 (월차 + 연차 통합 표시)
               let annualCell2 = ''
-              if (mlEnabled2 && under1Y2 && mlTot2 !== null) {
-                const unsavedMark = mlIsUnsaved2 ? '<span style="color:#f97316;font-size:8px">*</span>' : ''
-                annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${mlTot2}${unsavedMark}↗${mlRemain2}잔</div>`
-                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - (empLeave2.annual?.used ?? 0)}↑${annualRemain2}잔</div>`
-              } else if (mlEnabled2 && under1Y2) {
-                // 월차 데이터 없음 (입사 초기)
+              if (mlEnabled2 && ml2.isUnder1Y && ml2.total !== null) {
+                const unsavedMark = ml2.isUnsaved ? '<span style="color:#f97316;font-size:8px">*</span>' : ''
+                annualCell2 = `<div style="font-size:9px;font-weight:700;color:#0f766e;background:#ccfbf1;border-radius:3px;padding:1px 3px;margin-bottom:1px">월${ml2.total}${unsavedMark}↗${ml2.remain}잔</div>`
+                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - _annUsed2}↑${annualRemain2}잔</div>`
+              } else if (mlEnabled2 && ml2.isUnder1Y) {
                 annualCell2 = `<div style="font-size:9px;color:#0f766e;opacity:.6">월차-</div>`
-                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - (empLeave2.annual?.used ?? 0)}↑${annualRemain2}잔</div>`
+                if (annualEffective2 !== null) annualCell2 += `<div style="font-size:9px;color:#92400e">연${annualEffective2 - _annUsed2}↑${annualRemain2}잔</div>`
               } else if (annualEffective2 !== null) {
-                annualCell2 = `<div style="font-size:11px;font-weight:700;color:#92400e">${empLeave2.annual?.used ?? 0}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
+                annualCell2 = `<div style="font-size:11px;font-weight:700;color:#92400e">${_annUsed2}일</div><div style="font-size:9px;color:#b45309;opacity:.8">잔${annualRemain2}일</div>`
               } else {
                 annualCell2 = `<div style="font-size:10px;color:#d1d5db">-</div>`
               }
@@ -15866,7 +16056,7 @@ function renderMonthlyScheduleTab() {
               })
               // 그룹 일별 요약 행 (직무별 날짜당 근무 인원)
               if (grp.members.length > 0) {
-                const REST_CODES_GRP = new Set(['휴','연','경조','병가','-'])
+                const REST_CODES_GRP = new Set([...CALC_ENGINE.REST_CODES_SET, '-']) // ✅ CALC_ENGINE + '-'
                 const sm_grp = scheduleMonthData?.sched_map || {}
                 let summaryCells = ''
                 let totalWorkDaysGrp = 0
@@ -17330,7 +17520,7 @@ function renderAnalysisTabSimple(ad, year, month) {
 
   // ── 직원별 이달 근무 요약 (sched_map 기반) ───────────────────
   const sm   = scheduleMonthData?.sched_map || {}
-  const REST_CODES_S = new Set(['휴','연','경조','병가','반차','대체','오전','오후'])
+  const REST_CODES_S = new Set([...CALC_ENGINE.REST_CODES_SET, '반차','대체','오전','오후']) // ✅ CALC_ENGINE + 확장
   const ANNUAL_CODES = new Set(['연'])
   const empsForSummary = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
 
@@ -17834,7 +18024,7 @@ window.exportScheduleExcel = async () => {
 
   // 팀별 직원 행
   const allEmps = [...emps.filter(e=>e.team==='cook'||!e.team), ...emps.filter(e=>e.team==='nutrition')]
-  const REST_CODES = new Set(['휴','연','경조','병가','오전','오후'])
+  const REST_CODES = new Set([...CALC_ENGINE.REST_CODES_SET, '오전','오후']) // ✅ CALC_ENGINE + 확장
 
   for (const emp of allEmps) {
     let workCount = 0, annualCount = 0
@@ -17850,11 +18040,10 @@ window.exportScheduleExcel = async () => {
       }
     }
     const lv = leaveMap[emp.id]
-    const annualTot  = lv?.annual?.total ?? null
-    const annualUsed = lv?.annual?.used  ?? 0
-    const annualCarried = lv?.annual?.allowance_paid ? 0 : (lv?.annual?.carried_over_days ?? 0)
-    const annualEffective = annualTot !== null ? annualTot + annualCarried : null
-    const annualRemain = annualEffective !== null ? annualEffective - annualUsed : '-'
+    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
+    const { effective: annualEffective, used: annualUsed, remain: _annRemainRaw } =
+      CALC_ENGINE.calcAnnualRemain(lv)
+    const annualRemain = _annRemainRaw !== null ? _annRemainRaw : '-'
     row.push(workCount, annualCount, annualRemain)
     schedData.push(row)
   }
@@ -20026,9 +20215,9 @@ window.openEmpStatsModal = async (empId, empName) => {
 
   const { monthly, weekly, daily, leaveInfo } = stats
   const lv = leaveInfo
-  const annualTotal  = lv?.total_days ?? null
-  const annualUsed   = lv?.used_days  ?? 0
-  const annualRemain = annualTotal !== null ? annualTotal - annualUsed : null
+  // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함 — 이전: total_days만 사용해 carried_over 누락)
+  const { effective: annualTotal, used: annualUsed, remain: annualRemain } =
+    CALC_ENGINE.calcAnnualRemain(lv)
   const fmt = n => n?.toLocaleString() || '0'
 
   content.innerHTML = `
@@ -21799,7 +21988,7 @@ window.printMonthlyAnalysisReport = function() {
   const days       = new Date(year, month, 0).getDate()
   const requiredR  = parseInt(ws_r.required_staff_count || '0')
   const hospitalName = md?.hospital_name || ''
-  const REST_CODES_R = new Set(['연','휴','경조','병가'])
+  const REST_CODES_R = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
   const DOW_LABELS = ['일','월','화','수','목','금','토']
 
   // ── 일별 인원 집계 ──────────────────────────────────────────
@@ -23788,7 +23977,7 @@ window.schedCycleShift = (empId, date, cell, codesJson) => {
 // 해당 직원 행의 근무일수·연차 집계 재계산
 function schedRecalcRow(empId) {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
-  const REST_CODES = new Set(['휴','연','경조','병가'])
+  const REST_CODES = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
   const sm  = scheduleMonthData?.sched_map || {}
   const lm  = scheduleMonthData?.leave_map || {}
   const og  = scheduleOffGrants
@@ -23798,20 +23987,8 @@ function schedRecalcRow(empId) {
   let maxConsecFound = 0, curConsec = 0
   let weeklyHoursMap = {}, maxWeeklyHours = 0
 
-  // 근무조 시간 계산 헬퍼
-  function calcShiftHrs(code) {
-    if (!code || code === '-') return 0
-    if (REST_CODES.has(code)) return 0
-    const sf = (scheduleShifts||[]).find(s => s.shift_code === code)
-    if (sf?.start_time && sf?.end_time) {
-      const [sh, sm2] = sf.start_time.split(':').map(Number)
-      const [eh, em]  = sf.end_time.split(':').map(Number)
-      let hrs = (eh * 60 + em - sh * 60 - sm2) / 60
-      if (hrs < 0) hrs += 24
-      return Math.max(0, hrs - 1)
-    }
-    return 8
-  }
+  // 근무조 시간 계산 헬퍼 — ✅ CALC_ENGINE 위임
+  const calcShiftHrs = (code) => CALC_ENGINE.calcShiftHrs(code, scheduleShifts || [])
 
   for (let d = 1; d <= days; d++) {
     const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
@@ -23847,11 +24024,10 @@ function schedRecalcRow(empId) {
   // ── 우측 연차 셀 업데이트 ─────────────────────────────
   const anEl = document.getElementById(`annual-${empId}`)
   if (anEl) {
-    const empLeave     = lm[empId] || {}
-    const annualTot    = empLeave.annual?.total ?? null
-    const annualCarried = empLeave.annual?.allowance_paid ? 0 : (empLeave.annual?.carried_over_days ?? 0)
-    const annualEffective = annualTot !== null ? annualTot + annualCarried : null
-    const annualRemain = annualEffective !== null ? (annualEffective - (empLeave.annual?.used ?? 0)) : null
+    const empLeave = lm[empId] || {}
+    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
+    const { effective: annualEffective, used: annualUsed, remain: annualRemain, carried: annualCarried } =
+      CALC_ENGINE.calcAnnualRemain(empLeave)
     if (annualEffective !== null) {
       anEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일${annualCarried > 0 ? `<span style="color:#d97706;font-size:7px">(+${annualCarried})</span>` : ''}</div>`
     } else {
@@ -23905,7 +24081,7 @@ function updateSchedStickyBar() {
   const ws = scheduleWorkSettings || {}
   const year = App.currentYear, month = App.currentMonth
   const days = new Date(year, month, 0).getDate()
-  const REST_CODES = new Set(['휴','연','경조','병가','-'])
+  const REST_CODES = new Set([...CALC_ENGINE.REST_CODES_SET, '-']) // ✅ CALC_ENGINE + '-'
   const target = parseInt(ws.daily_required_staff || ws.target_staff || '0') || 0
 
   const today = new Date()
@@ -23979,7 +24155,7 @@ function _updateGroupSummaryRows() {
   const sm = scheduleMonthData?.sched_map || {}
   const year = App.currentYear, month = App.currentMonth
   const days = new Date(year, month, 0).getDate()
-  const REST_CODES = new Set(['휴','연','경조','병가','-'])
+  const REST_CODES = new Set([...CALC_ENGINE.REST_CODES_SET, '-']) // ✅ CALC_ENGINE + '-'
 
   document.querySelectorAll('[data-grpday]').forEach(cell => {
     const parts = cell.dataset.grpday.split('_')
@@ -24017,7 +24193,8 @@ function updateSchedRightPanel() {
   const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
   const year = App.currentYear, month = App.currentMonth
   const days = new Date(year, month, 0).getDate()
-  const REST_CODES = new Set(['휴','연','경조','병가'])
+  // ✅ CALC_ENGINE: REST_CODES_SET 전역 상수 사용
+  const REST_CODES = CALC_ENGINE.REST_CODES_SET
   const today = new Date()
   const todayStr = `${year}-${String(month).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
   const isCurrentMonth = (today.getFullYear() === year && today.getMonth() + 1 === month)
@@ -24049,10 +24226,8 @@ function updateSchedRightPanel() {
     if (otHours > 0) totalOtCnt++
 
     const empLeave = lm[emp.id] || {}
-    const annualTot = empLeave.annual?.total ?? null
-    const annualCarried = empLeave.annual?.allowance_paid ? 0 : (empLeave.annual?.carried_over_days ?? 0)
-    const annualEffective = annualTot !== null ? annualTot + annualCarried : null
-    const annualRemain = annualEffective !== null ? annualEffective - (empLeave.annual?.used ?? 0) : null
+    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
+    const { remain: annualRemain } = CALC_ENGINE.calcAnnualRemain(empLeave)
 
     return { emp, workDays, offDays, leaveDays, otHours, todayStatus, annualRemain, todayCode }
   })
