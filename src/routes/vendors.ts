@@ -2,10 +2,19 @@ import { Hono } from 'hono'
 
 const vendors = new Hono<{ Bindings: { DB: D1Database } }>()
 
+// admin은 query hospitalId, 일반 사용자는 user.hospitalId
+function getHospId(user: any, c: any): number {
+  if (user.role === 'admin' || user.role === 'hq') {
+    const qId = c.req.query('hospitalId')
+    return qId ? Number(qId) : Number(user.hospitalId)
+  }
+  return Number(user.hospitalId)
+}
+
 // 병원 업체 목록
 vendors.get('/', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   const data = await c.env.DB.prepare(
     `SELECT * FROM vendors WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order`
   ).bind(hospitalId).all<any>()

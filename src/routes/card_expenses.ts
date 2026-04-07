@@ -2,10 +2,19 @@ import { Hono } from 'hono'
 
 const cardExpenses = new Hono<{ Bindings: { DB: D1Database } }>()
 
+// admin은 query hospitalId, 일반 사용자는 user.hospitalId
+function getHospId(user: any, c: any): number {
+  if (user.role === 'admin' || user.role === 'hq') {
+    const qId = c.req.query('hospitalId')
+    return qId ? Number(qId) : Number(user.hospitalId)
+  }
+  return Number(user.hospitalId)
+}
+
 // ── 월별 법인카드 지출내역 조회 ──────────────────────────────────
 cardExpenses.get('/monthly/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   const { year, month } = c.req.param()
   const mm = month.padStart(2, '0')
   const prefix = `${year}-${mm}`

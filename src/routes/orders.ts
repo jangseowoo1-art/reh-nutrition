@@ -2,6 +2,15 @@ import { Hono } from 'hono'
 
 const orders = new Hono<{ Bindings: { DB: D1Database } }>()
 
+// ── admin은 query/body의 hospitalId 사용, 일반 사용자는 user.hospitalId 사용
+function getHospId(user: any, c: any): number {
+  if (user.role === 'admin' || user.role === 'hq') {
+    const qId = c.req.query('hospitalId')
+    return qId ? Number(qId) : Number(user.hospitalId)
+  }
+  return Number(user.hospitalId)
+}
+
 // ── 고정 경로 라우트를 동적 경로(/:year/:month)보다 먼저 등록해야 충돌을 방지할 수 있습니다 ──
 // Hono는 등록 순서대로 매칭하므로 /patient-categories, /category-monthly/:y/:m 등은
 // /:year/:month 보다 반드시 먼저 등록되어야 합니다.
@@ -320,7 +329,7 @@ orders.delete('/:id', async (c) => {
 // ── 환자군 카테고리 목록 조회 (영양사용) ────────────────────
 orders.get('/patient-categories', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   if (!hospitalId) return c.json([])
 
   const cats = await c.env.DB.prepare(`
@@ -335,7 +344,7 @@ orders.get('/patient-categories', async (c) => {
 orders.get('/category-monthly/:year/:month', async (c) => {
   try {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   if (!hospitalId) return c.json({ categories: [], monthly: [], settings: [] })
 
   const { year, month } = c.req.param()
@@ -496,7 +505,7 @@ orders.get('/category-monthly/:year/:month', async (c) => {
 // ── 카테고리별 일별 발주 조회 ────────────────────────────────
 orders.get('/category-daily/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   if (!hospitalId) return c.json([])
 
   const { year, month } = c.req.param()
@@ -575,7 +584,7 @@ orders.post('/save-category', async (c) => {
 // ── 카테고리별 연간 발주 현황 (영양사용) ────────────────────
 orders.get('/category-annual/:year', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   if (!hospitalId) return c.json({ categories: [], annualByCategory: [], annualSettings: [] })
 
   const { year } = c.req.param()
@@ -722,7 +731,7 @@ orders.get('/category-annual/:year', async (c) => {
 // 반드시 파일의 마지막 GET 라우트여야 합니다.
 orders.get('/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   const { year, month } = c.req.param()
 
   // BETWEEN을 사용해 인덱스 활용 (strftime보다 빠름)
@@ -789,7 +798,7 @@ orders.post('/multiday-setting', async (c) => {
 // 미검수 발주 목록 조회
 orders.get('/inspection/pending/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   const { year, month } = c.req.param()
 
   const data = await c.env.DB.prepare(

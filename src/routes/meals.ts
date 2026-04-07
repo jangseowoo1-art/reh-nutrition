@@ -77,10 +77,19 @@ meals.put('/custom-fields/:id', async (c) => {
   return c.json({ success: true })
 })
 
+// ─── 공통 헬퍼: admin은 query param hospitalId, 일반 사용자는 user.hospitalId
+function getHospId(user: any, c: any): number {
+  if (user.role === 'admin' || user.role === 'hq') {
+    const qId = c.req.query('hospitalId')
+    return qId ? Number(qId) : Number(user.hospitalId)
+  }
+  return Number(user.hospitalId)
+}
+
 // ─── 월별 식수 조회 (환자군 자동 반영 포함) ───────────────────────
 meals.get('/:year/:month', async (c) => {
   const user = c.get('user')
-  const hospitalId = Number(user.hospitalId)
+  const hospitalId = getHospId(user, c)
   const { year, month } = c.req.param()
 
   // 환자군 목록 조회
