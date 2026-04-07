@@ -16010,7 +16010,7 @@ function renderMonthlyScheduleTab() {
                   <div style="font-size:12px;font-weight:700;color:#166534">${workDayCount}</div>
                   <div style="font-size:8px;color:#4ade80;opacity:.8">근무</div>
                 </td>
-                <td style="padding:3px 2px;text-align:center;background:#fff1f2;border-left:1px solid #fecaca;min-width:28px">
+                <td id="restdays-${emp.id}" style="padding:3px 2px;text-align:center;background:#fff1f2;border-left:1px solid #fecaca;min-width:28px">
                   <div style="font-size:12px;font-weight:700;color:#b91c1c">${leaveUsed||0}</div>
                   <div style="font-size:8px;color:#ef4444;opacity:.8">휴무</div>
                 </td>
@@ -16018,13 +16018,13 @@ function renderMonthlyScheduleTab() {
                   <div style="font-size:12px;font-weight:700;color:#92400e">${annualUsed||0}</div>
                   <div style="font-size:8px;color:#b45309;opacity:.8">연차</div>
                 </td>
-                <td style="padding:3px 2px;text-align:center;background:#fef3c7;border-left:1px solid #fde68a;min-width:32px">
+                <td id="annual-remain-${emp.id}" style="padding:3px 2px;text-align:center;background:#fef3c7;border-left:1px solid #fde68a;min-width:32px">
                   ${annualRemain2 !== null
                     ? `<div style="font-size:12px;font-weight:700;color:#92400e">${annualRemain2}</div><div style="font-size:8px;color:#b45309;opacity:.8">잔여</div>`
                     : `<div style="font-size:10px;color:#d1d5db">-</div>`
                   }
                 </td>
-                <td style="padding:3px 2px;text-align:center;background:#faf5ff;border-left:1px solid #e9d5ff;min-width:28px">
+                <td id="ot-hours-${emp.id}" style="padding:3px 2px;text-align:center;background:#faf5ff;border-left:1px solid #e9d5ff;min-width:28px">
                   ${totalOtHours > 0
                     ? `<div style="font-size:11px;font-weight:700;color:#7c3aed">${totalOtHours}h</div><div style="font-size:8px;color:#7c3aed;opacity:.7">OT</div>`
                     : `<div style="font-size:10px;color:#d1d5db">-</div>`
@@ -18233,11 +18233,25 @@ window.saveLeaveEdit = async () => {
       return
     }
 
-    // 스케줄 관리 탭에서 열었을 경우 → 스케줄 탭 리로드
+    // 스케줄 관리 탭에서 열었을 경우 → 최소 리로드 (연차 데이터만 갱신 후 해당 행만 재계산)
     scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
-    scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
-    const content = document.getElementById('pageContent')
-    renderScheduleTab(content)
+    // leave_map도 갱신 (scheduleMonthData 내 캐시 교체)
+    if (scheduleMonthData) {
+      const freshLeave = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}/leave-map`).catch(() => null)
+      if (freshLeave?.leave_map) {
+        scheduleMonthData.leave_map = freshLeave.leave_map
+      } else {
+        // leave_map 전용 API 없을 경우 월간 데이터 전체 갱신 후 해당 행만 재계산
+        scheduleMonthData = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+      }
+    }
+    // ✅ 성능 최적화: 전체 탭 재렌더 대신 해당 직원 행만 재계산
+    schedRecalcRow(parseInt(empId))
+    // 연차 탭이 열려 있으면 해당 탭도 갱신
+    if (document.getElementById('tab-leaves')?.classList.contains('active')) {
+      const content = document.getElementById('pageContent')
+      renderScheduleTab(content)
+    }
   } else {
     showToast(res?.error || '저장 실패', 'error')
   }
@@ -18409,8 +18423,8 @@ window.saveMonthlyLeaveEdit = async () => {
     showToast(`월차 설정 완료 — 발생 ${totalDays}일 / 사용 ${usedDays}일 / 잔여 ${totalDays - usedDays}일`, 'success')
     document.getElementById('monthlyLeaveEditModal').classList.add('hidden')
     await loadMonthlyLeaveData()
-    const content = document.getElementById('pageContent')
-    renderScheduleTab(content)
+    // ✅ 성능 최적화: 전체 탭 재렌더 대신 해당 직원 행만 재계산
+    schedRecalcRow(empId)
   } else {
     showToast('저장 실패', 'error')
   }
@@ -24003,18 +24017,41 @@ function schedRecalcRow(empId) {
   const wdDesignEl = document.getElementById(`design-workdays-${empId}`)
   if (wdDesignEl) wdDesignEl.textContent = workDayCount
 
-  // ── 우측 연차 셀 업데이트 ─────────────────────────────
+  // ── 휴무일 셀 업데이트 (restdays) ─────────────────────
+  const rdEl = document.getElementById(`restdays-${empId}`)
+  if (rdEl) {
+    const restCount = summary.leaveDays
+    rdEl.innerHTML = `<div style="font-size:12px;font-weight:700;color:#b91c1c">${restCount}</div><div style="font-size:8px;color:#ef4444;opacity:.8">휴무</div>`
+  }
+
+  // ── 연차 사용/잔여 셀 업데이트 ─────────────────────────
+  const empLeave = lm[empId] || {}
+  // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
+  const { effective: annualEffective, used: annualUsedCalc, remain: annualRemain, carried: annualCarried } =
+    CALC_ENGINE.calcAnnualRemain(empLeave)
+
   const anEl = document.getElementById(`annual-${empId}`)
   if (anEl) {
-    const empLeave = lm[empId] || {}
-    // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함)
-    const { effective: annualEffective, used: annualUsed, remain: annualRemain, carried: annualCarried } =
-      CALC_ENGINE.calcAnnualRemain(empLeave)
+    const dispUsed = annualUsed  // calcWorkSummary 기준 실사용
+    anEl.innerHTML = `<div style="font-size:12px;font-weight:700;color:#92400e">${dispUsed}</div><div style="font-size:8px;color:#b45309;opacity:.8">연차</div>`
+  }
+
+  const anRemEl = document.getElementById(`annual-remain-${empId}`)
+  if (anRemEl) {
     if (annualEffective !== null) {
-      anEl.innerHTML = `<div style="font-size:11px;font-weight:700;color:#92400e">${annualUsed}일</div><div style="font-size:9px;color:#b45309;opacity:0.8">잔${annualRemain}일${annualCarried > 0 ? `<span style="color:#d97706;font-size:7px">(+${annualCarried})</span>` : ''}</div>`
+      anRemEl.innerHTML = `<div style="font-size:12px;font-weight:700;color:#92400e">${annualRemain}</div><div style="font-size:8px;color:#b45309;opacity:.8">잔여</div>`
     } else {
-      anEl.innerHTML = `<div style="font-size:10px;color:#d1d5db">-</div>`
+      anRemEl.innerHTML = `<div style="font-size:10px;color:#d1d5db">-</div>`
     }
+  }
+
+  // ── OT 셀 업데이트 ──────────────────────────────────
+  const otEl = document.getElementById(`ot-hours-${empId}`)
+  if (otEl) {
+    const otH = summary.otHours || 0
+    otEl.innerHTML = otH > 0
+      ? `<div style="font-size:11px;font-weight:700;color:#7c3aed">${otH}h</div><div style="font-size:8px;color:#7c3aed;opacity:.7">OT</div>`
+      : `<div style="font-size:10px;color:#d1d5db">-</div>`
   }
 
   // ── 좌측 이름 셀 경고 배지 실시간 업데이트 ─────────────
