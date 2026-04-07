@@ -1790,11 +1790,37 @@ schedule.get('/:year/:month', async (c) => {
   for (const l of (leaveRows.results || [])) {
     if (!leaveMap[l.employee_id]) leaveMap[l.employee_id] = {}
     leaveMap[l.employee_id][l.leave_type] = {
-      total: l.total_days,
+      total: l.total_days > 0 ? l.total_days : null,  // 0 = 미부여 → null 처리
       used: l.used_days,
       carried_over_days: l.carried_over_days ?? 0,
       allowance_paid: l.allowance_paid ?? 0,
       allowance_paid_at: l.allowance_paid_at ?? null
+    }
+  }
+
+  // ── 스케줄 기반 연차 사용일 보정 ──────────────────────────────
+  // employee_leaves에 행이 없거나 used_days가 실제와 다를 경우
+  // schedMap에서 직접 '연' 코드를 카운트하여 leaveMap에 주입
+  const annualUsedFromSched: Record<number, number> = {}
+  for (const key of Object.keys(schedMap)) {
+    const s = schedMap[key]
+    if (s.shift_code === '연') {
+      const empId = s.employee_id
+      annualUsedFromSched[empId] = (annualUsedFromSched[empId] || 0) + 1
+    }
+  }
+  for (const [empIdStr, schedUsed] of Object.entries(annualUsedFromSched)) {
+    const empId = Number(empIdStr)
+    if (!leaveMap[empId]) {
+      // employee_leaves 행 자체가 없는 직원 → 사용일만 주입
+      leaveMap[empId] = { annual: { total: null, used: schedUsed, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null } }
+    } else if (!leaveMap[empId].annual) {
+      leaveMap[empId].annual = { total: null, used: schedUsed, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null }
+    } else {
+      // DB의 used_days와 스케줄 카운트가 다를 경우 스케줄 기준으로 보정
+      if (leaveMap[empId].annual.used !== schedUsed) {
+        leaveMap[empId].annual.used = schedUsed
+      }
     }
   }
 
@@ -1902,11 +1928,13 @@ async function upsertScheduleWithCalc(
   ).bind(hospitalId, employeeId, `${workYear}-%`).first<any>()
   const usedAnnual = annualCount?.cnt ?? 0
 
-  // employee_leaves에 annual 행이 있으면 used_days 업데이트, 없으면 무시
+  // employee_leaves에 annual 행이 있으면 used_days 업데이트, 없으면 자동 생성 (UPSERT)
   await db.prepare(
-    `UPDATE employee_leaves SET used_days=?, updated_at=CURRENT_TIMESTAMP
-     WHERE hospital_id=? AND employee_id=? AND year=? AND leave_type='annual'`
-  ).bind(usedAnnual, hospitalId, employeeId, parseInt(workYear)).run()
+    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+     VALUES (?, ?, ?, 'annual', 0, ?, '')
+     ON CONFLICT (hospital_id, employee_id, year, leave_type)
+     DO UPDATE SET used_days=excluded.used_days, updated_at=CURRENT_TIMESTAMP`
+  ).bind(hospitalId, employeeId, parseInt(workYear), usedAnnual).run()
 }
 
 // 스케줄 저장 (upsert)

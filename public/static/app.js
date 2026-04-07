@@ -49,13 +49,14 @@ const CALC_ENGINE = (() => {
     const hasNested = empLeave.annual !== undefined
     const src = hasNested ? empLeave.annual : empLeave
 
-    const total    = src?.total ?? src?.total_days ?? null
+    const _rawTotal = src?.total ?? src?.total_days ?? null
+    const total    = (_rawTotal !== null && _rawTotal > 0) ? _rawTotal : null  // 0 = 미부여 → null 처리
     const used     = src?.used  ?? src?.used_days  ?? 0
     const carried  = (src?.allowance_paid) ? 0 : (src?.carried_over_days ?? 0)
     const effective = total !== null ? total + carried : null
     const remain    = effective !== null ? effective - used : null
 
-    return { effective, used, remain, carried }
+    return { total, effective, used, remain, carried }
   }
 
   // ─────────────────────────────────────────────
@@ -16471,18 +16472,48 @@ function renderEmployeeModal() {
           <!-- 근무 파트 -->
           <div class="col-span-2 mt-1">
             <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3 border-b pb-1">근무 가능 파트 (복수 선택)</h4>
-            <div class="flex gap-4 flex-wrap">
-              ${['cooking','serving','washing','nutrition','breakfast','lunch','dinner'].map(p => {
-                const pLabel = {cooking:'조리',serving:'배식',washing:'세척',nutrition:'영양',breakfast:'조식',lunch:'중식',dinner:'석식'}[p]
-                let workParts = []
-                try { workParts = isEdit ? (JSON.parse(emp?.work_parts||'[]') || []) : [] } catch(e) { workParts = [] }
-                return `<label class="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" id="ei_wp_${p}" class="w-4 h-4 text-blue-600"
-                    ${workParts.includes(p)?'checked':''}>
-                  <span class="text-sm text-gray-700">${pLabel}</span>
-                </label>`
-              }).join('')}
-            </div>
+            ${(()=>{
+              let workParts = []
+              try { workParts = isEdit ? (JSON.parse(emp?.work_parts||'[]') || []) : [] } catch(e) { workParts = [] }
+              const PART_GROUPS = [
+                {
+                  groupLabel: '기본 파트',
+                  parts: [
+                    {key:'cooking',   label:'조리'},
+                    {key:'serving',   label:'배식'},
+                    {key:'washing',   label:'세척'},
+                    {key:'nutrition', label:'영양'},
+                    {key:'breakfast', label:'조식'},
+                    {key:'lunch',     label:'중식'},
+                    {key:'dinner',    label:'석식'},
+                  ]
+                },
+                {
+                  groupLabel: '전처리',
+                  groupKey: 'preprocess',
+                  parts: [
+                    {key:'preprocess_cooking',   label:'전처리-조리'},
+                    {key:'preprocess_serving',   label:'전처리-배식'},
+                    {key:'preprocess_washing',   label:'전처리-세척'},
+                    {key:'preprocess_nutrition', label:'전처리-영양'},
+                    {key:'preprocess_breakfast', label:'전처리-조식'},
+                    {key:'preprocess_lunch',     label:'전처리-중식'},
+                    {key:'preprocess_dinner',    label:'전처리-석식'},
+                  ]
+                }
+              ]
+              return PART_GROUPS.map(grp => `
+                <div class="mb-3">
+                  <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">${grp.groupLabel}</div>
+                  <div class="flex gap-4 flex-wrap pl-2">
+                    ${grp.parts.map(p => `<label class="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" id="ei_wp_${p.key}" class="w-4 h-4 text-blue-600"
+                        ${workParts.includes(p.key)?'checked':''}>
+                      <span class="text-sm text-gray-700">${p.label}</span>
+                    </label>`).join('')}
+                  </div>
+                </div>`).join('')
+            })()}
           </div>
 
           <!-- 급여/수당 설정 -->
@@ -22732,9 +22763,11 @@ window.saveEmployeeCard = async (empId) => {
   const name = document.getElementById('ei_name')?.value?.trim()
   if (!name) { showToast('이름은 필수입니다', 'error'); return }
 
-  const workParts = ['cooking','serving','washing','nutrition','breakfast','lunch','dinner'].filter(p =>
-    document.getElementById(`ei_wp_${p}`)?.checked
-  )
+  const workParts = [
+    'cooking','serving','washing','nutrition','breakfast','lunch','dinner',
+    'preprocess_cooking','preprocess_serving','preprocess_washing',
+    'preprocess_nutrition','preprocess_breakfast','preprocess_lunch','preprocess_dinner'
+  ].filter(p => document.getElementById(`ei_wp_${p}`)?.checked)
 
   const body = {
     name,
