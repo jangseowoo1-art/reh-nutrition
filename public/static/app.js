@@ -3640,8 +3640,13 @@ async function renderOrders() {
             }).join('')}
           </div>` : ''
 
-          // 업체별 행 (월목표·누적·잔여·진행률·오늘입력)
-          const vendorRows = vendors.map((v, vi) => {
+          // 업체를 식재료 업체와 소모품 업체로 분리
+          // 소모품(supply) 업체는 카테고리 식단가·진행률 계산에서 제외하고 별도 섹션으로 표시
+          const foodVendors = vendors.filter(v => v.category !== 'supply')
+          const supplyVendors = vendors.filter(v => v.category === 'supply')
+
+          // 식재료 업체별 행 (월목표·누적·잔여·진행률·오늘입력)
+          const vendorRows = foodVendors.map((v, vi) => {
             const catRow = (catDailyMap[dateStr]?.[v.id]?.[cat.id]) || {}
             const taxable = catRow.taxable || 0
             const exempt = catRow.exempt || 0
@@ -3654,6 +3659,13 @@ async function renderOrders() {
               // 법인카드형 업체: _cardDailyMap 에서 dateStr 이하 날짜 합계
               const vendorCardMap = window._cardDailyMap?.[v.id] || {}
               Object.entries(vendorCardMap).forEach(([dk, amt]) => { if (dk <= dateStr) vCatMonthAccum += amt || 0 })
+            } else if (v.category === 'supply' || v.category === 'card') {
+              // 소모품/카드 업체: 카테고리 구분 없이 해당 업체 전체 합산 (카테고리 귀속 무관)
+              Object.keys(catDailyMap).forEach(dk => {
+                if (dk > dateStr) return
+                const vMap = catDailyMap[dk]?.[v.id] || {}
+                Object.values(vMap).forEach(r2 => { vCatMonthAccum += r2.total || 0 })
+              })
             } else {
               Object.keys(catDailyMap).forEach(dk => {
                 if (dk > dateStr) return
@@ -3661,7 +3673,8 @@ async function renderOrders() {
                 vCatMonthAccum += r2.total || 0
               })
             }
-            const vRemain = catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) - vCatMonthAccum : null
+            // 잔여 예산: 카테고리 예산을 식재료 업체 수로만 나눔 (소모품 제외)
+            const vRemain = catMonthBudget > 0 ? Math.round(catMonthBudget / Math.max(foodVendors.length, 1)) - vCatMonthAccum : null
             const taxLabel = v.is_card_type ? '법인카드' : (v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세')
             const taxBg = v.is_card_type ? '#f3e8ff' : (v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':v.tax_type==='mixed_total'?'#f3e8ff':'#fef9c3')
             const taxColor = v.is_card_type ? '#7c3aed' : (v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':v.tax_type==='mixed_total'?'#7c3aed':'#92400e')
@@ -3717,8 +3730,8 @@ async function renderOrders() {
             }
 
             // 업체 일 목표: v.monthly_budget ÷ 전체 working_days (설정 기준)
-            // v.monthly_budget 우선, 없으면 카테고리 예산 균등 배분 → 일별 목표로 변환
-            const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / vendors.length) : 0)
+            // v.monthly_budget 우선, 없으면 카테고리 예산을 식재료 업체 수로만 균등 배분 (소모품 제외)
+            const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / Math.max(foodVendors.length, 1)) : 0)
             const vDailyBudget = _globalWorkingDays > 0 ? Math.round(vRawMonthBudget / _globalWorkingDays) : 0
             // 오늘 적용 목표 = 일 목표 × 발주일수(multiDayCount)
             const vTodayTarget = vDailyBudget * multiDayCount
@@ -3779,7 +3792,87 @@ async function renderOrders() {
             </div>`
           }).join('')
 
-          // 카테고리 전체 소계 + 닫기 버튼 (첫번째 탭만 닫기 버튼 표시하면 헷갈리니 각 탭에 표시)
+          // ── 소모품 업체 별도 섹션 (카테고리 식단가·진행률과 분리) ──
+          const supplyVendorRows = supplyVendors.length > 0 ? `
+            <div style="margin-top:8px;padding-top:6px;border-top:2px dashed #f59e0b40">
+              <div style="font-size:9px;font-weight:700;color:#92400e;margin-bottom:5px;display:flex;align-items:center;gap:4px">
+                <i class="fas fa-box" style="color:#f59e0b;font-size:8px"></i>소모품
+                <span style="font-size:8px;font-weight:400;color:#9ca3af">(식단가 계산 제외)</span>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+              ${supplyVendors.map(v => {
+                // 소모품 업체: catDailyMap에서 해당 업체의 모든 카테고리 당일 합산
+                const vMapToday = catDailyMap[dateStr]?.[v.id] || {}
+                const supplyTodayTotal = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
+                // 월 누적: dateStr 이하 전체 합산
+                let supplyMonthAccum = 0
+                Object.keys(catDailyMap).forEach(dk => {
+                  if (dk > dateStr) return
+                  const sm = catDailyMap[dk]?.[v.id] || {}
+                  Object.values(sm).forEach(r => { supplyMonthAccum += r.total || 0 })
+                })
+                // 소모품 업체 자체 monthly_budget 기준 진행률
+                const vMonthBudgetS = v.monthly_budget || 0
+                const vMonthPctS = vMonthBudgetS > 0 ? Math.round(supplyMonthAccum / vMonthBudgetS * 100) : null
+                const vMonthOverS = vMonthPctS!==null&&vMonthPctS>=100
+                const vMonthWarnS = vMonthPctS!==null&&vMonthPctS>=80&&!vMonthOverS
+                const vMonthColorS = vMonthOverS?'#dc2626':vMonthWarnS?'#d97706':'#f59e0b'
+                const taxLabelS = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세'
+                // 입력 필드
+                // 소모품 업체: catDailyMap에서 실제 저장된 cat.id 키로 데이터 조회
+                // 저장 시 어떤 patient_category_id로 저장됐든 상관없이 해당 키로 접근
+                const existingCatIds = Object.keys(vMapToday)
+                const firstCatId = existingCatIds.length > 0 ? existingCatIds[0] : cat.id
+                const supplyRow = vMapToday[firstCatId] || vMapToday[cat.id] || {}
+                const supplyTotal = supplyRow.total || 0
+                const supplyTaxable = supplyRow.taxable || 0
+                const supplyExempt = supplyRow.exempt || 0
+                const vColsS = getVendorCols(v.tax_type, false)
+                let inputFieldsS = ''
+                if (vColsS === 3) {
+                  const useCatId = existingCatIds.length > 0 ? firstCatId : cat.id
+                  inputFieldsS = `<div style="display:flex;gap:3px;align-items:center;margin-top:4px">
+                    <div style="flex:1"><div style="font-size:8px;color:#9ca3af;margin-bottom:1px">과세</div>
+                    <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid #f59e0b60;border-radius:4px;background:${supplyTaxable>0?'#fef3c7':'white'}" data-category="${useCatId}" data-vendor="${v.id}" data-field="taxable" data-date="${dateStr}" value="${supplyTaxable>0?fmt(supplyTaxable):''}" placeholder="0"></div>
+                    <div style="flex:1"><div style="font-size:8px;color:#9ca3af;margin-bottom:1px">면세</div>
+                    <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid #f59e0b60;border-radius:4px;background:${supplyExempt>0?'#fef3c7':'white'}" data-category="${useCatId}" data-vendor="${v.id}" data-field="exempt" data-date="${dateStr}" value="${supplyExempt>0?fmt(supplyExempt):''}" placeholder="0"></div>
+                    <div style="flex:1;text-align:center;font-size:11px;font-weight:700;color:#f59e0b;padding:3px 2px;background:#fef3c7;border-radius:4px;margin-top:12px">${supplyTodayTotal>0?fmtMan(supplyTodayTotal):''}</div>
+                  </div>`
+                } else {
+                  const useCatId = existingCatIds.length > 0 ? firstCatId : cat.id
+                  inputFieldsS = `<div style="margin-top:4px"><div style="font-size:8px;color:#9ca3af;margin-bottom:1px">금액</div>
+                  <input type="text" inputmode="numeric" pattern="[0-9,]*" class="cat-order-input" style="width:100%;font-size:11px;text-align:right;padding:3px 4px;border:1.5px solid #f59e0b60;border-radius:4px;background:${supplyTotal>0?'#fef3c7':'white'}" data-category="${useCatId}" data-vendor="${v.id}" data-field="total" data-date="${dateStr}" value="${supplyTotal>0?fmt(supplyTotal):''}" placeholder="0"></div>`
+                }
+                return `<div id="vendor-card-${v.id}-${cat.id}-${dateStr}" style="background:white;border-radius:8px;border:1.5px solid ${supplyTodayTotal>0?'#f59e0b80':'#e5e7eb'};padding:8px 10px;min-width:120px;flex:1">
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+                    <span style="font-size:11px;font-weight:700;color:#92400e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90px">${v.name}</span>
+                    <span style="font-size:8px;padding:1px 4px;border-radius:4px;background:#fef3c7;color:#92400e;font-weight:700">${taxLabelS}</span>
+                  </div>
+                  ${inputFieldsS}
+                  <div style="margin-top:6px;padding-top:5px;border-top:1px solid #f3f4f6">
+                    <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px">
+                      <span style="color:#92400e;font-weight:600">오늘 발주</span>
+                      <span id="vcat-today-amt-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${supplyTodayTotal>0?'#f59e0b':'#6b7280'}">${supplyTodayTotal>0?fmtMan(supplyTodayTotal):'-'}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px;padding-top:2px;border-top:1px dashed #f3f4f6">
+                      <span>누적 발주</span>
+                      <span id="vcat-month-accum-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${vMonthColorS}">${supplyMonthAccum>0?fmtMan(supplyMonthAccum):'0'}</span>
+                    </div>
+                    ${vMonthBudgetS > 0 ? `
+                    <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-bottom:2px">
+                      <span>월 목표</span><span style="color:#6b7280">${fmtMan(vMonthBudgetS)}</span>
+                    </div>
+                    <div style="height:3px;background:#e5e7eb;border-radius:2px;margin-bottom:2px;overflow:hidden">
+                      <div style="height:3px;width:${Math.min(vMonthPctS||0,100)}%;background:${vMonthColorS};border-radius:2px"></div>
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;font-size:8px">
+                      <span style="color:${vMonthColorS};font-weight:600">${vMonthPctS!==null?vMonthPctS+'%':''}</span>
+                    </div>` : `<div style="font-size:8px;color:#d1d5db;text-align:center">목표 미설정</div>`}
+                  </div>
+                </div>`
+              }).join('')}
+              </div>
+            </div>` : ''
           const catSummary = `
             <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1.5px solid ${catColor}30">
               <div style="display:flex;align-items:center;gap:8px">
@@ -3814,6 +3907,7 @@ async function renderOrders() {
               <div style="display:flex;gap:8px;flex-wrap:wrap">
                 ${vendorRows}
               </div>
+              ${supplyVendorRows}
               ${catSummary}
             </td>
             ${grandSummary}
@@ -7013,7 +7107,8 @@ function updateDayTotal(date) {
     const catDailyMapDay = (window._catDailyMap || {})[date] || {}
 
     // 1) _catDailyMap 전체 합산 (항상 정확한 저장 데이터 기준)
-    ;(window._ordersVendors || []).filter(v => !v.is_card_type).forEach(v => {
+    // 소모품(supply)/카드(card)/이벤트(event) 업체는 카테고리 합계에서 제외 → 식단가 오염 방지
+    ;(window._ordersVendors || []).filter(v => !v.is_card_type && v.category !== 'supply' && v.category !== 'card' && v.category !== 'event').forEach(v => {
       patientCats.forEach(cat => {
         const r = (catDailyMapDay[v.id]?.[cat.id]) || {}
         catTotals[cat.id] = (catTotals[cat.id] || 0) + (r.total || 0)
@@ -7022,23 +7117,29 @@ function updateDayTotal(date) {
 
     // 2) 현재 input 이벤트로 편집 중인 쌍만 DOM 값으로 교체
     //    (_activeEditPair: input 이벤트 핸들러에서만 설정, 다른 경우 null)
+    //    소모품(supply) 업체가 편집 중이더라도 catTotals에는 반영하지 않음
     const aep = window._activeEditPair
     if (aep && aep.date === date) {
-      // 저장 전 DOM 값을 실시간 반영 (해당 업체+카테고리 한 쌍만)
-      const savedAmt = (catDailyMapDay[aep.vendorId]?.[aep.catId]?.total) || 0
-      const tbody2 = document.getElementById('ordersTbody')
-      const selBase2 = `.cat-order-input[data-vendor="${aep.vendorId}"][data-category="${aep.catId}"][data-date="${date}"]`
-      const taxableEl2 = tbody2?.querySelector(`${selBase2}[data-field="taxable"]`)
-      const exemptEl2  = tbody2?.querySelector(`${selBase2}[data-field="exempt"]`)
-      const totalEl2   = tbody2?.querySelector(`${selBase2}[data-field="total"]`)
-      const tx2 = parseOrderVal(taxableEl2?.value)
-      const ex2 = parseOrderVal(exemptEl2?.value)
-      const tot2 = parseOrderVal(totalEl2?.value)
-      const domAmt = tx2 > 0 || ex2 > 0
-        ? tx2 + Math.round(tx2 * 0.1) + ex2
-        : tot2
-      // 저장값 제거 후 DOM 값으로 교체
-      catTotals[aep.catId] = (catTotals[aep.catId] || 0) - savedAmt + domAmt
+      // 소모품/카드/이벤트 업체는 catTotals 편집 반영 제외
+      const aepVendor = (window._ordersVendors || []).find(v => String(v.id) === String(aep.vendorId))
+      const isSupplyAep = aepVendor && (aepVendor.category === 'supply' || aepVendor.category === 'card' || aepVendor.category === 'event')
+      if (!isSupplyAep) {
+        // 저장 전 DOM 값을 실시간 반영 (해당 업체+카테고리 한 쌍만)
+        const savedAmt = (catDailyMapDay[aep.vendorId]?.[aep.catId]?.total) || 0
+        const tbody2 = document.getElementById('ordersTbody')
+        const selBase2 = `.cat-order-input[data-vendor="${aep.vendorId}"][data-category="${aep.catId}"][data-date="${date}"]`
+        const taxableEl2 = tbody2?.querySelector(`${selBase2}[data-field="taxable"]`)
+        const exemptEl2  = tbody2?.querySelector(`${selBase2}[data-field="exempt"]`)
+        const totalEl2   = tbody2?.querySelector(`${selBase2}[data-field="total"]`)
+        const tx2 = parseOrderVal(taxableEl2?.value)
+        const ex2 = parseOrderVal(exemptEl2?.value)
+        const tot2 = parseOrderVal(totalEl2?.value)
+        const domAmt = tx2 > 0 || ex2 > 0
+          ? tx2 + Math.round(tx2 * 0.1) + ex2
+          : tot2
+        // 저장값 제거 후 DOM 값으로 교체
+        catTotals[aep.catId] = (catTotals[aep.catId] || 0) - savedAmt + domAmt
+      }
     }
     // 법인카드형 업체 금액
     let cardTotalForDay = 0
@@ -7190,7 +7291,9 @@ function updateDayTotal(date) {
       // 일 목표는 전체 설정의 working_days 기준 (카테고리별 working_days는 용도가 다름)
       const _globalWD5 = window._ordersBudget?.workingDays || 0
       const vendorsBudget = window._ordersVendors || []
-      const vCount = vendorsBudget.length || 1
+      // 식재료 업체수(소모품/카드/이벤트 제외): 카테고리 예산 균등 배분 기준
+      const foodVendorsBudget = vendorsBudget.filter(v => !v.is_card_type && v.category !== 'supply' && v.category !== 'card' && v.category !== 'event')
+      const vFoodCount = foodVendorsBudget.length || 1
 
       vendorsBudget.forEach(v => {
         // _catDailyMap 기반 date 이하 날짜 누적 합산 (누적 발주)
@@ -7198,6 +7301,14 @@ function updateDayTotal(date) {
         if (v.is_card_type) {
           const vendorCardMap = window._cardDailyMap?.[v.id] || {}
           Object.entries(vendorCardMap).forEach(([dk, amt]) => { if (dk <= date) vCatLiveTotal += amt || 0 })
+        } else if (v.category === 'supply' || v.category === 'card') {
+          // 소모품/카드 업체: 카테고리 구분 없이 전체 합산
+          const dailyMap = window._catDailyMap || {}
+          Object.keys(dailyMap).forEach(dk => {
+            if (dk > date) return
+            const vMap = dailyMap[dk]?.[v.id] || {}
+            Object.values(vMap).forEach(r => { vCatLiveTotal += r.total || 0 })
+          })
         } else {
           const dailyMap = window._catDailyMap || {}
           Object.keys(dailyMap).forEach(dk => {
@@ -7211,17 +7322,45 @@ function updateDayTotal(date) {
         let vTodayLiveAmt = 0
         if (v.is_card_type) {
           vTodayLiveAmt = (window._cardDailyMap?.[v.id]?.[date]) || 0
+        } else if (v.category === 'supply' || v.category === 'card') {
+          // 소모품/카드 업체: 카테고리 구분 없이 당일 전체 합산
+          const vMapToday = ((window._catDailyMap || {})[date]?.[v.id]) || {}
+          Object.values(vMapToday).forEach(r => { vTodayLiveAmt += r.total || 0 })
+          // 현재 편집 중인 셀이면 DOM 값 반영
+          if (aep && aep.date === date && String(aep.vendorId) === String(v.id)) {
+            const savedAmt2 = (((window._catDailyMap || {})[date]?.[v.id]?.[aep.catId]) || {}).total || 0
+            const tbody8 = document.getElementById('ordersTbody')
+            const selBase8 = `.cat-order-input[data-vendor="${v.id}"][data-category="${aep.catId}"][data-date="${date}"]`
+            const txEl8 = tbody8?.querySelector(`${selBase8}[data-field="taxable"]`)
+            const exEl8 = tbody8?.querySelector(`${selBase8}[data-field="exempt"]`)
+            const totEl8 = tbody8?.querySelector(`${selBase8}[data-field="total"]`)
+            const tx8 = parseOrderVal(txEl8?.value)
+            const ex8 = parseOrderVal(exEl8?.value)
+            const tot8 = parseOrderVal(totEl8?.value)
+            const domAmt8 = (tx8 > 0 || ex8 > 0) ? tx8 + Math.round(tx8 * 0.1) + ex8 : tot8
+            vTodayLiveAmt = vTodayLiveAmt - savedAmt2 + domAmt8
+          }
         } else {
           const r = ((window._catDailyMap || {})[date]?.[v.id]?.[cat.id]) || {}
           vTodayLiveAmt = r.total || 0
-          // 현재 편집 중인 셀이면 DOM 값 반영
+          // 현재 편집 중인 셀이면 DOM 값 반영 (해당 업체+카테고리 조합만)
           if (aep && aep.date === date && String(aep.vendorId) === String(v.id) && String(aep.catId) === String(cat.id)) {
-            vTodayLiveAmt = (catTotals[cat.id] || 0)  // 이미 DOM 반영된 값
+            // catTotals[cat.id]는 모든 업체 합산이므로 사용 불가 → 해당 업체 DOM 직접 읽기
+            const tbody7 = document.getElementById('ordersTbody')
+            const selBase7 = `.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"][data-date="${date}"]`
+            const txEl7 = tbody7?.querySelector(`${selBase7}[data-field="taxable"]`)
+            const exEl7 = tbody7?.querySelector(`${selBase7}[data-field="exempt"]`)
+            const totEl7 = tbody7?.querySelector(`${selBase7}[data-field="total"]`)
+            const tx7 = parseOrderVal(txEl7?.value)
+            const ex7 = parseOrderVal(exEl7?.value)
+            const tot7 = parseOrderVal(totEl7?.value)
+            vTodayLiveAmt = (tx7 > 0 || ex7 > 0) ? tx7 + Math.round(tx7 * 0.1) + ex7 : tot7
           }
         }
 
         // 업체 일 목표: v.monthly_budget ÷ 전체 working_days
-        const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vCount) : 0)
+        // 소모품 업체: 자체 monthly_budget 기준, 카테고리 예산 배분에서 제외
+        const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (v.category !== 'supply' && v.category !== 'card' && v.category !== 'event' && catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vFoodCount) : 0)
         const vDailyBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
         const vTodayTarget5 = isCovered ? 0 : vDailyBudget5 * multidays  // N일치 적용
         const vMonthBudget5 = vRawMonthBudget5  // 월 목표
@@ -7230,13 +7369,15 @@ function updateDayTotal(date) {
         const vTodayPct5 = vTodayTarget5 > 0 ? Math.round(vTodayLiveAmt / vTodayTarget5 * 100) : null
         const vTodayOver5 = vTodayPct5!==null&&vTodayPct5>=100
         const vTodayWarn5 = vTodayPct5!==null&&vTodayPct5>=80&&!vTodayOver5
-        const vTodayColor5 = vTodayOver5?'#dc2626':vTodayWarn5?'#d97706':(vTodayLiveAmt>0?catColor:'#6b7280')
+        // 소모품 업체: amber 색상 사용 (카테고리 색상과 혼용 방지)
+        const vBaseColor5 = (v.category === 'supply') ? '#f59e0b' : catColor
+        const vTodayColor5 = vTodayOver5?'#dc2626':vTodayWarn5?'#d97706':(vTodayLiveAmt>0?vBaseColor5:'#6b7280')
 
         // 누적 발주 진행률
         const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
         const vMonthOver5 = vMonthPct5!==null&&vMonthPct5>=100
         const vMonthWarn5 = vMonthPct5!==null&&vMonthPct5>=80&&!vMonthOver5
-        const vMonthColor5 = vMonthOver5?'#dc2626':vMonthWarn5?'#d97706':catColor
+        const vMonthColor5 = vMonthOver5?'#dc2626':vMonthWarn5?'#d97706':vBaseColor5
 
         // 오늘 발주 셀 업데이트 (날짜 포함 ID)
         const todayAmtEl = document.getElementById(`vcat-today-amt-${v.id}-${cat.id}-${date}`)

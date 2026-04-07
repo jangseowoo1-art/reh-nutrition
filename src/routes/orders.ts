@@ -371,22 +371,25 @@ orders.get('/category-monthly/:year/:month', async (c) => {
   `).bind(hospitalId, year, mm).all<any>()
 
   // vendor_id + date + patient_category_id 조합 일별 데이터 (서브행 렌더링용)
+  // 소모품(supply)/기타 비식재료 업체는 카테고리 계산에서 제외: 식단가·진행률 오염 방지
   const dailyByVendorCat = await c.env.DB.prepare(`
     SELECT
-      order_date,
-      vendor_id,
-      patient_category_id,
-      COALESCE(taxable_amount, 0) as taxable,
-      COALESCE(exempt_amount, 0) as exempt,
-      COALESCE(vat_amount, 0) as vat,
-      COALESCE(total_amount, 0) as total,
-      id
-    FROM daily_orders
-    WHERE hospital_id = ?
-      AND patient_category_id IS NOT NULL
-      AND strftime('%Y', order_date) = ?
-      AND strftime('%m', order_date) = ?
-    ORDER BY order_date, vendor_id, patient_category_id
+      d.order_date,
+      d.vendor_id,
+      d.patient_category_id,
+      COALESCE(d.taxable_amount, 0) as taxable,
+      COALESCE(d.exempt_amount, 0) as exempt,
+      COALESCE(d.vat_amount, 0) as vat,
+      COALESCE(d.total_amount, 0) as total,
+      d.id
+    FROM daily_orders d
+    JOIN vendors v ON d.vendor_id = v.id
+    WHERE d.hospital_id = ?
+      AND d.patient_category_id IS NOT NULL
+      AND v.category NOT IN ('supply', 'card', 'event')
+      AND strftime('%Y', d.order_date) = ?
+      AND strftime('%m', d.order_date) = ?
+    ORDER BY d.order_date, d.vendor_id, d.patient_category_id
   `).bind(hospitalId, year, mm).all<any>()
 
   // ── 해당 월 카테고리 설정 조회 ──────────────────────────────

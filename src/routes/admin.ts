@@ -763,29 +763,33 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
       // 카테고리 목록 (위에서 미리 조회한 patientCatsListEarly 재사용)
       const patientCatsList = patientCatsListEarly
 
-      // 카테고리별 월 발주금액
+      // 카테고리별 월 발주금액 (소모품/카드/이벤트 업체 제외: 식단가 오염 방지)
       const catMonthlyOrders = await c.env.DB.prepare(`
         SELECT
-          patient_category_id,
-          COALESCE(SUM(total_amount), 0) as total
-        FROM daily_orders
-        WHERE hospital_id = ?
-          AND patient_category_id IS NOT NULL
-          AND strftime('%Y', order_date) = ?
-          AND strftime('%m', order_date) = printf('%02d', ?)
-        GROUP BY patient_category_id
+          d.patient_category_id,
+          COALESCE(SUM(d.total_amount), 0) as total
+        FROM daily_orders d
+        JOIN vendors v ON d.vendor_id = v.id
+        WHERE d.hospital_id = ?
+          AND d.patient_category_id IS NOT NULL
+          AND v.category NOT IN ('supply', 'card', 'event')
+          AND strftime('%Y', d.order_date) = ?
+          AND strftime('%m', d.order_date) = printf('%02d', ?)
+        GROUP BY d.patient_category_id
       `).bind(h.id, hYear, hMonth).all<any>()
 
-      // 카테고리별 오늘 발주금액
+      // 카테고리별 오늘 발주금액 (소모품/카드/이벤트 업체 제외)
       const catTodayOrders = await c.env.DB.prepare(`
         SELECT
-          patient_category_id,
-          COALESCE(SUM(total_amount), 0) as total
-        FROM daily_orders
-        WHERE hospital_id = ?
-          AND patient_category_id IS NOT NULL
-          AND order_date = ?
-        GROUP BY patient_category_id
+          d.patient_category_id,
+          COALESCE(SUM(d.total_amount), 0) as total
+        FROM daily_orders d
+        JOIN vendors v ON d.vendor_id = v.id
+        WHERE d.hospital_id = ?
+          AND d.patient_category_id IS NOT NULL
+          AND v.category NOT IN ('supply', 'card', 'event')
+          AND d.order_date = ?
+        GROUP BY d.patient_category_id
       `).bind(h.id, today).all<any>()
 
       // 카테고리별 목표 설정 (fallback: 해당 월 이전 중 가장 가까운 설정, 소급 방지)

@@ -220,42 +220,50 @@ dashboard.get('/summary/:year/:month', async (c) => {
       ORDER BY sort_order, id
     `).bind(hospitalId).all<any>(),
 
-    // 카테고리별 월 발주
+    // 카테고리별 월 발주 (소모품/카드/이벤트 업체 제외: 식단가 오염 방지)
     c.env.DB.prepare(`
-      SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
-      FROM daily_orders
-      WHERE hospital_id = ?
-        AND patient_category_id IS NOT NULL
-        AND order_date BETWEEN ? AND ?
-      GROUP BY patient_category_id
+      SELECT d.patient_category_id, COALESCE(SUM(d.total_amount), 0) as total
+      FROM daily_orders d
+      JOIN vendors v ON d.vendor_id = v.id
+      WHERE d.hospital_id = ?
+        AND d.patient_category_id IS NOT NULL
+        AND v.category NOT IN ('supply', 'card', 'event')
+        AND d.order_date BETWEEN ? AND ?
+      GROUP BY d.patient_category_id
     `).bind(hospitalId, dateStart, dateEnd).all<any>(),
 
-    // NULL 카테고리 월 발주
+    // NULL 카테고리 월 발주 (소모품/카드/이벤트 업체 제외)
     c.env.DB.prepare(`
-      SELECT COALESCE(SUM(total_amount), 0) as total
-      FROM daily_orders
-      WHERE hospital_id = ?
-        AND patient_category_id IS NULL
-        AND order_date BETWEEN ? AND ?
+      SELECT COALESCE(SUM(d.total_amount), 0) as total
+      FROM daily_orders d
+      JOIN vendors v ON d.vendor_id = v.id
+      WHERE d.hospital_id = ?
+        AND d.patient_category_id IS NULL
+        AND v.category NOT IN ('supply', 'card', 'event')
+        AND d.order_date BETWEEN ? AND ?
     `).bind(hospitalId, dateStart, dateEnd).first<any>(),
 
-    // 카테고리별 오늘 발주
+    // 카테고리별 오늘 발주 (소모품/카드/이벤트 업체 제외)
     c.env.DB.prepare(`
-      SELECT patient_category_id, COALESCE(SUM(total_amount), 0) as total
-      FROM daily_orders
-      WHERE hospital_id = ?
-        AND patient_category_id IS NOT NULL
-        AND order_date = ?
-      GROUP BY patient_category_id
+      SELECT d.patient_category_id, COALESCE(SUM(d.total_amount), 0) as total
+      FROM daily_orders d
+      JOIN vendors v ON d.vendor_id = v.id
+      WHERE d.hospital_id = ?
+        AND d.patient_category_id IS NOT NULL
+        AND v.category NOT IN ('supply', 'card', 'event')
+        AND d.order_date = ?
+      GROUP BY d.patient_category_id
     `).bind(hospitalId, today).all<any>(),
 
-    // NULL 카테고리 오늘 발주
+    // NULL 카테고리 오늘 발주 (소모품/카드/이벤트 업체 제외)
     c.env.DB.prepare(`
-      SELECT COALESCE(SUM(total_amount), 0) as total
-      FROM daily_orders
-      WHERE hospital_id = ?
-        AND patient_category_id IS NULL
-        AND order_date = ?
+      SELECT COALESCE(SUM(d.total_amount), 0) as total
+      FROM daily_orders d
+      JOIN vendors v ON d.vendor_id = v.id
+      WHERE d.hospital_id = ?
+        AND d.patient_category_id IS NULL
+        AND v.category NOT IN ('supply', 'card', 'event')
+        AND d.order_date = ?
     `).bind(hospitalId, today).first<any>(),
 
     // 오늘 식수
