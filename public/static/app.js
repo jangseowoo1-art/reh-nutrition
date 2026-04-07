@@ -1597,8 +1597,16 @@ async function renderDashboard() {
         const nullCatTaxable = nullCatMonthly.taxable || 0
         const nullCatExempt = nullCatMonthly.exempt || 0
         // 단일 환자군인 경우: NULL 카테고리 발주를 해당 환자군에 포함
-        const isSingleCatDash = patientCats.length === 1
-        return patientCats.map(cat => {
+        // 주요 환자군만 표시: budgetKeys가 있는 카테고리 (항암 보호자, 경관식 등 보조 카테고리 제거)
+        const mainPatientCatsDash = patientCats.filter(cat => {
+          const dcEntry = (catDietPricesData||[]).find(d => d.id === cat.id)
+          if (dcEntry) return (dcEntry.budgetKeys||[]).length > 0
+          // catDietPricesData에 없으면 settings에서 확인
+          const s = catSettingsMap[cat.id] || {}
+          return (s.monthly_budget||0) > 0 || (s.ref_meal_price||0) > 0
+        })
+        const isSingleCatDash = mainPatientCatsDash.length === 1
+        return mainPatientCatsDash.map(cat => {
         const monthly = catMonthlyMap[cat.id] || {}
         const settings = catSettingsMap[cat.id] || {}
         // 이슈2&5 수정: NULL 카테고리 발주 포함
