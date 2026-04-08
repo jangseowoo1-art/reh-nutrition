@@ -8047,17 +8047,17 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const isFirst = gi===0
                 const bl = isFirst ? `border-left:3px solid ${sec.border}` : `border-left:2px solid ${g.color}50`
                 return `<th colspan="${g.count}" style="
-                  padding:6px 4px;
+                  padding:4px 2px;
                   ${bl};
                   border-top:2px solid ${sec.border};
                   border-bottom:2px solid ${sec.border}80;
                   background:#111827;
                   color:${g.color};
-                  font-size:13px;
+                  font-size:11px;
                   font-weight:800;
                   white-space:nowrap;
                   text-align:center;
-                "><i class="fas ${g.icon}" style="margin-right:3px;font-size:11px"></i>${g.label}</th>`
+                "><i class="fas ${g.icon}" style="margin-right:2px;font-size:10px"></i>${g.label}</th>`
               }).join('')
               return groupCells + `<th style="
                 border-left:2px solid rgba(255,255,255,0.25);
@@ -8065,10 +8065,11 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 border-top:2px solid ${sec.border};
                 border-bottom:2px solid ${sec.border}80;
                 background:#111827;
-                font-size:12px;
+                font-size:11px;
                 font-weight:800;
                 color:${isTot ? '#a5b4fc' : '#f8fafc'};
                 text-align:center;
+                width:36px;min-width:34px;
               ">합</th>`
             }).join('')}
           </tr>` : ''}
@@ -8100,8 +8101,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const bl = isFirst ? `border-left:3px solid ${sec.border};` : `border-left:1px solid ${sec.border}40;`
                 const br = isLast ? `;border-right:1px solid ${sec.border}40` : ''
                 const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
-                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};${br}padding:6px 3px;font-size:11px;font-weight:700;white-space:nowrap;text-align:center">${isLinkedTherapy?'↳ ':''}${label}</th>`
-              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.25);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};padding:6px 3px;background:${isTot?'#0f172a':'#1e3a8a'};color:#93c5fd;font-size:11px;font-weight:800;text-align:center">합</th>`
+                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};${br}padding:4px 2px;font-size:10px;font-weight:700;white-space:nowrap;text-align:center;width:40px;min-width:38px;max-width:44px">${isLinkedTherapy?'↳ ':''}${label}</th>`
+              }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.25);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};padding:4px 2px;background:${isTot?'#0f172a':'#1e3a8a'};color:#93c5fd;font-size:10px;font-weight:800;text-align:center;width:36px;min-width:34px">합</th>`
             }).join('')}
           </tr>
         </thead>
