@@ -8613,10 +8613,10 @@ window._mealUndoStack = []
 window._mealDrag = {
   active:   false,
   startEl:  null,
-  startRC:  null,   // { r, c }
-  startVal: null,
-  endRC:    null,   // { r, c }
-  snapshot: {},     // el → 원본값 (드래그 시작 시 스냅샷)
+  startRC:  null,   // { r, c } 시작점
+  startVal: null,   // 복사할 값
+  endRC:    null,   // { r, c } 끝점 (하이라이트용)
+  // 값 적용은 mouseup에서만: 드래그 중에는 하이라이트만
 }
 
 // ────────────────────────────────────────────────────
@@ -8782,17 +8782,25 @@ function _mealDragEnd(e) {
     return
   }
 
-  // 선택 범위 셀 목록
-  const { grid } = _buildMealGrid()
+  // ① 시작점 = 끝점 → 드래그 안 한 것 (단순 클릭), 스킵
   const { r: r1, c: c1 } = drag.startRC
   const { r: r2, c: c2 } = drag.endRC
+  if (r1 === r2 && c1 === c2) {
+    drag.startEl = null; drag.startRC = null; drag.endRC = null; drag.startVal = null
+    return
+  }
+
+  // ② 선택 범위 셀 목록
+  const { grid } = _buildMealGrid()
   const selCells = _mealRectCells(grid, r1, c1, r2, c2)
 
-  // 시작 셀 제외하고 값 복사가 일어난 셀만 undo 대상
-  const changed = selCells
-    .filter(el => el !== drag.startEl)
-    .map(el => ({ el, prev: drag.snapshot[el] !== undefined ? drag.snapshot[el] : el.value }))
-    .filter(({ el, prev }) => el.value !== prev)  // 실제로 바뀐 셀만
+  // ③ 시작 셀 제외한 셀들에 mouseup 시점에만 값 적용
+  const changed = []
+  selCells.forEach(el => {
+    if (el === drag.startEl) return   // 시작 셀은 이미 값 있음
+    changed.push({ el, prev: el.value })  // 현재(덮어쓰기 전) 값이 원본값
+    el.value = drag.startVal              // ← mouseup에서만 값 씀
+  })
 
   if (changed.length > 0) {
     _mealPushUndo(changed, `드래그 복사 "${drag.startVal}" → ${changed.length}셀`)
@@ -8801,8 +8809,7 @@ function _mealDragEnd(e) {
     showToast(`✅ ${changed.length}개 셀에 ${dispVal} 복사 완료`)
   }
 
-  drag.startEl = null; drag.startRC = null; drag.endRC = null
-  drag.startVal = null; drag.snapshot = {}
+  drag.startEl = null; drag.startRC = null; drag.endRC = null; drag.startVal = null
 }
 document.addEventListener('mouseup', _mealDragEnd)
 
@@ -8846,8 +8853,7 @@ function bindMealInputEvents() {
       drag.startEl  = this
       drag.startRC  = rc
       drag.endRC    = rc
-      drag.startVal = this.value
-      drag.snapshot = {}   // 이번 드래그에서 덮어쓸 셀의 원본값 저장
+      drag.startVal = this.value  // 복사할 값 (빈값 포함 모든 값 허용)
 
       // 시작 셀 강조
       document.querySelectorAll('.meal-input.mg-src,.meal-input.mg-sel')
@@ -8878,15 +8884,10 @@ function bindMealInputEvents() {
       const { r: r2, c: c2 } = rc
       const selCells = _mealRectCells(grid, r1, c1, r2, c2)
 
+      // ── 하이라이트만 적용 (값 변경 없음) ──
       selCells.forEach(el => {
-        if (el === drag.startEl) {
-          el.classList.add('mg-src')
-        } else {
-          el.classList.add('mg-sel')
-          // snapshot에 원본값 기록 (최초 한 번만)
-          if (!(el in drag.snapshot)) drag.snapshot[el] = el.value
-          el.value = drag.startVal
-        }
+        el.classList.add(el === drag.startEl ? 'mg-src' : 'mg-sel')
+        // ⚠️ 값은 절대 변경하지 않음 — mouseup에서만 적용
       })
 
       // ── 툴팁 ──
@@ -8899,7 +8900,7 @@ function bindMealInputEvents() {
                   : selRows === 1 ? `가로 ${selCols}칸`
                   : selCols === 1 ? `세로 ${selRows}칸`
                   : `${selRows}행 × ${selCols}열`
-      _mealTipShow(`${dispVal} → ${shape}`, e.clientX, e.clientY)
+      _mealTipShow(`${dispVal} → ${shape} (손 떼면 적용)`, e.clientX, e.clientY)
     })
 
     // ── 마우스 이동 시 툴팁 위치 갱신 ──
@@ -8908,6 +8909,44 @@ function bindMealInputEvents() {
       const tip = _mealTip()
       tip.style.left = (e.clientX + 14) + 'px'
       tip.style.top  = (e.clientY - 10) + 'px'
+    })
+
+    // ══════════════════════════════════════════
+    //  paste 이벤트: input에 직접 바인딩
+    //  - 브라우저가 Ctrl+V 시 발생시키는 paste 이벤트 사용
+    //  - clipboardData.getData('text') 로 안정적으로 데이터 수신
+    //  - e.preventDefault()로 브라우저의 기본 텍스트 삽입 차단
+    // ══════════════════════════════════════════
+    input.addEventListener('paste', function(e) {
+      e.preventDefault()  // 브라우저 기본 붙여넣기 막기
+      e.stopPropagation() // 이벤트 버블링 차단
+
+      const text = (e.clipboardData || window.clipboardData).getData('text')
+      if (!text) return
+
+      const self = this
+
+      if (text.includes('	') || text.includes('
+')) {
+        // ─ 엑셀/스프레드시트 다중 셀 붙여넣기
+        const pasteGrid = _parsePasteText(text)
+        _applyExcelPaste(self, pasteGrid)
+      } else {
+        // ─ 단일 값 붙여넣기
+        const n = _parseNum(text)
+        if (n !== null) {
+          _mealPushUndo([{ el: self, prev: self.value }], '단일 붙여넣기')
+          self.value = String(n)
+          updateMealRowTotals(self.dataset.date)
+          self.dispatchEvent(new Event('change'))
+        } else if (text.trim() === '') {
+          // 빈 값 붙여넣기 → 클리어
+          _mealPushUndo([{ el: self, prev: self.value }], '빈값 붙여넣기')
+          self.value = ''
+          updateMealRowTotals(self.dataset.date)
+          self.dispatchEvent(new Event('change'))
+        }
+      }
     })
 
     // ══════════════════════════════════════════
@@ -8942,35 +8981,12 @@ function bindMealInputEvents() {
         window._mealCopiedValue = this.value
         navigator.clipboard?.writeText(this.value).catch(() => {})
 
-      // Ctrl+V: 클립보드에서 붙여넣기
+      // Ctrl+V: 브라우저 paste 이벤트에 위임 (clipboardData 정상 수신 보장)
+      // → e.preventDefault() 하지 않으면 브라우저가 paste 이벤트를 자동 발생시킴
+      // → paste 핸들러(아래 input.addEventListener('paste'))에서 실제 처리
       } else if (e.key === 'v' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault()
-        const self = this
-        navigator.clipboard?.readText().then(text => {
-          if (!text) return
-          if (text.includes('\t') || text.includes('\n')) {
-            // 엑셀 다중 셀 붙여넣기
-            const pasteGrid = _parsePasteText(text)
-            _applyExcelPaste(self, pasteGrid)
-          } else {
-            // 단일 숫자 붙여넣기
-            const n = _parseNum(text)
-            if (n !== null) {
-              _mealPushUndo([{ el: self, prev: self.value }], '단일 붙여넣기')
-              self.value = String(n)
-              updateMealRowTotals(self.dataset.date)
-              self.dispatchEvent(new Event('change'))
-            }
-          }
-        }).catch(() => {
-          // 클립보드 API 실패 → 내부 복사값 사용
-          if (window._mealCopiedValue !== null) {
-            _mealPushUndo([{ el: self, prev: self.value }], '단일 붙여넣기')
-            self.value = window._mealCopiedValue
-            updateMealRowTotals(self.dataset.date)
-            self.dispatchEvent(new Event('change'))
-          }
-        })
+        // preventDefault 하지 않음: 브라우저가 paste 이벤트를 발생시키게 둠
+        // (paste 핸들러에서 e.preventDefault() 후 처리)
 
       // Ctrl+Z: 그룹 단위 실행 취소
       } else if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
@@ -8991,29 +9007,7 @@ function bindMealInputEvents() {
     })
   })
 
-  // ── paste 이벤트 (브라우저 기본 Ctrl+V 감지) ──
-  const tbody = document.getElementById('mealTableBody')
-  if (tbody && !tbody._pasteListenerAdded) {
-    tbody._pasteListenerAdded = true
-    tbody.addEventListener('paste', function(e) {
-      const focused = document.activeElement
-      if (!focused || !focused.classList.contains('meal-input')) return
-      e.preventDefault()
-      const text = (e.clipboardData || window.clipboardData).getData('text')
-      if (!text) return
-      if (text.includes('\t') || text.includes('\n')) {
-        _applyExcelPaste(focused, _parsePasteText(text))
-      } else {
-        const n = _parseNum(text)
-        if (n !== null) {
-          _mealPushUndo([{ el: focused, prev: focused.value }], '단일 붙여넣기')
-          focused.value = String(n)
-          updateMealRowTotals(focused.dataset.date)
-          focused.dispatchEvent(new Event('change'))
-        }
-      }
-    })
-  }
+  // paste 이벤트는 각 input에 직접 바인딩됨 (위에서 처리 완료)
 
   // 초기 렌더링 후 모든 행 소계/합계 즉시 계산
   const dates = new Set([...document.querySelectorAll('.meal-input')].map(el => el.dataset.date))
