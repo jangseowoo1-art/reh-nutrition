@@ -8563,60 +8563,283 @@ function _getMealInputGrid() {
   return { inputs: allInputs, cols }
 }
 
-// 클립보드 복사/붙여넣기용 전역 상태
+// ════════════════════════════════════════════════════
+//  식수 입력 전역 상태
+// ════════════════════════════════════════════════════
 window._mealCopiedValue = null
-window._mealUndoStack = []
+window._mealUndoStack   = []
 
+// 드래그 복사 상태
+window._mealDrag = {
+  active:    false,   // 드래그 진행 중
+  startEl:   null,    // 드래그 시작 input
+  startIdx:  -1,      // 그리드 인덱스
+  startVal:  '',      // 복사할 값
+  lastIdx:   -1,      // 마지막으로 칠한 인덱스
+  painted:   [],      // 이번 드래그에서 변경된 {el, prev}
+}
+
+// 드래그 중 셀 강조 CSS (한 번만 주입)
+;(function injectDragStyle() {
+  if (document.getElementById('meal-drag-style')) return
+  const s = document.createElement('style')
+  s.id = 'meal-drag-style'
+  s.textContent = `
+    .meal-input.drag-source  { outline:2px solid #2563eb; background:#dbeafe !important; }
+    .meal-input.drag-painted { outline:2px solid #16a34a; background:#dcfce7 !important; }
+    .meal-drag-tooltip {
+      position:fixed; z-index:9999; pointer-events:none;
+      background:#1e293b; color:#f8fafc; font-size:11px;
+      padding:3px 8px; border-radius:6px; white-space:nowrap;
+      box-shadow:0 2px 8px rgba(0,0,0,0.3);
+    }
+  `
+  document.head.appendChild(s)
+})()
+
+// 드래그 툴팁 요소
+function _getDragTooltip() {
+  let el = document.getElementById('meal-drag-tooltip')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'meal-drag-tooltip'
+    el.className = 'meal-drag-tooltip'
+    el.style.display = 'none'
+    document.body.appendChild(el)
+  }
+  return el
+}
+
+// 드래그 종료 처리 (mouseup)
+function _mealDragEnd() {
+  const drag = window._mealDrag
+  if (!drag.active) return
+  drag.active = false
+
+  // 강조 제거
+  document.querySelectorAll('.meal-input.drag-source,.meal-input.drag-painted')
+    .forEach(el => el.classList.remove('drag-source','drag-painted'))
+  _getDragTooltip().style.display = 'none'
+
+  // undo 스택에 일괄 등록
+  if (drag.painted.length > 0) {
+    window._mealUndoStack.push(...drag.painted)
+    // 변경된 날짜 일괄 저장
+    const dates = new Set(drag.painted.map(p => p.el.dataset.date))
+    dates.forEach(async date => {
+      await saveMealRow(date)
+      updateMealRowTotals(date)
+    })
+    showToast(`✅ ${drag.painted.length}개 셀에 "${drag.startVal}" 복사 완료`)
+  }
+  drag.painted  = []
+  drag.startEl  = null
+  drag.startIdx = -1
+  drag.lastIdx  = -1
+}
+
+// 전역 mouseup (테이블 밖에서 손을 떼도 종료)
+document.addEventListener('mouseup', _mealDragEnd)
+
+// ════════════════════════════════════════════════════
+//  엑셀 붙여넣기 파서
+//  탭(\t) + 줄바꿈(\n)으로 구성된 2D 배열 반환
+// ════════════════════════════════════════════════════
+function _parsePasteText(text) {
+  return text.trim().split(/\r?\n/).map(row =>
+    row.split('\t').map(cell => cell.trim())
+  )
+}
+
+// 숫자만 추출 (콤마·공백 제거)
+function _parseNum(str) {
+  const n = parseInt(str.replace(/[^0-9]/g, ''), 10)
+  return isNaN(n) ? null : n
+}
+
+// ════════════════════════════════════════════════════
+//  엑셀 다중 붙여넣기 처리
+//  startEl 위치부터 2D 배열을 그리드에 매핑
+// ════════════════════════════════════════════════════
+function _applyExcelPaste(startEl, grid2d) {
+  const { inputs, cols } = _getMealInputGrid()
+  const startIdx = inputs.indexOf(startEl)
+  if (startIdx < 0 || cols === 0) return
+
+  const pasteRows = grid2d.length
+  const pasteCols = Math.max(...grid2d.map(r => r.length))
+
+  // 단일 셀(1×1) 붙여넣기
+  if (pasteRows === 1 && pasteCols === 1) {
+    const n = _parseNum(grid2d[0][0])
+    if (n === null) return
+    window._mealUndoStack.push({ el: startEl, prev: startEl.value })
+    startEl.value = String(n)
+    updateMealRowTotals(startEl.dataset.date)
+    startEl.dispatchEvent(new Event('change'))
+    return
+  }
+
+  const changed = []
+  for (let r = 0; r < pasteRows; r++) {
+    for (let c = 0; c < grid2d[r].length; c++) {
+      const targetIdx = startIdx + r * cols + c
+      if (targetIdx >= inputs.length) continue
+      // 같은 행(date) 안에서만 열 이동 허용
+      const targetRowStart = startIdx + r * cols
+      if (targetIdx - targetRowStart !== c) continue  // 행 경계 넘지 않도록
+
+      const n = _parseNum(grid2d[r][c])
+      if (n === null) continue
+      const el = inputs[targetIdx]
+      changed.push({ el, prev: el.value })
+      el.value = String(n)
+    }
+  }
+
+  if (changed.length === 0) return
+  window._mealUndoStack.push(...changed)
+
+  const dates = new Set(changed.map(p => p.el.dataset.date))
+  dates.forEach(async date => {
+    await saveMealRow(date)
+    updateMealRowTotals(date)
+  })
+  // 마지막 셀로 포커스 이동
+  changed[changed.length - 1].el.focus()
+  showToast(`✅ ${changed.length}개 셀 붙여넣기 완료 (${pasteRows}행 × ${Math.max(...grid2d.map(r=>r.length))}열)`)
+}
+
+// ════════════════════════════════════════════════════
+//  이벤트 바인딩
+// ════════════════════════════════════════════════════
 function bindMealInputEvents() {
+  const { inputs, cols } = _getMealInputGrid()
+
   document.querySelectorAll('.meal-input').forEach(input => {
-    // 숫자만 허용 (입력 시 비숫자 제거)
+
+    // ── 숫자만 허용 ──
     input.addEventListener('input', function() {
       const v = this.value.replace(/[^0-9]/g, '')
       if (this.value !== v) this.value = v
       updateMealRowTotals(this.dataset.date)
     })
+
+    // ── 자동 저장 ──
     input.addEventListener('change', async function() {
       const date = this.dataset.date
       await saveMealRow(date)
       updateMealRowTotals(date)
       sendActivityLog('식수 입력')
     })
-    input.addEventListener('keydown', function(e) {
-      const { inputs, cols } = _getMealInputGrid()
-      const idx = inputs.indexOf(this)
-      if (idx < 0 || cols === 0) return
 
-      // 화살표 키 네비게이션
+    // ── 포커스 시 전체 선택 ──
+    input.addEventListener('focus', function() { this.select() })
+
+    // ════════════════════════════════
+    //  드래그 복사 (mousedown → mouseover → mouseup)
+    // ════════════════════════════════
+    input.addEventListener('mousedown', function(e) {
+      // 우클릭 무시
+      if (e.button !== 0) return
+      const drag = window._mealDrag
+      const { inputs: inp } = _getMealInputGrid()
+      const idx = inp.indexOf(this)
+      drag.active   = true
+      drag.startEl  = this
+      drag.startIdx = idx
+      drag.startVal = this.value
+      drag.lastIdx  = idx
+      drag.painted  = []
+      this.classList.add('drag-source')
+      // 드래그 시작 시 텍스트 선택 방지
+      e.preventDefault()
+      this.focus()
+    })
+
+    input.addEventListener('mouseover', function() {
+      const drag = window._mealDrag
+      if (!drag.active || !drag.startVal) return
+      const { inputs: inp, cols: c } = _getMealInputGrid()
+      const curIdx = inp.indexOf(this)
+      if (curIdx < 0 || curIdx === drag.lastIdx) return
+      drag.lastIdx = curIdx
+
+      // 시작~현재 범위 전체에 강조 + 값 세팅
+      const lo = Math.min(drag.startIdx, curIdx)
+      const hi = Math.max(drag.startIdx, curIdx)
+
+      // 이전 painted 원상복구 후 재계산
+      inp.forEach((el, i) => {
+        el.classList.remove('drag-painted')
+      })
+
+      drag.painted = []
+      for (let i = lo; i <= hi; i++) {
+        const el = inp[i]
+        if (!el) continue
+        if (el !== drag.startEl) {
+          el.classList.add('drag-painted')
+          drag.painted.push({ el, prev: el.value })
+          el.value = drag.startVal
+        }
+      }
+
+      // 툴팁 표시
+      const tooltip = _getDragTooltip()
+      tooltip.textContent = `"${drag.startVal}" → ${hi - lo + 1}개 셀`
+      tooltip.style.display = 'block'
+    })
+
+    // ════════════════════════════════
+    //  키보드 단축키
+    // ════════════════════════════════
+    input.addEventListener('keydown', function(e) {
+      const { inputs: inp, cols: c } = _getMealInputGrid()
+      const idx = inp.indexOf(this)
+      if (idx < 0 || c === 0) return
+
+      // 화살표 / Tab 네비게이션
       if (e.key === 'ArrowRight' || (e.key === 'Tab' && !e.shiftKey)) {
         e.preventDefault()
-        if (idx + 1 < inputs.length) inputs[idx + 1].focus()
+        if (idx + 1 < inp.length) inp[idx + 1].focus()
       } else if (e.key === 'ArrowLeft' || (e.key === 'Tab' && e.shiftKey)) {
         e.preventDefault()
-        if (idx - 1 >= 0) inputs[idx - 1].focus()
+        if (idx - 1 >= 0) inp[idx - 1].focus()
       } else if (e.key === 'ArrowDown' || e.key === 'Enter') {
         e.preventDefault()
-        if (idx + cols < inputs.length) inputs[idx + cols].focus()
+        if (idx + c < inp.length) inp[idx + c].focus()
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
-        if (idx - cols >= 0) inputs[idx - cols].focus()
+        if (idx - c >= 0) inp[idx - c].focus()
+
+      // Ctrl+C: 단일 셀 복사
       } else if (e.key === 'c' && (e.ctrlKey || e.metaKey)) {
-        // Ctrl+C: 현재 값 복사
         window._mealCopiedValue = this.value
-        // 실제 클립보드에도 복사
         navigator.clipboard?.writeText(this.value).catch(()=>{})
+
+      // Ctrl+V: 엑셀 다중 붙여넣기 or 단일 값 붙여넣기
       } else if (e.key === 'v' && (e.ctrlKey || e.metaKey)) {
-        // Ctrl+V: 붙여넣기 - 클립보드에서 또는 내부 복사값 사용
         e.preventDefault()
         const self = this
         navigator.clipboard?.readText().then(text => {
-          const num = text.replace(/[^0-9]/g, '')
-          if (num !== '') {
-            window._mealUndoStack.push({ el: self, prev: self.value })
-            self.value = num
-            updateMealRowTotals(self.dataset.date)
-            self.dispatchEvent(new Event('change'))
+          if (!text.trim()) return
+          // 탭 또는 개행이 있으면 엑셀 다중 셀 붙여넣기
+          if (text.includes('\t') || text.includes('\n')) {
+            const grid = _parsePasteText(text)
+            _applyExcelPaste(self, grid)
+          } else {
+            // 단일 숫자 붙여넣기
+            const n = _parseNum(text)
+            if (n !== null) {
+              window._mealUndoStack.push({ el: self, prev: self.value })
+              self.value = String(n)
+              updateMealRowTotals(self.dataset.date)
+              self.dispatchEvent(new Event('change'))
+            }
           }
         }).catch(() => {
+          // 클립보드 권한 없을 때 내부 복사값 사용
           if (window._mealCopiedValue !== null) {
             window._mealUndoStack.push({ el: self, prev: self.value })
             self.value = window._mealCopiedValue
@@ -8624,8 +8847,9 @@ function bindMealInputEvents() {
             self.dispatchEvent(new Event('change'))
           }
         })
+
+      // Ctrl+Z: 실행 취소
       } else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
-        // Ctrl+Z: 실행 취소
         e.preventDefault()
         const last = window._mealUndoStack.pop()
         if (last) {
@@ -8633,21 +8857,50 @@ function bindMealInputEvents() {
           updateMealRowTotals(last.el.dataset.date)
           last.el.dispatchEvent(new Event('change'))
         }
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        // 현재 값이 이미 비어있으면 이전 셀로 이동 (Backspace만)
-        if (e.key === 'Backspace' && this.value === '' && idx - 1 >= 0) {
-          e.preventDefault()
-          inputs[idx - 1].focus()
-        }
-        // 일반 삭제는 기본 동작 허용
+
+      // Backspace: 빈 칸에서 이전 셀로
+      } else if (e.key === 'Backspace' && this.value === '' && idx - 1 >= 0) {
+        e.preventDefault()
+        inp[idx - 1].focus()
       }
     })
-    // 포커스 시 전체 선택 (값 교체 용이하게)
-    input.addEventListener('focus', function() {
-      this.select()
+
+    // ── 마우스 이동 시 툴팁 위치 갱신 ──
+    input.addEventListener('mousemove', function(e) {
+      if (!window._mealDrag.active) return
+      const tooltip = _getDragTooltip()
+      tooltip.style.left = (e.clientX + 14) + 'px'
+      tooltip.style.top  = (e.clientY - 10) + 'px'
     })
   })
-  // 초기 렌더링 후 모든 행의 소계/합계 즉시 계산
+
+  // ── paste 이벤트 (표 영역 전체에서 Ctrl+V 감지) ──
+  // keydown에서 이미 처리하므로 중복 방지
+  const tbody = document.getElementById('mealTableBody')
+  if (tbody && !tbody._pasteListenerAdded) {
+    tbody._pasteListenerAdded = true
+    tbody.addEventListener('paste', function(e) {
+      const focused = document.activeElement
+      if (!focused || !focused.classList.contains('meal-input')) return
+      e.preventDefault()
+      const text = (e.clipboardData || window.clipboardData).getData('text')
+      if (!text.trim()) return
+      if (text.includes('\t') || text.includes('\n')) {
+        const grid = _parsePasteText(text)
+        _applyExcelPaste(focused, grid)
+      } else {
+        const n = _parseNum(text)
+        if (n !== null) {
+          window._mealUndoStack.push({ el: focused, prev: focused.value })
+          focused.value = String(n)
+          updateMealRowTotals(focused.dataset.date)
+          focused.dispatchEvent(new Event('change'))
+        }
+      }
+    })
+  }
+
+  // 초기 렌더링 후 모든 행 소계/합계 즉시 계산
   const dates = new Set([...document.querySelectorAll('.meal-input')].map(el => el.dataset.date))
   dates.forEach(date => updateMealRowTotals(date))
 }
