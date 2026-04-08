@@ -4446,7 +4446,12 @@ window.updateMultiDayNote = async (sel) => {
   updateDayTotal(dateStr)
   // 5-1) 열린 상세 탭의 업체 카드 진행률도 즉시 갱신
   // updateDayTotal은 요약 행만 갱신하므로, 상세 탭의 vcat-today-target/pct 요소는 별도로 갱신
-  ;(window._patientCats || []).forEach(cat => {
+  // 상세탭이 열려있는지 여부와 무관하게 DOM에 요소가 있으면 업데이트
+  const _updateDetailCards = () => {
+  const _allCatsToUpdate = (window._patientCats && window._patientCats.length > 0)
+    ? window._patientCats
+    : [{ id: null, category_key: 'general' }]  // 카테고리 없는 병원 fallback
+  ;_allCatsToUpdate.forEach(cat => {
     const catColor = getCategoryColorHex(cat.category_key)
     const catSettings5 = (window._catSettingsMap || {})[cat.id] || {}
     const catMonthBudget5 = catSettings5.monthly_budget || 0
@@ -4533,6 +4538,10 @@ window.updateMultiDayNote = async (sel) => {
       }
     })
   })
+  } // end _updateDetailCards
+  _updateDetailCards()
+  // 상세탭이 열리면서 DOM이 새로 그려지는 경우를 대비해 50ms 후 한번 더 실행
+  setTimeout(_updateDetailCards, 80)
 
   // 6) 발주일수 전용 저장 (금액 없어도 항상 저장)
   await api('POST', '/api/orders/multiday-setting', { orderDate: dateStr, dayCount: days })

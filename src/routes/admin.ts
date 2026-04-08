@@ -1126,15 +1126,16 @@ adminRouter.get('/hospitals/:id/vendors', async (c) => {
 // ── 병원별 업체 추가 (관리자용) ───────────────────────────────
 adminRouter.post('/hospitals/:id/vendors', async (c) => {
   const hospitalId = c.req.param('id')
-  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype } = await c.req.json()
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle } = await c.req.json()
   if (!name?.trim()) return c.json({ error: '업체명을 입력하세요' }, 400)
   await c.env.DB.prepare(`
-    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active, is_card_type, card_subtype)
-    VALUES (?,?,?,?,?,?,1,?,?)
+    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active, is_card_type, card_subtype, order_cycle)
+    VALUES (?,?,?,?,?,?,1,?,?,?)
   `).bind(
     hospitalId, name.trim(), category||'general',
     taxType||'mixed', monthlyBudget||0, sortOrder||99,
-    isCardType ? 1 : 0, cardSubtype || null
+    isCardType ? 1 : 0, cardSubtype || null,
+    orderCycle || 'daily'
   ).run()
   // ── 발주 업체 등록 시 거래명세서 업체도 자동 생성 (미설정 상태로) ──
   const norm = name.trim().replace(/\s+/g, '')
@@ -1162,15 +1163,16 @@ adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
 // ── 병원별 업체 수정 (관리자용) ───────────────────────────────
 adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
-  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype } = await c.req.json()
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle } = await c.req.json()
   await c.env.DB.prepare(`
     UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?,
-                       is_card_type=?, card_subtype=?
+                       is_card_type=?, card_subtype=?, order_cycle=?
     WHERE id=? AND hospital_id=?
   `).bind(
     name, category||'general', taxType||'mixed',
     monthlyBudget||0, sortOrder||99,
     isCardType ? 1 : 0, cardSubtype || null,
+    orderCycle || 'daily',
     vid, hospitalId
   ).run()
   return c.json({ success: true })
