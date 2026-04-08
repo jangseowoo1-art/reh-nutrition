@@ -3745,14 +3745,54 @@ async function renderOrders() {
                 </div>`
             }
 
-            // 업체 일 목표: v.monthly_budget ÷ 전체 working_days (설정 기준)
-            // v.monthly_budget 우선, 없으면 카테고리 예산을 식재료 업체 수로만 균등 배분 (소모품 제외)
+            // 업체 발주주기 (daily: 매일, weekly: 주 1회)
+            const vOrderCycle = v.order_cycle || 'daily'
+            const isWeeklyVendor = vOrderCycle === 'weekly'
+
+            // 업체 월 목표: v.monthly_budget 우선, 없으면 카테고리 예산을 식재료 업체 수로 균등 배분
             const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / Math.max(foodVendors.length, 1)) : 0)
-            const vDailyBudget = _globalWorkingDays > 0 ? Math.round(vRawMonthBudget / _globalWorkingDays) : 0
-            // 오늘 적용 목표 = 일 목표 × 발주일수(multiDayCount)
-            const vTodayTarget = vDailyBudget * multiDayCount
-            // 오늘 발주금액 = 현재 날짜의 이 업체 입력값
-            const vTodayAmt = total  // catRow.total (당일 입력값)
+
+            // ── 주간 발주 업체: 이번 주 누적·목표 계산 ──
+            // 이번 주 시작~dateStr 날짜 범위에서 이 업체 발주 합계
+            let vWeekAccum = 0
+            if (isWeeklyVendor) {
+              Object.keys(catDailyMap).forEach(dk => {
+                if (dk < weekKey || dk > dateStr) return
+                const r2 = (catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
+                vWeekAccum += r2.total || 0
+              })
+              // 저장된 실시간 catDailyMap도 반영
+              if (window._catDailyMap) {
+                Object.keys(window._catDailyMap).forEach(dk => {
+                  if (dk < weekKey || dk > dateStr) return
+                  if (catDailyMap[dk]?.[v.id]?.[cat.id]) return // 이미 포함됨
+                  const r2 = (window._catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
+                  vWeekAccum += r2.total || 0
+                })
+              }
+            }
+
+            // 주차 수 계산 (해당 월의 영업일 기준 주차)
+            const weeksInMonth = _globalWorkingDays > 0 ? Math.ceil(_globalWorkingDays / 5) : 4
+
+            // 목표 계산
+            let vDailyBudget, vTodayTarget, vTodayAmt, vTodayLabel
+            if (isWeeklyVendor) {
+              // 주 단위: 이번 주 목표 = 월 목표 ÷ 주차수
+              const vWeeklyBudget = weeksInMonth > 0 ? Math.round(vRawMonthBudget / weeksInMonth) : 0
+              vDailyBudget = vWeeklyBudget  // 주간 업체에서는 "일 목표" 대신 "주 목표"
+              vTodayTarget = vWeeklyBudget  // 이번 주 목표 (multiDayCount 미적용)
+              vTodayAmt = vWeekAccum         // 이번 주 누적 발주액
+              vTodayLabel = '이번주 목표'
+            } else {
+              // 일 단위: 일 목표 × 발주일수
+              const vSingleDayBudget = _globalWorkingDays > 0 ? Math.round(vRawMonthBudget / _globalWorkingDays) : 0
+              vDailyBudget = vSingleDayBudget
+              vTodayTarget = vSingleDayBudget * multiDayCount
+              vTodayAmt = total  // catRow.total (당일 입력값)
+              vTodayLabel = '오늘 목표'
+            }
+
             const vTodayPct = vTodayTarget > 0 ? Math.round(vTodayAmt / vTodayTarget * 100) : null
             const vTodayOver = vTodayPct!==null&&vTodayPct>=100
             const vTodayWarn = vTodayPct!==null&&vTodayPct>=80&&!vTodayOver
@@ -3772,13 +3812,13 @@ async function renderOrders() {
               </div>
               ${inputFields}
               <div style="margin-top:6px;padding-top:5px;border-top:1px solid #f3f4f6">
-                <!-- 오늘 발주금액 / 오늘 목표 -->
+                <!-- 오늘/주간 발주금액 / 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px">
-                  <span style="color:#374151;font-weight:600">오늘 발주</span>
+                  <span style="color:#374151;font-weight:600">${isWeeklyVendor?'이번주 발주':'오늘 발주'}${isWeeklyVendor?'<span style="font-size:8px;background:#dbeafe;color:#1d4ed8;padding:0 3px;border-radius:3px;margin-left:3px;font-weight:700">주1회</span>':''}</span>
                   <span id="vcat-today-amt-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
                 </div>
                 <div id="vcat-today-target-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;align-items:center;font-size:9px;color:#9ca3af;margin-bottom:2px">
-                  <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}" style="flex-shrink:0">오늘 목표${multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
+                  <span id="vcat-today-target-label-${v.id}-${cat.id}-${dateStr}" style="flex-shrink:0">${vTodayLabel}${!isWeeklyVendor&&multiDayCount>1?` <span style="color:#16a34a;font-weight:700">(×${multiDayCount}일)</span>`:''}</span>
                   <span id="vcat-today-target-${v.id}-${cat.id}-${dateStr}" style="color:#6b7280">${fmtMan(vTodayTarget)}</span>
                 </div>
                 <div id="vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'block':'none'};height:5px;background:#e5e7eb;border-radius:3px;margin-bottom:3px;overflow:hidden">
@@ -3817,10 +3857,9 @@ async function renderOrders() {
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
               ${supplyVendors.map(v => {
-                // 소모품 업체: catDailyMap에서 해당 업체의 모든 카테고리 당일 합산
-                // catDailyMap에는 supply 업체 데이터가 없으므로(API에서 제외됨) 당일 발주는 0으로 표시됨
-                // 실시간 업데이트는 updateLiveAmounts()에서 _catDailyMap 기반으로 처리됨
-                const vMapToday = catDailyMap[dateStr]?.[v.id] || {}
+                // 소모품 업체 당일 발주: catDailyMap(API초기값)에는 없으므로 window._catDailyMap(저장 후 갱신값)에서 읽기
+                // 초기 렌더 시에는 당일 데이터가 _catDailyMap에도 없으므로 0 표시 → 정상
+                const vMapToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
                 const supplyTodayTotal = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
                 // 월 누적: 백엔드에서 제공하는 supplyVendorMonthly 기반 (카테고리 구분 없이 전체 합산)
                 const supplyMonthAccum = window._supplyVendorMonthlyMap?.[v.id] || 0
@@ -4405,6 +4444,95 @@ window.updateMultiDayNote = async (sel) => {
 
   // 5) 진행률 셀 즉시 재계산
   updateDayTotal(dateStr)
+  // 5-1) 열린 상세 탭의 업체 카드 진행률도 즉시 갱신
+  // updateDayTotal은 요약 행만 갱신하므로, 상세 탭의 vcat-today-target/pct 요소는 별도로 갱신
+  ;(window._patientCats || []).forEach(cat => {
+    const catColor = getCategoryColorHex(cat.category_key)
+    const catSettings5 = (window._catSettingsMap || {})[cat.id] || {}
+    const catMonthBudget5 = catSettings5.monthly_budget || 0
+    const _globalWD5 = window._ordersBudget?.workingDays || 0
+    const vendorsBudget = window._ordersVendors || []
+    const foodVendorsBudget = vendorsBudget.filter(v => !v.is_card_type && v.category !== 'supply' && v.category !== 'card' && v.category !== 'event')
+    const vFoodCount = foodVendorsBudget.length || 1
+    const isCoveredForUpdate = (window._ordersCoveredDates || {})[dateStr] !== undefined
+    const multidays5 = days  // 방금 변경한 값
+
+    vendorsBudget.forEach(v => {
+      // 오늘 발주 목표 재계산 (multidays 기반)
+      const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget
+        : (v.category !== 'supply' && v.category !== 'card' && v.category !== 'event' && catMonthBudget5 > 0
+          ? Math.round(catMonthBudget5 / vFoodCount) : 0)
+      const vIsWeekly5 = (v.order_cycle || 'daily') === 'weekly'
+      const weeksInMonth5 = _globalWD5 > 0 ? Math.ceil(_globalWD5 / 5) : 4
+
+      let vTodayTarget5, vTodayLiveAmt, vTargetLabel5
+      if (vIsWeekly5) {
+        // 주간 발주: 이번 주 목표 = 월 목표 ÷ 주차수
+        const vWeeklyBudget5 = weeksInMonth5 > 0 ? Math.round(vRawMonthBudget5 / weeksInMonth5) : 0
+        vTodayTarget5 = isCoveredForUpdate ? 0 : vWeeklyBudget5
+        vTargetLabel5 = '이번주 목표'
+        // 이번 주 누적 발주액
+        vTodayLiveAmt = 0
+        const summaryRow = document.querySelector(`.order-summary-row[data-date="${dateStr}"]`)
+        const weekKey5 = summaryRow?.dataset.weekStart || dateStr
+        const catDMap5 = window._catDailyMap || {}
+        Object.keys(catDMap5).forEach(dk => {
+          if (dk < weekKey5 || dk > dateStr) return
+          const r = (catDMap5[dk]?.[v.id]?.[cat.id]) || {}
+          vTodayLiveAmt += r.total || 0
+        })
+      } else {
+        // 일 단위: 일 목표 × 발주일수
+        const vDailyBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
+        vTodayTarget5 = isCoveredForUpdate ? 0 : vDailyBudget5 * multidays5
+        vTargetLabel5 = '오늘 목표'
+        if (v.is_card_type) {
+          vTodayLiveAmt = (window._cardDailyMap?.[v.id]?.[dateStr]) || 0
+        } else if (v.category === 'supply' || v.category === 'card') {
+          vTodayLiveAmt = 0
+          const vMapT = ((window._catDailyMap || {})[dateStr]?.[v.id]) || {}
+          Object.values(vMapT).forEach(r => { vTodayLiveAmt += r.total || 0 })
+        } else {
+          const r = ((window._catDailyMap || {})[dateStr]?.[v.id]?.[cat.id]) || {}
+          vTodayLiveAmt = r.total || 0
+        }
+      }
+
+      const vTodayPct5 = vTodayTarget5 > 0 ? Math.round(vTodayLiveAmt / vTodayTarget5 * 100) : null
+      const vTodayOver5 = vTodayPct5 !== null && vTodayPct5 >= 100
+      const vTodayWarn5 = vTodayPct5 !== null && vTodayPct5 >= 80 && !vTodayOver5
+      const vBaseColor5 = v.category === 'supply' ? '#f59e0b' : catColor
+      const vTodayColor5 = vTodayOver5 ? '#dc2626' : vTodayWarn5 ? '#d97706' : (vTodayLiveAmt > 0 ? vBaseColor5 : '#6b7280')
+
+      // DOM 업데이트
+      const targetRowEl = document.getElementById(`vcat-today-target-row-${v.id}-${cat.id}-${dateStr}`)
+      const targetLabelEl = document.getElementById(`vcat-today-target-label-${v.id}-${cat.id}-${dateStr}`)
+      const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}-${dateStr}`)
+      const barWrapEl = document.getElementById(`vcat-today-bar-wrap-${v.id}-${cat.id}-${dateStr}`)
+      const barInnerEl = document.getElementById(`vcat-today-bar-${v.id}-${cat.id}-${dateStr}`)
+      const pctRowEl = document.getElementById(`vcat-today-pct-row-${v.id}-${cat.id}-${dateStr}`)
+      const pctTextEl = document.getElementById(`vcat-today-pct-${v.id}-${cat.id}-${dateStr}`)
+      if (vTodayTarget5 > 0) {
+        if (targetRowEl) targetRowEl.style.display = 'flex'
+        if (barWrapEl) barWrapEl.style.display = 'block'
+        if (pctRowEl) pctRowEl.style.display = 'flex'
+        if (targetLabelEl) targetLabelEl.innerHTML = vTargetLabel5 + (!vIsWeekly5 && multidays5 > 1
+          ? ` <span style="color:#16a34a;font-weight:700">(×${multidays5}일)</span>` : '')
+        if (targetAmtEl) targetAmtEl.textContent = fmtMan(vTodayTarget5)
+        if (barInnerEl) { barInnerEl.style.width = Math.min(vTodayPct5 || 0, 100) + '%'; barInnerEl.style.background = vTodayColor5 }
+        if (pctTextEl) {
+          pctTextEl.style.display = vTodayPct5 !== null ? 'inline-block' : 'none'
+          pctTextEl.textContent = vTodayPct5 !== null ? vTodayPct5 + '%' : ''
+          pctTextEl.style.background = vTodayColor5
+        }
+      } else {
+        if (targetRowEl) targetRowEl.style.display = 'none'
+        if (barWrapEl) barWrapEl.style.display = 'none'
+        if (pctRowEl) pctRowEl.style.display = 'none'
+        if (pctTextEl) pctTextEl.style.display = 'none'
+      }
+    })
+  })
 
   // 6) 발주일수 전용 저장 (금액 없어도 항상 저장)
   await api('POST', '/api/orders/multiday-setting', { orderDate: dateStr, dayCount: days })
@@ -7388,20 +7516,43 @@ function updateDayTotal(date) {
           }
         }
 
-        // 업체 일 목표: v.monthly_budget ÷ 전체 working_days
-        // 소모품 업체: 자체 monthly_budget 기준, 카테고리 예산 배분에서 제외
+        // 업체 일/주 목표: v.monthly_budget 기준, 주간 업체는 주 단위 목표
         const vRawMonthBudget5 = (v.monthly_budget > 0) ? v.monthly_budget : (v.category !== 'supply' && v.category !== 'card' && v.category !== 'event' && catMonthBudget5 > 0 ? Math.round(catMonthBudget5 / vFoodCount) : 0)
-        const vDailyBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
-        const vTodayTarget5 = isCovered ? 0 : vDailyBudget5 * multidays  // N일치 적용
+        const vIsWeeklyV5 = (v.order_cycle || 'daily') === 'weekly'
+        const weeksInMonth5v = _globalWD5 > 0 ? Math.ceil(_globalWD5 / 5) : 4
+
+        let vTodayTarget5, vTodayAmt5Final, vTargetLabel5v
+        if (vIsWeeklyV5) {
+          // 주간 발주 업체: 이번 주 목표 = 월 목표 ÷ 주차수
+          const vWeekBudget5 = weeksInMonth5v > 0 ? Math.round(vRawMonthBudget5 / weeksInMonth5v) : 0
+          vTodayTarget5 = isCovered ? 0 : vWeekBudget5
+          vTargetLabel5v = '이번주 목표'
+          // 이번 주 누적 (this week's date range)
+          const summaryRow5 = document.querySelector(`.order-summary-row[data-date="${date}"]`)
+          const weekKey5v = summaryRow5?.dataset.weekStart || date
+          vTodayAmt5Final = 0
+          const catDM5 = window._catDailyMap || {}
+          Object.keys(catDM5).forEach(dk => {
+            if (dk < weekKey5v || dk > date) return
+            const r = (catDM5[dk]?.[v.id]?.[cat.id]) || {}
+            vTodayAmt5Final += r.total || 0
+          })
+        } else {
+          const vDailyBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
+          vTodayTarget5 = isCovered ? 0 : vDailyBudget5 * multidays  // N일치 적용
+          vTargetLabel5v = '오늘 목표'
+          vTodayAmt5Final = vTodayLiveAmt
+        }
+
         const vMonthBudget5 = vRawMonthBudget5  // 월 목표
 
-        // 오늘 발주 진행률
-        const vTodayPct5 = vTodayTarget5 > 0 ? Math.round(vTodayLiveAmt / vTodayTarget5 * 100) : null
+        // 오늘/주간 발주 진행률
+        const vTodayPct5 = vTodayTarget5 > 0 ? Math.round(vTodayAmt5Final / vTodayTarget5 * 100) : null
         const vTodayOver5 = vTodayPct5!==null&&vTodayPct5>=100
         const vTodayWarn5 = vTodayPct5!==null&&vTodayPct5>=80&&!vTodayOver5
         // 소모품 업체: amber 색상 사용 (카테고리 색상과 혼용 방지)
         const vBaseColor5 = (v.category === 'supply') ? '#f59e0b' : catColor
-        const vTodayColor5 = vTodayOver5?'#dc2626':vTodayWarn5?'#d97706':(vTodayLiveAmt>0?vBaseColor5:'#6b7280')
+        const vTodayColor5 = vTodayOver5?'#dc2626':vTodayWarn5?'#d97706':(vTodayAmt5Final>0?vBaseColor5:'#6b7280')
 
         // 누적 발주 진행률
         const vMonthPct5 = vMonthBudget5 > 0 ? Math.round(vCatLiveTotal / vMonthBudget5 * 100) : null
@@ -7412,11 +7563,11 @@ function updateDayTotal(date) {
         // 오늘 발주 셀 업데이트 (날짜 포함 ID)
         const todayAmtEl = document.getElementById(`vcat-today-amt-${v.id}-${cat.id}-${date}`)
         if (todayAmtEl) {
-          todayAmtEl.textContent = vTodayLiveAmt > 0 ? fmtMan(vTodayLiveAmt) : '-'
+          todayAmtEl.textContent = vTodayAmt5Final > 0 ? fmtMan(vTodayAmt5Final) : '-'
           todayAmtEl.style.color = vTodayColor5
         }
 
-        // 오늘 목표금액 / 레이블 / 진행률 바 실시간 업데이트 (multidays 반영, 날짜 포함 ID)
+        // 오늘/이번주 목표금액 / 레이블 / 진행률 바 실시간 업데이트 (multidays 반영, 날짜 포함 ID)
         const targetRowEl = document.getElementById(`vcat-today-target-row-${v.id}-${cat.id}-${date}`)
         const targetLabelEl = document.getElementById(`vcat-today-target-label-${v.id}-${cat.id}-${date}`)
         const targetAmtEl = document.getElementById(`vcat-today-target-${v.id}-${cat.id}-${date}`)
@@ -7428,7 +7579,7 @@ function updateDayTotal(date) {
           if (targetRowEl) targetRowEl.style.display = 'flex'
           if (barWrapEl) barWrapEl.style.display = 'block'
           if (pctRowEl) pctRowEl.style.display = 'flex'
-          if (targetLabelEl) targetLabelEl.innerHTML = '오늘 목표' + (multidays > 1 ? ` <span style="color:#16a34a;font-weight:700">(×${multidays}일)</span>` : '')
+          if (targetLabelEl) targetLabelEl.innerHTML = vTargetLabel5v + (!vIsWeeklyV5 && multidays > 1 ? ` <span style="color:#16a34a;font-weight:700">(×${multidays}일)</span>` : '')
           if (targetAmtEl) targetAmtEl.textContent = fmtMan(vTodayTarget5)
           if (barInnerEl) {
             barInnerEl.style.width = Math.min(vTodayPct5 || 0, 100) + '%'
@@ -8320,25 +8471,101 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
 }
 
 function makeMealInput(key, date, val, extraStyle = '') {
-  return `<input type="number" class="meal-input" data-key="${key}" data-date="${date}" value="${val||''}" placeholder="" min="0">`
+  return `<input type="text" inputmode="numeric" pattern="[0-9]*" class="meal-input" data-key="${key}" data-date="${date}" value="${val||''}" placeholder="" style="text-align:center">`
 }
+
+// 엑셀식 식수 입력 네비게이션: 셀 위치(행, 열) 계산 헬퍼
+function _getMealInputGrid() {
+  const allInputs = [...document.querySelectorAll('.meal-input')]
+  if (allInputs.length === 0) return { inputs: [], cols: 0 }
+  // 같은 data-date를 가진 input 수 = 열 수
+  const firstDate = allInputs[0].dataset.date
+  const cols = allInputs.filter(el => el.dataset.date === firstDate).length
+  return { inputs: allInputs, cols }
+}
+
+// 클립보드 복사/붙여넣기용 전역 상태
+window._mealCopiedValue = null
+window._mealUndoStack = []
 
 function bindMealInputEvents() {
   document.querySelectorAll('.meal-input').forEach(input => {
-    input.addEventListener('input', function() { updateMealRowTotals(this.dataset.date) })
+    // 숫자만 허용 (입력 시 비숫자 제거)
+    input.addEventListener('input', function() {
+      const v = this.value.replace(/[^0-9]/g, '')
+      if (this.value !== v) this.value = v
+      updateMealRowTotals(this.dataset.date)
+    })
     input.addEventListener('change', async function() {
       const date = this.dataset.date
-      // 저장 후 즉시 소계/합계 재계산 (삭제 포함 모든 변경에 반영)
       await saveMealRow(date)
       updateMealRowTotals(date)
       sendActivityLog('식수 입력')
     })
     input.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        const inputs = [...document.querySelectorAll('.meal-input')]
-        const idx = inputs.indexOf(this)
-        if (idx < inputs.length-1) { e.preventDefault(); inputs[idx+1].focus() }
+      const { inputs, cols } = _getMealInputGrid()
+      const idx = inputs.indexOf(this)
+      if (idx < 0 || cols === 0) return
+
+      // 화살표 키 네비게이션
+      if (e.key === 'ArrowRight' || (e.key === 'Tab' && !e.shiftKey)) {
+        e.preventDefault()
+        if (idx + 1 < inputs.length) inputs[idx + 1].focus()
+      } else if (e.key === 'ArrowLeft' || (e.key === 'Tab' && e.shiftKey)) {
+        e.preventDefault()
+        if (idx - 1 >= 0) inputs[idx - 1].focus()
+      } else if (e.key === 'ArrowDown' || e.key === 'Enter') {
+        e.preventDefault()
+        if (idx + cols < inputs.length) inputs[idx + cols].focus()
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (idx - cols >= 0) inputs[idx - cols].focus()
+      } else if (e.key === 'c' && (e.ctrlKey || e.metaKey)) {
+        // Ctrl+C: 현재 값 복사
+        window._mealCopiedValue = this.value
+        // 실제 클립보드에도 복사
+        navigator.clipboard?.writeText(this.value).catch(()=>{})
+      } else if (e.key === 'v' && (e.ctrlKey || e.metaKey)) {
+        // Ctrl+V: 붙여넣기 - 클립보드에서 또는 내부 복사값 사용
+        e.preventDefault()
+        const self = this
+        navigator.clipboard?.readText().then(text => {
+          const num = text.replace(/[^0-9]/g, '')
+          if (num !== '') {
+            window._mealUndoStack.push({ el: self, prev: self.value })
+            self.value = num
+            updateMealRowTotals(self.dataset.date)
+            self.dispatchEvent(new Event('change'))
+          }
+        }).catch(() => {
+          if (window._mealCopiedValue !== null) {
+            window._mealUndoStack.push({ el: self, prev: self.value })
+            self.value = window._mealCopiedValue
+            updateMealRowTotals(self.dataset.date)
+            self.dispatchEvent(new Event('change'))
+          }
+        })
+      } else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+        // Ctrl+Z: 실행 취소
+        e.preventDefault()
+        const last = window._mealUndoStack.pop()
+        if (last) {
+          last.el.value = last.prev
+          updateMealRowTotals(last.el.dataset.date)
+          last.el.dispatchEvent(new Event('change'))
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        // 현재 값이 이미 비어있으면 이전 셀로 이동 (Backspace만)
+        if (e.key === 'Backspace' && this.value === '' && idx - 1 >= 0) {
+          e.preventDefault()
+          inputs[idx - 1].focus()
+        }
+        // 일반 삭제는 기본 동작 허용
       }
+    })
+    // 포커스 시 전체 선택 (값 교체 용이하게)
+    input.addEventListener('focus', function() {
+      this.select()
     })
   })
   // 초기 렌더링 후 모든 행의 소계/합계 즉시 계산
@@ -25866,7 +26093,7 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>
 
-        <!-- ② 소모품/카드 제외 식단가 계산 기준 -->
+        <!-- ② 소모품/카드 제외 식단가 계산 기준 (병원 전체 대시보드 3종 식단가 기준) -->
         ${(() => {
           const savedKeys = (supplyExcludeCfg?.supply_exclude_keys) || []
           const isDefault = savedKeys.length === 0
@@ -25878,8 +26105,9 @@ async function openHospitalDetail(hospitalId) {
         <div class="p-4 bg-orange-50 border border-orange-200 rounded-xl">
           <div class="flex items-center justify-between mb-3">
             <div>
-              <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>소모품/카드 제외 식단가 계산 기준</h3>
-              <p class="text-xs text-orange-600 mt-0.5">③ 소모품·카드 제외 식단가 = (총금액 − 선택한 제외항목 합계) ÷ 전체 식수</p>
+              <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>② 대시보드 "소모품 제외 식단가" 계산 기준 <span class="text-xs font-normal text-gray-400">(병원 전체 적용)</span></h3>
+              <p class="text-xs text-orange-600 mt-0.5">소모품·카드 제외 식단가 = (전체 총금액 − 아래 선택항목 합계) ÷ 전체 식수<br>
+              <span class="text-gray-400">↳ 위 ①항목(카테고리별 포함 설정)과는 완전히 별개입니다. 대시보드 3종 식단가 표시에만 영향.</span></p>
             </div>
             ${isDefault
               ? `<span class="text-xs bg-orange-100 text-orange-600 px-2 py-1 rounded-full border border-orange-300">기본값 적용중 (카드+소모품)</span>`
@@ -26091,6 +26319,22 @@ async function openHospitalDetail(hospitalId) {
               <option value="other">기타</option>
             </select>
           </div>
+        </div>
+        <!-- 발주 주기 설정 -->
+        <div class="p-3 bg-blue-50 rounded-xl border border-blue-100">
+          <label class="text-sm font-semibold text-blue-800"><i class="fas fa-calendar-alt mr-1"></i>발주 주기</label>
+          <p class="text-xs text-blue-600 mt-1 mb-2">영양사 발주 화면에서 진행률 계산 기준을 설정합니다</p>
+          <div class="flex gap-3">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="adminVendorOrderCycle" id="adminOrderCycleDaily" value="daily" class="accent-blue-600" checked>
+              <span class="text-sm text-gray-700"><i class="fas fa-calendar-day mr-0.5 text-blue-500"></i>매일 (일 단위)</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="adminVendorOrderCycle" id="adminOrderCycleWeekly" value="weekly" class="accent-blue-600">
+              <span class="text-sm text-gray-700"><i class="fas fa-calendar-week mr-0.5 text-green-500"></i>주 1회 (주 단위)</span>
+            </label>
+          </div>
+          <p class="text-xs text-gray-400 mt-1.5">주 단위: 월 목표금액 ÷ 주수로 주간 목표 계산, 매일: 월 목표금액 ÷ 근무일수로 일 목표 계산</p>
         </div>
         <div>
           <label class="text-sm font-medium text-gray-600">월 목표금액 (원)</label>
@@ -26373,13 +26617,13 @@ function renderAdminVendorRows(vendors) {
         <span class="text-gray-400 text-xs w-5 text-center">${idx+1}</span>
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
         <div class="flex-1 min-w-0">
-          <div class="font-medium text-sm">${v.name}${v.is_card_type?'<span class="ml-1 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium"><i class="fas fa-credit-card mr-0.5"></i>법인카드</span>':''}</div>
+          <div class="font-medium text-sm">${v.name}${v.is_card_type?'<span class="ml-1 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium"><i class="fas fa-credit-card mr-0.5"></i>법인카드</span>':''}${v.order_cycle==='weekly'?'<span class="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-medium"><i class="fas fa-calendar-week mr-0.5"></i>주1회</span>':''}</div>
           <div class="text-xs text-gray-400">${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)}</div>
         </div>
         <div class="text-sm text-gray-600 font-medium">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'목표없음'}</div>
         <div class="flex gap-1">
           <button onclick="editAdminVendor(${v.id})"
-            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}"
+            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}" data-ordercycle="${v.order_cycle||'daily'}"
             class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
           <button onclick="deleteAdminVendor(${v.id})"
             class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
@@ -26454,6 +26698,7 @@ function showAdminAddVendorModal() {
   document.getElementById('adminVendorIsCard').checked = false
   document.getElementById('adminVendorCardSubtype').value = 'food'
   document.getElementById('adminCardSubtypeWrap').classList.add('hidden')
+  document.getElementById('adminOrderCycleDaily').checked = true
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
@@ -26465,6 +26710,7 @@ function editAdminVendor(id) {
   const budget = parseInt(btn?.dataset.budget || 0)
   const isCard = btn?.dataset.iscard === '1'
   const cardSubtype = btn?.dataset.cardsubtype || 'food'
+  const orderCycle = btn?.dataset.ordercycle || 'daily'
   document.getElementById('adminVendorModalTitle').textContent = '업체 수정'
   document.getElementById('adminVendorId').value = id
   document.getElementById('adminVendorName').value = name
@@ -26474,6 +26720,9 @@ function editAdminVendor(id) {
   document.getElementById('adminVendorIsCard').checked = isCard
   document.getElementById('adminVendorCardSubtype').value = cardSubtype
   document.getElementById('adminCardSubtypeWrap').classList.toggle('hidden', !isCard)
+  // 발주 주기 라디오 버튼 설정
+  const cycleRadio = document.querySelector(`input[name="adminVendorOrderCycle"][value="${orderCycle}"]`)
+  if (cycleRadio) cycleRadio.checked = true
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
@@ -26482,13 +26731,15 @@ async function saveAdminVendor() {
   if (!hospitalId) return
   const vid = document.getElementById('adminVendorId').value
   const isCard = document.getElementById('adminVendorIsCard').checked
+  const orderCycleEl = document.querySelector('input[name="adminVendorOrderCycle"]:checked')
   const data = {
     name: document.getElementById('adminVendorName').value.trim(),
     category: document.getElementById('adminVendorCategory').value,
     taxType: document.getElementById('adminVendorTaxType').value,
     monthlyBudget: parseCommaNum(document.getElementById('adminVendorBudget').value),
     isCardType: isCard,
-    cardSubtype: isCard ? document.getElementById('adminVendorCardSubtype').value : null
+    cardSubtype: isCard ? document.getElementById('adminVendorCardSubtype').value : null,
+    orderCycle: orderCycleEl ? orderCycleEl.value : 'daily'
   }
   if (!data.name) { showToast('업체명을 입력하세요', 'error'); return }
   const res = vid
@@ -27711,11 +27962,13 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             </div>` : ''}
           </div>
           <!-- 저장 버튼 -->
-          <!-- 소모품/카드 발주 포함 설정 (카테고리 식단가에 반영) -->
+          <!-- ① 카테고리별 식단가 포함 설정 (이 카테고리의 식단가 계산에만 영향) -->
           <div class="border border-teal-200 bg-teal-50 rounded-lg p-2 mt-2">
-            <div class="text-xs font-semibold text-teal-700 mb-1.5"><i class="fas fa-box mr-1"></i>소모품 · 카드 발주 식단가 반영</div>
-            <div class="text-xs text-gray-500 mb-1.5">체크 시 이 카테고리 식단가에 해당 발주금액이 포함됩니다.<br>
-              <span class="text-amber-600 font-medium">※ 소모품은 최대 1개 카테고리에만 반영 권장 (중복 시 과대계상)</span>
+            <div class="text-xs font-semibold text-teal-700 mb-1"><i class="fas fa-tag mr-1"></i>① 이 카테고리 식단가에 포함할 항목</div>
+            <div class="text-xs text-gray-500 mb-1.5">
+              체크한 항목의 발주금액이 <b>이 카테고리(${cat.category_name}) 식단가에만</b> 포함됩니다.<br>
+              <span class="text-amber-600 font-medium">※ 소모품은 최대 1개 카테고리에만 체크 권장 (중복 시 과대계상)</span><br>
+              <span class="text-gray-400 text-xs">↳ 아래 ②항목(소모품 제외 식단가 기준)과는 별개 설정입니다.</span>
             </div>
             <div class="flex gap-3">
               <label class="flex items-center gap-1.5 text-xs cursor-pointer">
