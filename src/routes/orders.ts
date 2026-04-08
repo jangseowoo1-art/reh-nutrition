@@ -390,20 +390,22 @@ orders.get('/category-monthly/:year/:month', async (c) => {
 
   // 소모품(supply) 업체별 일별 발주 데이터 (날짜별 누적 계산용)
   // 소모품은 dailyByVendorCat에 포함되지 않으므로 별도 조회
+  // 중요: GROUP BY order_date, vendor_id 로 patient_category_id 중복 합산 방지
+  // (동일 날짜에 여러 patient_category_id로 저장된 경우 날짜+업체별로 단일 합산)
   const supplyDailyByVendor = await c.env.DB.prepare(`
     SELECT
       d.order_date,
       d.vendor_id,
-      COALESCE(d.taxable_amount, 0) as taxable,
-      COALESCE(d.exempt_amount, 0) as exempt,
-      COALESCE(d.total_amount, 0) as total,
-      d.patient_category_id
+      SUM(COALESCE(d.taxable_amount, 0)) as taxable,
+      SUM(COALESCE(d.exempt_amount, 0)) as exempt,
+      SUM(COALESCE(d.total_amount, 0)) as total
     FROM daily_orders d
     JOIN vendors v ON d.vendor_id = v.id
     WHERE d.hospital_id = ?
       AND strftime('%Y', d.order_date) = ?
       AND strftime('%m', d.order_date) = ?
       AND v.category IN ('supply', 'card', 'event')
+    GROUP BY d.order_date, d.vendor_id
     ORDER BY d.order_date, d.vendor_id
   `).bind(hospitalId, year, mm).all<any>()
 
