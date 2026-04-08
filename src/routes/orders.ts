@@ -388,6 +388,25 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     GROUP BY d.vendor_id
   `).bind(hospitalId, year, mm).all<any>()
 
+  // 소모품(supply) 업체별 일별 발주 데이터 (날짜별 누적 계산용)
+  // 소모품은 dailyByVendorCat에 포함되지 않으므로 별도 조회
+  const supplyDailyByVendor = await c.env.DB.prepare(`
+    SELECT
+      d.order_date,
+      d.vendor_id,
+      COALESCE(d.taxable_amount, 0) as taxable,
+      COALESCE(d.exempt_amount, 0) as exempt,
+      COALESCE(d.total_amount, 0) as total,
+      d.patient_category_id
+    FROM daily_orders d
+    JOIN vendors v ON d.vendor_id = v.id
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+      AND strftime('%m', d.order_date) = ?
+      AND v.category IN ('supply', 'card', 'event')
+    ORDER BY d.order_date, d.vendor_id
+  `).bind(hospitalId, year, mm).all<any>()
+
   // vendor_id + date + patient_category_id 조합 일별 데이터 (서브행 렌더링용)
   // 소모품(supply)/기타 비식재료 업체는 카테고리 계산에서 제외: 식단가·진행률 오염 방지
   const dailyByVendorCat = await c.env.DB.prepare(`
@@ -514,6 +533,7 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     monthly: monthly.results || [],
     dailyByVendorCat: dailyByVendorCat.results || [],
     supplyVendorMonthly: supplyVendorMonthly.results || [],
+    supplyDailyByVendor: supplyDailyByVendor.results || [],
     settings: catSettingsRows.results || [],
     todayMeals: todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 },
     prevSettings: prevCatSettingsRows.results || []
