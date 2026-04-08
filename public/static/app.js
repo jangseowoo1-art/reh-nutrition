@@ -8574,9 +8574,10 @@ window._mealDrag = {
   active:    false,   // 드래그 진행 중
   startEl:   null,    // 드래그 시작 input
   startIdx:  -1,      // 그리드 인덱스
-  startVal:  '',      // 복사할 값
+  startVal:  null,    // 복사할 값 (null=드래그 전)
   lastIdx:   -1,      // 마지막으로 칠한 인덱스
   painted:   [],      // 이번 드래그에서 변경된 {el, prev}
+  origMap:   {},      // 셀 원본값 보존 맵 (idx → prev value)
 }
 
 // 드래그 중 셀 강조 CSS (한 번만 주입)
@@ -8587,6 +8588,7 @@ window._mealDrag = {
   s.textContent = `
     .meal-input.drag-source  { outline:2px solid #2563eb; background:#dbeafe !important; }
     .meal-input.drag-painted { outline:2px solid #16a34a; background:#dcfce7 !important; }
+    .meal-input { user-select:none; -webkit-user-select:none; }
     .meal-drag-tooltip {
       position:fixed; z-index:9999; pointer-events:none;
       background:#1e293b; color:#f8fafc; font-size:11px;
@@ -8621,19 +8623,24 @@ function _mealDragEnd() {
     .forEach(el => el.classList.remove('drag-source','drag-painted'))
   _getDragTooltip().style.display = 'none'
 
-  // undo 스택에 일괄 등록
+  // painted가 있으면 undo 스택 등록 + 저장
   if (drag.painted.length > 0) {
-    window._mealUndoStack.push(...drag.painted)
+    // painted의 prev가 이미 원본값(origMap에서 설정)이므로 그대로 사용
+    const undoItems = drag.painted.map(p => ({ el: p.el, prev: p.prev }))
+    window._mealUndoStack.push(...undoItems)
     // 변경된 날짜 일괄 저장
     const dates = new Set(drag.painted.map(p => p.el.dataset.date))
     dates.forEach(async date => {
       await saveMealRow(date)
       updateMealRowTotals(date)
     })
-    showToast(`✅ ${drag.painted.length}개 셀에 "${drag.startVal}" 복사 완료`)
+    const dispVal = drag.startVal === '' ? '(빈값)' : `"${drag.startVal}"`
+    showToast(`✅ ${drag.painted.length}개 셀에 ${dispVal} 복사 완료`)
   }
   drag.painted  = []
+  drag.origMap  = {}
   drag.startEl  = null
+  drag.startVal = null
   drag.startIdx = -1
   drag.lastIdx  = -1
 }
@@ -8680,24 +8687,34 @@ function _applyExcelPaste(startEl, grid2d) {
     return
   }
 
+  // 시작 셀의 그리드 내 행·열 위치
+  const startRowInGrid = Math.floor(startIdx / cols)
+  const startColInGrid = startIdx % cols
+
   const changed = []
   for (let r = 0; r < pasteRows; r++) {
     for (let c = 0; c < grid2d[r].length; c++) {
-      const targetIdx = startIdx + r * cols + c
+      const targetRowInGrid = startRowInGrid + r
+      const targetColInGrid = startColInGrid + c
+      // 열 범위 초과 방지
+      if (targetColInGrid >= cols) continue
+      const targetIdx = targetRowInGrid * cols + targetColInGrid
       if (targetIdx >= inputs.length) continue
-      // 같은 행(date) 안에서만 열 이동 허용
-      const targetRowStart = startIdx + r * cols
-      if (targetIdx - targetRowStart !== c) continue  // 행 경계 넘지 않도록
 
-      const n = _parseNum(grid2d[r][c])
-      if (n === null) continue
+      const cellText = grid2d[r][c]
+      // 숫자 파싱: 빈 문자열은 0으로 처리
+      const n = cellText.trim() === '' ? 0 : _parseNum(cellText)
+      if (n === null) continue  // 숫자가 아닌 텍스트는 건너뜀
       const el = inputs[targetIdx]
       changed.push({ el, prev: el.value })
-      el.value = String(n)
+      el.value = n === 0 ? '' : String(n)
     }
   }
 
-  if (changed.length === 0) return
+  if (changed.length === 0) {
+    showToast('⚠️ 붙여넣기할 숫자 데이터가 없습니다.', 'warning')
+    return
+  }
   window._mealUndoStack.push(...changed)
 
   const dates = new Set(changed.map(p => p.el.dataset.date))
@@ -8707,7 +8724,11 @@ function _applyExcelPaste(startEl, grid2d) {
   })
   // 마지막 셀로 포커스 이동
   changed[changed.length - 1].el.focus()
-  showToast(`✅ ${changed.length}개 셀 붙여넣기 완료 (${pasteRows}행 × ${Math.max(...grid2d.map(r=>r.length))}열)`)
+  const actualRows = new Set(changed.map(p => p.el.dataset.date)).size
+  const actualCols = Math.max(...Array.from(dates).map(d =>
+    changed.filter(p => p.el.dataset.date === d).length
+  ))
+  showToast(`✅ ${changed.length}개 셀 붙여넣기 완료 (${actualRows}일 × ${pasteCols}열)`)
 }
 
 // ════════════════════════════════════════════════════
@@ -8748,9 +8769,10 @@ function bindMealInputEvents() {
       drag.active   = true
       drag.startEl  = this
       drag.startIdx = idx
-      drag.startVal = this.value
+      drag.startVal = this.value   // '' 포함 모든 값 허용 (null 체크를 active로만)
       drag.lastIdx  = idx
       drag.painted  = []
+      drag.origMap  = {}           // 원본값 맵 초기화
       this.classList.add('drag-source')
       // 드래그 시작 시 텍스트 선택 방지
       e.preventDefault()
@@ -8759,7 +8781,7 @@ function bindMealInputEvents() {
 
     input.addEventListener('mouseover', function() {
       const drag = window._mealDrag
-      if (!drag.active || !drag.startVal) return
+      if (!drag.active || drag.startVal === null) return  // null만 체크 ('' 허용)
       const { inputs: inp, cols: c } = _getMealInputGrid()
       const curIdx = inp.indexOf(this)
       if (curIdx < 0 || curIdx === drag.lastIdx) return
@@ -8769,25 +8791,33 @@ function bindMealInputEvents() {
       const lo = Math.min(drag.startIdx, curIdx)
       const hi = Math.max(drag.startIdx, curIdx)
 
-      // 이전 painted 원상복구 후 재계산
-      inp.forEach((el, i) => {
-        el.classList.remove('drag-painted')
+      // ① 이전 painted 셀 원상복구 (origMap에서 읽어옴)
+      drag.painted.forEach(p => {
+        const origVal = drag.origMap[p.el]
+        if (origVal !== undefined) p.el.value = origVal
+        p.el.classList.remove('drag-painted')
       })
 
+      // ② 새 범위 계산 및 적용
       drag.painted = []
       for (let i = lo; i <= hi; i++) {
         const el = inp[i]
-        if (!el) continue
-        if (el !== drag.startEl) {
-          el.classList.add('drag-painted')
-          drag.painted.push({ el, prev: el.value })
-          el.value = drag.startVal
-        }
+        if (!el || el === drag.startEl) continue
+        // origMap에 없으면 현재 el.value가 원본
+        if (!(el in drag.origMap)) drag.origMap[el] = el.value
+        el.classList.add('drag-painted')
+        drag.painted.push({ el, prev: drag.origMap[el] })
+        el.value = drag.startVal
       }
 
       // 툴팁 표시
       const tooltip = _getDragTooltip()
-      tooltip.textContent = `"${drag.startVal}" → ${hi - lo + 1}개 셀`
+      const dispVal = drag.startVal === '' ? '(빈값)' : `"${drag.startVal}"`
+      // 방향 표시: 행(같은 row 유지)인지 열(다른 row)인지
+      const startRow = Math.floor(drag.startIdx / c)
+      const endRow   = Math.floor(curIdx / c)
+      const dirLabel = startRow === endRow ? '→ 가로' : '↓ 세로'
+      tooltip.textContent = `${dispVal} ${dirLabel} ${hi - lo + 1}개 셀`
       tooltip.style.display = 'block'
     })
 
