@@ -3760,23 +3760,21 @@ async function renderOrders() {
             const vRawMonthBudget = (v.monthly_budget > 0) ? v.monthly_budget : (catMonthBudget > 0 ? Math.round(catMonthBudget / Math.max(foodVendors.length, 1)) : 0)
 
             // ── 주간 발주 업체: 이번 주 누적·목표 계산 ──
-            // 이번 주 시작~dateStr 날짜 범위에서 이 업체 발주 합계
+            // weekKey ~ dateStr 범위의 이 업체 발주 합계 + 발주 입력 날짜 추적
             let vWeekAccum = 0
+            let vWeekInputDate = null  // 이번 주에 실제 발주 입력된 날짜 (주1회이므로 보통 1개)
             if (isWeeklyVendor) {
-              Object.keys(catDailyMap).forEach(dk => {
+              // catDailyMap과 window._catDailyMap은 동일 객체이므로 한 번만 순회
+              const srcMap = window._catDailyMap || catDailyMap
+              Object.keys(srcMap).forEach(dk => {
                 if (dk < weekKey || dk > dateStr) return
-                const r2 = (catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
-                vWeekAccum += r2.total || 0
+                const r2 = (srcMap[dk]?.[v.id]?.[cat.id]) || {}
+                const amt = r2.total || 0
+                if (amt > 0) {
+                  vWeekAccum += amt
+                  vWeekInputDate = dk  // 발주 입력된 날짜 기록
+                }
               })
-              // 저장된 실시간 catDailyMap도 반영
-              if (window._catDailyMap) {
-                Object.keys(window._catDailyMap).forEach(dk => {
-                  if (dk < weekKey || dk > dateStr) return
-                  if (catDailyMap[dk]?.[v.id]?.[cat.id]) return // 이미 포함됨
-                  const r2 = (window._catDailyMap[dk]?.[v.id]?.[cat.id]) || {}
-                  vWeekAccum += r2.total || 0
-                })
-              }
             }
 
             // 주차 수 계산 (해당 월의 영업일 기준 주차)
@@ -3803,6 +3801,7 @@ async function renderOrders() {
             const vTodayPct = vTodayTarget > 0 ? Math.round(vTodayAmt / vTodayTarget * 100) : null
             const vTodayOver = vTodayPct!==null&&vTodayPct>=100
             const vTodayWarn = vTodayPct!==null&&vTodayPct>=80&&!vTodayOver
+            // 주간 업체: 당일 입력(total) 여부와 무관하게 주간 누적(vWeekAccum) 기준 색상
             const vTodayColor = vTodayOver?'#dc2626':vTodayWarn?'#d97706':(vTodayAmt>0?catColor:'#6b7280')
             // 누적 발주금액 = 이번 달 현재일까지의 합계 (vCatMonthAccum)
             const vMonthBudget = vRawMonthBudget  // 월 목표 (전체)
@@ -3821,7 +3820,7 @@ async function renderOrders() {
               <div style="margin-top:6px;padding-top:5px;border-top:1px solid #f3f4f6">
                 <!-- 오늘/주간 발주금액 / 목표 -->
                 <div style="display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:1px">
-                  <span style="color:#374151;font-weight:600">${isWeeklyVendor?'이번주 발주':'오늘 발주'}${isWeeklyVendor?'<span style="font-size:8px;background:#dbeafe;color:#1d4ed8;padding:0 3px;border-radius:3px;margin-left:3px;font-weight:700">주1회</span>':''}</span>
+                  <span style="color:#374151;font-weight:600">${isWeeklyVendor?'이번주 발주':'오늘 발주'}${isWeeklyVendor?'<span style="font-size:8px;background:#dbeafe;color:#1d4ed8;padding:0 3px;border-radius:3px;margin-left:3px;font-weight:700">주1회</span>':''}${isWeeklyVendor&&vWeekInputDate&&vWeekInputDate!==dateStr?`<span style="font-size:7px;color:#9ca3af;margin-left:2px">(${vWeekInputDate.slice(5).replace('-','/')}입력)</span>`:''}</span>
                   <span id="vcat-today-amt-${v.id}-${cat.id}-${dateStr}" style="font-weight:700;color:${vTodayColor}">${vTodayAmt>0?fmtMan(vTodayAmt):'-'}</span>
                 </div>
                 <div id="vcat-today-target-row-${v.id}-${cat.id}-${dateStr}" style="display:${vTodayTarget>0?'flex':'none'};justify-content:space-between;align-items:center;font-size:9px;color:#9ca3af;margin-bottom:2px">
@@ -7568,7 +7567,7 @@ function updateDayTotal(date) {
           const vWeekBudget5 = weeksInMonth5v > 0 ? Math.round(vRawMonthBudget5 / weeksInMonth5v) : 0
           vTodayTarget5 = isCovered ? 0 : vWeekBudget5
           vTargetLabel5v = '이번주 목표'
-          // 이번 주 누적 (this week's date range)
+          // 이번 주 누적 (weekKey ~ date 범위, 단일 소스 _catDailyMap)
           const summaryRow5 = document.querySelector(`.order-summary-row[data-date="${date}"]`)
           const weekKey5v = summaryRow5?.dataset.weekStart || date
           vTodayAmt5Final = 0
@@ -7578,6 +7577,21 @@ function updateDayTotal(date) {
             const r = (catDM5[dk]?.[v.id]?.[cat.id]) || {}
             vTodayAmt5Final += r.total || 0
           })
+          // 현재 편집 중인 셀이면 해당 날짜 값을 DOM에서 읽어 반영
+          if (aep && aep.date >= weekKey5v && aep.date <= date && String(aep.vendorId) === String(v.id) && String(aep.catId) === String(cat.id)) {
+            const savedR = (catDM5[aep.date]?.[v.id]?.[cat.id]) || {}
+            const savedAmt5 = savedR.total || 0
+            const tbody9 = document.getElementById('ordersTbody')
+            const selBase9 = `.cat-order-input[data-vendor="${v.id}"][data-category="${cat.id}"][data-date="${aep.date}"]`
+            const txEl9 = tbody9?.querySelector(`${selBase9}[data-field="taxable"]`)
+            const exEl9 = tbody9?.querySelector(`${selBase9}[data-field="exempt"]`)
+            const totEl9 = tbody9?.querySelector(`${selBase9}[data-field="total"]`)
+            const tx9 = parseOrderVal(txEl9?.value)
+            const ex9 = parseOrderVal(exEl9?.value)
+            const tot9 = parseOrderVal(totEl9?.value)
+            const domAmt9 = (tx9 > 0 || ex9 > 0) ? tx9 + Math.round(tx9 * 0.1) + ex9 : tot9
+            vTodayAmt5Final = vTodayAmt5Final - savedAmt5 + domAmt9
+          }
         } else {
           const vDailyBudget5 = _globalWD5 > 0 ? Math.round(vRawMonthBudget5 / _globalWD5) : 0
           vTodayTarget5 = isCovered ? 0 : vDailyBudget5 * multidays  // N일치 적용
