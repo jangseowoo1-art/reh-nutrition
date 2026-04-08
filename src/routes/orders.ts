@@ -356,18 +356,36 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     ORDER BY sort_order, id
   `).bind(hospitalId).all<any>()
 
+  // 소모품(supply)/카드(card)/이벤트(event) 업체는 카테고리 진행률 계산에서 제외
+  // 이들을 포함하면 catMonthTotals에 소모품 금액이 들어가 진행률이 비정상적으로 높아짐
   const monthly = await c.env.DB.prepare(`
     SELECT
-      patient_category_id,
-      COALESCE(SUM(taxable_amount), 0) as taxable,
-      COALESCE(SUM(exempt_amount), 0) as exempt,
-      COALESCE(SUM(vat_amount), 0) as vat,
-      COALESCE(SUM(total_amount), 0) as total
-    FROM daily_orders
-    WHERE hospital_id = ?
-      AND strftime('%Y', order_date) = ?
-      AND strftime('%m', order_date) = ?
-    GROUP BY patient_category_id
+      d.patient_category_id,
+      COALESCE(SUM(d.taxable_amount), 0) as taxable,
+      COALESCE(SUM(d.exempt_amount), 0) as exempt,
+      COALESCE(SUM(d.vat_amount), 0) as vat,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM daily_orders d
+    JOIN vendors v ON d.vendor_id = v.id
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+      AND strftime('%m', d.order_date) = ?
+      AND v.category NOT IN ('supply', 'card', 'event')
+    GROUP BY d.patient_category_id
+  `).bind(hospitalId, year, mm).all<any>()
+
+  // 소모품(supply) 업체별 월 합계 (진행률 바 표시용 - 카테고리 구분 없이 전체 합산)
+  const supplyVendorMonthly = await c.env.DB.prepare(`
+    SELECT
+      d.vendor_id,
+      COALESCE(SUM(d.total_amount), 0) as total
+    FROM daily_orders d
+    JOIN vendors v ON d.vendor_id = v.id
+    WHERE d.hospital_id = ?
+      AND strftime('%Y', d.order_date) = ?
+      AND strftime('%m', d.order_date) = ?
+      AND v.category IN ('supply', 'card', 'event')
+    GROUP BY d.vendor_id
   `).bind(hospitalId, year, mm).all<any>()
 
   // vendor_id + date + patient_category_id 조합 일별 데이터 (서브행 렌더링용)
@@ -495,6 +513,7 @@ orders.get('/category-monthly/:year/:month', async (c) => {
     categories: cats.results || [],
     monthly: monthly.results || [],
     dailyByVendorCat: dailyByVendorCat.results || [],
+    supplyVendorMonthly: supplyVendorMonthly.results || [],
     settings: catSettingsRows.results || [],
     todayMeals: todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 },
     prevSettings: prevCatSettingsRows.results || []

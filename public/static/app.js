@@ -2450,6 +2450,11 @@ async function renderOrders() {
   window._catDailyOrders = (catOrderData?.dailyByVendorCat) || []  // 실제 카테고리 발주 데이터
   window._catTodayMeals = catOrderData?.todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 }
   window._catPrevSettings = catOrderData?.prevSettings || []
+  // 소모품 업체별 월 합계 (vendor_id → total 맵) - 진행률 바 표시용
+  window._supplyVendorMonthlyMap = {}
+  ;(catOrderData?.supplyVendorMonthly || []).forEach(r => {
+    window._supplyVendorMonthlyMap[r.vendor_id] = r.total || 0
+  })
   // 발주 페이지 로드 시 항상 최신 dashData로 catDietPricesData 갱신
   // (대시보드에서 다른 병원을 보다가 넘어온 경우 stale 데이터 방지)
   if (dashData?.catDietPrices && dashData.catDietPrices.length > 0) {
@@ -3813,15 +3818,12 @@ async function renderOrders() {
               <div style="display:flex;gap:6px;flex-wrap:wrap">
               ${supplyVendors.map(v => {
                 // 소모품 업체: catDailyMap에서 해당 업체의 모든 카테고리 당일 합산
+                // catDailyMap에는 supply 업체 데이터가 없으므로(API에서 제외됨) 당일 발주는 0으로 표시됨
+                // 실시간 업데이트는 updateLiveAmounts()에서 _catDailyMap 기반으로 처리됨
                 const vMapToday = catDailyMap[dateStr]?.[v.id] || {}
                 const supplyTodayTotal = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
-                // 월 누적: dateStr 이하 전체 합산
-                let supplyMonthAccum = 0
-                Object.keys(catDailyMap).forEach(dk => {
-                  if (dk > dateStr) return
-                  const sm = catDailyMap[dk]?.[v.id] || {}
-                  Object.values(sm).forEach(r => { supplyMonthAccum += r.total || 0 })
-                })
+                // 월 누적: 백엔드에서 제공하는 supplyVendorMonthly 기반 (카테고리 구분 없이 전체 합산)
+                const supplyMonthAccum = window._supplyVendorMonthlyMap?.[v.id] || 0
                 // 소모품 업체 자체 monthly_budget 기준 진행률
                 const vMonthBudgetS = v.monthly_budget || 0
                 const vMonthPctS = vMonthBudgetS > 0 ? Math.round(supplyMonthAccum / vMonthBudgetS * 100) : null
@@ -5672,6 +5674,8 @@ async function saveCatOrderInput(input) {
     if (!window._catDailyMap[date]) window._catDailyMap[date] = {}
     if (!window._catDailyMap[date][parseInt(vendorId)]) window._catDailyMap[date][parseInt(vendorId)] = {}
     const savedTotal = totalOverride !== null ? totalOverride : taxable + exempt + vat
+    const prevEntry = window._catDailyMap[date][parseInt(vendorId)][parseInt(categoryId)] || {}
+    const prevTotal = prevEntry.total || 0
     window._catDailyMap[date][parseInt(vendorId)][parseInt(categoryId)] = {
       order_date: date,
       vendor_id: parseInt(vendorId),
@@ -5680,6 +5684,13 @@ async function saveCatOrderInput(input) {
       exempt: totalOverride !== null ? 0 : exempt,
       vat: totalOverride !== null ? 0 : vat,
       total: savedTotal
+    }
+    // 소모품/카드/이벤트 업체인 경우 _supplyVendorMonthlyMap도 실시간 업데이트
+    const savedVendor = (window._ordersVendors || []).find(v => String(v.id) === String(vendorId))
+    if (savedVendor && (savedVendor.category === 'supply' || savedVendor.category === 'card' || savedVendor.category === 'event')) {
+      if (!window._supplyVendorMonthlyMap) window._supplyVendorMonthlyMap = {}
+      const prevMonthly = window._supplyVendorMonthlyMap[parseInt(vendorId)] || 0
+      window._supplyVendorMonthlyMap[parseInt(vendorId)] = prevMonthly - prevTotal + savedTotal
     }
   }
 
@@ -7313,13 +7324,21 @@ function updateDayTotal(date) {
           const vendorCardMap = window._cardDailyMap?.[v.id] || {}
           Object.entries(vendorCardMap).forEach(([dk, amt]) => { if (dk <= date) vCatLiveTotal += amt || 0 })
         } else if (v.category === 'supply' || v.category === 'card') {
-          // 소모품/카드 업체: 카테고리 구분 없이 전체 합산
-          const dailyMap = window._catDailyMap || {}
-          Object.keys(dailyMap).forEach(dk => {
+          // 소모품/카드 업체: _supplyVendorMonthlyMap 기반 월 합계 사용
+          // (초기 렌더 및 저장 후 실시간 업데이트 일관성 유지)
+          // _catDailyMap에는 소모품 업체 데이터가 API에서 제외되어 없음
+          // → _supplyVendorMonthlyMap(백엔드 제공 월합계) + 당월 추가 저장분(_catDailyMap)으로 보정
+          const baseMonthly = window._supplyVendorMonthlyMap?.[v.id] || 0
+          // _catDailyMap에 소모품 저장분이 있으면 추가 합산 (저장 후 실시간 반영)
+          const dailyMap2 = window._catDailyMap || {}
+          let savedAfterLoad = 0
+          Object.keys(dailyMap2).forEach(dk => {
             if (dk > date) return
-            const vMap = dailyMap[dk]?.[v.id] || {}
-            Object.values(vMap).forEach(r => { vCatLiveTotal += r.total || 0 })
+            const vMap2 = dailyMap2[dk]?.[v.id] || {}
+            Object.values(vMap2).forEach(r2 => { savedAfterLoad += r2.total || 0 })
           })
+          // 저장된 값이 기본 월합계보다 크면 최신 저장분 사용, 아니면 기본값 사용
+          vCatLiveTotal = Math.max(baseMonthly, savedAfterLoad)
         } else {
           const dailyMap = window._catDailyMap || {}
           Object.keys(dailyMap).forEach(dk => {
