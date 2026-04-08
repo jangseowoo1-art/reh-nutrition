@@ -589,7 +589,15 @@ orders.post('/save-category', async (c) => {
     totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount || 0)
   }
 
-  // vendor + date + category 조합으로 upsert
+  // vendor + date 조합으로 기존 레코드 조회 (patient_category_id 무관)
+  // 소모품/카드 업체는 날짜+업체 기준으로 단일 레코드만 유지 (중복 방지)
+  const existingAny = await c.env.DB.prepare(`
+    SELECT id, patient_category_id FROM daily_orders
+    WHERE hospital_id=? AND vendor_id=? AND order_date=?
+    ORDER BY id DESC LIMIT 1
+  `).bind(hospitalId, vendorId, orderDate).first<any>()
+
+  // patient_category_id가 일치하는 레코드도 별도 확인
   const existing = await c.env.DB.prepare(`
     SELECT id FROM daily_orders
     WHERE hospital_id=? AND vendor_id=? AND order_date=?
@@ -597,14 +605,14 @@ orders.post('/save-category', async (c) => {
   `).bind(hospitalId, vendorId, orderDate, patientCategoryId || null, patientCategoryId || null).first<any>()
 
   if (totalAmount === 0 && !note) {
-    // 모든 금액이 0이면 기존 레코드 삭제 (빈 입력으로 초기화)
-    if (existing) {
-      await c.env.DB.prepare(`DELETE FROM daily_orders WHERE id=?`).bind(existing.id).run()
-    }
+    // 모든 금액이 0이면 해당 날짜+업체의 모든 레코드 삭제 (빈 입력으로 초기화)
+    await c.env.DB.prepare(`DELETE FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=?`)
+      .bind(hospitalId, vendorId, orderDate).run()
     return c.json({ success: true, totalAmount: 0, deleted: true })
   }
 
   if (existing) {
+    // 동일 patient_category_id 레코드 업데이트
     await c.env.DB.prepare(`
       UPDATE daily_orders SET
         taxable_amount=?, exempt_amount=?, vat_amount=?, total_amount=?,
@@ -612,6 +620,15 @@ orders.post('/save-category', async (c) => {
       WHERE id=?
     `).bind(taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
             patientCategoryId||null, note||null, existing.id).run()
+  } else if (existingAny) {
+    // 다른 patient_category_id로 저장된 레코드가 있으면 업데이트 (중복 방지)
+    await c.env.DB.prepare(`
+      UPDATE daily_orders SET
+        taxable_amount=?, exempt_amount=?, vat_amount=?, total_amount=?,
+        patient_category_id=?, note=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).bind(taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
+            patientCategoryId||null, note||null, existingAny.id).run()
   } else {
     await c.env.DB.prepare(`
       INSERT INTO daily_orders
