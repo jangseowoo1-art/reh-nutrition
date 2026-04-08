@@ -266,7 +266,7 @@ function getAppShell(): string {
 <script src="/static/axios.min.js"></script>
 <script src="/static/xlsx.bundle.js"></script>
 <script src="/static/jspdf.umd.min.js" defer></script>
-<link rel="stylesheet" href="/static/styles.css?v=20260330d">
+<link rel="stylesheet" href="/static/styles.css?v=20260408a">
 </head>
 <body class="bg-gray-50">
 
@@ -369,7 +369,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260401f"></script>
+<script src="/static/app.js?v=20260408a"></script>
 </body>
 </html>`
 }

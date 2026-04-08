@@ -3867,28 +3867,24 @@ async function renderOrders() {
                 // 초기 렌더 시에는 당일 데이터가 _catDailyMap에도 없으므로 0 표시 → 정상
                 const vMapToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
                 const supplyTodayTotal = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
-                // 월 누적: dateStr까지의 누적 (supplyDailyMap 기반 - 날짜별 계산)
-                // _supplyDailyMap이 없으면 월 전체 합계(_supplyVendorMonthlyMap) fallback
-                let supplyMonthAccum = 0
+                // 월 누적: dateStr 이전 날짜까지의 합산 (당일 제외) + 당일 live 입력값
+                // ※ 당일 오늘 발주가 없으면 누적란도 0으로 표시 (혼란 방지)
+                // supplyDailyMap: GROUP BY order_date, vendor_id → 날짜별 단일 합산값
                 const supplyDMap = window._supplyDailyMap?.[v.id] || {}
-                if (Object.keys(supplyDMap).length > 0) {
-                  // 날짜별 데이터가 있으면 dateStr 이하 날짜만 합산
-                  Object.keys(supplyDMap).forEach(dk => {
-                    if (dk <= dateStr) supplyMonthAccum += supplyDMap[dk] || 0
-                  })
-                  // 실시간 입력값도 반영 (_catDailyMap의 해당 날짜 소모품 데이터)
-                  const liveToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
-                  const liveTodayTotal = Object.values(liveToday).reduce((s2, r2) => s2 + (r2.total || 0), 0)
-                  // supplyDMap에 이미 dateStr 데이터가 있으면 live로 대체(중복 방지)
-                  if (supplyDMap[dateStr] !== undefined) {
-                    supplyMonthAccum = supplyMonthAccum - (supplyDMap[dateStr] || 0) + liveTodayTotal
-                  } else {
-                    supplyMonthAccum += liveTodayTotal
-                  }
-                } else {
-                  // fallback: 월 전체 합계 (기존 동작 유지)
-                  supplyMonthAccum = window._supplyVendorMonthlyMap?.[v.id] || 0
-                }
+                // 당일 live 입력값 (저장 전 실시간)
+                const liveToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
+                const liveTodayTotal = Object.values(liveToday).reduce((s2, r2) => s2 + (r2.total || 0), 0)
+                // 당일 저장된 금액 (supplyDMap 기준)
+                const savedToday = supplyDMap[dateStr] || 0
+                // 실제 오늘 발주 = live 우선, 없으면 saved
+                const actualTodayAmt = liveTodayTotal > 0 ? liveTodayTotal : savedToday
+                // dateStr 이전(미포함) 날짜 누적
+                let prevAccum = 0
+                Object.keys(supplyDMap).forEach(dk => {
+                  if (dk < dateStr) prevAccum += supplyDMap[dk] || 0
+                })
+                // 누적 발주 = 이전 누적 + 오늘 발주
+                let supplyMonthAccum = prevAccum + actualTodayAmt
                 // 소모품 업체 자체 monthly_budget 기준 진행률
                 const vMonthBudgetS = v.monthly_budget || 0
                 const vMonthPctS = vMonthBudgetS > 0 ? Math.round(supplyMonthAccum / vMonthBudgetS * 100) : null
@@ -7491,22 +7487,15 @@ function updateDayTotal(date) {
           const vendorCardMap = window._cardDailyMap?.[v.id] || {}
           Object.entries(vendorCardMap).forEach(([dk, amt]) => { if (dk <= date) vCatLiveTotal += amt || 0 })
         } else if (v.category === 'supply' || v.category === 'card') {
-          // 소모품/카드 업체: _supplyDailyMap(날짜별) 기반으로 date까지 누적 계산
+          // 소모품/카드 업체: _supplyDailyMap(날짜별) 기반으로 date 이전 누적 + 당일 live
           const supplyDMap = window._supplyDailyMap?.[v.id] || {}
-          if (Object.keys(supplyDMap).length > 0) {
-            Object.keys(supplyDMap).forEach(dk => { if (dk <= date) vCatLiveTotal += supplyDMap[dk] || 0 })
-            // 오늘 실시간 입력값 반영 (_catDailyMap)
-            const liveToday2 = (window._catDailyMap || {})[date]?.[v.id] || {}
-            const liveTodayAmt2 = Object.values(liveToday2).reduce((s, r) => s + (r.total || 0), 0)
-            if (supplyDMap[date] !== undefined) {
-              vCatLiveTotal = vCatLiveTotal - (supplyDMap[date] || 0) + liveTodayAmt2
-            } else {
-              vCatLiveTotal += liveTodayAmt2
-            }
-          } else {
-            // fallback: 월 전체 합계
-            vCatLiveTotal = window._supplyVendorMonthlyMap?.[v.id] || 0
-          }
+          // date 이전(미포함) 누적
+          Object.keys(supplyDMap).forEach(dk => { if (dk < date) vCatLiveTotal += supplyDMap[dk] || 0 })
+          // 오늘 실시간 입력값 우선, 없으면 저장값
+          const liveToday2 = (window._catDailyMap || {})[date]?.[v.id] || {}
+          const liveTodayAmt2 = Object.values(liveToday2).reduce((s, r) => s + (r.total || 0), 0)
+          const savedToday2 = supplyDMap[date] || 0
+          vCatLiveTotal += liveTodayAmt2 > 0 ? liveTodayAmt2 : savedToday2
         } else {
           const dailyMap = window._catDailyMap || {}
           Object.keys(dailyMap).forEach(dk => {
