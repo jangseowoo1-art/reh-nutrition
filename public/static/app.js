@@ -689,6 +689,34 @@ async function api(method, url, data = null) {
 /** 숫자 → 천단위 콤마 (표시용) */
 function fmt(n) { return (n || 0).toLocaleString('ko-KR') }
 
+/** 식수 헤더 항목명 줄바꿈 처리
+ * - 공백 있으면 공백 기준으로 줄바꿈
+ * - 공백 없는 한글 4자 이상이면 2자 단위로 줄바꿈
+ * 예: "항암 보호자식" → "항암<br>보호자식", "직원일반식" → "직원<br>일반식"
+ */
+function mealHeaderLabel(label) {
+  if (!label) return label
+  // 공백이 있으면 공백 기준 줄바꿈
+  if (/\s/.test(label)) return label.replace(/\s+/g, '<br>')
+  // 공백 없고 4자 이상이면 2자 단위로 줄바꿈
+  if (label.length >= 4) {
+    // 알려진 패턴 우선 처리
+    const patterns = [
+      [/^(항암)(보호자식)$/, '$1<br>$2'],
+      [/^(요양)(보호자식)$/, '$1<br>$2'],
+      [/^(직원)(일반식)$/, '$1<br>$2'],
+      [/^(직원)(치료식)$/, '$1<br>$2'],
+      [/^(간병)(사식)$/, '$1<br>$2'],
+    ]
+    for (const [re, rep] of patterns) {
+      if (re.test(label)) return label.replace(re, rep)
+    }
+    // 그 외: 앞 2자 + 나머지 줄바꿈
+    return label.slice(0, 2) + '<br>' + label.slice(2)
+  }
+  return label
+}
+
 /** 숫자 → 콤마+'원' */
 function fmtWon(n) { return `${(n || 0).toLocaleString('ko-KR')}원` }
 
@@ -8020,8 +8048,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
         <thead style="position:sticky;top:0;z-index:20">
           <!-- 1행: 식사 구분 (조식/중식/석식/합계) - 큰 글씨, 진한 색, 명확한 구분 -->
           <tr>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="position:sticky;left:0;z-index:25;min-width:30px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 4px">일</th>
-            <th rowspan="${hasLevel2 ? 3 : 2}" style="position:sticky;left:30px;z-index:25;min-width:24px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:13px;font-weight:700;padding:6px 2px">요</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="position:sticky;left:0;z-index:25;width:26px;min-width:26px;max-width:26px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:12px;font-weight:700;padding:4px 2px">일</th>
+            <th rowspan="${hasLevel2 ? 3 : 2}" style="position:sticky;left:26px;z-index:25;width:20px;min-width:20px;max-width:20px;border:2px solid #374151;background:#1f2937;color:#e5e7eb;font-size:12px;font-weight:700;padding:4px 1px">요</th>
             ${mealSections.map((s, si) => {
               const span = si < 3 ? colCount : allLabels.length + 1
               return `<th colspan="${span}" style="
@@ -8029,10 +8057,10 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 border-bottom:3px solid ${s.border};
                 background:${s.bg};
                 color:${s.textColor};
-                font-size:16px;
+                font-size:13px;
                 font-weight:900;
-                padding:9px 4px;
-                letter-spacing:4px;
+                padding:6px 4px;
+                letter-spacing:3px;
                 text-align:center;
                 text-shadow:0 1px 3px rgba(0,0,0,0.4);
               ">${s.label}</th>`
@@ -8046,6 +8074,8 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
               const groupCells = level2Groups.map((g, gi) => {
                 const isFirst = gi===0
                 const bl = isFirst ? `border-left:3px solid ${sec.border}` : `border-left:2px solid ${g.color}50`
+                // 대분류명 줄바꿈 처리 (비급여식 → 비급여<br>식 등)
+                const g2label = g.label.replace(/\s+/g, '<br>')
                 return `<th colspan="${g.count}" style="
                   padding:4px 2px;
                   ${bl};
@@ -8055,9 +8085,11 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                   color:${g.color};
                   font-size:11px;
                   font-weight:800;
-                  white-space:nowrap;
+                  white-space:normal;
+                  word-break:keep-all;
+                  line-height:1.3;
                   text-align:center;
-                "><i class="fas ${g.icon}" style="margin-right:2px;font-size:10px"></i>${g.label}</th>`
+                "><i class="fas ${g.icon}" style="display:block;margin-bottom:2px;font-size:10px"></i>${g2label}</th>`
               }).join('')
               return groupCells + `<th style="
                 border-left:2px solid rgba(255,255,255,0.25);
@@ -8101,7 +8133,9 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
                 const bl = isFirst ? `border-left:3px solid ${sec.border};` : `border-left:1px solid ${sec.border}40;`
                 const br = isLast ? `;border-right:1px solid ${sec.border}40` : ''
                 const titleAttr = isLinkedTherapy ? `title="${fieldObj._linkedGroupName} 치료식"` : ''
-                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};${br}padding:4px 2px;font-size:10px;font-weight:700;white-space:nowrap;text-align:center;width:40px;min-width:38px;max-width:44px">${isLinkedTherapy?'↳ ':''}${label}</th>`
+                // 항목명 줄바꿈 처리 (mealHeaderLabel 헬퍼 사용)
+                const labelHtml = mealHeaderLabel(label)
+                return `<th ${titleAttr} style="${bl}${bg}${textColor}border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};${br}padding:4px 2px;font-size:10px;font-weight:700;white-space:normal;word-break:keep-all;line-height:1.3;text-align:center;width:40px;min-width:38px;max-width:44px">${isLinkedTherapy?'↳<br>':''}${labelHtml}</th>`
               }).join('') + `<th style="border-left:2px solid rgba(255,255,255,0.25);border-right:3px solid ${sec.border};border-top:2px solid ${sec.border}80;border-bottom:2px solid ${sec.border};padding:4px 2px;background:${isTot?'#0f172a':'#1e3a8a'};color:#93c5fd;font-size:10px;font-weight:800;text-align:center;width:36px;min-width:34px">합</th>`
             }).join('')}
           </tr>
@@ -8460,8 +8494,8 @@ function buildMealRow(day, mealMap, customFields, colCount) {
 
   const dayBg = dow==='일' ? '#fee2e2' : dow==='토' ? '#fef9c3' : 'white'
   return `<tr class="${rowClass}" data-date="${dateStr}">
-    <td class="font-semibold text-center meal-sticky-left" style="position:sticky;left:0;z-index:5;background:${dayBg};border:1px solid #d1d5db;min-width:30px">${day}</td>
-    <td class="text-center meal-sticky-dow ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="position:sticky;left:30px;z-index:5;background:${dayBg};border:1px solid #d1d5db;min-width:24px">${dow}</td>
+    <td class="font-semibold text-center meal-sticky-left" style="position:sticky;left:0;z-index:5;background:${dayBg};border:1px solid #d1d5db;width:26px;min-width:26px;max-width:26px;font-size:11px;padding:3px 1px">${day}</td>
+    <td class="text-center meal-sticky-dow ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="position:sticky;left:26px;z-index:5;background:${dayBg};border:1px solid #d1d5db;width:20px;min-width:20px;max-width:20px;font-size:11px;padding:3px 1px">${dow}</td>
     ${cells}
   </tr>`
 }
