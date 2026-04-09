@@ -3061,11 +3061,18 @@ async function renderOrders() {
       <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch">
       <div class="flex gap-2 min-w-max text-xs" id="vendorSummaryRow">
         ${vendors.map(v => {
-          // 법인카드 업체: _cardDailyMap에서 월 합계 계산 (orderData에 없음)
+          // 소모품/카드/이벤트 업체: 중복 방지를 위해 _supplyDailyMap 또는 _cardDailyMap 사용
+          // (patient_category_id 중복 행 합산 방지)
           let vTotal
           if (v.is_card_type) {
+            // 법인카드 업체: _cardDailyMap에서 월 합계 계산
             vTotal = Object.values(window._cardDailyMap?.[v.id] || {}).reduce((s, a) => s + a, 0)
+          } else if (v.category === 'supply' || v.category === 'card' || v.category === 'event') {
+            // 소모품/카드/이벤트 업체: _supplyDailyMap에서 월 합계 계산
+            const supplyDMap = window._supplyDailyMap?.[v.id] || {}
+            vTotal = Object.values(supplyDMap).reduce((s, amt) => s + (amt || 0), 0)
           } else {
+            // 일반 식재료 업체: orderList에서 계산
             const vOrders = (orderList || []).filter(o => o.vendor_id === v.id)
             vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
           }
