@@ -8926,8 +8926,7 @@ function bindMealInputEvents() {
 
       const self = this
 
-      if (text.includes('	') || text.includes('
-')) {
+      if (text.includes('\t') || text.includes('\n')) {
         // ─ 엑셀/스프레드시트 다중 셀 붙여넣기
         const pasteGrid = _parsePasteText(text)
         _applyExcelPaste(self, pasteGrid)
