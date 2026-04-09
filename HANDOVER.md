@@ -1,884 +1,413 @@
-# 🏥 병원 급식 예산 관리 시스템 — 개발자 인수인계 문서
-
-> **작성일**: 2026-04-02  
-> **버전**: v2.0  
-> **대상**: 신규 개발자 / 유지보수 담당자  
-> **작성 목적**: 현재 운영 중인 시스템의 구조, 색상 체계, 기능 히스토리, 알려진 이슈를 인수인계
+# 🏥 급식 예산관리 시스템 인수인계서
+> 작성일: 2026-04-09  
+> 샌드박스: Novita AI (기존 샌드박스 ID 그대로 유지)
 
 ---
 
-## 📋 목차
+## ✅ 새 채팅방 시작 시 첫 메시지 (그대로 복사해서 사용)
 
-1. [프로젝트 개요](#1-프로젝트-개요)
-2. [기술 스택 & 인프라](#2-기술-스택--인프라)
-3. [프로젝트 구조](#3-프로젝트-구조)
-4. [디자인 시스템 (색상 & UI 규칙)](#4-디자인-시스템-색상--ui-규칙)
-5. [사용자 역할 체계](#5-사용자-역할-체계)
-6. [메뉴 구조](#6-메뉴-구조)
-7. [화면별 기능 상세](#7-화면별-기능-상세)
-8. [백엔드 API 구조](#8-백엔드-api-구조)
-9. [데이터베이스 구조](#9-데이터베이스-구조)
-10. [핵심 계산 로직](#10-핵심-계산-로직)
-11. [기능 개발 히스토리](#11-기능-개발-히스토리)
-12. [알려진 이슈 & 수정 필요 항목](#12-알려진-이슈--수정-필요-항목)
-13. [개발 환경 설정](#13-개발-환경-설정)
-14. [배포 방법](#14-배포-방법)
-15. [주의사항 & 개발 원칙](#15-주의사항--개발-원칙)
+```
+급식 예산관리 시스템 개발을 이어서 진행합니다.
+
+[환경정보]
+- 샌드박스: 기존 Novita AI 샌드박스 그대로 유지 (재사용)
+- 프로젝트 경로: /home/user/webapp
+- PM2 앱 이름: hospital-meal
+- 서비스 포트: 3000
+- DB 파일: /home/user/webapp/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/c1d1e6f550688b742edd79dd88a75718f5137a380244b7655328b4febec74c4f.sqlite
+- DB 백업: /home/user/webapp/backup_full_db_20260409_*.sql
+- 인수인계서: /home/user/webapp/HANDOVER.md 를 먼저 읽어주세요
+
+[서비스 재시작 명령어]
+cd /home/user/webapp && npm run build && pm2 restart hospital-meal
+
+[요청 작업]
+← 여기에 원하는 작업 입력
+```
 
 ---
 
-## 1. 프로젝트 개요
+## 1. 프로젝트 기본 정보
 
 | 항목 | 내용 |
 |------|------|
-| **시스템명** | 병원 급식 예산 관리 시스템 |
-| **목적** | 병원 영양사의 급식 예산·발주·식수·스케줄을 통합 관리하고 관리자/경영진에게 대시보드 제공 |
-| **주요 사용자** | 병원 영양사, 시스템 관리자, 운영진(executive), 경영진(CEO) |
-| **운영 URL** | Cloudflare Pages 배포 (wrangler project: `hospital-meal-budget`) |
-| **DB** | Cloudflare D1 SQLite (`hospital-meal-production`) |
+| 프로젝트 경로 | `/home/user/webapp` |
+| 서비스 포트 | 3000 |
+| 프레임워크 | Hono (TypeScript) + Cloudflare Pages |
+| DB 종류 | SQLite (Wrangler D1 local) |
+| DB 이름 | `hospital-meal-production` |
+| DB 파일 경로 | `/home/user/webapp/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/c1d1e6f550688b742edd79dd88a75718f5137a380244b7655328b4febec74c4f.sqlite` |
+| PM2 앱 이름 | `hospital-meal` |
+| 빌드 출력 | `/home/user/webapp/dist/` |
+| 프론트엔드 | `/home/user/webapp/public/static/app.js` (단일 파일, 약 37,000줄) |
 
 ---
 
-## 2. 기술 스택 & 인프라
-
-```
-Frontend:  Vanilla JavaScript (SPA 방식, 프레임워크 없음)
-           TailwindCSS (CDN), Font Awesome (CDN), Chart.js (CDN)
-           jsPDF (로컬 번들: public/static/jspdf.umd.min.js)
-           NanumGothic 폰트 (로컬: public/static/NanumGothic.ttf, .b64.txt)
-
-Backend:   Hono Framework (TypeScript)
-           Cloudflare Workers + Pages
-
-Database:  Cloudflare D1 (SQLite 호환)
-           DB Binding: "DB"
-           DB Name:    hospital-meal-production
-           DB ID:      8cd39977b63bb3122ba4bce948af09ffc1cd80e74253123a1208272811ea0b15
-
-Build:     Vite + @hono/vite-cloudflare-pages
-           빌드 후 app.js / styles.css 수동 복사 (package.json build 스크립트 참고)
-
-인증:      JWT 토큰 (Authorization: Bearer {token})
-           localStorage에 token, role, hospitalName, username 저장
-```
-
-### 빌드 명령
+## 2. 서비스 시작 / 재시작 방법
 
 ```bash
-# 빌드
-npm run build
-# → vite build 후 public/static/app.js, styles.css → dist/static/ 복사
+# 포트 정리 후 빌드 + 시작
+fuser -k 3000/tcp 2>/dev/null || true
+cd /home/user/webapp && npm run build
+cd /home/user/webapp && pm2 start ecosystem.config.cjs
 
-# 로컬 개발 (PM2 필요)
-pm2 start ecosystem.config.cjs
+# 이미 실행 중일 때 재시작
+cd /home/user/webapp && npm run build && pm2 restart hospital-meal
 
-# 배포
-npm run deploy
+# 서비스 확인
+curl http://localhost:3000/   # 200 OK 이면 정상
+
+# 로그 확인
+pm2 logs hospital-meal --nostream
 ```
 
 ---
 
-## 3. 프로젝트 구조
+## 3. 주요 파일 구조
 
 ```
-webapp/
+/home/user/webapp/
 ├── src/
-│   ├── index.tsx               ← 메인 진입점 (라우트 등록, 인증 미들웨어)
-│   ├── middleware/
-│   │   └── auth.ts             ← JWT_SECRET, 인증 미들웨어
-│   ├── utils/
-│   │   └── auth.ts             ← verifyToken, hashPassword
+│   ├── index.tsx                  # 메인 Hono 앱 (라우팅 진입점)
 │   └── routes/
-│       ├── admin.ts            ← 관리자 전용 API (병원·계정·휴일·예산설정 등)
-│       ├── auth.ts             ← 로그인/로그아웃/세션
-│       ├── card_expenses.ts    ← 법인카드 지출 관리
-│       ├── ceo-dashboard.ts    ← 경영 대시보드 집계
-│       ├── dashboard.ts        ← 영양사 월별 대시보드
-│       ├── executive.ts        ← 운영진 대시보드
-│       ├── meals.ts            ← 식수 입력
-│       ├── orders.ts           ← 발주 입력
-│       ├── schedule.ts         ← 스케줄 관리 (직원·휴가·외부인력 등)
-│       ├── settings.ts         ← 마감 요청·세션·알림
-│       ├── transaction.ts      ← 거래명세서 분석 (AI 포함)
-│       └── vendors.ts          ← 업체 관리
-│
-├── public/
-│   └── static/
-│       ├── app.js              ← 프론트엔드 전체 (~34,800줄, SPA)
-│       ├── executive.js        ← 운영진/경영 대시보드 전용 JS
-│       ├── styles.css          ← 전체 CSS
-│       ├── style.css           ← 추가 CSS (거래명세서 등)
-│       ├── jspdf.umd.min.js    ← PDF 출력 라이브러리 (로컬)
-│       ├── NanumGothic.ttf     ← 한글 폰트 (PDF용)
-│       ├── NanumGothicBold.ttf ← 한글 폰트 볼드 (PDF용)
-│       └── NanumGothic.b64.txt ← Base64 인코딩 폰트 (PDF 임베드용)
-│
-├── migrations/                 ← D1 마이그레이션 SQL (0001~0047)
-├── wrangler.jsonc              ← Cloudflare 설정
+│       ├── orders.ts              # 발주 입력 API
+│       ├── meals.ts               # 식수 입력 API
+│       ├── dashboard.ts           # 대시보드 API
+│       ├── settings.ts            # 설정 API (업체, 예산 등)
+│       ├── schedule.ts            # 스케줄 관리 API
+│       ├── auth.ts                # 로그인/인증 API
+│       ├── card_expenses.ts       # 법인카드 지출 API
+│       └── admin.ts               # 관리자 API
+├── public/static/
+│   └── app.js                     # ⚠️ 프론트엔드 전체 (약 37,000줄 단일 파일)
+├── migrations/                    # DB 마이그레이션 SQL 파일들
+├── wrangler.jsonc                 # Cloudflare Workers 설정
+├── ecosystem.config.cjs           # PM2 설정
+├── vite.config.ts                 # 빌드 설정
 ├── package.json
-├── vite.config.ts
-├── ecosystem.config.cjs        ← PM2 설정 (로컬 개발용)
-└── tsconfig.json
-```
-
-### ⚠️ 중요: app.js 구조
-
-`app.js`는 단일 파일 SPA로 **약 34,800줄**입니다.  
-빌드 도구 없이 직접 편집하며, 주요 렌더 함수 위치:
-
-| 함수명 | 시작 라인 | 역할 |
-|--------|-----------|------|
-| `renderDashboard()` | 669 | 영양사 월별 대시보드 |
-| `renderOrders()` | 2072 | 발주 입력 화면 |
-| `renderMeals()` | 6767 | 식수 입력 화면 |
-| `renderMealsContent()` | 6802 | 식수 내용 렌더링 |
-| `renderSettings()` | 8855 | 마감 요청 화면 |
-| `renderAdminDashboard()` | 10525 | 관리자 전체 현황 |
-| `renderSchedule()` | 11885 | 스케줄 관리 화면 |
-| `renderScheduleTab()` | 11951 | 스케줄 탭 전환 |
-| `renderCardExpenseModal()` | 24966 | 법인카드 입력 모달 |
-| `renderCeoDashboard()` | 25924 | 경영 대시보드 |
-| `renderTransactionAnalysis()` | 27245 | 거래명세서 분석 |
-
----
-
-## 4. 디자인 시스템 (색상 & UI 규칙)
-
-### 🎨 메인 컬러 팔레트 (진녹색 계열)
-
-```css
-/* 사이드바 그라디언트 */
---sidebar-dark:    #1a4731   /* 가장 어두운 녹 (사이드바 상단) */
---sidebar-mid:     #15502b   /* 중간 녹 (사이드바 중간) */
---sidebar-deep:    #123d22   /* 깊은 녹 (사이드바 하단) */
-
-/* 주요 액션 컬러 */
---green-base:      #166534   /* 기본 녹 (테이블 헤더, 버튼) */
---green-medium:    #15803d   /* 중간 녹 (호버, 그라디언트 끝) */
---green-light:     #16a34a   /* 밝은 녹 (버튼, 활성 탭, 포커스) */
---green-bright:    #22c55e   /* 가장 밝은 녹 (성공 버튼) */
-```
-
-### 📊 발주 입력 테이블 — 업체 세금 유형별 색상
-
-| 세금 유형 | 배경색 | 글자색 | 레이블 |
-|-----------|--------|--------|--------|
-| `taxable` (과세) | `#dcfce7` | `#166534` | 과세 |
-| `exempt` (면세) | `#fffbeb` | `#92400e` | 면세 |
-| `vat` (VAT 별도) | `#f9fafb` | `#6b7280` | VAT |
-| `mixed_total` (혼합합계) | `#eff6ff` | `#1d4ed8` | 합계 |
-| `card` (법인카드) | `#f3e8ff` | `#7c3aed` | 카드 |
-
-### 🗂️ 발주 업체 카테고리별 뱃지 색상
-
-```javascript
-organic:'bg-green-400'   // 유기농
-delivery:'bg-purple-400' // 납품
-market:'bg-orange-400'   // 시장구매
-event:'bg-pink-400'      // 이벤트
-card:'bg-gray-400'       // 법인카드
-```
-
-### 🏷️ 상태 뱃지 색상
-
-| 클래스 | 배경 | 글자 | 용도 |
-|--------|------|------|------|
-| `badge-green` | `#dcfce7` | `#166534` | 정상/완료 |
-| `badge-yellow` | `#fef9c3` | `#a16207` | 주의/경고 |
-| `badge-red` | `#fee2e2` | `#dc2626` | 오류/초과 |
-| `badge-blue` | `#dcfce7` | `#166534` | 정보 (현재 녹과 동일) |
-| `badge-gray` | `#f1f5f9` | `#64748b` | 비활성 |
-| `badge-purple` | `#f3e8ff` | `#7c3aed` | 법인카드 |
-
-### 📅 달력/테이블 행 배경
-
-| 상태 | 배경색 | 용도 |
-|------|--------|------|
-| 주말 행 | `#fffbeb` | 토·일요일 |
-| 공휴일 행 | `#fef2f2` | 법정 공휴일 |
-| 주중 | 흰색 | 일반 평일 |
-| 오늘 | `#eff6ff` (파란빛) | 현재 날짜 강조 |
-| 당월 | `#f0fdf4` (녹빛) | 선택된 달 |
-
-### 🔴 진행률 바 색상
-
-```css
-.progress-green  → linear-gradient(#16a34a → #15803d)  /* 정상 범위 */
-.progress-yellow → linear-gradient(#f59e0b → #d97706)  /* 주의 범위 */
-.progress-red    → linear-gradient(#ef4444 → #dc2626)  /* 초과/위험 */
-.progress-blue   → linear-gradient(#166534 → #15803d)  /* 기타 */
-```
-
-### 🖥️ 레이아웃 구조
-
-```
-┌────────────────────────────────────────────────────┐
-│  사이드바 (240px, 진녹색 그라디언트)                  │
-│  ┌──────────────────────────────────────────────┐  │
-│  │ 로고 + 병원명                                  │  │
-│  │ 메뉴 섹션 제목 (대문자, 흰색 35% 투명)          │  │
-│  │ 메뉴 항목 (아이콘 + 라벨)                      │  │
-│  └──────────────────────────────────────────────┘  │
-│                                                    │
-│  메인 콘텐츠 (flex-1, #f8fafc 배경)                 │
-│  ┌──────────────────────────────────────────────┐  │
-│  │ 상단 헤더 (페이지 제목 + 월 선택 + 사용자 정보) │  │
-│  │ 콘텐츠 영역 (id="pageContent")                │  │
-│  └──────────────────────────────────────────────┘  │
-│                                                    │
-│  모바일 하단 네비게이션 (768px 이하)                  │
-└────────────────────────────────────────────────────┘
+├── backup_full_db_20260409_*.sql  # DB 전체 백업 (SQL dump)
+└── HANDOVER.md                    # 이 인수인계서
 ```
 
 ---
 
-## 5. 사용자 역할 체계
+## 4. 로그인 계정 정보 (users 테이블)
 
-| role 값 | 명칭 | 접근 가능 화면 | 비고 |
-|---------|------|--------------|------|
-| `hospital` | 영양사 | 대시보드, 발주 입력, 식수 입력, 스케줄, 마감 요청, 지출결의서 | 마감 승인된 달 → 읽기전용 |
-| `admin` | 관리자 | 전체 현황, 병원 관리, 공휴일, 직원 관리, 비교 분석, 보고서, 경영 대시보드, 거래명세서 분석 | 마감 승인 권한, 항상 편집 가능 |
-| `executive` | 운영진 | executive.js 전용 화면 (운영진 대시보드) | 로그인 시 `/executive`로 자동 리다이렉트 |
-| `ceo` | 경영진 | 경영 대시보드 | - |
+| id | username | role | 병원 |
+|----|----------|------|------|
+| 1 | admin | admin | 전체 관리자 |
+| 2 | amina | hospital | 아미나 병원 (id=1) |
+| 3 | muijae | hospital | 무이재 한방병원 (id=2) |
+| 4 | hosp03 | hospital | 늘봄요양병원 (id=3) |
+| 5 | hosp04 | hospital | 무이재 의원 (id=4) |
+| 9 | mu1 | hospital | 무이재 의원 (id=4) |
+| 10 | exec_test | executive | 아미나 병원 (임원용) |
 
-### 인증 흐름
-
-```
-로그인 → JWT 발급 → localStorage 저장
-→ 모든 /api/* 요청에 Authorization: Bearer {token} 헤더
-→ executive 역할은 /executive 페이지로 리다이렉트
-→ admin 역할은 관리자 메뉴 표시
-→ hospital 역할은 영양사 메뉴 표시
-```
-
-### 마감(읽기전용) 처리
-
-```javascript
-// App.lockedMonths = ["2026-01", "2025-12", ...]  ← 마감 승인된 달
-// isReadOnly(year, month) → admin은 항상 false, 영양사는 lockedMonths 체크
-// 마감된 달에서 저장 시도 → "⛔ 마감 완료된 달은 수정할 수 없습니다." 토스트
-// 화면 상단에 readOnlyBanner() 노란 배너 표시
-```
+> ⚠️ 비밀번호는 DB에 해시 저장됨. 분실 시 admin 계정으로 재설정 필요.
 
 ---
 
-## 6. 메뉴 구조
+## 5. 병원 목록 (hospitals 테이블)
 
-### 영양사 메뉴 (`getHospitalMenus()`)
-
-| 순서 | id | 아이콘 | 라벨 | 섹션 |
-|------|-----|--------|------|------|
-| 1 | `dashboard` | fa-chart-line | 월별 대시보드 | 현황 |
-| 2 | `orders` | fa-clipboard-list | 발주 입력 | - |
-| 3 | `meals` | fa-utensils | 식수 입력 | - |
-| 4 | `schedule` | fa-calendar-alt | 스케줄 관리 | - |
-| 5 | `settings` | fa-flag-checkered | 마감 요청 | 관리 |
-| 6 | `expense-doc` | fa-file-invoice-dollar | 지출결의서 | - |
-
-### 관리자 메뉴 (`getAdminMenus()`)
-
-| 순서 | id | 아이콘 | 라벨 | 섹션 |
-|------|-----|--------|------|------|
-| 1 | `admin` | fa-th-large | 전체 현황 | 관리자 |
-| 2 | `hospital-manage` | fa-hospital | 병원 관리 | - |
-| 3 | `holiday-manage` | fa-calendar-times | 공휴일 관리 | - |
-| 4 | `staff-manage` | fa-users-cog | 직원 관리 | 인사 |
-| 5 | `analysis` | fa-chart-bar | 비교 분석 | 분석 |
-| 6 | `report` | fa-file-pdf | 보고서 출력 | - |
-| 7 | `ceo-dashboard` | fa-crown | 경영 대시보드 | 경영 |
-| 8 | `transaction-analysis` | fa-file-invoice | 거래명세서 분석 | 데이터 분석 |
-
-> 병원 관리(`hospital-manage`) 메뉴에는 **마감요청 배지(빨강)** + **이슈 알림 배지(주황)** 두 개 표시
+| id | 병원명 | 비고 |
+|----|--------|------|
+| 1 | 아미나 병원 | 직원 13명, 스케줄 관리 사용 중 |
+| 2 | 무이재 한방병원 | 직원 2명 |
+| 3 | 늘봄요양병원 | 주요 작업 대상 |
+| 4 | 무이재 의원 | |
+| 5~7 | 병원5, 병원6, 병원7 | 테스트용 (미사용) |
 
 ---
 
-## 7. 화면별 기능 상세
+## 6. 병원별 업체 목록 (vendors 테이블)
 
-### 7-1. 월별 대시보드 (`renderDashboard`, L.669)
+### 아미나 병원 (hospital_id=1) - 활성 업체만
 
-**주요 표시 항목:**
-- 예산 현황 카드: 총 예산, 사용액, 잔여, 소진율
-- 식단가 현황: 전체, 직원식 제외, 소모품 제외
-- 진행률 바: 일별/주별/월별
-- AI 경고: 발주 적정성, 예산 소진 예상일, 이상 발주
-- 업체별 예산 현황 테이블
-- 환자군별 식수·식단가 분석
-- 가중평균 식단가
+| id | 업체명 | 분류 | 월예산 | 세금유형 |
+|----|--------|------|--------|----------|
+| 26 | 푸드힐 | market | 25,000,000 | mixed_total |
+| 27 | 푸드힐(소모품) | supply | 700,000 | mixed_total |
+| 28 | 대동청과 | fruit | 5,000,000 | exempt |
+| 29 | 이산푸드 | market | 10,000,000 | mixed_total |
+| 30 | 하나로미트 | meat | 4,000,000 | exempt |
+| 31 | 이벤트 | event | 2,000,000 | mixed_total |
+| 32 | 법인카드(온라인) | card | 1,500,000 | mixed_total |
+| 33 | 법인카드(소모품) | supply | 300,000 | mixed_total |
 
-**핵심 변수 (app.js L.775~781):**
-```javascript
-const mealPrice         // 실제 식단가 (총 사용액 / 총 식수)
-const mealPriceTotal    // API에서 계산된 전체 식단가
-const mealPriceNoStaff  // 직원식 제외 식단가
-const mealPriceNoSupply // 소모품 제외 식단가
-const targetMealPrice   // 목표 식단가 (settings.meal_price)
-const mpOver            // 목표 초과 여부 (boolean)
-```
+### 무이재 한방병원 (hospital_id=2) - 전체 활성
 
-**⚠️ 주의: 식단가 계산 원칙**
-- **전체 식단가** = 식재료비(직원식·소모품 포함) / 전체 식수
-- **직원식 제외** = 식재료비(소모품 제외X, 직원식만 제외) / 직원식 제외 식수
-- **소모품 제외** = 식재료비에서 소모품 금액 차감 / 전체 식수
-- 각 항목은 **서로 다른 분모/분자**를 사용해야 함 → 동일하게 표시되면 버그
+| id | 업체명 | 분류 | 월예산 | 세금유형 |
+|----|--------|------|--------|----------|
+| 11 | 삼성 웰스토리 | major | 33,000,000 | mixed |
+| 12 | 아워홈 | major | 45,000,000 | mixed |
+| 13 | 하나로미트(육류) | meat | 8,500,000 | exempt |
+| 14 | 한살림 | organic | 500,000 | exempt |
+| 15 | 낙원(떡) | general | 1,000,000 | exempt |
+| 16 | 청과(사과) | fruit | 1,500,000 | exempt |
+| 17 | 돌핀 | delivery | 500,000 | exempt |
+| 18 | 이벤트 | event | 5,000,000 | mixed |
+| 19 | 유튜브(인터넷) | delivery | 0 | taxable |
 
----
+### 늘봄요양병원 (hospital_id=3) - 전체 활성
 
-### 7-2. 발주 입력 (`renderOrders`, L.2072)
+| id | 업체명 | 분류 | 월예산 | 세금유형 |
+|----|--------|------|--------|----------|
+| 20 | 삼성웰스토리 | major | 40,000,000 | mixed |
+| 21 | 현지 육류업체 | meat | 3,000,000 | exempt |
+| 22 | 이산유통 | market | 20,000,000 | mixed_total |
+| 23 | 호일헬스케어(뉴케어) | market | 3,000,000 | taxable |
+| 24 | 경기메디칼(그린비아) | market | 2,000,000 | taxable |
+| 25 | 신진세척기 | market | 700,000 | taxable |
+| 42 | 삼성웰스토리(소모품) | supply | 500,000 | mixed_total |
 
-**핵심 기능:**
-- 날짜별 업체별 발주 금액 입력 (월간 테이블)
-- 세금 유형별 컬럼 (과세/면세/VAT/혼합합계)
-- 법인카드 입력 (별도 모달, 보라색 구분)
-- 카테고리별 발주 (식재료 카테고리 분류)
-- 주간 소계 행, 월 합계 행
-- 전체보기 모달 (`monthAllOrdersModal`)
+### 무이재 의원 (hospital_id=4)
 
-**업체 컬럼 색상 (subType 기준):**
-```javascript
-subColor = {
-  taxable:     '#16a34a',  // 과세 → 녹색
-  exempt:      '#d97706',  // 면세 → 주황
-  vat:         '#6b7280',  // VAT → 회색
-  mixed_total: '#1d4ed8',  // 혼합합계 → 파란색
-  card:        '#7c3aed'   // 법인카드 → 보라색
-}
-subBg = {
-  taxable:     '#f0fdf4',
-  exempt:      '#fffbeb',
-  vat:         '#f9fafb',
-  mixed_total: '#eff6ff',
-  card:        '#f3e8ff'
-}
-```
-
-**합계 계산 규칙:**
-- `rowTotal` = taxable + exempt + mixed_total (VAT 별도 처리)
-- 법인카드는 별도 집계 후 표시 (중복 포함 주의)
-- `grandTotal` = 전체 월 합계
+| id | 업체명 | 분류 | 월예산 | 세금유형 |
+|----|--------|------|--------|----------|
+| 34 | 아워홈 | major | 10,000,000 | mixed |
+| 35 | 칠복청과(사과) | market | 200,000 | exempt |
+| 36 | 하나로 미트 | meat | 1,000,000 | exempt |
 
 ---
 
-### 7-3. 식수 입력 (`renderMeals`, L.6767)
+## 7. 병원별 환자 카테고리 (hospital_patient_categories)
 
-**주요 기능:**
-- 날짜별 환자군·식이 분류별 식수 입력
-- 직원식 분리 입력
-- 월별 대시보드와 연동 (실시간 반영)
-- 비급여 항목 중 식단가 체크된 항목만 계산
-
-**⚠️ 계산 원칙:**
-- 직원식 제외 분모 = 전체 식수 - 직원식 수
-- 비급여 식수 = `include_in_meal_price = true`인 항목만 분자·분모에 포함
-
----
-
-### 7-4. 스케줄 관리 (`renderSchedule`, L.11885)
-
-**탭 구성:**
-- 직원 목록 / 근무 일정 / 휴가 관리 / 외부 인력 / 파견 일정
-- 월별 근무표 캘린더 뷰
-
-**연동 항목:**
-- 공휴일 (holidays 테이블 연동)
-- 직원 연차 자동 계산
-- 마감 완료 달 → 읽기전용
+| 병원 | id | key | 이름 |
+|------|----|-----|------|
+| 아미나 병원 | 3 | cancer | 항암 |
+| 무이재 한방병원 | 10 | cancer | 항암 |
+| 늘봄요양병원 | 1 | cancer | 항암 |
+| 늘봄요양병원 | 2 | nursing | 요양 |
+| 늘봄요양병원 | 15 | other | 항암 보호자 |
+| 늘봄요양병원 | 19 | general | 경관식 |
+| 무이재 의원 | 9 | cancer | 항암 |
 
 ---
 
-### 7-5. 마감 요청 (`renderSettings`, L.8855)
+## 8. 병원별 식단 카테고리 (diet_categories)
 
-**흐름:**
-```
-영양사: 마감 요청 버튼 클릭
-  → monthly_closings 테이블에 요청 기록
-  → 관리자 병원 관리 메뉴 배지(빨강) 표시
+### 아미나 병원 (hospital_id=1)
+| id | diet_key | 이름 |
+|----|----------|------|
+| 3 | legacy_cancer | 항암 |
+| 8 | preset_therapy_gastrectomy_1 | 위절제식 |
+| 9 | preset_therapy_lowresidue_1 | 저잔사식 |
+| 10 | preset_therapy_lowiodine_1 | 저요오드식 |
+| 11 | preset_staff_regular_1 | 직원 일반식 |
+| 12 | preset_nc_guardian_1 | 보호자식 |
+| 13 | preset_nc_outpatient_1 | 외래환자식 |
+| 14 | preset_patient_rehab_1 | 재활 일반식 |
+| 25 | preset_staff_special_1 | 직원 특식 |
+| 32 | preset_staff_night_1 | 직원 야식 |
 
-관리자: 병원 관리 → 마감 요청 탭에서 확인
-  → 승인 클릭
-  → App.lockedMonths 업데이트
-  → 영양사 화면 읽기전용 전환 (폴링으로 자동 감지)
-  → 다음 달로 자동 이동
-```
+### 무이재 한방병원 (hospital_id=2)
+| id | diet_key | 이름 |
+|----|----------|------|
+| 5 | legacy_cancer | 항암 |
+| 31 | preset_staff_special_1 | 직원 특식 |
+| 38 | preset_staff_night_1 | 직원 야식 |
+| 41 | preset_therapy_gastrectomy_2 | 위절제식 |
+| 42 | preset_therapy_lowresidue_2 | 저잔사식 |
+| 43 | preset_therapy_lowiodine_2 | 저요오드식 |
+| 44 | preset_therapy_other_2 | 기타 치료식 |
+| 45 | preset_nc_guardian_2 | 보호자식 |
+| 46 | preset_nc_rice_extra_2 | 공기밥추가 |
+| 47 | preset_staff_general_2 | 직원 일반식 |
 
----
+### 늘봄요양병원 (hospital_id=3)
+| id | diet_key | 이름 |
+|----|----------|------|
+| 1 | legacy_cancer | 항암 |
+| 2 | legacy_nursing | 요양 |
+| 6 | legacy_other | 항암 보호자 |
+| 7 | legacy_general | 경관식 |
+| 15 | preset_nc_guardian_3 | 보호자식 |
+| 26 | preset_staff_special_1 | 직원 특식 |
+| 33 | preset_staff_night_1 | 직원 야식 |
+| 39 | preset_nc_nursing_guardian_3 | 요양 보호자식 |
+| 40 | preset_nc_caregiver_3 | 간병사 |
+| 48 | preset_staff_general_3 | 직원 일반식 |
 
-### 7-6. 지출결의서 (`expense-doc`)
-
-**지출 유형 분류:**
-```javascript
-['delivery', 'market', 'event', 'card', 'supply', 'etc']
-// delivery: 납품업체, market: 현장구매, event: 이벤트
-// card: 법인카드, supply: 소모품, etc: 기타
-```
-
-**⚠️ 중요:**
-- 지출결의서와 발주 입력이 같은 항목을 **이중 계산**하지 않도록 주의
-- 법인카드는 card_expenses 테이블 기준으로만 집계
-- 운영진·관리자 대시보드에 정상 반영 여부 항상 확인
-
----
-
-### 7-7. 관리자 전체 현황 (`renderAdminDashboard`, L.10525)
-
-- 전체 병원 현황 요약
-- 병원별 KPI 카드
-- 병원 유형·운영 유형 필터
-
----
-
-### 7-8. 경영 대시보드 (`renderCeoDashboard`, L.25924)
-
-**필터:**
-- 병원 유형 / 운영 유형 / 병상 규모 조합
-
-**표시 항목:**
-- KPI 수치, AI 경고, 환자군별 현황
-- 그래프 (Chart.js)
-- PDF/PPT 저장 (한글 폰트 NanumGothic 필요)
-
----
-
-### 7-9. 거래명세서 분석 (`renderTransactionAnalysis`, L.27245)
-
-- 엑셀/PDF 업로드 → AI 자동 분석
-- 컬럼 매핑, 카테고리 자동 분류
-- 월별 추이, 단가·단위 정규화
-- TOP12·TOP10·TOP1 품목 분석
-- 보고서 출력 (PPT/PDF/Excel)
+### 무이재 의원 (hospital_id=4)
+| id | diet_key | 이름 |
+|----|----------|------|
+| 4 | legacy_cancer | 항암 |
+| 27 | preset_staff_special_1 | 직원 특식 |
+| 34 | preset_staff_night_1 | 직원 야식 |
 
 ---
 
-## 8. 백엔드 API 구조
+## 9. 병원별 월별 예산 설정 (monthly_settings)
 
-### 인증
-```
-POST /api/auth/login          ← 로그인 (JWT 발급)
-POST /api/auth/logout
-GET  /api/auth/me
-```
-
-### 대시보드
-```
-GET  /api/dashboard           ← 월별 집계 (mealPrice, mealPriceNoStaff, mealPriceNoSupply 등)
-```
-
-### 발주
-```
-GET  /api/orders              ← 월별 발주 데이터 조회
-POST /api/orders              ← 발주 저장
-GET  /api/orders/summary      ← 월 합계
-DELETE /api/orders/:id
-```
-
-### 식수
-```
-GET  /api/meals               ← 월별 식수 조회
-POST /api/meals               ← 식수 저장
-DELETE /api/meals/custom-fields/:id
-```
-
-### 업체
-```
-GET    /api/vendors           ← 업체 목록
-POST   /api/vendors
-DELETE /api/vendors/:id
-```
-
-### 스케줄
-```
-GET/POST/DELETE /api/schedule/employees
-GET/POST/DELETE /api/schedule/shifts
-GET/POST/DELETE /api/schedule/positions
-GET/POST/DELETE /api/schedule/holidays
-GET/POST/DELETE /api/schedule/external-workers
-GET/POST/DELETE /api/schedule/:employeeId/:workDate
-GET/POST        /api/schedule/employees/:id/leaves
-GET/POST/DELETE /api/schedule/off-grants/substitute/:id
-DELETE          /api/schedule/clear-month/:year/:month
-```
-
-### 설정/마감
-```
-GET/POST /api/settings        ← 예산 설정
-POST     /api/settings/close-request
-POST     /api/settings/session/heartbeat
-```
-
-### 법인카드
-```
-GET/POST/DELETE /api/card-expenses
-GET/POST/DELETE /api/card-expenses/direct/:id
-```
-
-### 관리자 전용 (`/api/admin/`)
-```
-GET/POST/PUT/DELETE /api/admin/hospitals/:id
-GET/POST/PUT/DELETE /api/admin/hospitals/:id/vendors/:vid
-GET/POST/DELETE     /api/admin/holidays/:date
-GET/POST/PUT/DELETE /api/admin/hospitals/:id/accounts/:uid
-GET/POST/PUT/DELETE /api/admin/hospitals/:id/executive-accounts/:uid
-GET/POST/PUT/DELETE /api/admin/hospitals/:id/diet-categories/:catId
-```
-
-### 거래명세서
-```
-POST   /api/transaction/upload
-GET    /api/transaction/files
-DELETE /api/transaction/files/:fileId
-POST   /api/transaction/analyze
-DELETE /api/transaction/vendor-templates/:name
-DELETE /api/transaction/invoice/file/:file_id
-DELETE /api/transaction/invoice-vendors/:id
-```
+| 병원 | 년 | 월 | 총예산 | 식단가 | 근무일 | 소모품예산 | 카드예산 |
+|------|----|----|--------|--------|--------|------------|----------|
+| 아미나 병원 | 2026 | 2 | 60,000,000 | 8,000 | 31 | 0 | 0 |
+| 아미나 병원 | 2026 | 3 | 48,500,000 | 8,000 | 31 | 0 | 0 |
+| 아미나 병원 | 2026 | 4 | 48,500,000 | 8,000 | 30 | 0 | 0 |
+| 무이재 한방병원 | 2026 | 2 | 0 | 0 | 0 | 0 | 0 |
+| 무이재 한방병원 | 2026 | 3 | 90,000,000 | 7,490 | 31 | 0 | 0 |
+| 늘봄요양병원 | 2026 | 3 | 68,700,000 | 3,593 | 31 | 684,000 | 0 |
+| 늘봄요양병원 | 2026 | 4 | 69,200,000 | 4,249 | 30 | 600,000 | 0 |
+| 무이재 의원 | 2026 | 2 | 11,200,000 | 6,000 | 31 | 200,000 | 500,000 |
+| 무이재 의원 | 2026 | 3 | 11,200,000 | 6,000 | 31 | 200,000 | 500,000 |
+| 무이재 의원 | 2026 | 4 | 11,200,000 | 6,000 | 22 | 200,000 | 500,000 |
 
 ---
 
-## 9. 데이터베이스 구조
+## 10. 전체 병원 데이터 현황
 
-### 마이그레이션 히스토리 (migrations/ 폴더)
+### 발주 입력 (daily_orders)
+| 병원명 | 월 | 건수 | 합계금액 |
+|--------|----|------|----------|
+| 아미나 병원 | 2026-02 | 106건 | 55,865,911원 |
+| 아미나 병원 | 2026-03 | 126건 | 62,448,429원 |
+| 무이재 한방병원 | 2026-02 | 88건 | 94,531,387원 |
+| 무이재 한방병원 | 2026-03 | 94건 | 94,786,136원 |
+| 늘봄요양병원 | 2026-02 | 99건 | 65,855,150원 |
+| 늘봄요양병원 | 2026-03 | 133건 | 70,294,014원 |
+| 무이재 의원 | 2026-03 | 4건 | 2,023,456원 |
 
-| 파일 | 내용 |
-|------|------|
-| `0001_initial.sql` | 기본 테이블 (hospitals, users, vendors, monthly_settings, daily_orders, daily_meals, employees, daily_schedules) |
-| `0002_seed.sql` | 초기 데이터 |
-| `0003_hospital_info.sql` | 병원 정보 테이블 |
-| `0004_specialty.sql` | 진료과 |
-| `0005~0008` | 일별 이슈, 계정, 세션 |
-| `0009_meal_custom_fields.sql` | 식수 커스텀 필드 |
-| `0011_patient_categories.sql` | **환자군 분류** (핵심) |
-| `0012_category_daily_meal_count.sql` | 환자군별 일별 식수 |
-| `0015_category_diet_price_formula.sql` | 식단가 계산 공식 |
-| `0016_card_expenses.sql` | **법인카드 지출** |
-| `0017_order_inspection.sql` | 발주 검수 |
-| `0020_ceo_dashboard.sql` | 경영 대시보드 집계 |
-| `0021_expense_type.sql` | 지출 유형 |
-| `0022_transaction_statements.sql` | **거래명세서 분석** |
-| `0024_diet_categories.sql` | 식이 카테고리 |
-| `0025_diet_structure_v2.sql` | 식이 구조 v2 |
-| `0026_diet_v3_patient_group_structure.sql` | 환자군 구조 v3 |
-| `0027_executive_role.sql` | **운영진 역할** |
-| `0029_invoice_category_analysis.sql` | 청구서 카테고리 분석 |
-| `0030_staff_diet_types.sql` | 직원식 유형 |
-| `0031~0032` | 청구서 업체 연동 |
-| `0033_invoice_period_mode.sql` | 청구서 기간 모드 |
-| `0034~0035` | 식재료 자동 원산지, 업체별 단가 |
-| `0036_ref_meal_price.sql` | **기준 식단가** |
-| `0037_order_multiday_settings.sql` | 다중일 발주 설정 |
-| `0038_order_input_source.sql` | 발주 입력 소스 |
-| `0039_schedule_module_v1.sql` | **스케줄 모듈 v1** |
-| `0040_monthly_off_grants.sql` | 월별 휴가 허가 |
-| `0041_fix_positions.sql` | 직위 수정 |
-| `0042_labor_cost_tables.sql` | 인건비 테이블 |
-| `0043_schedule_enhancements.sql` | 스케줄 개선 |
-| `0044_labor_cost_v2.sql` | 인건비 v2 |
-| `0045_dispatch_unique.sql` | 파견 유니크 제약 |
-| `0046_external_workers.sql` | 외부 인력 |
-| `0047_leave_carryover_allowance.sql` | **연차 이월 허용** |
+### 식수 입력 (daily_meals)
+| 병원명 | 월 | 건수 |
+|--------|----|------|
+| 아미나 병원 | 2026-02 | 28일치 |
+| 아미나 병원 | 2026-03 | 31일치 |
+| 무이재 한방병원 | 2026-02 | 28일치 |
+| 무이재 한방병원 | 2026-03 | 28일치 |
+| 늘봄요양병원 | 2026-03 | 31일치 |
+| 무이재 의원 | 2026-03 | 1일치 |
 
-### 주요 테이블 목록 (현재 운영 중)
-
-```sql
--- 병원/사용자
-hospitals, users, hospital_sessions, hospital_info
-hospital_work_settings, hospital_meal_price_settings
-hospital_patient_categories  -- 환자군 설정
-
--- 예산/발주
-monthly_settings             -- 월별 예산 설정
-daily_orders                 -- 일별 발주 입력
-order_inspections            -- 발주 검수
-order_multiday_settings      -- 다중일 발주 설정
-card_expenses                -- 법인카드 지출
-
--- 식수
-daily_meals                  -- 일별 식수 입력
-meal_custom_fields           -- 커스텀 필드 정의
-diet_categories              -- 식이 카테고리
-diet_category_presets        -- 식이 프리셋
-
--- 업체
-vendors                      -- 업체 목록
-ingredient_prices            -- 식재료 단가
-category_budgets             -- 카테고리별 예산
-
--- 스케줄
-employees                    -- 직원 목록 (annual_leave_total: 15일 기본)
-daily_schedules              -- 일별 근무표
-employee_leaves              -- 직원 휴가
-employee_leave_history       -- 연차 이력
-schedule_shifts              -- 근무 조
-schedule_min_staff           -- 최소 인원
-substitute_off_days          -- 대체 휴일
-dispatch_schedules           -- 파견 일정
-external_workers             -- 외부 인력
-external_schedules           -- 외부 인력 일정
-
--- 마감
-monthly_closings             -- 마감 요청/승인
-
--- 거래명세서
-transaction_documents        -- 업로드 문서
-transaction_files            -- 파일 목록
-transaction_items            -- 파싱된 항목
-transaction_item_categories  -- 카테고리 분류
-transaction_vendor_templates -- 업체 템플릿
-transaction_ai_analysis      -- AI 분석 결과
-hospital_invoice_vendors     -- 청구서 업체
-invoice_supplier_classifications -- 공급업체 분류
-
--- 기타
-holidays                     -- 공휴일
-notifications                -- 알림
-monthly_work_summary         -- 월별 근무 요약
-labor_cost_settings          -- 인건비 설정
-close_month_requests         -- 마감 요청
-food_waste_records           -- 음식물 쓰레기
-inspection_issues            -- 검수 이슈
-```
+### 스케줄 입력 (daily_schedules)
+| 병원명 | 월 | 건수 |
+|--------|----|------|
+| 아미나 병원 | 2026-03 | 408건 |
+| 아미나 병원 | 2026-04 | 1건 |
+| 무이재 한방병원 | 2026-03 | 3건 |
 
 ---
 
-## 10. 핵심 계산 로직
+## 11. 직원 목록
 
-### 식단가 계산 (3가지 구분)
+### 아미나 병원 (hospital_id=1) - 13명
+| id | 이름 | 직책 | 분류 |
+|----|------|------|------|
+| 4 | 이재욱 | 책임셰프 | cook |
+| 5 | 강금화 | - | cook |
+| 6 | 안정임 | - | cook |
+| 7 | 차숙청 | - | cook |
+| 8 | 조소희 | - | cook |
+| 9 | 김연정 | - | cook |
+| 10 | 박연숙 | - | cook |
+| 11 | 김효진 | - | cook |
+| 12 | 윤미숙 | - | cook |
+| 13 | 조미영 | - | cook |
+| 14 | 이현정 | - | cook |
+| 15 | 최혜진 | 팀장 | nutrition |
+| 16 | 문나은 | 영양사 | nutrition |
 
-```javascript
-// [1] 전체 식단가 (mealPriceTotal)
-= (전체 발주 사용액) / (전체 식수)
+### 무이재 한방병원 (hospital_id=2) - 2명
+| id | 이름 | 직책 | 분류 |
+|----|------|------|------|
+| 2 | 홍길동 | 조리장 | cook |
+| 3 | 김영양 | 영양사 | nutrition |
 
-// [2] 직원식 제외 식단가 (mealPriceNoStaff)
-= (전체 발주 사용액) / (전체 식수 - 직원식 수)
-// ⚠️ 직원식 금액은 분자에서 제외하지 않음
-
-// [3] 소모품 제외 식단가 (mealPriceNoSupply)
-= (전체 발주 사용액 - 소모품 금액) / (전체 식수)
-// ⚠️ 분모는 전체 식수 그대로, 분자에서만 소모품 제외
-```
-
-### 예산 소진율 계산
-
-```javascript
-// 일별 소진율 = 오늘까지 사용액 / 오늘까지 예산
-// 주별 소진율 = 이번주 사용액 / 이번주 예산
-// 월별 소진율 = 월 사용액 / 월 예산
-// → 각각 100% 초과 가능 (초과 시 빨간색 표시)
-```
-
-### 업체별 목표금액 배분
-
-```javascript
-// 예산 설정 → 업체별 목표금액 합산 = 식재료 기본 예산
-// 소모품·이벤트·법인카드는 별도 항목으로 분리
-// 5개 항목: 식재료, 이벤트, 소모품, 법인카드, 기타
-// ⚠️ 5개 항목이 중복 합산되지 않도록 주의
-```
-
-### 연차 계산 (스케줄)
-
-```javascript
-// 기본 연차: employees.annual_leave_total (기본값 15일)
-// 이월 허용 여부: leave_carryover_allowance 마이그레이션(0047)
-// 사용: employee_leaves 테이블
-// 잔여 = 총 연차 + 이월 - 사용
-```
+### 아미나 병원 교대 근무 유형 (schedule_shifts)
+| id | 이름 | 코드 | 시작 | 종료 |
+|----|------|------|------|------|
+| 1 | 오전 | A | 06:00 | 15:00 |
+| 2 | 오후 | B | 10:00 | 19:00 |
+| 3 | 종일 | F | 06:00 | 19:00 |
 
 ---
 
-## 11. 기능 개발 히스토리
+## 12. 이번 세션 완료 작업 (버그 수정 이력)
 
-> 마이그레이션 순서를 기준으로 개발 순서를 추적할 수 있음
+### ✅ Bug Fix 1: 소모품 업체 - 입력 없는 날 누적 발주 오류
+- **파일**: `public/static/app.js` 약 3894~3929줄
+- **증상**: 늘봄요양병원 삼성웰스토리(소모품) - 3월 10일 입력 없는데 19,030원 표시
+- **원인**: `dk <= dateStr` 비교로 당일 저장값(`savedToday`)이 포함됨
+- **수정**: `dk < dateStr`로 변경 → 당일은 live값 또는 saved값만 별도 합산
 
-| 단계 | 주요 기능 추가 |
-|------|----------------|
-| 초기 (0001~0010) | 병원·사용자·업체·발주·식수 기본 기능 |
-| 환자군 (0011~0015) | 환자군 분류, 일별 식수, 식단가 공식 |
-| 지출 관리 (0016~0021) | 법인카드, 발주 검수, 경영 대시보드, 지출 유형 |
-| 거래명세서 (0022~0023) | 거래명세서 업로드·분석 |
-| 식이 구조 (0024~0026) | 식이 카테고리 v1→v3 전면 개편 |
-| 운영진 (0027~0029) | 운영진 역할, 청구서 카테고리 분석 |
-| 식재료 자동화 (0030~0035) | 직원식 유형, 청구서 업체 연동, 자동 원산지, 단가 |
-| 기준 식단가 (0036) | 기준 식단가 참조 테이블 |
-| 발주 개선 (0037~0038) | 다중일 발주, 입력 소스 구분 |
-| **스케줄 모듈** (0039~0047) | 전체 스케줄 시스템 (직원·휴가·파견·외부인력·인건비·연차) |
+### ✅ Bug Fix 2: 소모품 업체 - 상단 카드 월합계 중복 합산 오류
+- **파일**: `public/static/app.js` 약 3063~3078줄
+- **증상**: 492만원 표시 (실제 37만원)
+- **원인**: `patient_category_id`별로 중복된 행들이 `orderList`에서 모두 합산됨
+- **수정**: supply/card/event 업체는 `window._supplyDailyMap`(날짜별 그룹) 기준으로 집계
 
----
+### ✅ Bug Fix 3: 식수 입력 - 엑셀 붙여넣기 일부 숫자 오류
+- **파일**: `public/static/app.js` 약 8718~8779줄
+- **증상**: 엑셀에서 복사 붙여넣기 시 일부 숫자가 입력되지 않음
+- **원인 1**: `_parseNum`이 쉼표 포함 숫자(`1,234`), 원화기호(`₩`, `￦`) 처리 못함
+- **원인 2**: 순수 텍스트 셀(합계 라벨 등) 건너뛸 때 이후 열이 밀림
+- **원인 3**: 붙여넣기 후 행 소계가 즉시 갱신 안됨
+- **수정**: `_parseNum` 쉼표/기호 제거 강화, 텍스트 셀 처리 개선, `input` 이벤트 발생
 
-## 12. 알려진 이슈 & 수정 필요 항목
+### ✅ Bug Fix 4: 실시간 식단가 계산에 소모품 금액 포함 오류
+- **파일**: `public/static/app.js` 약 6027~6044줄 및 6581~6591줄
+- **증상**: 실시간 식단가가 높게 표시 (소모품 발주금액이 식단가 분자에 포함됨)
+- **원인**: `_catDailyMap` 순회 시 `is_card_type`만 체크하고 `supply` 카테고리 제외 안됨
+- **수정**: `vendorObj.category === 'supply' || 'card' || 'event'` 조건 추가로 제외 처리
 
-> 출처: `개발자 요청 문구(예산 급식 운영 부분-아미나).docx`
+### ✅ Bug Fix 5: 환자군별 월 식단가 요양 발주금액 과다 표시
+- **파일**: `public/static/app.js` 약 6581줄 (catMonthAmtLive 계산)
+- **증상**: 요양 월 발주 금액이 4,857만원으로 과다 표시 (소모품 포함됨)
+- **원인**: supply 업체 발주가 `patient_category_id=2`(요양)으로 저장되어 요양 식단가에 합산
+- **수정**: supply/card/event 업체 제외 조건 추가
 
-### 🔴 우선순위 1 (즉시 수정)
+### ✅ Bug Fix 6: 삼성웰스토리(소모품) 초기 금액 0원 표시
+- **파일**: `public/static/app.js` 약 3900~3930줄
+- **증상**: 소모품 업체 오늘 발주 금액이 저장 전에 0원으로 표시
+- **원인**: `supplyTodayTotal`이 `_catDailyMap`에서만 조회하여 초기 로드 시 데이터 없음
+- **수정**: `_supplyDailyMap[dateStr]`(API에서 받은 저장값)을 fallback으로 추가
 
-#### 월별 대시보드
-- [ ] **목표 금액 2배 오류**: 목표금액이 2배로 표시되는 버그
-- [ ] **직원식/소모품 제외 식단가 동일 표시**: 3가지 식단가(전체·직원식제외·소모품제외)가 같은 값으로 나오는 버그 → 계산 로직 분리 필요
-- [ ] **진행률 100% 초과**: 일/주/월 진행률이 100%를 넘어도 100%로 cap 처리 누락
-- [ ] **목표·현재 식단가 혼합 계산**: 분자/분모 혼용 오류
+### ✅ Bug Fix 7: 신진세척기 → supply 분류 변경
+- **DB**: vendors 테이블 id=25 (`category='market'` → `category='supply'`, name='신진세척기(소모품)')
+- **효과**: 신진세척기가 식단가 계산에서 제외되고 소모품 섹션에 표시됨
 
-#### 발주 입력
-- [ ] **날짜별 재조회 시 값 미유지**: 발주 입력 후 다른 달 이동 → 돌아오면 값 사라지는 현상
-- [ ] **+/- 처리 오류**: 차감·변동 금액의 부호 처리 버그
-- [ ] **소모품·이벤트·법인카드 금액 미반영**: 대시보드에 실시간 반영 안 됨
-- [ ] **일/주/월 합계 불일치**: 업체별 입력 총합과 합계 행이 다른 경우
-
-#### 식수 입력
-- [ ] **환자군·식이 분류 노출 문제**: 중복 또는 미표시
-- [ ] **직원식 제외 분모 오류**: 직원식 제외 시 분모에서 정확히 차감 안 됨
-
-#### 예산설정
-- [ ] **5개 항목 중복 계산**: 식재료+이벤트+소모품+법인카드+기타가 중복 합산되는 버그
-
-### 🟡 우선순위 2 (다음 수정)
-
-#### 운영진/경영 대시보드
-- [ ] **필터 조합 시 병원 소실**: 병원 유형·운영 유형·병상 규모 조합 필터 적용 시 일부 병원 누락
-- [ ] **KPI·AI 경고 수치 불일치**: 대시보드 KPI와 AI 경고 숫자가 다르게 표시
-- [ ] **그래프 라벨 잘림**: Chart.js 그래프에서 라벨·범례가 잘리는 현상
-- [ ] **PDF/PPT 저장 문제**: 여백·텍스트 정렬·차트 겹침 오류
-
-#### 마감 요청
-- [ ] **승인 후 읽기전용 전환 타이밍**: 폴링 지연으로 즉시 반영 안 되는 경우
-- [ ] **수정·조회 권한 분리**: 마감 후 조회는 되지만 일부 수정 가능한 버그
-
-### 🟢 우선순위 3 (개선 사항)
-
-#### 거래명세서 분석
-- [ ] **TOP12·TOP10·TOP1 의미 검증**: 각 분석 결과의 기준 명확화
-- [ ] **비정상 단가 감지**: 이상 단가 자동 플래그 기능
-- [ ] **한글 깨짐 재발**: PDF 출력 시 NanumGothic 폰트 로드 실패 케이스
-
-#### 병원 관리
-- [ ] **환자군 삭제 후 복구 오류**: 삭제된 환자군 복구 시 데이터 불일치
-- [ ] **목표 식단가 고정 미유지**: 저장 후 재입력 시 초기화되는 현상
+### ✅ Bug Fix 8: 환자군별 식수 오류 (항암 2,926식 / 요양 22,127식)
+- **DB**: hospital_patient_categories 테이블 meals_include_keys 수정
+- **항암 (id=1)**: `["cat_cancer","nc_key_legacy_other"]` → `["cat_cancer"]` (항암 보호자 제외)
+- **요양 (id=2)**: `["st_key_...", "cat_nursing", "th_key_...", "nc_key_...", ...]` → `["cat_nursing"]` (직원/보호자/간병사 제외)
+- **수정 후 예상값**: 항암 2,926식, 요양 10,041식 (3월 기준)
 
 ---
 
-## 13. 개발 환경 설정
-
-### 요구 사항
-- Node.js 18+
-- npm
-- PM2 (`npm install -g pm2`)
-- Wrangler (`npm install` 시 devDependencies에 포함)
-
-### 최초 설정
+## 13. DB 복구 방법 (데이터 사라졌을 때)
 
 ```bash
-cd /home/user/webapp
+DB_FILE="/home/user/webapp/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/c1d1e6f550688b742edd79dd88a75718f5137a380244b7655328b4febec74c4f.sqlite"
 
-# 의존성 설치
-npm install
+# ⚠️ 기존 DB 삭제 후 백업에서 복구
+rm -f "$DB_FILE"
+sqlite3 "$DB_FILE" < /home/user/webapp/backup_full_db_20260409_*.sql
 
-# D1 로컬 마이그레이션 적용
-npx wrangler d1 migrations apply hospital-meal-production --local
-
-# 빌드
-npm run build
-
-# PM2로 실행
-pm2 start ecosystem.config.cjs
-
-# 접속 확인
-curl http://localhost:3000
+# 복구 확인
+sqlite3 "$DB_FILE" "SELECT h.name, COUNT(*) FROM daily_orders d JOIN hospitals h ON d.hospital_id=h.id GROUP BY d.hospital_id;"
 ```
-
-### ecosystem.config.cjs 예시
-
-```javascript
-module.exports = {
-  apps: [{
-    name: 'webapp',
-    script: 'npx',
-    args: 'wrangler pages dev dist --d1=hospital-meal-production --local --ip 0.0.0.0 --port 3000',
-    watch: false,
-    instances: 1,
-    exec_mode: 'fork'
-  }]
-}
-```
-
-### 로컬 개발 시 주의
-
-1. **app.js 수정 후** → `npm run build` 필수 (빌드 스크립트가 dist/에 복사)
-2. **새 마이그레이션 추가 시** → `npx wrangler d1 migrations apply hospital-meal-production --local`
-3. **PM2 재시작** → `pm2 restart webapp` (포트 충돌 시 `fuser -k 3000/tcp`)
 
 ---
 
-## 14. 배포 방법
+## 14. 자주 쓰는 DB 조회 명령어
 
 ```bash
-# 1. Cloudflare API 키 설정 (최초 1회)
-# Deploy 탭에서 CLOUDFLARE_API_TOKEN 설정
+DB_FILE="/home/user/webapp/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/c1d1e6f550688b742edd79dd88a75718f5137a380244b7655328b4febec74c4f.sqlite"
 
-# 2. 빌드 + 배포
-npm run deploy
-# = npm run build + wrangler pages deploy
+# 발주 데이터 확인
+sqlite3 "$DB_FILE" "SELECT h.name, substr(order_date,1,7), COUNT(*), SUM(total_amount) FROM daily_orders d JOIN hospitals h ON d.hospital_id=h.id GROUP BY d.hospital_id, substr(order_date,1,7) ORDER BY d.hospital_id, order_date;"
 
-# 3. 프로덕션 D1 마이그레이션 (새 마이그레이션 추가 시)
-npx wrangler d1 migrations apply hospital-meal-production
+# 식수 데이터 확인
+sqlite3 "$DB_FILE" "SELECT h.name, substr(meal_date,1,7), COUNT(*) FROM daily_meals m JOIN hospitals h ON m.hospital_id=h.id GROUP BY m.hospital_id, substr(meal_date,1,7);"
 
-# 4. 배포 확인
-npx wrangler whoami
-```
-
-**Cloudflare 설정 정보:**
-- Project Name: `hospital-meal-budget`
-- D1 Database: `hospital-meal-production`
-- D1 ID: `8cd39977b63bb3122ba4bce948af09ffc1cd80e74253123a1208272811ea0b15`
-
----
-
-## 15. 주의사항 & 개발 원칙
-
-### ⚠️ 절대 주의사항
-
-1. **app.js는 단일 파일** (~34,800줄) → 함수 추가 시 파일 끝 근처에 추가, 기존 함수 수정 시 라인 번호 확인 필수
-2. **build 후 테스트** → `public/static/app.js` 수정 후 반드시 `npm run build` 실행
-3. **D1은 SQLite 문법** → `ON CONFLICT`, `INSERT OR IGNORE` 등 SQLite 전용 문법 사용
-4. **법인카드 이중집계 방지** → 발주 입력과 card_expenses가 동일 금액을 두 곳에서 집계하지 않도록
-5. **마감 처리** → 마감된 달 데이터 수정 API 호출 시 반드시 `isReadOnly` 체크
-
-### 개발 원칙
-
-1. **전체 흐름 우선**: 병원관리 → 식수 입력 → 발주 입력 → 검수·지출 → 월별·운영진 대시보드 → 보고서 → 마감 후 읽기전용 흐름에서 저장·계산·집계·출력이 일관되어야 함
-2. **화면 간 연동 확인**: 한 화면에서 저장 → 다른 화면에서 즉시 반영되는지 확인
-3. **월/일/카테고리별 집계 일관성**: 일 합계의 합 = 월 합계, 카테고리 합계의 합 = 전체 합계
-4. **PDF 한글 폰트**: NanumGothic.b64.txt 사용, 로드 실패 시 영문 폴백 필요
-5. **모바일 대응**: 768px 이하 모바일 하단 네비게이션 동작 유지
-
-### 코드 스타일
-
-```javascript
-// 통화 포맷
-const fmt = (n) => Math.round(n).toLocaleString()
-const fmtMan = (n) => Math.round(n / 10000).toLocaleString() + '만'
-
-// API 호출 패턴
-const data = await api('GET', '/api/dashboard?year=2026&month=4')
-const result = await api('POST', '/api/orders', { date: '2026-04-01', amount: 50000 })
-
-// 토스트 알림
-showToast('저장되었습니다.', 'success')
-showToast('오류가 발생했습니다.', 'error')
-
-// 읽기전용 체크 패턴
-if (isReadOnly(year, month)) {
-  showToast('⛔ 마감 완료된 달은 수정할 수 없습니다.', 'error')
-  return
-}
+# 특정 병원 특정 월 발주 상세
+sqlite3 "$DB_FILE" "SELECT d.order_date, v.name, d.total_amount FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id WHERE d.hospital_id=3 AND d.order_date LIKE '2026-03%' ORDER BY d.order_date, v.name;"
 ```
 
 ---
 
-## 📞 추가 문의
+## 15. 백업 파일
 
-이 문서에서 다루지 않은 세부 사항은 다음을 참고:
-- `src/routes/*.ts` — API 엔드포인트 상세 구현
-- `migrations/*.sql` — 테이블 스키마 상세
-- `public/static/executive.js` — 운영진 대시보드 전용 로직
-- 기존 개발 채팅 히스토리 (Genspark AI)
-
----
-
-*이 문서는 시스템 변경 시 함께 업데이트해야 합니다.*
+| 파일 | 설명 | 다운로드 |
+|------|------|----------|
+| `/home/user/webapp/backup_full_db_20260409_*.sql` | DB 전체 SQL 덤프 | 샌드박스 내부 |
+| `/home/user/webapp_full_backup_20260409_*.tar.gz` | 코드+DB 전체 tar.gz | 샌드박스 내부 |
+| ProjectBackup 업로드 | 코드+DB 전체 | https://www.genspark.ai/api/files/s/QBV7KsYt |

@@ -3898,18 +3898,21 @@ async function renderOrders() {
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
               ${supplyVendors.map(v => {
-                // 소모품 업체 당일 발주: catDailyMap(API초기값)에는 없으므로 window._catDailyMap(저장 후 갱신값)에서 읽기
-                // 초기 렌더 시에는 당일 데이터가 _catDailyMap에도 없으므로 0 표시 → 정상
+                // 소모품 업체 당일 발주:
+                // 1) _catDailyMap에서 먼저 확인 (저장 후 갱신값, live 입력값)
+                // 2) _supplyDailyMap에서 보조 확인 (API에서 받은 초기값)
                 const vMapToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
-                const supplyTodayTotal = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
+                const supplyTodayFromCatMap = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
                 // 월 누적: dateStr 이전 날짜까지의 합산 (당일 포함) - supplyDMap 기준
                 // supplyDailyMap: GROUP BY order_date, vendor_id → 날짜별 단일 합산값
                 const supplyDMap = window._supplyDailyMap?.[v.id] || {}
                 // 당일 live 입력값 (저장 전 실시간) - _catDailyMap 기준
                 const liveToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
                 const liveTodayTotal = Object.values(liveToday).reduce((s2, r2) => s2 + (r2.total || 0), 0)
-                // 당일 저장된 금액 (supplyDMap 기준)
+                // 당일 저장된 금액 (supplyDMap 기준 - API 초기 데이터)
                 const savedToday = supplyDMap[dateStr] || 0
+                // 실제 오늘 발주 표시: catDailyMap live > catDailyMap saved > supplyDMap saved 순서
+                const supplyTodayTotal = liveTodayTotal > 0 ? liveTodayTotal : (supplyTodayFromCatMap > 0 ? supplyTodayFromCatMap : savedToday)
                 
                 // 누적 발주 계산: dateStr 이전(미포함) 날짜까지만 합산
                 // 핵심: 당일(dateStr) 데이터는 제외하고, 이전 날짜만 누적
@@ -3925,8 +3928,6 @@ async function renderOrders() {
                 const todayAmount = liveTodayTotal > 0 ? liveTodayTotal : savedToday
                 supplyMonthAccum += todayAmount
                 
-                // 실제 오늘 발주 표시 = live 우선, 없으면 saved
-                const actualTodayAmt = liveTodayTotal > 0 ? liveTodayTotal : savedToday
                 // 소모품 업체 자체 monthly_budget 기준 진행률
                 const vMonthBudgetS = v.monthly_budget || 0
                 const vMonthPctS = vMonthBudgetS > 0 ? Math.round(supplyMonthAccum / vMonthBudgetS * 100) : null
@@ -3936,11 +3937,12 @@ async function renderOrders() {
                 const taxLabelS = v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':v.tax_type==='mixed_total'?'합산':'면세'
                 // 입력 필드
                 // 소모품 업체: catDailyMap에서 실제 저장된 cat.id 키로 데이터 조회
-                // 저장 시 어떤 patient_category_id로 저장됐든 상관없이 해당 키로 접근
+                // supplyDMap에서 당일 데이터가 있으면 우선 사용 (초기 로드 시에도 표시)
                 const existingCatIds = Object.keys(vMapToday)
                 const firstCatId = existingCatIds.length > 0 ? existingCatIds[0] : cat.id
                 const supplyRow = vMapToday[firstCatId] || vMapToday[cat.id] || {}
-                const supplyTotal = supplyRow.total || 0
+                // supplyTotal: catDailyMap 우선, 없으면 supplyDMap[dateStr] 사용
+                const supplyTotal = supplyRow.total || savedToday || 0
                 const supplyTaxable = supplyRow.taxable || 0
                 const supplyExempt = supplyRow.exempt || 0
                 const vColsS = getVendorCols(v.tax_type, false)
@@ -6027,6 +6029,8 @@ function updateBudgetProgressPanel() {
         const vInt = parseInt(vid)
         const vendorObj = (window._ordersVendors||[]).find(v=>v.id===vInt)
         if (!vendorObj || vendorObj.is_card_type) return
+        // supply/card/event 업체는 식단가 계산용 monthTotal에서 제외 (소모품은 별도 집계)
+        if (vendorObj.category === 'supply' || vendorObj.category === 'card' || vendorObj.category === 'event') return
         Object.entries(cMap).forEach(([cid, r]) => {
           const catId = String(cid)
           const amt = r.total || 0
@@ -6581,7 +6585,9 @@ function updateBudgetProgressPanel() {
         Object.entries(dailyMapForCat).forEach(([dk3, vMap3]) => {
           Object.entries(vMap3).forEach(([vid3, cMap3]) => {
             const vendorObj3 = (window._ordersVendors||[]).find(v=>v.id===parseInt(vid3))
+            // supply/card/event 업체는 식단가 계산에서 제외 (소모품, 법인카드 등)
             if (!vendorObj3 || vendorObj3.is_card_type) return
+            if (vendorObj3.category === 'supply' || vendorObj3.category === 'card' || vendorObj3.category === 'event') return
             Object.entries(cMap3).forEach(([cid3, r3]) => {
               if (targetCatIds3.has(String(cid3))) {
                 catMonthAmtLive += r3.total || 0
@@ -8717,10 +8723,11 @@ async function _mealSaveDates(items) {
 // ────────────────────────────────────────────────────
 function _parseNum(str) {
   if (typeof str !== 'string') str = String(str)
-  const cleaned = str.replace(/[^0-9]/g, '')
-  if (cleaned === '') return null
+  // 쉼표·공백·통화기호 제거, 소수점은 버림(정수 취급)
+  const cleaned = str.replace(/[,\s₩\$￦]/g, '').replace(/\.\d*$/, '').replace(/[^0-9\-]/g, '')
+  if (cleaned === '' || cleaned === '-') return null
   const n = parseInt(cleaned, 10)
-  return isNaN(n) ? null : n
+  return isNaN(n) ? null : (n < 0 ? 0 : n)  // 음수는 0으로 처리
 }
 
 // ────────────────────────────────────────────────────
@@ -8758,11 +8765,16 @@ function _applyExcelPaste(startEl, pasteGrid) {
 
       const cellText = pasteRow[pc]
       // 빈 셀은 0(→ 빈 input), 숫자 아닌 텍스트는 건너뜀
-      const n = cellText.trim() === '' ? 0 : _parseNum(cellText)
+      const trimmed = cellText.trim()
+      // 순수 텍스트(숫자 없음)인 경우 해당 열 건너뜀 (엑셀 헤더/합계 텍스트 등)
+      if (trimmed !== '' && !/[0-9]/.test(trimmed)) continue
+      const n = trimmed === '' ? 0 : _parseNum(trimmed)
       if (n === null) continue
 
       changed.push({ el, prev: el.value })
       el.value = n === 0 ? '' : String(n)
+      // change 이벤트 발생 → 행 합계 즉시 갱신
+      el.dispatchEvent(new Event('input', { bubbles: true }))
     }
   }
 
