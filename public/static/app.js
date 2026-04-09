@@ -3895,24 +3895,29 @@ async function renderOrders() {
                 // 초기 렌더 시에는 당일 데이터가 _catDailyMap에도 없으므로 0 표시 → 정상
                 const vMapToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
                 const supplyTodayTotal = Object.values(vMapToday).reduce((s, r) => s + (r.total || 0), 0)
-                // 월 누적: dateStr 이전 날짜까지의 합산 (당일 제외) + 당일 live 입력값
-                // ※ 당일 오늘 발주가 없으면 누적란도 0으로 표시 (혼란 방지)
+                // 월 누적: dateStr 이전 날짜까지의 합산 (당일 포함) - supplyDMap 기준
                 // supplyDailyMap: GROUP BY order_date, vendor_id → 날짜별 단일 합산값
                 const supplyDMap = window._supplyDailyMap?.[v.id] || {}
-                // 당일 live 입력값 (저장 전 실시간)
+                // 당일 live 입력값 (저장 전 실시간) - _catDailyMap 기준
                 const liveToday = (window._catDailyMap || {})[dateStr]?.[v.id] || {}
                 const liveTodayTotal = Object.values(liveToday).reduce((s2, r2) => s2 + (r2.total || 0), 0)
                 // 당일 저장된 금액 (supplyDMap 기준)
                 const savedToday = supplyDMap[dateStr] || 0
-                // 실제 오늘 발주 = live 우선, 없으면 saved
-                const actualTodayAmt = liveTodayTotal > 0 ? liveTodayTotal : savedToday
-                // dateStr 이전(미포함) 날짜 누적
-                let prevAccum = 0
+                
+                // 누적 발주 계산: dateStr 이하(포함) 날짜 모두 합산
+                let supplyMonthAccum = 0
                 Object.keys(supplyDMap).forEach(dk => {
-                  if (dk < dateStr) prevAccum += supplyDMap[dk] || 0
+                  if (dk <= dateStr) supplyMonthAccum += supplyDMap[dk] || 0
                 })
-                // 누적 발주 = 이전 누적 + 오늘 발주
-                let supplyMonthAccum = prevAccum + actualTodayAmt
+                
+                // 당일 live 입력이 saved와 다르면 차액 반영
+                // (저장 전 실시간 입력 또는 방금 저장 후 아직 페이지 리로드 전)
+                if (liveTodayTotal !== savedToday) {
+                  supplyMonthAccum = supplyMonthAccum - savedToday + liveTodayTotal
+                }
+                
+                // 실제 오늘 발주 표시 = live 우선, 없으면 saved
+                const actualTodayAmt = liveTodayTotal > 0 ? liveTodayTotal : savedToday
                 // 소모품 업체 자체 monthly_budget 기준 진행률
                 const vMonthBudgetS = v.monthly_budget || 0
                 const vMonthPctS = vMonthBudgetS > 0 ? Math.round(supplyMonthAccum / vMonthBudgetS * 100) : null
