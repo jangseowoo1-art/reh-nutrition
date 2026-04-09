@@ -3911,17 +3911,19 @@ async function renderOrders() {
                 // 당일 저장된 금액 (supplyDMap 기준)
                 const savedToday = supplyDMap[dateStr] || 0
                 
-                // 누적 발주 계산: dateStr 이하(포함) 날짜 모두 합산
+                // 누적 발주 계산: dateStr 이전(미포함) 날짜까지만 합산
+                // 핵심: 당일(dateStr) 데이터는 제외하고, 이전 날짜만 누적
                 let supplyMonthAccum = 0
                 Object.keys(supplyDMap).forEach(dk => {
-                  if (dk <= dateStr) supplyMonthAccum += supplyDMap[dk] || 0
+                  if (dk < dateStr) {
+                    supplyMonthAccum += supplyDMap[dk] || 0
+                  }
                 })
                 
-                // 당일 live 입력이 saved와 다르면 차액 반영
-                // (저장 전 실시간 입력 또는 방금 저장 후 아직 페이지 리로드 전)
-                if (liveTodayTotal !== savedToday) {
-                  supplyMonthAccum = supplyMonthAccum - savedToday + liveTodayTotal
-                }
+                // 당일 입력값 추가: live 입력이 있으면 그것을, 없으면 saved 값을 누적에 추가
+                // (당일 입력이 전혀 없으면 둘 다 0이므로 누적에 영향 없음)
+                const todayAmount = liveTodayTotal > 0 ? liveTodayTotal : savedToday
+                supplyMonthAccum += todayAmount
                 
                 // 실제 오늘 발주 표시 = live 우선, 없으면 saved
                 const actualTodayAmt = liveTodayTotal > 0 ? liveTodayTotal : savedToday
