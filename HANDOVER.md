@@ -364,11 +364,12 @@ pm2 logs hospital-meal --nostream
 - **DB**: vendors 테이블 id=25 (`category='market'` → `category='supply'`, name='신진세척기(소모품)')
 - **효과**: 신진세척기가 식단가 계산에서 제외되고 소모품 섹션에 표시됨
 
-### ✅ Bug Fix 8: 환자군별 식수 오류 (항암 2,926식 / 요양 22,127식)
+### ✅ Bug Fix 8: 환자군별 식수 공식 수정 (늘봄요양병원)
 - **DB**: hospital_patient_categories 테이블 meals_include_keys 수정
-- **항암 (id=1)**: `["cat_cancer","nc_key_legacy_other"]` → `["cat_cancer"]` (항암 보호자 제외)
-- **요양 (id=2)**: `["st_key_...", "cat_nursing", "th_key_...", "nc_key_...", ...]` → `["cat_nursing"]` (직원/보호자/간병사 제외)
-- **수정 후 예상값**: 항암 2,926식, 요양 10,041식 (3월 기준)
+- **항암 (id=1)**: `["cat_cancer","nc_key_legacy_other"]`
+  - 항암 환자(cat_cancer) 2,926식 + 항암 보호자(nc_key_legacy_other) 191식 = **3,117식**
+- **요양 (id=2)**: `["cat_nursing","th_key_legacy_general","nc_key_preset_nc_nursing_guardian_3","nc_key_preset_nc_caregiver_3","st_key_preset_staff_general_3"]`
+  - 요양(cat_nursing) 10,041 + 경관식(th_key_legacy_general) 4,341 + 요양보호자식 3,674 + 간병사 5,112 + 직원일반식 3,300 = **26,468식**
 
 ---
 
