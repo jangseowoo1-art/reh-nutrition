@@ -3943,8 +3943,20 @@ async function renderOrders() {
                 const supplyRow = vMapToday[firstCatId] || vMapToday[cat.id] || {}
                 // supplyTotal: catDailyMap 우선, 없으면 supplyDMap[dateStr] 사용
                 const supplyTotal = supplyRow.total || savedToday || 0
-                const supplyTaxable = supplyRow.taxable || 0
-                const supplyExempt = supplyRow.exempt || 0
+                let supplyTaxable = supplyRow.taxable || 0
+                let supplyExempt = supplyRow.exempt || 0
+                // DB에 taxable/exempt=0이고 total만 있는 경우 보정
+                // (기존 데이터가 total_amount에만 저장된 경우 tax_type으로 분배)
+                if (supplyTotal > 0 && supplyTaxable === 0 && supplyExempt === 0) {
+                  if (v.tax_type === 'taxable') {
+                    // 과세: total = taxable + 10% VAT → taxable ≈ total / 1.1
+                    // 단, 표시는 total을 그대로 과세 칸에 넣음(입력 편의)
+                    supplyTaxable = supplyTotal
+                  } else if (v.tax_type === 'exempt') {
+                    supplyExempt = supplyTotal
+                  }
+                  // mixed_total은 단일 금액 칸 사용이므로 해당 없음
+                }
                 const vColsS = getVendorCols(v.tax_type, false)
                 let inputFieldsS = ''
                 if (vColsS === 3) {
@@ -6357,6 +6369,10 @@ function updateBudgetProgressPanel() {
       if (window._cardDailyMap?.[v.id]) {
         Object.values(window._cardDailyMap[v.id]).forEach(amt => { vMonthTotal += amt })
       }
+    } else if (v.category === 'supply' || v.category === 'event') {
+      // 소모품/이벤트 업체: _supplyDailyMap에서 월 합계 계산
+      const supplyDMapVsum = window._supplyDailyMap?.[v.id] || {}
+      Object.values(supplyDMapVsum).forEach(amt => { vMonthTotal += (amt || 0) })
     } else if (hasCatsForVsum) {
       // ── 근본 수정: _catDailyMap 기반 업체별 월합계 + _activeEditPair만 DOM 반영 ──
       const dailyMapForVsum = window._catDailyMap || {}
