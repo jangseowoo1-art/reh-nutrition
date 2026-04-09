@@ -752,13 +752,16 @@ orders.get('/category-annual/:year', async (c) => {
         mealsKeys.filter((k: string) => k.startsWith('cat_')).forEach((k: string) => { total += (mCustom[k] || 0) })
         // nc_key_/th_key_ 처리: diet_categories.diet_key 기반 → meal_custom_fields.field_key는 'diet_' 접두사 추가
         // nc_key_preset_nc_guardian_1 → dietKey='preset_nc_guardian_1' → field_key='diet_preset_nc_guardian_1'
+        // legacy_ 패턴: nc_key_legacy_other → 'legacy_other' → field_key='cat_other' (legacy_ 제거 후 cat_ 붙임)
         mealsKeys.filter((k: string) => k.startsWith('nc_key_')).forEach((k: string) => {
           const dietKey = k.replace('nc_key_', '')
-          total += (mCustom['diet_' + dietKey] || mCustom[dietKey] || 0)
+          const legacyKey = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+          total += (mCustom['diet_' + dietKey] || mCustom[dietKey] || (legacyKey ? mCustom[legacyKey] : 0) || 0)
         })
         mealsKeys.filter((k: string) => k.startsWith('th_key_')).forEach((k: string) => {
           const dietKey = k.replace('th_key_', '')
-          total += (mCustom['diet_' + dietKey] || mCustom[dietKey] || 0)
+          const legacyKey = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+          total += (mCustom['diet_' + dietKey] || mCustom[dietKey] || (legacyKey ? mCustom[legacyKey] : 0) || 0)
         })
         monthMeals = total
       } else {

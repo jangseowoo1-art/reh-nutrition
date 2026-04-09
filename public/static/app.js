@@ -6650,13 +6650,15 @@ function updateBudgetProgressPanel() {
             } else if (k.startsWith('cat_')) {
               catMonthMeals += (orderMealStats[k] || 0)
             } else if (k.startsWith('nc_key_')) {
-              // 비급여식: nc_key_{diet_key} → diet_{diet_key}
+              // 비급여식: nc_key_{diet_key} → diet_{diet_key} 또는 cat_{diet_key}(legacy_)
               const dietKey = k.replace('nc_key_', '')
-              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
+              const legacyKey2 = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || (legacyKey2 ? orderMealStats[legacyKey2] : 0) || 0)
             } else if (k.startsWith('th_key_')) {
-              // 치료식: th_key_{diet_key} → diet_{diet_key}
+              // 치료식: th_key_{diet_key} → diet_{diet_key} 또는 cat_{diet_key}(legacy_)
               const dietKey = k.replace('th_key_', '')
-              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0)
+              const legacyKey2 = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || (legacyKey2 ? orderMealStats[legacyKey2] : 0) || 0)
             }
           })
         } else {
@@ -7004,12 +7006,14 @@ function updateInsightPanel() {
         // diet_categories.diet_key='preset_nc_guardian_1', field_key='diet_preset_nc_guardian_1'
         mealsKeys2.filter(k => k.startsWith('nc_key_')).forEach(k => {
           const dietKey = k.replace('nc_key_', '')
-          catMealCount += (orderMealStats2['diet_' + dietKey] || orderMealStats2[dietKey] || 0)
+          const legacyKey3 = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+          catMealCount += (orderMealStats2['diet_' + dietKey] || orderMealStats2[dietKey] || (legacyKey3 ? orderMealStats2[legacyKey3] : 0) || 0)
         })
         // 치료식 식수: th_key_{diet_key} 형식
         mealsKeys2.filter(k => k.startsWith('th_key_')).forEach(k => {
           const dietKey = k.replace('th_key_', '')
-          catMealCount += (orderMealStats2['diet_' + dietKey] || orderMealStats2[dietKey] || 0)
+          const legacyKey3 = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+          catMealCount += (orderMealStats2['diet_' + dietKey] || orderMealStats2[dietKey] || (legacyKey3 ? orderMealStats2[legacyKey3] : 0) || 0)
         })
       } else {
         // formula 없으면 카테고리 key로 식수 직접 조회

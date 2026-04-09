@@ -678,15 +678,19 @@ dashboard.get('/summary/:year/:month', async (c) => {
     // meal_custom_fields.field_key = 'diet_preset_nc_guardian_1' (앞에 'diet_' 추가)
     // customTotalsMap 키는 field_key 기준이므로 'diet_' 접두사를 붙여 조회
     mealsKeys.filter(k => k.startsWith('nc_key_')).forEach(k => {
-      const dietKey = k.replace('nc_key_', '')  // e.g. 'preset_nc_guardian_1'
-      total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
+      const dietKey = k.replace('nc_key_', '')  // e.g. 'preset_nc_guardian_1' or 'legacy_other'
+      // legacy_ 패턴: 'legacy_other' → field_key='cat_other' (legacy_ 제거 후 cat_ 붙임)
+      const legacyKey = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+      total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || (legacyKey ? customTotalsMap[legacyKey] : 0) || 0)
     })
     // 치료식 식수: th_key_{diet_key} 형식
-    // diet_categories.diet_key = 'preset_therapy_gastrectomy_1'
-    // meal_custom_fields.field_key = 'diet_preset_therapy_gastrectomy_1'
+    // diet_categories.diet_key = 'preset_therapy_gastrectomy_1' or 'legacy_general'
+    // meal_custom_fields.field_key = 'diet_preset_therapy_gastrectomy_1' or 'cat_general'
     mealsKeys.filter(k => k.startsWith('th_key_')).forEach(k => {
-      const dietKey = k.replace('th_key_', '')  // e.g. 'preset_therapy_gastrectomy_1'
-      total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || 0)
+      const dietKey = k.replace('th_key_', '')  // e.g. 'preset_therapy_gastrectomy_1' or 'legacy_general'
+      // legacy_ 패턴: 'legacy_general' → field_key='cat_general' (legacy_ 제거 후 cat_ 붙임)
+      const legacyKey = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
+      total += (customTotalsMap['diet_' + dietKey] || customTotalsMap[dietKey] || (legacyKey ? customTotalsMap[legacyKey] : 0) || 0)
     })
     return total
   }
