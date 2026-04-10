@@ -731,11 +731,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
     const catIncludeCard = cat.budget_include_card === 1
     const isMainCategory = budgetKeys.length > 0  // 주요 환자군 여부
 
-    // targetPrice: KPI 메인 비교 기준 = 직접 설정 목표 식단가(ref_meal_price) 우선
-    // ref_meal_price = 관리자 직접 설정값 (항암 6,500 / 요양 1,800 등) → 대시보드 KPI 기준
-    // target_meal_price = 가중배분 참고값 (배분예산÷3개월평균식수) → 예산배분 보조지표
+    // ★★★ targetPrice: KPI 고정 기준 = target_meal_price (사용자 직접 입력값) 우선
+    // target_meal_price = 관리자가 직접 입력한 목표 식단가 (항암 6,500 / 요양 1,800 등) → KPI 고정 기준
+    // ref_meal_price = fallback 보조용 (동일값 또는 구버전 호환)
+    // 어떠한 계산/시뮬레이션 결과도 target_meal_price를 덮어쓰지 않음
     // 보조 카테고리(budgetKeys 없음)는 0으로 처리
-    const targetPrice = s3.ref_meal_price || s3.target_meal_price || (isMainCategory ? (settings?.meal_price || 0) : 0)
+    const targetPrice = s3.target_meal_price || s3.ref_meal_price || (isMainCategory ? (settings?.meal_price || 0) : 0)
     const monthBudget = s3.monthly_budget || 0
     const workDays = s3.working_days || workingDays
     const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
