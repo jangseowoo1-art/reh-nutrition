@@ -6571,8 +6571,10 @@ function updateBudgetProgressPanel() {
       // 카테고리별 월 식단가 업데이트 (formula 기반: 선택 예산항목 ÷ 선택 식수항목)
       catsList.forEach(cat => {
         const s3 = catSetMap3[cat.id] || {}
-        // 이슈1 수정: ref_meal_price(관리자 설정 기준가) 우선, 없으면 target_meal_price(예산 기반) 사용
-        const targetPrice3 = s3.ref_meal_price || s3.target_meal_price || 0
+        // 가중배분 목표 식단가(target_meal_price) 우선, 없으면 기준단가(ref_meal_price) 폴백
+        // target_meal_price = 배분예산 ÷ 3개월평균식수 (설정화면 가중배분 목표)
+        // ref_meal_price = 관리자 입력 기준단가 (가중치 계산 기반)
+        const targetPrice3 = s3.target_meal_price || s3.ref_meal_price || 0
 
         // formula 설정 (백엔드에서 받은 catDietPricesData 활용)
         const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
@@ -28936,6 +28938,8 @@ async function saveCategoryBudgets(hospitalId) {
     return
   }
 
+  const mealTotals = window._adminCatMealTotals || []
+
   const settings = cats.map(cat => {
     // 기준 단가: 상단 테이블 allocRefPrice- 입력값 (UI에서 직접 입력하는 유일한 단가 값)
     const refPrice = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
@@ -28961,13 +28965,24 @@ async function saveCategoryBudgets(hospitalId) {
       workingDays = parseInt(document.getElementById('autoAlloc-workdays')?.value || 0) || 0
     }
 
+    // 가중평균 배분 후 목표 식단가 = 배분예산 ÷ 3개월평균식수
+    // 이 값이 대시보드의 "목표 대비" KPI 기준으로 사용됨 (target_meal_price)
+    const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
+    const avgMeals = mealInfo.avg_meals_3m || 0
+    let targetMealPrice = 0
+    if (monthlyBudget > 0 && avgMeals > 0) {
+      targetMealPrice = Math.round(monthlyBudget / avgMeals)
+    }
+    // 배분 계산 없으면(가중배분 미적용) 기준 단가를 목표로 사용
+    if (targetMealPrice === 0) targetMealPrice = refPrice
+
     return {
       patient_category_id: cat.id,
       monthly_budget: monthlyBudget,
-      target_meal_price: refPrice,   // 기준 단가를 target_meal_price로 저장 (대시보드 참조용)
+      target_meal_price: targetMealPrice,  // 가중배분 목표 식단가 (배분예산÷평균식수) → 대시보드 KPI 기준
       working_days: workingDays,
       daily_meal_count: 0,
-      ref_meal_price: refPrice       // ref_meal_price도 동일하게 저장
+      ref_meal_price: refPrice             // 기준 단가 (원본 입력값, 가중치 계산 기반)
     }
   })
 
