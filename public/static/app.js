@@ -1783,14 +1783,13 @@ async function renderDashboard() {
       <div class="mt-3 space-y-2">
         <div class="flex items-center justify-between mb-1">
           <span class="text-xs font-semibold text-gray-600"><i class="fas fa-utensils mr-1 text-blue-400"></i>식단가 현황</span>
-          ${effectiveTargetPrice>0?`<span class="text-xs text-gray-400">목표(KPI): ${fmt(effectiveTargetPrice)}원/식</span>`:''}
+          <!-- 전체 목표 식단가는 가중 계산값이므로 표시 제거 -->
         </div>
-        <div class="flex items-center justify-between p-2.5 ${mpOver?'bg-red-50 border border-red-200':'bg-blue-50'} rounded-xl">
+        <div class="flex items-center justify-between p-2.5 bg-blue-50 rounded-xl">
           <div>
-            <span class="text-xs font-medium ${mpOver?'text-red-600':'text-blue-600'}">${catDietPricesData.length >= 2 ? '전체 식단가 (전체 식수 기준)' : '전체 식단가 (전체 식수 기준)'}</span>
-            ${mpOver?`<span class="text-xs text-red-500 ml-1 font-bold">▲초과</span>`:''}
+            <span class="text-xs font-medium text-blue-600">전체 식단가 (전체 식수 기준)</span>
           </div>
-          <span class="font-bold text-lg ${mpOver?'text-red-600':'text-blue-700'}">${totalMeals>0?fmt(mealPriceTotal):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
+          <span class="font-bold text-lg text-blue-700">${totalMeals>0?fmt(mealPriceTotal):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
         </div>
         ${catDietPricesData.length >= 2 ? `
         <div class="flex items-center justify-between p-2.5 bg-teal-50 rounded-xl">
@@ -2688,7 +2687,7 @@ async function renderOrders() {
   // ── 마감 완료 달 읽기전용 처리 ──
   const _ordersReadOnly = isReadOnly(App.currentYear, App.currentMonth)
 
-  // 가중평균 목표 식단가: API에서 계산된 값 우선, 없으면 프론트에서 계산
+  // 가중평균 목표 식단가 계산 (카테고리 실시간 업데이트용으로만 사용, 전체카드에는 표시 안 함)
   const weightedAvgTargetMealPrice = dashData?.projection?.weightedAvgTargetPrice || targetMealPrice
   window._weightedAvgTargetMealPrice = weightedAvgTargetMealPrice
 
@@ -2701,11 +2700,10 @@ async function renderOrders() {
       <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt(initTotalMeals)}</strong>식</span>
     </div>
     <div class="grid grid-cols-3 gap-3">
-      <div id="mpCard-total" class="rounded-xl p-3 ${weightedAvgTargetMealPrice > 0 && dashData?.mealPriceTotal > weightedAvgTargetMealPrice ? 'bg-red-50 border-2 border-red-300' : 'bg-blue-50'}">
+      <div id="mpCard-total" class="rounded-xl p-3 bg-blue-50">
         <div class="text-xs text-blue-600 mb-1 font-medium">전체 식단가</div>
         <div class="text-lg font-bold" id="mpVal-total">${fmt(dashData?.mealPriceTotal||0)}<span class="text-xs font-normal ml-0.5">원/식</span></div>
-        ${weightedAvgTargetMealPrice > 0 ? `<div class="text-xs text-gray-400">목표: ${fmt(weightedAvgTargetMealPrice)}원</div>` : ''}
-        <div class="text-xs font-semibold mt-1" id="mpDiff-total">${weightedAvgTargetMealPrice > 0 && dashData?.mealPriceTotal > 0 ? (dashData.mealPriceTotal > weightedAvgTargetMealPrice ? `<span class="text-red-500">▲ +${fmt(dashData.mealPriceTotal-weightedAvgTargetMealPrice)}원 초과</span>` : `<span class="text-green-600">▼ ${fmt(weightedAvgTargetMealPrice-dashData.mealPriceTotal)}원 여유</span>`) : ''}</div>
+        <div class="text-xs font-semibold mt-1" id="mpDiff-total"></div>
       </div>
       <div class="bg-purple-50 rounded-xl p-3">
         <div class="text-xs text-purple-600 mb-1 font-medium">직원식 제외</div>
@@ -3104,7 +3102,12 @@ async function renderOrders() {
         }).join('')}
         <div style="min-width:90px;background:#f0fdf4;border-radius:10px;border:1px solid #d1fae5;padding:8px 10px">
           <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:3px">월 합계</div>
-          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:13px;font-weight:800">${fmtMan((orderList||[]).reduce((s,o)=>s+(o.total_amount||0),0))}</div>
+          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:13px;font-weight:800">${fmtMan((() => {
+            const foodTotal = (orderList||[]).reduce((s,o)=>s+(o.total_amount||0),0)
+            const supplyT = Object.values(window._supplyDailyMap||{}).reduce((s,dMap)=>s+Object.values(dMap).reduce((s2,a)=>s2+(a||0),0),0)
+            const cardT = Object.values(window._cardDailyMap||{}).reduce((s,dMap)=>s+Object.values(dMap).reduce((s2,a)=>s2+(a||0),0),0)
+            return foodTotal + supplyT + cardT
+          })())}</div>
           ${totalBudget > 0 ? `<div style="font-size:10px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}" id="monthPctDisplay">${monthPct}%</div>` : ''}
           ${totalBudget > 0 ? `<div style="height:5px;background:#e5e7eb;border-radius:3px;margin-top:3px;overflow:hidden"><div style="height:100%;width:${Math.min(monthPct,100)}%;background:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};border-radius:3px"></div></div>` : ''}
         </div>
@@ -6350,10 +6353,18 @@ function updateBudgetProgressPanel() {
     updateBudgetCard(`week${num}-card`, `weekPct${num}`, `weekAmt${num}`, `weekBar${num}`, wkPct, wkAmt, isCW)
   })
 
-  // 월 합계 표시 업데이트
+  // 월 합계 표시 업데이트 (식재료 + 소모품/카드 전체 합산)
   const mTotalEl = document.getElementById('monthTotalDisplay')
   const mPctEl = document.getElementById('monthPctDisplay')
-  if (mTotalEl) mTotalEl.textContent = fmtMan(monthTotal)
+  if (mTotalEl) {
+    // 소모품/카드 월 합계 산출
+    const supplyMonthTotal = Object.values(window._supplyDailyMap || {}).reduce((s, dMap) =>
+      s + Object.values(dMap).reduce((s2, amt) => s2 + (amt || 0), 0), 0)
+    const cardMonthTotal = Object.values(window._cardDailyMap || {}).reduce((s, dMap) =>
+      s + Object.values(dMap).reduce((s2, amt) => s2 + (amt || 0), 0), 0)
+    const grandMonthTotal = monthTotal + supplyMonthTotal + cardMonthTotal
+    mTotalEl.textContent = fmtMan(grandMonthTotal)
+  }
   if (mPctEl) mPctEl.textContent = `${monthPct}%`
 
   // ── 업체별 월 합계 카드 실시간 업데이트 ──
@@ -6500,8 +6511,7 @@ function updateBudgetProgressPanel() {
     } else {
       mp1 = 0; mp2 = 0; mp3 = 0
     }
-    const tgt = window._weightedAvgTargetMealPrice || ms.targetMealPrice || 0
-
+    // 전체 식단가 카드에는 목표 표시 안 함 (가중평균 목표는 사용자 설정값 아님)
     const mp1El = document.getElementById('mpVal-total')
     const mp2El = document.getElementById('mpVal-nostaff')
     const mp3El = document.getElementById('mpVal-nosupply')
@@ -6515,16 +6525,9 @@ function updateBudgetProgressPanel() {
       if (mp1El) mp1El.innerHTML = `${fmt(mp1)}<span class="text-xs font-normal ml-0.5">원/식</span>`
       if (mp2El) mp2El.innerHTML = `${fmt(mp2)}<span class="text-xs font-normal ml-0.5">원/식</span>`
       if (mp3El) mp3El.innerHTML = `${fmt(mp3)}<span class="text-xs font-normal ml-0.5">원/식</span>`
-
-      if (mpDiffEl && tgt > 0) {
-        if (mp1 > tgt) {
-          mpDiffEl.innerHTML = `<span class="text-red-500">▲ +${fmt(mp1-tgt)}원 초과</span>`
-          if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-red-50 border-2 border-red-300'
-        } else {
-          mpDiffEl.innerHTML = `<span class="text-green-600">▼ ${fmt(tgt-mp1)}원 여유</span>`
-          if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-blue-50'
-        }
-      }
+      // 전체 목표 표시 제거: 가중평균 목표는 사용자 설정값이 아니므로 diff 표시 안 함
+      if (mpDiffEl) mpDiffEl.innerHTML = ''
+      if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-blue-50'
     } else {
       // 식수 없을 때 금액 기반으로 표시
       if (mp1El) mp1El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
@@ -26632,16 +26635,7 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>
 
-        <!-- 시뮬레이션 결과 요약 -->
-        <div id="simulationResultSummary" class="hidden">
-          <div class="p-3 bg-indigo-50 border border-indigo-200 rounded-xl">
-            <div class="font-semibold text-indigo-800 text-sm mb-2">
-              <i class="fas fa-chart-bar mr-1"></i>시뮬레이션 결과 요약
-              <span class="text-xs font-normal text-gray-400 ml-1">(참고값 — KPI 미반영)</span>
-            </div>
-            <div id="simulationResultContent" class="text-xs text-gray-600">계산 중...</div>
-          </div>
-        </div>
+        <!-- 시뮬레이션 결과 요약 삭제됨 -->
       </div>
 
       <!-- 업체관리 탭 -->
@@ -28541,9 +28535,7 @@ function renderSimulationBudgetList() {
   // 시뮬레이션 탭에서는 기존 renderCategoryBudgetList를 simulationBudgetList 대상으로 호출
   // isMealPricingTab=false 를 강제하기 위해 simulationBudgetList id 사용
   renderCategoryBudgetList(cats, settings, false, '')
-  // 시뮬레이션 결과 요약 표시
-  const resultDiv = document.getElementById('simulationResultSummary')
-  if (resultDiv) resultDiv.classList.remove('hidden')
+  // 시뮬레이션 결과 요약 표시 제거됨 (UI에서 삭제)
 }
 
 // ── 자동배분: 예산설정 탭에서 총 목표금액 가져오기 ──
