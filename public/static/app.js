@@ -6571,10 +6571,10 @@ function updateBudgetProgressPanel() {
       // 카테고리별 월 식단가 업데이트 (formula 기반: 선택 예산항목 ÷ 선택 식수항목)
       catsList.forEach(cat => {
         const s3 = catSetMap3[cat.id] || {}
-        // 가중배분 목표 식단가(target_meal_price) 우선, 없으면 기준단가(ref_meal_price) 폴백
-        // target_meal_price = 배분예산 ÷ 3개월평균식수 (설정화면 가중배분 목표)
-        // ref_meal_price = 관리자 입력 기준단가 (가중치 계산 기반)
-        const targetPrice3 = s3.target_meal_price || s3.ref_meal_price || 0
+        // KPI 메인 비교 기준 = 직접 설정 목표 식단가(ref_meal_price) 우선
+        // ref_meal_price = 관리자 직접 설정값 (항암 6,500 / 요양 1,800 등) → KPI 기준
+        // target_meal_price = 가중배분 참고값 → 예산배분 보조지표
+        const targetPrice3 = s3.ref_meal_price || s3.target_meal_price || 0
 
         // formula 설정 (백엔드에서 받은 catDietPricesData 활용)
         const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
@@ -28941,7 +28941,8 @@ async function saveCategoryBudgets(hospitalId) {
   const mealTotals = window._adminCatMealTotals || []
 
   const settings = cats.map(cat => {
-    // 기준 단가: 상단 테이블 allocRefPrice- 입력값 (UI에서 직접 입력하는 유일한 단가 값)
+    // ref_meal_price = 직접 설정 목표 식단가 (KPI 메인 비교 기준)
+    // 관리자가 입력하는 "기준 단가" 값: 항암 6,500 / 요양 1,800 등
     const refPrice = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
 
     // 배분예산: catBudget- hidden에 값이 없으면 recalcAutoAlloc 결과에서 직접 계산
@@ -28965,24 +28966,22 @@ async function saveCategoryBudgets(hospitalId) {
       workingDays = parseInt(document.getElementById('autoAlloc-workdays')?.value || 0) || 0
     }
 
-    // 가중평균 배분 후 목표 식단가 = 배분예산 ÷ 3개월평균식수
-    // 이 값이 대시보드의 "목표 대비" KPI 기준으로 사용됨 (target_meal_price)
+    // target_meal_price = 가중배분 참고값 (배분예산 ÷ 3개월평균식수)
+    // 예산배분 보조지표 용도. KPI 메인 기준은 ref_meal_price 사용
     const mealInfo = mealTotals.find(m => m.category_key === cat.category_key) || {}
     const avgMeals = mealInfo.avg_meals_3m || 0
-    let targetMealPrice = 0
+    let allocMealPrice = 0
     if (monthlyBudget > 0 && avgMeals > 0) {
-      targetMealPrice = Math.round(monthlyBudget / avgMeals)
+      allocMealPrice = Math.round(monthlyBudget / avgMeals)
     }
-    // 배분 계산 없으면(가중배분 미적용) 기준 단가를 목표로 사용
-    if (targetMealPrice === 0) targetMealPrice = refPrice
 
     return {
       patient_category_id: cat.id,
       monthly_budget: monthlyBudget,
-      target_meal_price: targetMealPrice,  // 가중배분 목표 식단가 (배분예산÷평균식수) → 대시보드 KPI 기준
+      target_meal_price: allocMealPrice || refPrice,  // 가중배분 참고값 (예산÷식수), 없으면 기준단가
       working_days: workingDays,
       daily_meal_count: 0,
-      ref_meal_price: refPrice             // 기준 단가 (원본 입력값, 가중치 계산 기반)
+      ref_meal_price: refPrice  // ★ KPI 메인 목표: 직접 설정 목표 식단가 (항암 6,500 / 요양 1,800)
     }
   })
 
