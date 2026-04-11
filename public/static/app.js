@@ -1657,8 +1657,10 @@ async function renderDashboard() {
         const catDietEntry = (catDietPricesData||[]).find(d => d.id === cat.id)
         const includeNullCat = isSingleCatDash || (catDietEntry?.monthAmt && catDietEntry.monthAmt > (monthly.total||0))
         const usedBase = monthly.total || 0
-        const used = includeNullCat ? usedBase + nullCatTotal : usedBase
-        const budget = settings.monthly_budget || 0
+        const used = catDietEntry?.monthAmt || (includeNullCat ? usedBase + nullCatTotal : usedBase)
+        // ★★★ 목표금액: catDietPricesData.monthBudget 우선 (target_meal_price × 실제식수 계산값)
+        // catDietPricesData가 없으면 settings.monthly_budget fallback
+        const budget = (catDietEntry?.monthBudget) || settings.monthly_budget || 0
         const taxable = (monthly.taxable || 0) + (includeNullCat ? nullCatTaxable : 0)
         const exempt = (monthly.exempt || 0) + (includeNullCat ? nullCatExempt : 0)
         const pct = CALC_ENGINE.calcBudgetPct(used, budget) || null // ✅ CALC_ENGINE
@@ -1974,12 +1976,6 @@ async function renderDashboard() {
                 <div style="position:absolute;top:-3px;left:${tPct}%;transform:translateX(-50%);width:2px;height:18px;background:#7c3aed;border-radius:1px"></div>
               </div>
             </div>
-            <div>
-              <div style="font-size:9px;color:#9ca3af;margin-bottom:2px">목표 <strong style="color:#7c3aed">${fmt(dbWeightedTarget)}원/식</strong> (▎마커)</div>
-              <div style="background:#e5e7eb;border-radius:4px;height:8px">
-                <div style="height:100%;width:${tPct}%;background:#c084fc;border-radius:4px"></div>
-              </div>
-            </div>
           </div>`
         })() : ''
         const panelTitle = '전체 식단가 (전체 식수 기준)'
@@ -1990,11 +1986,7 @@ async function renderDashboard() {
             ${dbWDiff!==null&&dbWeightedCurrent>0?`<span style="font-size:11px;font-weight:700;color:${dbWColor}">${dbWOver?'🔴 +'+fmt(Math.abs(dbWDiff))+'원 초과':'🟢 '+fmt(Math.abs(dbWDiff))+'원 절감'}</span>`:''}
           </div>
           <div style="font-size:9px;color:#9ca3af;margin-bottom:6px">${panelDesc}</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0px">
-            <div style="background:white;border-radius:8px;padding:10px;text-align:center;border:1px solid #e5e7eb">
-              <div style="font-size:10px;color:#6b7280;margin-bottom:3px">목표 식단가 <span style="font-size:8px;color:#9ca3af">(KPI 기준)</span></div>
-              <div style="font-size:15px;font-weight:800;color:${dbWeightedTarget>0?'#374151':'#d1d5db'}">${dbWeightedTarget>0?fmt(dbWeightedTarget)+'원/식':'미설정'}</div>
-            </div>
+          <div style="margin-bottom:0px">
             <div style="background:${dbWOver?'#fff1f2':'#f0fdf4'};border-radius:8px;padding:10px;text-align:center;border:2px solid ${dbWColor}60">
               <div style="font-size:10px;color:#6b7280;margin-bottom:3px">현재 식단가</div>
               <div style="font-size:15px;font-weight:800;color:${dbWeightedCurrent>0?dbWColor:'#d1d5db'}">${dbWeightedCurrent>0?fmt(dbWeightedCurrent)+'원/식':'미입력'}</div>
@@ -3312,7 +3304,8 @@ async function renderOrders() {
     apiMealPriceTotal: dashData?.mealPriceTotal || 0,
     apiMealPriceNoStaff: dashData?.mealPriceNoStaff || 0,
     apiMealPriceNoSupply: dashData?.mealPriceNoSupply || 0,
-    apiTotalUsed: dashData?.totalUsed || 0
+    apiTotalUsed: dashData?.totalUsed || 0,
+    apiSupplyUsed: dashData?.supplyCardUsed || 0  // 소모품+카드 제외 금액 합계 (mp3 비율 보정용)
   }
 
   // ── 인사이트 패널 즉시 업데이트 (모든 전역 데이터가 준비된 직후) ──
@@ -6495,14 +6488,23 @@ function updateBudgetProgressPanel() {
     const apiMp1 = ms.apiMealPriceTotal || 0
     const apiMp2 = ms.apiMealPriceNoStaff || 0
     const apiMp3 = ms.apiMealPriceNoSupply || 0
+    const apiSupplyUsed = ms.apiSupplyUsed || 0  // API 계산 시 소모품+카드 금액
 
     let mp1, mp2, mp3
     if (apiBase > 0 && apiMp1 > 0 && monthTotal > 0) {
-      // 발주 금액 변동 비율로 API 값 조정 (3종 모두 동일 비율 적용)
+      // 발주 금액 변동 비율로 API 값 조정
       const ratio = monthTotal / apiBase
       mp1 = Math.round(apiMp1 * ratio)
       mp2 = Math.round(apiMp2 * ratio)
-      mp3 = Math.round(apiMp3 * ratio)
+      // mp3(소모품 제외 식단가)는 소모품 제외 금액 비율로 별도 보정
+      // 분자: (현재 전체발주 - 현재 소모품) / (API 전체발주 - API 소모품) 비율 적용
+      const apiNoSupplyBase = apiBase - apiSupplyUsed
+      const curNoSupply = monthTotal - supplyTotal
+      if (apiNoSupplyBase > 0) {
+        mp3 = Math.round(apiMp3 * curNoSupply / apiNoSupplyBase)
+      } else {
+        mp3 = Math.round(apiMp3 * ratio)
+      }
     } else if (totalMealsForPrice > 0) {
       // API 값 없을 때 식수 기반 계산
       mp1 = Math.round(monthTotal / totalMealsForPrice)
@@ -26256,9 +26258,6 @@ async function openHospitalDetail(hospitalId) {
         <button class="tab-btn flex-shrink-0" id="tab-mealpricing" onclick="switchHospTab('mealpricing')">
           <i class="fas fa-utensils mr-1"></i>식단가설정
         </button>
-        <button class="tab-btn flex-shrink-0" id="tab-simulation" onclick="switchHospTab('simulation')">
-          <i class="fas fa-calculator mr-1"></i>예산시뮬레이션
-        </button>
         <button class="tab-btn flex-shrink-0" id="tab-accounts" onclick="switchHospTab('accounts')">
           <i class="fas fa-user-circle mr-1"></i>계정관리
         </button>
@@ -26527,8 +26526,7 @@ async function openHospitalDetail(hospitalId) {
               <div class="font-bold text-green-800 text-sm mb-1">운영 KPI 기준 — 목표 식단가 직접 설정</div>
               <div class="text-xs text-green-700">
                 여기서 입력한 값이 <strong>모든 화면의 KPI 비교 기준</strong>이 됩니다.<br>
-                <span class="text-gray-500">• 대시보드 · 발주 입력 · 월별 분석 — 모두 이 값 기준으로 초과/절감 표시</span><br>
-                <span class="text-gray-500">• 예산 자동배분·가중값 계산은 <strong>예산시뮬레이션 탭</strong>에서 별도 사용</span>
+                <span class="text-gray-500">• 대시보드 · 발주 입력 · 월별 분석 — 모두 이 값 기준으로 초과/절감 표시</span>
               </div>
             </div>
           </div>
@@ -26605,37 +26603,6 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>`
         })()}
-      </div>
-
-      <!-- 예산시뮬레이션 탭 (KPI 비연동 참고 전용) -->
-      <div id="hospTab-simulation" class="hidden">
-        <!-- 경고 배너: KPI 비연동 명시 -->
-        <div class="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-xl">
-          <div class="flex items-start gap-2">
-            <i class="fas fa-exclamation-triangle text-amber-500 mt-0.5"></i>
-            <div>
-              <div class="font-bold text-amber-800 text-sm mb-1">⚠️ 참고 전용 — KPI에 영향 없음</div>
-              <div class="text-xs text-amber-700">
-                이 탭에서 계산된 값은 <strong>절대로 운영 KPI(목표 식단가)에 반영되지 않습니다.</strong><br>
-                예산 배분 시뮬레이션 참고 목적으로만 사용하세요.<br>
-                <span class="text-gray-500">KPI 기준 변경은 → <strong>식단가설정 탭</strong>에서 직접 입력하세요.</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 예산 자동배분 시뮬레이션 -->
-        <div class="mb-4">
-          <h3 class="font-semibold text-gray-700 text-sm mb-2">
-            <i class="fas fa-calculator text-indigo-600 mr-1.5"></i>환자군별 예산 자동배분 시뮬레이션
-            <span class="text-xs font-normal text-gray-400 ml-1">(식수 × 기준단가 가중방식 · 참고 전용)</span>
-          </h3>
-          <div id="simulationBudgetList" class="space-y-2">
-            <div class="text-xs text-gray-400 text-center py-2">식단가설정 탭에서 목표 식단가를 먼저 입력하세요</div>
-          </div>
-        </div>
-
-        <!-- 시뮬레이션 결과 요약 삭제됨 -->
       </div>
 
       <!-- 업체관리 탭 -->
@@ -27442,9 +27409,9 @@ function switchHospTab(tab) {
     document.getElementById(`tabSaveBtn-${t}`)?.classList.toggle('hidden', t !== tab)
   })
   // 현재 탭 안내 라벨 업데이트
-  const tabNames = { info:'기본정보', categories:'환자군 설정', vendors:'업체 관리', budget:'예산 설정', mealpricing:'식단가 설정', simulation:'예산시뮬레이션', accounts:'계정 관리' }
+  const tabNames = { info:'기본정보', categories:'환자군 설정', vendors:'업체 관리', budget:'예산 설정', mealpricing:'식단가 설정', accounts:'계정 관리' }
   const lbl = document.getElementById('currentTabLabel')
-  if (lbl) lbl.innerHTML = `<i class="fas fa-circle-dot mr-1"></i>현재: <strong class="text-gray-600">${tabNames[tab]||tab}</strong> 탭${ tab==='vendors'||tab==='accounts' ? ' — 우측 버튼으로 추가' : tab==='simulation' ? ' — 참고 전용 (KPI 미반영)' : ' — 우측 상단 버튼으로 저장' }`
+  if (lbl) lbl.innerHTML = `<i class="fas fa-circle-dot mr-1"></i>현재: <strong class="text-gray-600">${tabNames[tab]||tab}</strong> 탭${ tab==='vendors'||tab==='accounts' ? ' — 우측 버튼으로 추가' : ' — 우측 상단 버튼으로 저장' }`
   // 환자군 탭으로 전환 시 데이터 로드
   if (tab === 'categories' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
@@ -27453,11 +27420,6 @@ function switchHospTab(tab) {
   // 식단가설정 탭으로 전환 시 카테고리 목표 데이터 로드 (단순화: 목표 식단가 직접 입력만)
   if (tab === 'mealpricing' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
-  }
-  // 예산시뮬레이션 탭으로 전환 시 시뮬레이션 데이터 로드 (KPI 비연동)
-  if (tab === 'simulation' && window._adminHospitalId) {
-    loadPatientCategories(window._adminHospitalId)
-    setTimeout(() => { if (typeof fetchBudgetTotalForAlloc === 'function') fetchBudgetTotalForAlloc(); renderSimulationBudgetList() }, 400)
   }
   // 예산 탭으로 전환 시 업체별 합계 자동 계산 + 식재료 기본예산 재계산
   if (tab === 'budget') {
@@ -28975,19 +28937,17 @@ async function saveCategoryBudgets(hospitalId) {
     // 관리자가 입력하는 "기준 단가" 값: 항암 6,500 / 요양 1,800 등
     const refPrice = parseCommaNum(document.getElementById(`allocRefPrice-${cat.id}`)?.value)
 
-    // 배분예산: catBudget- hidden에 값이 없으면 recalcAutoAlloc 결과에서 직접 계산
-    let monthlyBudget = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value)
-    if (!monthlyBudget) {
-      // hidden에 값이 없을 경우 현재 배분 계산 결과에서 가져오기
-      const totalBudget = parseCommaNum(document.getElementById('autoAlloc-totalBudget')?.value)
-      const ratioEl = document.getElementById(`allocRatio-${cat.id}`)
-      const ratio = parseFloat(ratioEl?.value || 0) / 100
-      if (totalBudget > 0 && ratio > 0) {
-        monthlyBudget = Math.round(totalBudget * ratio)
-        // hidden input에도 반영
-        const hiddenBudget = document.getElementById(`catBudget-${cat.id}`)
-        if (hiddenBudget) hiddenBudget.value = monthlyBudget
-      }
+    // ★★★ monthly_budget = target_meal_price × 해당월 실제 총 식수 (KPI 정확도 핵심)
+    // 가중 배분이 아닌 실제 식수 기반으로 계산하여 환자군별 목표 금액 정확성 보장
+    const mealInfo = mealTotals.find(m => m.id === cat.id || m.category_key === cat.category_key) || {}
+    const totalMeals = mealInfo.total_meals || 0
+    let monthlyBudget = 0
+    if (refPrice > 0 && totalMeals > 0) {
+      // 실제 식수 × 목표 식단가 = 올바른 월 목표 금액
+      monthlyBudget = Math.round(refPrice * totalMeals)
+    } else {
+      // 식수 데이터 없을 경우 fallback: catBudget hidden 값 사용
+      monthlyBudget = parseCommaNum(document.getElementById(`catBudget-${cat.id}`)?.value) || 0
     }
 
     // 영업일수: catWorkDays- hidden 값, 없으면 autoAlloc-workdays 값 사용
@@ -29001,8 +28961,8 @@ async function saveCategoryBudgets(hospitalId) {
     // ref_meal_price = fallback 보조용 (동일 값 저장)
     return {
       patient_category_id: cat.id,
-      monthly_budget: monthlyBudget,
-      target_meal_price: refPrice,  // ★ KPI 고정값: 직접 입력한 목표 식단가 (항암 6,500 / 요양 1,800)
+      monthly_budget: monthlyBudget,  // ★ 실제 식수 × 목표 식단가 계산값
+      target_meal_price: refPrice,    // ★ KPI 고정값: 직접 입력한 목표 식단가 (항암 6,500 / 요양 1,800)
       working_days: workingDays,
       daily_meal_count: 0,
       ref_meal_price: refPrice  // fallback 보조용 (동일 값)

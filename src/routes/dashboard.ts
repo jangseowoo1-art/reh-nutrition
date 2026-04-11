@@ -336,12 +336,26 @@ dashboard.get('/summary/:year/:month', async (c) => {
     } catch(e) {}
   })
 
+  // diet_categories에서 diet_key → legacy_field_key 매핑 로드
+  // nc_key_legacy_xxx / th_key_legacy_xxx 같은 legacy 키를 field_key로 변환하기 위해 필요
+  const dietKeyToLegacyFieldKey: Record<string, string> = {}
+  if (allMealsIncludeKeys.size > 0) {
+    const dietCatsList = await c.env.DB.prepare(
+      `SELECT diet_key, legacy_field_key FROM diet_categories WHERE hospital_id = ? AND legacy_field_key IS NOT NULL AND legacy_field_key != 'null'`
+    ).bind(hospitalId).all<any>()
+    ;(dietCatsList.results || []).forEach((dc: any) => {
+      if (dc.diet_key && dc.legacy_field_key) {
+        dietKeyToLegacyFieldKey[dc.diet_key] = dc.legacy_field_key
+      }
+    })
+  }
+
   // meals_include_keys를 field_key로 변환하는 헬퍼
   // meals_include_keys의 키 패턴:
   //   cat_{legacy_field_key or diet_key}  → 환자식 (meal_custom_fields.field_key 직접 매칭)
-  //   nc_key_{diet_key}  → 비급여식 (field_key = 'diet_' + diet_key 또는 diet_key)
-  //   th_key_{diet_key}  → 치료식 (field_key = 'diet_' + diet_key 또는 diet_key)
-  //   st_key_{diet_key}  → 직원식 (field_key = 'diet_' + diet_key 또는 diet_key)
+  //   nc_key_{diet_key}  → 비급여식 (field_key = 'diet_' + diet_key 또는 diet_key 또는 legacy_field_key)
+  //   th_key_{diet_key}  → 치료식 (field_key = 'diet_' + diet_key 또는 diet_key 또는 legacy_field_key)
+  //   st_key_{diet_key}  → 직원식 (field_key = 'diet_' + diet_key 또는 diet_key 또는 legacy_field_key)
   const mealsIncludeFieldKeys = new Set<string>()
   if (allMealsIncludeKeys.size > 0) {
     ;(customFieldsList.results || []).forEach((f: any) => {
@@ -350,9 +364,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
       if (allMealsIncludeKeys.has(fk)) { mealsIncludeFieldKeys.add(fk); return }
       if (allMealsIncludeKeys.has('cat_' + fk)) { mealsIncludeFieldKeys.add(fk); return }
       // nc_key_/th_key_/st_key_ 접두사 제거 후 'diet_' 접두사 붙이거나 그대로 매칭
+      // + diet_categories.legacy_field_key를 통한 legacy 키 매핑 지원
       for (const prefix of ['nc_key_', 'th_key_', 'st_key_']) {
         const dietKey = fk.startsWith('diet_') ? fk.slice('diet_'.length) : fk
         if (allMealsIncludeKeys.has(prefix + dietKey)) { mealsIncludeFieldKeys.add(fk); return }
+        // legacy_field_key 역방향 매핑: fk가 legacy_field_key일 경우 diet_key를 찾아 접두사 붙여 확인
+        for (const [dk, lfk] of Object.entries(dietKeyToLegacyFieldKey)) {
+          if (lfk === fk && allMealsIncludeKeys.has(prefix + dk)) {
+            mealsIncludeFieldKeys.add(fk); return
+          }
+        }
       }
     })
   }
@@ -737,9 +758,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
     // 어떠한 계산/시뮬레이션 결과도 target_meal_price를 덮어쓰지 않음
     // 보조 카테고리(budgetKeys 없음)는 0으로 처리
     const targetPrice = s3.target_meal_price || s3.ref_meal_price || (isMainCategory ? (settings?.meal_price || 0) : 0)
-    const monthBudget = s3.monthly_budget || 0
+    // ★★★ monthBudget: target_meal_price × 해당 월 실제 식수로 동적 계산 (DB monthly_budget 우선, 없으면 계산)
+    // DB monthly_budget이 잘못된 경우를 대비해 target_meal_price × monthMeals로 나중에 재계산
+    // (meals 계산 후 아래에서 재설정됨)
+    const dbMonthBudget = s3.monthly_budget || 0
     const workDays = s3.working_days || workingDays
-    const catRatio = totalCatBudgetDash > 0 ? (monthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
+    const catRatio = totalCatBudgetDash > 0 ? (dbMonthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
 
     // formula 설정이 없으면 기존 방식 (해당 카테고리 발주 ÷ 카테고리+직원+보호자)
     const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
@@ -767,6 +791,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
       const defaultCatKey = `cat_${cat.category_key}`
       monthMeals = (customFieldTotals[defaultCatKey] || 0) + (ms.total_staff||0) + (ms.total_guardian||0)
     }
+
+    // ★★★ monthBudget: target_meal_price × 실제 식수 (정확한 목표 금액)
+    // DB monthly_budget이 잘못된 값일 수 있으므로, 식수 데이터가 있으면 실시간 계산 우선
+    const monthBudget = (targetPrice > 0 && monthMeals > 0)
+      ? Math.round(targetPrice * monthMeals)
+      : dbMonthBudget
 
     // ── 이번 달 식단가 계산 ──
     const monthDietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
@@ -1243,6 +1273,7 @@ dashboard.get('/summary/:year/:month', async (c) => {
     mealPriceRaw: mealPriceTotal,            // 기존 총발주÷총식수 방식 (참고용)
     mealPriceNoStaff,
     mealPriceNoSupply,
+    supplyCardUsed,     // 소모품+카드 제외 금액 합계 (프론트엔드 mp3 비율 보정용)
     mealPriceOperating,                      // 총 운영원가 (식재료+소모품+카드) ÷ 식수
     supplyExcludeKeys,  // 병원별 소모품 제외 설정 (프론트엔드 라벨 표시용)
     totalMeals,
