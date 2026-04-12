@@ -274,7 +274,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   // 병원 계정이면 DB의 활성 월(current_year/month)로 App 상태 동기화
   if (App.role !== 'admin') {
     try {
-      const am = await api('GET', '/api/settings/active-month')
+      // 5초 타임아웃으로 active-month API 호출 (느린 응답으로 초기화 지연 방지)
+      const amPromise = api('GET', '/api/settings/active-month')
+      const am = await Promise.race([
+        amPromise,
+        new Promise(resolve => setTimeout(() => resolve(null), 5000))
+      ])
       if (am?.year) {
         App.currentYear = am.year
         App.currentMonth = am.month
@@ -284,6 +289,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     } catch(e) {}
     // heartbeat 시작 (60초마다 현재 페이지 서버에 전달)
     startHeartbeat()
+  }
+
+  // 관리자: 병원 목록 미리 로드 (대시보드와 병렬로 시작)
+  if (App.role === 'admin') {
+    api('GET', '/api/admin/hospitals').then(hList => {
+      const hospitals = Array.isArray(hList) ? hList : (hList?.hospitals || hList?.data || [])
+      if (hospitals.length > 0) {
+        App._adminHospitals = hospitals
+        if (!App.adminHospitalId) App.adminHospitalId = hospitals[0].id
+      }
+    }).catch(() => {})
   }
 
   initSidebar()
@@ -1030,8 +1046,8 @@ async function renderDashboard() {
 
   // ── 관리자: 병원 선택 처리 ──────────────────────────────────────
   if (App.role === 'admin') {
-    // 아직 선택된 병원이 없으면 첫 번째 병원 자동 선택
-    if (!App.adminHospitalId) {
+    // 초기화 시 미리 로드된 경우 스킵, 없으면 여기서 로드
+    if (!App.adminHospitalId || !App._adminHospitals) {
       const hList = await api('GET', '/api/admin/hospitals')
       const hospitals = Array.isArray(hList) ? hList : (hList?.hospitals || hList?.data || [])
       if (hospitals.length === 0) {

@@ -3,7 +3,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && cp public/static/app.js dist/static/app.js && cp public/static/styles.css dist/static/styles.css",
+    "build": "vite build && cp public/static/app.js dist/static/app.js && cp public/static/styles.css dist/static/styles.css && cp public/static/logo.png dist/static/logo.png",
     "preview": "wrangler pages dev",
     "deploy": "npm run build && wrangler pages deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"

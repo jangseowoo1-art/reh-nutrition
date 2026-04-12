@@ -142,8 +142,8 @@ function getLoginPage(): string {
 <body class="flex items-center justify-center min-h-screen p-4">
 <div class="login-card rounded-2xl shadow-2xl p-8 w-full max-w-md">
   <div class="text-center mb-8">
-    <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4" style="background:linear-gradient(135deg,#1a4731,#16a34a)">
-      <i class="fas fa-hospital text-white text-2xl"></i>
+    <div class="inline-flex items-center justify-center mb-4">
+      <img src="/static/logo.png" alt="Re&H 로고" class="w-20 h-20 object-contain" style="filter: invert(30%) sepia(60%) saturate(500%) hue-rotate(100deg) brightness(80%)">
     </div>
     <h1 class="text-2xl font-bold text-gray-800">Re&amp;H 급식 예산관리</h1>
     <p class="text-gray-500 text-sm mt-1">Re&amp;H Nutrition Management System</p>
@@ -279,8 +279,8 @@ function getAppShell(): string {
     <!-- 로고 + 모바일 닫기 버튼 -->
     <div class="p-4 border-b border-white/10">
       <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
-          <i class="fas fa-hospital text-white text-base"></i>
+        <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0 overflow-hidden">
+          <img src="/static/logo.png" alt="Re&H" class="w-8 h-8 object-contain" style="filter:brightness(0) invert(1)">
         </div>
         <div class="flex-1 min-w-0">
           <div class="text-white font-bold text-sm leading-tight">Re&amp;H 급식 예산관리</div>
