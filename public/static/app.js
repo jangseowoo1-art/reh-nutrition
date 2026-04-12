@@ -1902,11 +1902,6 @@ async function renderDashboard() {
           const patientOnlyDietPrice = cat.patientOnlyDietPrice || 0
           const patientOnlyMeals = cat.patientOnlyMeals || 0
 
-          // 비교 기준: 직원식/보호자식 포함형이면 전체 식수 식단가로 비교
-          // (목표도 전체 식수 기준이어야 정상이지만, 카드에 안내 문구 추가)
-          const monthDietPrice2 = cat.monthDietPrice !== undefined
-            ? (cat.monthDietPrice || 0)
-            : (catMonthMeals2 > 0 ? Math.round(catMonthAmt / catMonthMeals2) : 0)
           // 월 식단가 기준으로 초과/경고 판단
           const isOverM2 = targetP > 0 && monthDietPrice2 > targetP
           const isDangerM2 = targetP > 0 && monthDietPrice2 >= targetP * 1.1  // 110% 이상 위험
