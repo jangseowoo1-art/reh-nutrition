@@ -716,6 +716,53 @@ dashboard.get('/summary/:year/:month', async (c) => {
     return total
   }
 
+  // ★ 식수 구성 세분화: mealsKeys에서 환자/직원/보호자/기타 식수를 각각 계산해 반환
+  const buildMealsBreakdown = (mealsKeys: string[], mealStatsRow: {total_staff?:number,total_guardian?:number}|null, customTotalsMap: Record<string,number>): {
+    patientMeals: number, staffMeals: number, guardianMeals: number, therapyMeals: number, ncMeals: number,
+    hasStaff: boolean, hasGuardian: boolean
+  } => {
+    let patientMeals = 0, staffMeals = 0, guardianMeals = 0, therapyMeals = 0, ncMeals = 0
+    let hasStaff = false, hasGuardian = false
+    if (!mealsKeys || mealsKeys.length === 0) return { patientMeals, staffMeals, guardianMeals, therapyMeals, ncMeals, hasStaff, hasGuardian }
+    // 직원식
+    if (mealsKeys.includes('staff')) {
+      staffMeals += (mealStatsRow?.total_staff || 0)
+      hasStaff = true
+    }
+    if (mealsKeys.some(k => k.startsWith('st_key_'))) {
+      hasStaff = true
+      let staffFromCustom = 0
+      mealsKeys.filter(k => k.startsWith('st_key_')).forEach(k => {
+        const dk = k.replace('st_key_', '')
+        staffFromCustom += (customTotalsMap['diet_' + dk] || customTotalsMap[dk] || 0)
+      })
+      staffMeals += staffFromCustom > 0 ? staffFromCustom : (mealStatsRow?.total_staff || 0)
+    }
+    // 보호자식 (legacy guardian key)
+    if (mealsKeys.includes('guardian')) {
+      guardianMeals += (mealStatsRow?.total_guardian || 0)
+      hasGuardian = true
+    }
+    // 환자식 (cat_ 키)
+    mealsKeys.filter(k => k.startsWith('cat_')).forEach(k => { patientMeals += (customTotalsMap[k] || 0) })
+    // 비급여식 (nc_key_): 보호자식 포함 가능
+    mealsKeys.filter(k => k.startsWith('nc_key_')).forEach(k => {
+      const dk = k.replace('nc_key_', '')
+      const legacyKey = dk.startsWith('legacy_') ? 'cat_' + dk.replace('legacy_', '') : null
+      const v = (customTotalsMap['diet_' + dk] || customTotalsMap[dk] || (legacyKey ? customTotalsMap[legacyKey] : 0) || 0)
+      // nc_key는 보호자/비급여 통합 - 보호자식으로 분류
+      guardianMeals += v
+      hasGuardian = true
+    })
+    // 치료식 (th_key_)
+    mealsKeys.filter(k => k.startsWith('th_key_')).forEach(k => {
+      const dk = k.replace('th_key_', '')
+      const legacyKey = dk.startsWith('legacy_') ? 'cat_' + dk.replace('legacy_', '') : null
+      therapyMeals += (customTotalsMap['diet_' + dk] || customTotalsMap[dk] || (legacyKey ? customTotalsMap[legacyKey] : 0) || 0)
+    })
+    return { patientMeals, staffMeals, guardianMeals, therapyMeals, ncMeals, hasStaff, hasGuardian }
+  }
+
   // 이번 달 직원/보호자 식수 맵 (mealStats에서)
   const monthMealStatsRow = { total_staff: ms.total_staff||0, total_guardian: ms.total_guardian||0 }
   // customFieldTotals는 이미 계산되어 있음 (월별 필드별 합계)
@@ -784,13 +831,26 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
     // ── 이번 달 식수 계산 (meals_include_keys 기반) ──
     let monthMeals: number
+    let mealsBreakdown: { patientMeals: number, staffMeals: number, guardianMeals: number, therapyMeals: number, ncMeals: number, hasStaff: boolean, hasGuardian: boolean }
     if (hasFormula && mealsKeys.length > 0) {
       monthMeals = buildMealsFromKeys(mealsKeys, monthMealStatsRow, customFieldTotals)
+      mealsBreakdown = buildMealsBreakdown(mealsKeys, monthMealStatsRow, customFieldTotals)
     } else {
       // 기존 방식: 카테고리 식수 + 직원 + 보호자
       const defaultCatKey = `cat_${cat.category_key}`
       monthMeals = (customFieldTotals[defaultCatKey] || 0) + (ms.total_staff||0) + (ms.total_guardian||0)
+      mealsBreakdown = {
+        patientMeals: customFieldTotals[defaultCatKey] || 0,
+        staffMeals: ms.total_staff||0,
+        guardianMeals: ms.total_guardian||0,
+        therapyMeals: 0, ncMeals: 0,
+        hasStaff: (ms.total_staff||0) > 0,
+        hasGuardian: (ms.total_guardian||0) > 0
+      }
     }
+
+    // 환자식 단독 식수 (직원식/보호자식 제외)
+    const patientOnlyMeals = mealsBreakdown.patientMeals + mealsBreakdown.therapyMeals
 
     // ★★★ monthBudget: target_meal_price × 실제 식수 (정확한 목표 금액)
     // DB monthly_budget이 잘못된 값일 수 있으므로, 식수 데이터가 있으면 실시간 계산 우선
@@ -800,6 +860,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
     // ── 이번 달 식단가 계산 ──
     const monthDietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
+    // 환자식 단독 식단가 (직원식/보호자식 제외) - 참고용
+    const patientOnlyDietPrice = patientOnlyMeals > 0 ? Math.round(monthAmt / patientOnlyMeals) : 0
 
     // ── 오늘 발주금액 계산 (budget_include_keys 기반) ──
     let todayAmt: number
@@ -839,7 +901,18 @@ dashboard.get('/summary/:year/:month', async (c) => {
       budgetKeys, mealsKeys, extraIncludeKeys,
       catIncludeSupply, catIncludeCard,
       refMealPrice: s3.ref_meal_price || 0,  // 관리자 설정 기준 식단가
-      settingsMealPrice: settings?.meal_price || 0  // monthly_settings 기준 식단가
+      settingsMealPrice: settings?.meal_price || 0,  // monthly_settings 기준 식단가
+      // ★ 식수 구성 breakdown (직원식/보호자식 포함 여부 명시)
+      mealsBreakdown: {
+        patientMeals: mealsBreakdown.patientMeals,
+        staffMeals: mealsBreakdown.staffMeals,
+        guardianMeals: mealsBreakdown.guardianMeals,
+        therapyMeals: mealsBreakdown.therapyMeals,
+        hasStaff: mealsBreakdown.hasStaff,
+        hasGuardian: mealsBreakdown.hasGuardian
+      },
+      patientOnlyMeals,   // 환자식+치료식 단독 식수 (직원/보호자 제외)
+      patientOnlyDietPrice  // 환자식 단독 식단가 (참고용)
     }
   })
 
@@ -1147,9 +1220,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
   // ══════════════════════════════════════════════════════════════
   // 2.4 식수 대비 발주 적정성 분석
   // ══════════════════════════════════════════════════════════════
-  const appropriateMealPrice = settings?.meal_price || 0  // 목표 식단가 = 적정 단가 기준
-  const appropriateOrderAmt = appropriateMealPrice > 0 && totalMeals > 0
-    ? appropriateMealPrice * totalMeals : 0
+  // 카테고리별 목표 식단가가 있으면 카테고리별 합산으로 적정 발주액 계산
+  // (전체 평균 단가 × 총식수 방식은 단가 차이가 큰 다중 카테고리 병원에서 왜곡 발생)
+  const catBasedAppropriateAmt = catDietPrices
+    .filter(c => (c.targetPrice || 0) > 0 && (c.monthMeals || 0) > 0)
+    .reduce((sum: number, c: any) => sum + (c.targetPrice * c.monthMeals), 0)
+  const appropriateMealPrice = settings?.meal_price || 0  // 목표 식단가 = 폴백용
+  // 카테고리별 합산이 있으면 우선 사용, 없으면 전체 목표 × 총식수 폴백
+  const appropriateOrderAmt = catBasedAppropriateAmt > 0
+    ? catBasedAppropriateAmt
+    : (appropriateMealPrice > 0 && totalMeals > 0 ? appropriateMealPrice * totalMeals : 0)
   const orderAppropriatenessRatio = appropriateOrderAmt > 0
     ? parseFloat(((totalUsed - appropriateOrderAmt) / appropriateOrderAmt * 100).toFixed(1)) : 0
 
@@ -1322,7 +1402,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
       diffAmt: Math.round(totalUsed - appropriateOrderAmt),
       diffRatio: orderAppropriatenessRatio,
       budgetProgressPct: parseFloat(budgetProgressPct.toFixed(1)),  // 예산 대비 사용률
-      label: orderAppropriatenessLabel  // 'over' | 'under' | 'normal'
+      label: orderAppropriatenessLabel,  // 'over' | 'under' | 'normal'
+      usedCatBased: catBasedAppropriateAmt > 0  // 카테고리별 합산 기준 사용 여부
     },
     // ── 2.5 발주 이상 탐지 ──
     anomalies,

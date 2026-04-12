@@ -1270,10 +1270,29 @@ async function renderDashboard() {
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
 
     <!-- 2.2 월말 예상 식단가 -->
-    <div class="bg-white rounded-2xl shadow-sm border ${proj.projectedMealPriceDiff > 0 ? 'border-red-200' : 'border-green-200'} p-4">
+    <div class="bg-white rounded-2xl shadow-sm border ${(() => {
+      const catProjs2 = proj.catProjections || []
+      const mainCats2 = catProjs2.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+      if (mainCats2.length > 0) {
+        // 다중 카테고리: 하나라도 초과면 빨강
+        const anyOver2 = mainCats2.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice)
+        return anyOver2 ? 'border-red-200' : 'border-green-200'
+      }
+      return proj.projectedMealPriceDiff > 0 ? 'border-red-200' : 'border-green-200'
+    })()} p-4">
       <div class="flex items-center gap-2 mb-2">
-        <div class="w-8 h-8 rounded-lg ${proj.projectedMealPriceDiff > 0 ? 'bg-red-50' : 'bg-green-50'} flex items-center justify-center">
-          <i class="fas fa-chart-line ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-500'} text-sm"></i>
+        <div class="w-8 h-8 rounded-lg ${(() => {
+          const cps = proj.catProjections || []
+          const mcs = cps.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+          if (mcs.length > 0) return mcs.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice) ? 'bg-red-50' : 'bg-green-50'
+          return proj.projectedMealPriceDiff > 0 ? 'bg-red-50' : 'bg-green-50'
+        })()} flex items-center justify-center">
+          <i class="fas fa-chart-line ${(() => {
+            const cps = proj.catProjections || []
+            const mcs = cps.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+            if (mcs.length > 0) return mcs.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice) ? 'text-red-500' : 'text-green-500'
+            return proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-500'
+          })()} text-sm"></i>
         </div>
         <span class="text-xs text-gray-500 font-semibold">월말 예상 식단가</span>
       </div>
@@ -1305,12 +1324,13 @@ async function renderDashboard() {
             </div>`
           }).join('')
           const overallColor = proj.projectedMealPriceDiff > 0 ? '#dc2626' : '#16a34a'
+          // 다중 카테고리에서 전체 평균은 참고용이므로 중립 색상 사용
           return `<div style="margin-bottom:6px">${catRows}</div>
           <div style="border-top:2px solid #e5e7eb;padding-top:6px;display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:#374151">전체 평균</span>
+            <span style="font-size:11px;font-weight:700;color:#374151">전체 평균<span style="font-size:8px;font-weight:400;color:#9ca3af;margin-left:3px">(참고)</span></span>
             <div style="text-align:right">
-              <div class="text-lg font-bold" style="color:${proj.projectedMonthEndMealPrice>0?overallColor:'#9ca3af'}">${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}</div>
-              <div style="font-size:9px;color:#9ca3af">월말 예상: 누적+예상 발주 ÷ 누적+예상 식수 (직접 설정 목표 식단가 기준)</div>
+              <div class="text-lg font-bold" style="color:${proj.projectedMonthEndMealPrice>0?'#6b7280':'#9ca3af'}">${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}</div>
+              <div style="font-size:9px;color:#9ca3af">전체 발주액 ÷ 전체 식수 (카테고리별 위 참고)</div>
             </div>
           </div>`
         }
@@ -1320,12 +1340,29 @@ async function renderDashboard() {
         </div>
         <div class="text-xs text-gray-400 mt-1">현재: ${fmt(data.mealPriceTotal||0)}원 · 목표: ${fmt(proj.targetMealPrice||0)}원</div>`
       })()}
-      ${proj.projectedMealPriceDiff !== 0 && proj.projectedMonthEndMealPrice > 0 ? `
-      <div class="text-xs font-semibold mt-1 ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-600'}">
-        ${proj.projectedMealPriceDiff > 0 ? '▲' : '▼'} ${fmt(Math.abs(proj.projectedMealPriceDiff))}원
-        (${proj.projectedMealPriceDiff > 0 ? '+' : ''}${proj.projectedMealPriceDiffPct}%)
-        ${proj.projectedMealPriceDiff > 0 ? '초과 예상' : '여유'}
-      </div>` : (proj.projectedMonthEndMealPrice > 0 ? '<div class="text-xs text-green-600 font-semibold mt-1">✓ 목표 범위 내</div>' : '')}
+      ${(() => {
+        const catProjs3 = proj.catProjections || []
+        const mainCats3 = catProjs3.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+        if (mainCats3.length > 0) {
+          // 다중 카테고리: 카테고리별 over/ok 요약
+          const overCats = mainCats3.filter(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice)
+          const okCats   = mainCats3.filter(c => c.targetPrice > 0 && c.projectedMealPrice > 0 && c.projectedMealPrice <= c.targetPrice)
+          if (overCats.length > 0) {
+            return `<div class="text-xs font-semibold mt-1 text-red-500">⚠ ${overCats.map(c=>c.category_name).join(', ')} 초과 예상</div>`
+          } else if (okCats.length > 0) {
+            return `<div class="text-xs text-green-600 font-semibold mt-1">✓ 모든 카테고리 목표 범위 내</div>`
+          }
+          return ''
+        }
+        if (proj.projectedMealPriceDiff !== 0 && proj.projectedMonthEndMealPrice > 0) {
+          return `<div class="text-xs font-semibold mt-1 ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-600'}">
+            ${proj.projectedMealPriceDiff > 0 ? '▲' : '▼'} ${fmt(Math.abs(proj.projectedMealPriceDiff))}원
+            (${proj.projectedMealPriceDiff > 0 ? '+' : ''}${proj.projectedMealPriceDiffPct}%)
+            ${proj.projectedMealPriceDiff > 0 ? '초과 예상' : '여유'}
+          </div>`
+        }
+        return proj.projectedMonthEndMealPrice > 0 ? '<div class="text-xs text-green-600 font-semibold mt-1">✓ 목표 범위 내</div>' : ''
+      })()}
       <div class="text-xs text-gray-300 mt-1">${proj.elapsedDays||0}일 경과 기준 추세</div>
     </div>
 
@@ -1359,7 +1396,7 @@ async function renderDashboard() {
         ${orderAppr.label==='over' ? '⚠ 과다 발주' : orderAppr.label==='under' ? '▼ 과소 발주' : (orderAppr.targetMealPrice > 0 ? '✓ 적정 수준' : '목표 미설정')}
       </div>
       <!-- 판정 기준 설명 -->
-      ${orderAppr.targetMealPrice > 0 ? (() => {
+      ${(orderAppr.targetMealPrice > 0 || orderAppr.usedCatBased) ? (() => {
         const bPct = orderAppr.budgetProgressPct || 0
         const dRatio = orderAppr.diffRatio || 0
         const totalMealsVal = orderAppr.totalMeals || 0
@@ -1367,25 +1404,26 @@ async function renderDashboard() {
         // 식수 데이터 신뢰도: 입력일수 3일 이상 + 발주일수 대비 25% 이상
         const orderDays = (data.projection && data.projection.elapsedDays) || 1
         const mealDataSufficient = msDays >= 3 && (msDays / orderDays) >= 0.25
+        const catBased = orderAppr.usedCatBased === true
         // 어느 기준으로 과다/적정/과소가 됐는지 표시
         let reasonText = ''
         if (orderAppr.label === 'over') {
           if (bPct >= 105) reasonText = `예산 ${bPct.toFixed(1)}% 초과`
-          else reasonText = `식단가 +${dRatio}% 초과`
+          else reasonText = `식단가 +${dRatio}% 초과${catBased ? ' (카테고리별 합산 기준)' : ''}`
         } else if (orderAppr.label === 'under') {
-          reasonText = `식단가 ${dRatio}% 미달`
+          reasonText = `식단가 ${dRatio}% 미달${catBased ? ' (카테고리별 합산 기준)' : ''}`
         } else {
           if (!mealDataSufficient && totalMealsVal > 0) {
             // 식수 입력이 부족한 경우: 예산 기준만 표시, 식단가 수치 숨김
             reasonText = `예산 ${bPct.toFixed(1)}% · 식수 미입력(${msDays}일)`
           } else {
-            reasonText = `예산 ${bPct.toFixed(1)}% · 식단가 ${dRatio>0?'+':''}${dRatio}%`
+            reasonText = `예산 ${bPct.toFixed(1)}% · 식단가 ${dRatio>0?'+':''}${dRatio}%${catBased ? ' (카테고리별)' : ''}`
           }
         }
         return `<div style="font-size:10px;color:#6b7280;margin-top:2px;margin-bottom:6px">${reasonText}</div>`
       })() : ''}
       <!-- #6 일별/주별/월별 적정성 3단계 표시 (예산 대비) -->
-      ${orderAppr.targetMealPrice > 0 ? (() => {
+      ${(orderAppr.targetMealPrice > 0 || orderAppr.usedCatBased) ? (() => {
         const isPast = s.isPastMonth === true   // 백엔드가 내려준 과거 달 플래그
         const todayPct = s.dailyBudget > 0 ? Math.round(s.todayUsed / s.dailyBudget * 100) : null
         const weekPct  = s.weeklyBudget > 0 ? Math.round(s.weekUsed / s.weeklyBudget * 100) : null
@@ -1416,7 +1454,7 @@ async function renderDashboard() {
             const orderDaysB = (data.projection && data.projection.elapsedDays) || 1
             const mealSuffB = msDaysB >= 3 && (msDaysB / orderDaysB) >= 0.25
             return (orderAppr.appropriateOrderAmt > 0 && mealSuffB)
-              ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식단가 기준 적정액: ${fmtMan(orderAppr.appropriateOrderAmt)}원 (${orderAppr.diffRatio>0?'+':''}${orderAppr.diffRatio}%)</div>`
+              ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식단가 기준 적정액: ${fmtMan(orderAppr.appropriateOrderAmt)}원 (${orderAppr.diffRatio>0?'+':''}${orderAppr.diffRatio}%)${orderAppr.usedCatBased?' · 카테고리별 합산':''}</div>`
               : (orderAppr.appropriateOrderAmt > 0 && !mealSuffB)
                 ? `<div style="font-size:9px;color:#9ca3af;margin-top:3px;padding-top:3px;border-top:1px solid #f3f4f6">식수 미입력 — 식단가 기준 적정액 산출 불가</div>`
                 : ''
@@ -1853,6 +1891,22 @@ async function renderDashboard() {
           const monthDietPrice2 = cat.monthDietPrice !== undefined
             ? (cat.monthDietPrice || 0)
             : (catMonthMeals2 > 0 ? Math.round(catMonthAmt / catMonthMeals2) : 0)
+
+          // ★ 직원식/보호자식 포함 여부 판단 (mealsBreakdown 활용)
+          const breakdown = cat.mealsBreakdown || {}
+          const hasStaffInMeals = breakdown.hasStaff || (cat.mealsKeys||[]).some(k => k.startsWith('st_key_') || k === 'staff')
+          const hasGuardianInMeals = breakdown.hasGuardian || (cat.mealsKeys||[]).some(k => k.startsWith('nc_key_') || k === 'guardian')
+          const hasMixedMeals = hasStaffInMeals || hasGuardianInMeals  // 직원/보호자식 포함형
+
+          // ★ 환자식 단독 식단가 (참고용) - hasMixedMeals인 경우 표시
+          const patientOnlyDietPrice = cat.patientOnlyDietPrice || 0
+          const patientOnlyMeals = cat.patientOnlyMeals || 0
+
+          // 비교 기준: 직원식/보호자식 포함형이면 전체 식수 식단가로 비교
+          // (목표도 전체 식수 기준이어야 정상이지만, 카드에 안내 문구 추가)
+          const monthDietPrice2 = cat.monthDietPrice !== undefined
+            ? (cat.monthDietPrice || 0)
+            : (catMonthMeals2 > 0 ? Math.round(catMonthAmt / catMonthMeals2) : 0)
           // 월 식단가 기준으로 초과/경고 판단
           const isOverM2 = targetP > 0 && monthDietPrice2 > targetP
           const isDangerM2 = targetP > 0 && monthDietPrice2 >= targetP * 1.1  // 110% 이상 위험
@@ -1865,12 +1919,35 @@ async function renderDashboard() {
           const priceDiffPct = targetP > 0 && priceDiff !== null ? parseFloat((priceDiff / targetP * 100).toFixed(1)) : null
           const borderColor = isDangerM2 ? '#b91c1c' : isOverM2 ? '#dc2626' : isWarnM2 ? '#d97706' : (monthDietPrice2 > 0 && targetP > 0 ? '#16a34a' : color)
           const bgColor = isDangerM2 ? '#fef2f2' : isOverM2 ? '#fff1f2' : isWarnM2 ? '#fffbeb' : (monthDietPrice2 > 0 && targetP > 0 ? '#f0fdf4' : `${color}06`)
+
+          // ★ 식수 구성 태그 (직원식/보호자식 포함 여부 표시)
+          const mealTypeBadges = [
+            hasStaffInMeals ? `<span style="font-size:8px;background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:4px;font-weight:600">직원포함</span>` : '',
+            hasGuardianInMeals ? `<span style="font-size:8px;background:#ede9fe;color:#5b21b6;padding:1px 4px;border-radius:4px;font-weight:600">보호자포함</span>` : ''
+          ].filter(Boolean).join(' ')
+
+          // ★ 식수 구성 상세 (직원/보호자 포함형일 때 표시)
+          const mealsDetailHtml = hasMixedMeals && catMonthMeals2 > 0 ? (() => {
+            const pMeals = breakdown.patientMeals || 0
+            const sMeals = breakdown.staffMeals || 0
+            const gMeals = breakdown.guardianMeals || 0
+            const tMeals = breakdown.therapyMeals || 0
+            const parts = []
+            if (pMeals > 0) parts.push(`환자 ${fmt(pMeals)}`)
+            if (tMeals > 0) parts.push(`치료식 ${fmt(tMeals)}`)
+            if (sMeals > 0) parts.push(`직원 ${fmt(sMeals)}`)
+            if (gMeals > 0) parts.push(`보호자 ${fmt(gMeals)}`)
+            return parts.length > 0 ? `<div style="font-size:8px;color:#6b7280;margin-top:2px;text-align:center">${parts.join(' + ')}식</div>` : ''
+          })() : ''
+
           return `<div style="border:2px solid ${borderColor}40;border-radius:10px;padding:8px 10px;background:${bgColor};margin-bottom:6px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
-              <div style="display:flex;align-items:center;gap:5px">
+              <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
                 <span style="width:9px;height:9px;border-radius:50%;background:${color};display:inline-block"></span>
                 <span style="font-size:12px;font-weight:700;color:${color}">${cat.category_name}</span>
-                <span style="font-size:8px;color:#9ca3af;font-weight:400">환자군 식수 기준</span>
+                ${hasMixedMeals
+                  ? `<span style="font-size:8px;color:#9ca3af;font-weight:400">전체 식수 기준</span>${mealTypeBadges}`
+                  : `<span style="font-size:8px;color:#9ca3af;font-weight:400">환자군 식수 기준</span>`}
                 ${cat.catIncludeSupply ? `<span style="font-size:8px;background:#ccfbf1;color:#0f766e;padding:1px 4px;border-radius:4px;font-weight:600">🗃소모품포함</span>` : ''}
                 ${cat.catIncludeCard ? `<span style="font-size:8px;background:#dbeafe;color:#1d4ed8;padding:1px 4px;border-radius:4px;font-weight:600">💳카드포함</span>` : ''}
               </div>
@@ -1880,16 +1957,22 @@ async function renderDashboard() {
             ${targetP > 0 ? `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
               <div style="text-align:center;padding:6px 5px;background:white;border-radius:7px;border:2px solid ${borderColor}50">
-                <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">현재 식단가</div>
+                <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">${hasMixedMeals ? '전체 식단가' : '현재 식단가'}</div>
                 <div style="font-size:15px;font-weight:900;color:${monthDietPrice2>0?priceColorM2:'#d1d5db'}">${monthDietPrice2>0?fmt(monthDietPrice2):'-'}</div>
                 <div style="font-size:8px;color:#6b7280">원/식</div>
+                ${hasMixedMeals && patientOnlyDietPrice > 0 ? `<div style="font-size:8px;color:#6b7280;margin-top:2px;border-top:1px dashed #e5e7eb;padding-top:2px">환자만: <strong style="color:#374151">${fmt(patientOnlyDietPrice)}원</strong></div>` : ''}
               </div>
               <div style="text-align:center;padding:6px 5px;background:white;border-radius:7px;border:1px solid #e5e7eb">
                 <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">목표 식단가</div>
                 <div style="font-size:15px;font-weight:900;color:#374151">${fmt(targetP)}</div>
                 <div style="font-size:8px;color:#6b7280">원/식</div>
+                ${hasMixedMeals ? `<div style="font-size:8px;color:#f59e0b;margin-top:2px">※ 환자식 기준</div>` : ''}
               </div>
             </div>
+            ${hasMixedMeals ? `
+            <div style="padding:4px 8px;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;margin-bottom:5px;font-size:8px;color:#92400e">
+              <i class="fas fa-info-circle" style="margin-right:3px"></i>직원식·보호자식 포함형: 목표는 환자식 기준 설정값입니다. 전체 식수로 나눈 실제 식단가와 단순 비교 불가.
+            </div>` : ''}
             <div style="padding:5px 8px;background:${isDangerM2?'#fee2e2':isOverM2?'#fff1f2':isWarnM2?'#fffbeb':'#f0fdf4'};border-radius:7px;display:flex;align-items:center;justify-content:space-between">
               <span style="font-size:10px;font-weight:700;color:${priceColorM2}">
                 ${priceDiff !== null && priceDiff > 0 ? `🔴 +${fmt(priceDiff)}원 초과` : priceDiff !== null && priceDiff < 0 ? `🟢 ${fmt(Math.abs(priceDiff))}원 절감` : priceDiff === 0 ? '✅ 목표 달성' : '-'}
@@ -1906,7 +1989,10 @@ async function renderDashboard() {
             <!-- 월 발주 / 식수 -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px">
               <div style="text-align:center;font-size:9px;color:#6b7280">월 발주: <strong>${fmtMan(catMonthAmt)}</strong></div>
-              <div style="text-align:center;font-size:9px;color:#6b7280">식수: <strong>${catMonthMeals2>0?fmt(catMonthMeals2)+'식':'-'}</strong></div>
+              <div style="text-align:center;font-size:9px;color:#6b7280">
+                식수: <strong>${catMonthMeals2>0?fmt(catMonthMeals2)+'식':'-'}</strong>
+                ${mealsDetailHtml}
+              </div>
             </div>
           </div>`
         }).join('')
@@ -2001,9 +2087,7 @@ async function renderDashboard() {
             <thead>
               <tr style="background:#f3f4f6">
                 <th style="padding:6px 8px;text-align:left;color:#6b7280;font-weight:600;border-bottom:2px solid #e5e7eb">카테고리</th>
-                <th style="padding:6px 8px;text-align:right;color:#7c3aed;font-weight:600;border-bottom:2px solid #e5e7eb">목표 식단가</th>
                 <th style="padding:6px 8px;text-align:right;color:#1d4ed8;font-weight:600;border-bottom:2px solid #e5e7eb">실제 식단가</th>
-                <th style="padding:6px 8px;text-align:right;color:#6b7280;font-weight:600;border-bottom:2px solid #e5e7eb">차이</th>
               </tr>
             </thead>
             <tbody>
@@ -2015,10 +2099,9 @@ async function renderDashboard() {
                 const targetP = cat.targetPrice || 0
                 const actualP = cat._dietPrice || 0
                 const diff = targetP > 0 && actualP > 0 ? actualP - targetP : null
-                const diffPct = diff !== null && targetP > 0 ? parseFloat(((diff / targetP) * 100).toFixed(1)) : null
                 const isOver = diff !== null && diff > 0
                 const isDanger = targetP > 0 && actualP >= targetP * 1.1
-                const diffColor = isDanger ? '#b91c1c' : isOver ? '#dc2626' : diff !== null && diff < 0 ? '#16a34a' : '#6b7280'
+                const diffColor = isDanger ? '#b91c1c' : isOver ? '#dc2626' : diff !== null && diff < 0 ? '#16a34a' : '#1d4ed8'
                 return `<tr style="border-bottom:1px solid #f3f4f6;background:${isDanger?'#fef2f2':isOver?'#fff8f8':'white'}">
                   <td style="padding:6px 8px">
                     <span style="display:inline-flex;align-items:center;gap:4px">
@@ -2027,11 +2110,7 @@ async function renderDashboard() {
                       ${isDanger ? `<span style="font-size:8px;color:#b91c1c;font-weight:700">🚨110%↑</span>` : ''}
                     </span>
                   </td>
-                  <td style="padding:6px 8px;text-align:right;color:#374151;font-weight:700">${targetP > 0 ? fmt(targetP)+'원' : '<span style="color:#d1d5db">미설정</span>'}</td>
                   <td style="padding:6px 8px;text-align:right;font-weight:700;color:${actualP>0?diffColor:'#d1d5db'}">${actualP > 0 ? fmt(actualP)+'원' : '미입력'}</td>
-                  <td style="padding:6px 8px;text-align:right;font-weight:700;color:${diffColor}">
-                    ${diff !== null ? `${diff > 0 ? '🔴 +' : '🟢 '}${fmt(diff)}원 (${diff > 0 ? '+' : ''}${diffPct}%)` : '<span style="color:#d1d5db">-</span>'}
-                  </td>
                 </tr>`
               }).join('')}
             </tbody>
@@ -2753,6 +2832,13 @@ async function renderOrders() {
         const initMonthPrice = dcEntry?.monthDietPrice !== undefined
           ? (dcEntry.monthDietPrice || 0)
           : (initMonthAmt > 0 && initMonthMeals > 0 ? Math.round(initMonthAmt / initMonthMeals) : 0)
+
+        // ★ 직원식/보호자식 포함 여부 판단
+        const breakdown = dcEntry?.mealsBreakdown || {}
+        const hasMixedMeals = breakdown.hasStaff || breakdown.hasGuardian ||
+          (dcEntry?.mealsKeys||[]).some(k => k.startsWith('st_key_') || k === 'staff' || k.startsWith('nc_key_') || k === 'guardian')
+        const patientOnlyDietPrice = dcEntry?.patientOnlyDietPrice || 0
+
         // 초기 목표 대비 계산
         const initIsOver = targetPrice > 0 && initMonthPrice > targetPrice
         const initIsWarn = targetPrice > 0 && initMonthPrice >= targetPrice * 0.9 && !initIsOver
@@ -2762,6 +2848,19 @@ async function renderOrders() {
               ? `<span style="color:#dc2626;font-size:10px">▲ +${fmt(initMonthPrice-targetPrice)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>`
               : `<span style="color:#16a34a;font-size:10px">▼ ${fmt(targetPrice-initMonthPrice)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>`)
           : (targetPrice > 0 ? `<div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>` : '<span style="font-size:9px;color:#d1d5db">미설정</span>')
+
+        // 식수 구성 상세 (직원/보호자 포함형)
+        const mealsDetailHtml2 = hasMixedMeals && initMonthMeals > 0 ? (() => {
+          const pM = breakdown.patientMeals || 0
+          const sM = breakdown.staffMeals || 0
+          const gM = breakdown.guardianMeals || 0
+          const parts = []
+          if (pM > 0) parts.push(`환자 ${fmt(pM)}`)
+          if (sM > 0) parts.push(`직원 ${fmt(sM)}`)
+          if (gM > 0) parts.push(`보호자 ${fmt(gM)}`)
+          return parts.length > 0 ? `<div style="font-size:7px;color:#9ca3af;margin-top:1px">${parts.join('+')}식</div>` : ''
+        })() : ''
+
         return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:${color}0d;border:1px solid ${color}30;margin-bottom:6px">
           <div style="display:flex;align-items:center;gap:4px;min-width:50px">
             <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0"></span>
@@ -2773,13 +2872,15 @@ async function renderOrders() {
               <div id="cat-mp-amt-${cat.id}" style="font-size:12px;font-weight:700;color:${color}">${initMonthAmt>0?fmtMan(initMonthAmt):'-'}</div>
             </div>
             <div style="text-align:center">
-              <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">월 식단가</div>
+              <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">${hasMixedMeals ? '전체 식단가' : '월 식단가'}</div>
               <div id="cat-mp-price-${cat.id}" style="font-size:13px;font-weight:900;color:${initMonthPrice>0?initPriceColor:color}">${initMonthPrice>0?fmt(initMonthPrice):'-'}</div>
               <div style="font-size:8px;color:#6b7280">원/식</div>
+              ${hasMixedMeals && patientOnlyDietPrice > 0 ? `<div style="font-size:8px;color:#6b7280;border-top:1px dashed #e5e7eb;padding-top:1px;margin-top:1px">환자만: <strong>${fmt(patientOnlyDietPrice)}</strong></div>` : ''}
             </div>
             <div style="text-align:center">
               <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">목표 대비</div>
               <div id="cat-mp-diff-${cat.id}" style="font-size:10px;font-weight:700;color:#9ca3af">
+                ${hasMixedMeals && targetPrice > 0 ? `<div style="font-size:7px;color:#f59e0b;margin-bottom:2px">※ 환자식 기준</div>` : ''}
                 ${initDiffHtml}
               </div>
             </div>
@@ -2787,6 +2888,7 @@ async function renderOrders() {
           <div style="text-align:right;min-width:36px">
             <div style="font-size:8px;color:#9ca3af">식수</div>
             <div id="cat-mp-meals-${cat.id}" style="font-size:10px;font-weight:600;color:#374151">${initMonthMeals > 0 ? fmt(initMonthMeals)+'식' : '-'}</div>
+            ${mealsDetailHtml2}
           </div>
         </div>`
       }).join('')
@@ -26603,6 +26705,68 @@ async function openHospitalDetail(hospitalId) {
           </div>
         </div>`
         })()}
+
+        <!-- ③ 직원식 관리 방식 설정 -->
+        <div id="staffDietModePanel" class="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-bold text-amber-800 text-sm"><i class="fas fa-user-tie text-amber-600 mr-1.5"></i>③ 직원식 관리 방식</h3>
+              <p class="text-xs text-amber-600 mt-0.5">병원별로 직원식을 특정 환자군에 포함할지, 별도 식단가로 관리할지 설정합니다</p>
+            </div>
+          </div>
+          <!-- 모드 선택 -->
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <label id="staffModeLabel-included" class="flex items-start gap-2 p-3 bg-white border-2 border-amber-300 rounded-xl cursor-pointer hover:bg-amber-50 transition-all" onclick="selectStaffDietMode('included')">
+              <input type="radio" name="staffDietMode" value="included" id="staffMode-included" class="mt-0.5" checked>
+              <div>
+                <div class="text-xs font-bold text-amber-800">포함형 (기본)</div>
+                <div class="text-xs text-gray-500 mt-0.5">직원식을 특정 환자군 식단가에 포함하여 계산<br><span class="text-amber-600">현재 설정: 해당 환자군의 식수 포함 항목에서 직원식 체크</span></div>
+              </div>
+            </label>
+            <label id="staffModeLabel-separate" class="flex items-start gap-2 p-3 bg-white border-2 border-transparent rounded-xl cursor-pointer hover:bg-amber-50 transition-all" onclick="selectStaffDietMode('separate')">
+              <input type="radio" name="staffDietMode" value="separate" id="staffMode-separate" class="mt-0.5">
+              <div>
+                <div class="text-xs font-bold text-amber-800">별도형</div>
+                <div class="text-xs text-gray-500 mt-0.5">직원식 식단가를 별도 카드로 독립 관리<br><span class="text-blue-600">대시보드·발주 화면에 직원식 카드 별도 표시</span></div>
+              </div>
+            </label>
+          </div>
+          <!-- 별도형 설정 영역 -->
+          <div id="staffSeparateConfig" class="hidden mt-2 p-3 bg-white border border-amber-200 rounded-lg">
+            <div class="text-xs font-semibold text-amber-700 mb-2"><i class="fas fa-cog mr-1"></i>직원식 별도 설정</div>
+            <div class="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label class="block text-xs text-gray-600 mb-1 font-medium">직원식 목표 식단가 (원/식)</label>
+                <input type="text" inputmode="numeric" id="staffDietTargetPrice"
+                  class="form-input text-sm py-1.5 w-full font-bold comma-input text-center"
+                  style="border:2px solid #d97706;"
+                  placeholder="목표 식단가 입력">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-600 mb-1 font-medium">직원식 식수 포함 항목</label>
+                <div id="staffDietMealsKeys" class="space-y-1 text-xs max-h-24 overflow-y-auto border border-gray-200 rounded p-1.5">
+                  <div class="text-gray-400">로딩 중...</div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-600 mb-1 font-medium">직원식 발주 포함 업체 (선택)</label>
+              <div id="staffDietVendorKeys" class="space-y-1 text-xs max-h-24 overflow-y-auto border border-gray-200 rounded p-1.5">
+                <div class="text-gray-400">로딩 중...</div>
+              </div>
+            </div>
+            <div class="mt-2 p-2 bg-amber-50 rounded text-xs text-amber-700">
+              <i class="fas fa-info-circle mr-1"></i>
+              직원식 별도형 활성화 시: 환자군 식단가 계산에서 직원식이 자동 분리됩니다.<br>
+              직원식이 포함된 환자군의 <b>식수 포함 항목에서 직원식 체크를 해제</b>해주세요.
+            </div>
+          </div>
+          <button type="button" onclick="saveStaffDietConfig()" 
+            class="w-full mt-3 py-2 text-sm font-semibold bg-amber-600 text-white rounded-lg hover:bg-amber-700">
+            <i class="fas fa-save mr-1"></i>직원식 관리 방식 저장
+          </button>
+        </div>
+
       </div>
 
       <!-- 업체관리 탭 -->
@@ -27403,7 +27567,7 @@ function getDefaultWorkingDays(year, month) {
 }
 
 function switchHospTab(tab) {
-  ['info','categories','budget','mealpricing','simulation','vendors','accounts'].forEach(t => {
+  ['info','categories','budget','mealpricing','vendors','accounts'].forEach(t => {
     document.getElementById(`hospTab-${t}`)?.classList.toggle('hidden', t !== tab)
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab)
     document.getElementById(`tabSaveBtn-${t}`)?.classList.toggle('hidden', t !== tab)
@@ -27540,7 +27704,7 @@ async function saveSupplyExcludeConfig(hospitalId, silent = false) {
 }
 window.saveSupplyExcludeConfig = saveSupplyExcludeConfig
 
-// ── 식단가설정 탭 통합 저장 (카테고리 목표 + 소모품/카드 제외 기준) ────
+// ── 식단가설정 탭 통합 저장 (카테고리 목표 + 소모품/카드 제외 기준 + 직원식 모드) ────
 async function saveMealPricingSettings(hospitalId) {
   const saveBtn = document.getElementById('tabSaveBtn-mealpricing')
   if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>저장중...' }
@@ -27556,6 +27720,102 @@ async function saveMealPricingSettings(hospitalId) {
   }
 }
 window.saveMealPricingSettings = saveMealPricingSettings
+
+// ── 직원식 관리 방식 UI 함수들 ────────────────────────────────
+async function loadStaffDietConfig(hospitalId) {
+  try {
+    const cfg = await api('GET', `/api/admin/hospitals/${hospitalId}/staff-diet-config`)
+    window._staffDietConfig = cfg
+    const mode = cfg?.staff_diet_mode || 'included'
+    // 라디오 버튼 상태 반영
+    const incEl = document.getElementById('staffMode-included')
+    const sepEl = document.getElementById('staffMode-separate')
+    if (incEl) incEl.checked = (mode === 'included')
+    if (sepEl) sepEl.checked = (mode === 'separate')
+    selectStaffDietMode(mode, true) // UI 갱신 (초기 로드)
+    // 별도형 세부 설정 채우기
+    if (mode === 'separate') {
+      const priceEl = document.getElementById('staffDietTargetPrice')
+      if (priceEl) priceEl.value = cfg?.staff_diet_target_price > 0 ? cfg.staff_diet_target_price.toLocaleString('ko-KR') : ''
+    }
+    // 직원식 식수 항목 렌더링
+    _renderStaffDietMealsKeys(cfg?.staff_diet_vendor_keys || [])
+  } catch(e) {
+    console.error('[loadStaffDietConfig]', e)
+  }
+}
+window.loadStaffDietConfig = loadStaffDietConfig
+
+function selectStaffDietMode(mode, silent) {
+  const incLabel = document.getElementById('staffModeLabel-included')
+  const sepLabel = document.getElementById('staffModeLabel-separate')
+  const sepConfig = document.getElementById('staffSeparateConfig')
+  if (incLabel) incLabel.style.borderColor = mode === 'included' ? '#d97706' : 'transparent'
+  if (sepLabel) sepLabel.style.borderColor = mode === 'separate' ? '#d97706' : 'transparent'
+  if (sepConfig) sepConfig.classList.toggle('hidden', mode !== 'separate')
+  const incEl = document.getElementById('staffMode-included')
+  const sepEl = document.getElementById('staffMode-separate')
+  if (incEl) incEl.checked = (mode === 'included')
+  if (sepEl) sepEl.checked = (mode === 'separate')
+  if (mode === 'separate' && !silent) {
+    _renderStaffDietMealsKeys(window._staffDietConfig?.staff_diet_vendor_keys || [])
+  }
+}
+window.selectStaffDietMode = selectStaffDietMode
+
+function _renderStaffDietMealsKeys(savedVendorKeys) {
+  // 직원식 식수 항목 (st_key_ 체크박스)
+  const mealsEl = document.getElementById('staffDietMealsKeys')
+  const vendorEl = document.getElementById('staffDietVendorKeys')
+  const dietCats = window._dietCategories || []
+  const staffDiets = dietCats.filter(dc => dc.parent_type === 'staff' && dc.is_active)
+  if (mealsEl) {
+    if (staffDiets.length === 0) {
+      mealsEl.innerHTML = '<div class="text-gray-400">직원식 식이 항목 없음</div>'
+    } else {
+      mealsEl.innerHTML = staffDiets.map(dc => `
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" class="staff-meals-key-cb" value="st_key_${dc.diet_key}" checked>
+          <span>${dc.diet_name}</span>
+        </label>`).join('')
+    }
+  }
+  // 직원식 관련 업체 (발주 포함 업체 선택)
+  const vendors = window._adminHospVendors || []
+  if (vendorEl) {
+    if (vendors.length === 0) {
+      vendorEl.innerHTML = '<div class="text-gray-400">업체 목록을 먼저 로드하세요</div>'
+    } else {
+      vendorEl.innerHTML = vendors.map(v => `
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" class="staff-vendor-key-cb" value="${v.id}" ${savedVendorKeys.includes(String(v.id)) ? 'checked' : ''}>
+          <span>${v.name} <span class="text-gray-400">(${v.category||'-'})</span></span>
+        </label>`).join('')
+    }
+  }
+}
+
+async function saveStaffDietConfig() {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) { showToast('병원을 선택하세요', 'warning'); return }
+  const mode = document.getElementById('staffMode-separate')?.checked ? 'separate' : 'included'
+  const rawPrice = document.getElementById('staffDietTargetPrice')?.value?.replace(/,/g,'') || '0'
+  const targetPrice = parseInt(rawPrice) || 0
+  const vendorKeys = Array.from(document.querySelectorAll('.staff-vendor-key-cb:checked')).map(el => el.value)
+  try {
+    await api('PUT', `/api/admin/hospitals/${hospitalId}/staff-diet-config`, {
+      staff_diet_mode: mode,
+      staff_diet_target_price: targetPrice,
+      staff_diet_vendor_keys: vendorKeys
+    })
+    window._staffDietConfig = { staff_diet_mode: mode, staff_diet_target_price: targetPrice, staff_diet_vendor_keys: vendorKeys }
+    showToast(`직원식 관리 방식(${mode === 'separate' ? '별도형' : '포함형'})이 저장되었습니다`, 'success')
+  } catch(e) {
+    showToast('직원식 설정 저장 실패', 'error')
+    console.error('[saveStaffDietConfig]', e)
+  }
+}
+window.saveStaffDietConfig = saveStaffDietConfig
 
 // 카카오 주소검색
 window.openKakaoAddressSearch = function() {
@@ -27720,6 +27980,11 @@ async function loadPatientCategories(hospitalId) {
   renderDietPresetChips()
   window._budgetCats = catsForBudget
   renderCategoryBudgetList(catsForBudget, catSettings, isCatFallback, catFallbackYearMonth)
+
+  // 직원식 관리 방식 로드 (식단가 설정 탭에서만)
+  if (document.getElementById('staffDietModePanel')) {
+    loadStaffDietConfig(hospitalId)
+  }
 }
 
 // ── 식이 분류 관련 상수 ──────────────────────────────────────
@@ -28482,22 +28747,6 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
     updateWeightedAvgTarget()
     setTimeout(() => { fetchBudgetTotalForAlloc(); recalcAutoAlloc() }, 100)
   }
-}
-
-// ── 예산시뮬레이션 탭: 기존 자동배분 패널 렌더링 (KPI 비연동) ──
-function renderSimulationBudgetList() {
-  const simEl = document.getElementById('simulationBudgetList')
-  if (!simEl) return
-  const cats = window._budgetCats || window._patientCategories || []
-  const settings = window._catSettingsForBudget || []
-  if (cats.length === 0) {
-    simEl.innerHTML = `<div class="text-xs text-gray-400 text-center py-4">식단가설정 탭에서 목표 식단가를 먼저 설정하세요</div>`
-    return
-  }
-  // 시뮬레이션 탭에서는 기존 renderCategoryBudgetList를 simulationBudgetList 대상으로 호출
-  // isMealPricingTab=false 를 강제하기 위해 simulationBudgetList id 사용
-  renderCategoryBudgetList(cats, settings, false, '')
-  // 시뮬레이션 결과 요약 표시 제거됨 (UI에서 삭제)
 }
 
 // ── 자동배분: 예산설정 탭에서 총 목표금액 가져오기 ──

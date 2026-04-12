@@ -82,6 +82,38 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
   return c.json({ success: true })
 })
 
+// ── 직원식 관리 방식 조회 ─────────────────────────────────────
+adminRouter.get('/hospitals/:id/staff-diet-config', async (c) => {
+  const id = c.req.param('id')
+  const row = await c.env.DB.prepare(`
+    SELECT staff_diet_mode, staff_diet_target_price, staff_diet_vendor_keys
+    FROM hospital_info WHERE hospital_id=?
+  `).bind(id).first<any>()
+  return c.json({
+    staff_diet_mode: row?.staff_diet_mode || 'included',
+    staff_diet_target_price: row?.staff_diet_target_price || 0,
+    staff_diet_vendor_keys: row?.staff_diet_vendor_keys ? JSON.parse(row.staff_diet_vendor_keys) : []
+  })
+})
+
+// ── 직원식 관리 방식 저장 ─────────────────────────────────────
+adminRouter.put('/hospitals/:id/staff-diet-config', async (c) => {
+  const id = c.req.param('id')
+  const { staff_diet_mode, staff_diet_target_price, staff_diet_vendor_keys } = await c.req.json()
+  const mode = staff_diet_mode === 'separate' ? 'separate' : 'included'
+  const targetPrice = parseInt(staff_diet_target_price) || 0
+  const vendorKeys = Array.isArray(staff_diet_vendor_keys) ? staff_diet_vendor_keys : []
+  await c.env.DB.prepare(`
+    UPDATE hospital_info SET
+      staff_diet_mode=?,
+      staff_diet_target_price=?,
+      staff_diet_vendor_keys=?,
+      updated_at=CURRENT_TIMESTAMP
+    WHERE hospital_id=?
+  `).bind(mode, targetPrice, JSON.stringify(vendorKeys), id).run()
+  return c.json({ success: true, staff_diet_mode: mode })
+})
+
 // ── 소모품/카드 제외 식단가 계산 기준 조회 ──────────────────────
 adminRouter.get('/hospitals/:id/supply-exclude-config', async (c) => {
   const id = c.req.param('id')
