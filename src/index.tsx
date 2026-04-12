@@ -143,7 +143,7 @@ function getLoginPage(): string {
 <div class="login-card rounded-2xl shadow-2xl p-8 w-full max-w-md">
   <div class="text-center mb-8">
     <div class="inline-flex items-center justify-center mb-4">
-      <img src="/static/logo.png" alt="Re&H 로고" class="w-20 h-20 object-contain" style="filter: invert(30%) sepia(60%) saturate(500%) hue-rotate(100deg) brightness(80%)">
+      <img src="/static/logo.png" alt="Re&H 로고" class="w-20 h-20 object-contain">
     </div>
     <h1 class="text-2xl font-bold text-gray-800">Re&amp;H 급식 예산관리</h1>
     <p class="text-gray-500 text-sm mt-1">Re&amp;H Nutrition Management System</p>
