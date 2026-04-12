@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "reh-nutrition",
+  "name": "hospital-meal-budget",
   "compatibility_date": "2024-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "pages_build_output_dir": "./dist",
@@ -8,7 +8,7 @@
     {
       "binding": "DB",
       "database_name": "hospital-meal-production",
-      "database_id": "8d6e3611-1d2f-4e7c-bec6-c3dcba349eee"
+      "database_id": "81c2ecc9-4e4c-4fbb-93d3-90fca05077de"
     }
   ]
 }

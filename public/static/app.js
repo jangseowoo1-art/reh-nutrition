@@ -952,7 +952,24 @@ function logout() { localStorage.clear(); window.location.href = '/login' }
 // ══════════════════════════════════════════════════════════════
 async function renderDashboard() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   // ── 관리자: 병원 선택 처리 ──────────────────────────────────────
   if (App.role === 'admin') {
@@ -2542,7 +2559,24 @@ async function renderDashboard() {
 // ══════════════════════════════════════════════════════════════
 async function renderOrders() {
   const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   const [vendors, orderData, settingsData, dashData, patientCats, catOrderData, cardData] = await Promise.all([
     api('GET', '/api/vendors'),
@@ -7966,7 +8000,24 @@ window._mealCustomFields = []
 
 async function renderMeals() {
   const content = document.getElementById('meals-panel') || document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   // 식수 데이터 + 카테고리 발주 합계 병렬 로드
   const [resp, catOrderData] = await Promise.all([
@@ -9340,7 +9391,24 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     const el = document.getElementById(id)
     if (el) { const ch = Chart.getChart ? Chart.getChart(el) : null; if (ch) ch.destroy() }
   })
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   let hospitals = []
   if (App.role === 'admin') {
@@ -10535,7 +10603,24 @@ window.switchAnaTab = (tab) => {
 async function renderSettings() {
   stopClosingPoll()
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   // 마감 현황 + 활성 월 정보 로드
   const activeMonth = await api('GET', '/api/settings/active-month')
@@ -10908,7 +10993,24 @@ window.saveIngredientPrices = async function(year, month, count) {
 // ── #8 식재료 단가 분석 독립 페이지 ──────────────────────────────
 async function renderIngredientPricesPage() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   const year  = App.currentYear
   const month = App.currentMonth
@@ -12204,7 +12306,15 @@ async function deleteVendor(id) {
 // ══════════════════════════════════════════════════════════════
 async function renderAdminDashboard() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  // 스켈레톤 UI: 즉시 레이아웃 표시 → 로딩 스피너 대신 실제 구조 미리 보여줌
+  content.innerHTML = `
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
+    ${Array(4).fill(0).map(() => `<div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>`).join('')}
+  </div>
+  <div class="skeleton h-8 w-48 rounded mb-3"></div>
+  <div class="space-y-3">
+    ${Array(3).fill(0).map(() => `<div class="bg-white rounded-2xl p-4 border border-gray-100"><div class="flex gap-3"><div class="skeleton h-4 w-32 rounded"></div><div class="skeleton h-4 w-20 rounded ml-auto"></div></div><div class="skeleton h-2 w-full rounded mt-3"></div><div class="grid grid-cols-3 gap-2 mt-3">${Array(3).fill(0).map(() => `<div class="skeleton h-10 rounded-lg"></div>`).join('')}</div></div>`).join('')}
+  </div>`
 
   let data, adminStaffLabor
   try {
@@ -13567,7 +13677,24 @@ let scheduleHolidayPolicySummary = null
 
 async function renderSchedule() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   // 스케줄 관리 메뉴 진입 시 항상 월간 스케줄 탭을 첫 화면으로 표시
   scheduleTab = 'schedule'
@@ -13635,7 +13762,24 @@ async function reloadScheduleMonth() {
   const content = document.getElementById('pageContent')
   // 스피너만 월간 스케줄 탭 영역에 표시
   const tc = document.getElementById('scheduleTabContent')
-  if (tc) tc.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  if (tc) tc.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   // admin이 병원을 선택한 경우 hospitalId 파라미터 포함
   const hId = App.role === 'admin' && App.currentHospitalId ? App.currentHospitalId : null
@@ -19332,7 +19476,24 @@ window.switchScheduleTab = async (tab) => {
 
   // 스피너를 탭 콘텐츠 영역에만 표시
   const tc = document.getElementById('scheduleTabContent')
-  if (tc) tc.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  if (tc) tc.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   try {
     if (tab === 'leaves') {
@@ -25562,7 +25723,24 @@ let adminStaffLeaveHospitalFilter = 'all'  // 연차 알림 병원 필터
 
 async function renderAdminStaffManage() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   const [hospitals, employees, positions] = await Promise.all([
     api('GET', '/api/admin/hospitals').catch(() => []),
@@ -26170,7 +26348,24 @@ window.adminResignEmployee = (empId, name) => {
 // ══════════════════════════════════════════════════════════════
 async function renderHospitalManage() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   const [hospitals, closingReqs, recentApproved] = await Promise.all([
     api('GET', '/api/admin/hospitals'),
@@ -26912,10 +27107,15 @@ async function openHospitalDetail(hospitalId) {
           <label class="text-sm font-medium text-gray-600">업체명 *</label>
           <input type="text" id="adminVendorName" class="form-input mt-1" placeholder="예: 삼성 웰스토리">
         </div>
+        <!-- ★ 비용유형 안내 배너 (event/supply/utility 선택 시 표시) -->
+        <div id="adminVendorBlockedWarning" class="hidden p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          <i class="fas fa-exclamation-triangle mr-1"></i>
+          <strong id="adminVendorBlockedMsg"></strong>
+        </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="text-sm font-medium text-gray-600">카테고리</label>
-            <select id="adminVendorCategory" class="form-input mt-1">
+            <select id="adminVendorCategory" class="form-input mt-1" onchange="checkAdminVendorCategory(this.value)">
               <option value="major">대기업급식</option>
               <option value="meat">육류</option>
               <option value="seafood">해산물</option>
@@ -26923,9 +27123,10 @@ async function openHospitalDetail(hospitalId) {
               <option value="organic">유기농/한살림</option>
               <option value="market">시장/유통</option>
               <option value="delivery">인터넷배송</option>
-              <option value="supply">소모품 ★</option>
+              <option value="supply" disabled class="text-gray-400">소모품 ★ (비용유형으로 관리)</option>
               <option value="card">법인카드</option>
-              <option value="event">이벤트</option>
+              <option value="event" disabled class="text-gray-400">이벤트 (비용유형으로 관리)</option>
+              <option value="utility" disabled class="text-gray-400">공과금/인터넷 (비용유형으로 관리)</option>
               <option value="general">기타</option>
             </select>
           </div>
@@ -27362,6 +27563,23 @@ function editAdminVendor(id) {
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
+// ★ 관리자 vendor 카테고리 선택 시 차단 경고 표시
+function checkAdminVendorCategory(val) {
+  const BLOCKED_MSG = {
+    event: '이벤트/운영비는 업체로 등록할 수 없습니다. 발주 입력 시 cost_type(이벤트)으로 관리하세요.',
+    supply: '소모품비는 업체로 등록할 수 없습니다. 발주 입력 시 cost_type(소모품)으로 관리하세요.',
+    utility: '공과금/인터넷은 업체로 등록할 수 없습니다. 발주 입력 시 cost_type(공과금)으로 관리하세요.',
+  }
+  const warn = document.getElementById('adminVendorBlockedWarning')
+  const msg = document.getElementById('adminVendorBlockedMsg')
+  if (BLOCKED_MSG[val]) {
+    msg.textContent = BLOCKED_MSG[val]
+    warn.classList.remove('hidden')
+  } else {
+    warn.classList.add('hidden')
+  }
+}
+
 async function saveAdminVendor() {
   const hospitalId = window._adminHospitalId
   if (!hospitalId) return
@@ -27378,9 +27596,27 @@ async function saveAdminVendor() {
     orderCycle: orderCycleEl ? orderCycleEl.value : 'daily'
   }
   if (!data.name) { showToast('업체명을 입력하세요', 'error'); return }
+
+  // ★ 차단 카테고리 사전 검사 (event/supply/utility)
+  const BLOCKED_VENDOR_CATS = ['event', 'supply', 'utility']
+  const BLOCKED_LABELS = {
+    event: '이벤트/운영비는 발주 입력 시 cost_type으로 관리합니다.',
+    supply: '소모품비는 발주 입력 시 cost_type으로 관리합니다.',
+    utility: '공과금/인터넷은 발주 입력 시 cost_type으로 관리합니다.',
+  }
+  if (BLOCKED_VENDOR_CATS.includes(data.category)) {
+    showToast(`'${data.category}' 카테고리로는 업체를 등록할 수 없습니다.\n${BLOCKED_LABELS[data.category] || ''}`, 'error')
+    return
+  }
+
   const res = vid
     ? await api('PUT', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`, data)
     : await api('POST', `/api/admin/hospitals/${hospitalId}/vendors`, data)
+
+  if (res?.blocked) {
+    showToast(res.error || '차단된 카테고리입니다.', 'error')
+    return
+  }
   if (res?.success) {
     document.getElementById('adminVendorModal').classList.add('hidden')
     showToast(vid ? '업체가 수정되었습니다' : '업체가 추가되었습니다', 'success')
@@ -28724,18 +28960,39 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             <div class="text-xs font-semibold text-teal-700 mb-1"><i class="fas fa-tag mr-1"></i>① 이 카테고리 식단가에 포함할 항목</div>
             <div class="text-xs text-gray-500 mb-1.5">
               체크한 항목의 발주금액이 <b>이 카테고리(${cat.category_name}) 식단가에만</b> 포함됩니다.<br>
-              <span class="text-amber-600 font-medium">※ 소모품은 최대 1개 카테고리에만 체크 권장 (중복 시 과대계상)</span><br>
-              <span class="text-gray-400 text-xs">↳ 아래 ②항목(소모품 제외 식단가 기준)과는 별개 설정입니다.</span>
+              <span class="text-amber-600 font-medium">※ 소모품/이벤트는 최대 1개 카테고리에만 체크 권장 (중복 시 과대계상)</span>
             </div>
-            <div class="flex gap-3">
-              <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                <input type="checkbox" id="catIncludeSupply-${cat.id}" ${catIncludeSupply ? 'checked' : ''}>
-                <span class="text-teal-700 font-medium">🗃 소모품 발주 포함</span>
-              </label>
-              <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                <input type="checkbox" id="catIncludeCard-${cat.id}" ${catIncludeCard ? 'checked' : ''}>
-                <span class="text-blue-700 font-medium">💳 카드 발주 포함</span>
-              </label>
+            <!-- 발주 포함 설정 -->
+            <div class="mb-1">
+              <div class="text-xs text-gray-500 font-medium mb-1">발주 포함</div>
+              <div class="flex flex-wrap gap-3">
+                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input type="checkbox" id="catIncludeSupply-${cat.id}" ${catIncludeSupply ? 'checked' : ''}>
+                  <span class="text-teal-700 font-medium">🗃 소모품 발주 포함</span>
+                </label>
+                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input type="checkbox" id="catIncludeEvent-${cat.id}" ${cat.budget_include_event ? 'checked' : ''}>
+                  <span class="text-orange-600 font-medium">🎉 이벤트 발주 포함</span>
+                </label>
+              </div>
+            </div>
+            <!-- 법인카드 포함 설정 (cost_type별 세분화) -->
+            <div class="mt-1.5">
+              <div class="text-xs text-gray-500 font-medium mb-1">법인카드 포함 <span class="text-gray-400">(cost_type별 분류)</span></div>
+              <div class="flex flex-wrap gap-3">
+                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input type="checkbox" id="catCardFood-${cat.id}" ${(cat.card_food_include || cat.budget_include_card) ? 'checked' : ''}>
+                  <span class="text-blue-700 font-medium">💳 카드-식재료 포함</span>
+                </label>
+                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input type="checkbox" id="catCardSupply-${cat.id}" ${cat.card_supply_include ? 'checked' : ''}>
+                  <span class="text-blue-600 font-medium">💳 카드-소모품 포함</span>
+                </label>
+                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input type="checkbox" id="catCardEvent-${cat.id}" ${cat.card_event_include ? 'checked' : ''}>
+                  <span class="text-blue-500 font-medium">💳 카드-이벤트 포함</span>
+                </label>
+              </div>
             </div>
           </div>
           <button type="button" onclick="saveCategoryFormula(${cat.id}, ${window._adminHospitalId})"
@@ -29152,15 +29409,24 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
   const mealsChecks = document.querySelectorAll(`.meals-include-cb[data-cat="${catId}"]:checked`)
   const mealsKeys = mealsChecks.length > 0 ? Array.from(mealsChecks).map(cb => cb.value) : null
 
-  // 소모품/카드 포함 여부 수집
-  const includeSupply = document.getElementById(`catIncludeSupply-${catId}`)?.checked ? 1 : 0
-  const includeCard = document.getElementById(`catIncludeCard-${catId}`)?.checked ? 1 : 0
+  // ★ 소모품/이벤트/카드 포함 여부 수집 (신규 세분화)
+  const includeSupply      = document.getElementById(`catIncludeSupply-${catId}`)?.checked ? 1 : 0
+  const includeEvent       = document.getElementById(`catIncludeEvent-${catId}`)?.checked ? 1 : 0
+  const cardFoodInclude    = document.getElementById(`catCardFood-${catId}`)?.checked ? 1 : 0
+  const cardSupplyInclude  = document.getElementById(`catCardSupply-${catId}`)?.checked ? 1 : 0
+  const cardEventInclude   = document.getElementById(`catCardEvent-${catId}`)?.checked ? 1 : 0
+  // 하위호환: budget_include_card = card_food_include
+  const includeCard = cardFoodInclude
 
   const res = await api('PUT', `/api/admin/hospitals/${hid}/patient-categories/${catId}/formula`, {
     budget_include_keys: budgetKeys,
     meals_include_keys: mealsKeys,
     budget_include_supply: includeSupply,
-    budget_include_card: includeCard
+    budget_include_card: includeCard,
+    budget_include_event: includeEvent,
+    card_food_include: cardFoodInclude,
+    card_supply_include: cardSupplyInclude,
+    card_event_include: cardEventInclude,
   })
 
   if (res?.success) {
@@ -29319,7 +29585,24 @@ window.saveWasteUnitPriceAdmin = async function(hospitalId) {
 // ══════════════════════════════════════════════════════════════
 async function renderHolidayManage() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   const holidays = await api('GET', `/api/admin/holidays/${App.currentYear}`)
 
@@ -29405,7 +29688,24 @@ async function renderReport(selectedHospitalId = null) {
     return
   }
 
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   let hospitals = []
   let hospitalName = App.hospitalName
@@ -34651,7 +34951,24 @@ window.closeCardExpenseModal = function() {
 // ════════════════════════════════════════════════════════════════
 async function renderExpenseDoc() {
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   const year = App.currentYear
   const month = App.currentMonth
@@ -35340,7 +35657,24 @@ window._ceoFilter = {
 async function renderCeoDashboard() {
   const content = document.getElementById('pageContent')
   if (!content) return
-  content.innerHTML = `<div class="flex items-center justify-center h-40"><div class="loading-spinner"></div></div>`
+  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
+      <div class="skeleton h-3 w-full rounded mb-2"></div>
+      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
+      <div class="skeleton h-3 w-2/3 rounded"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100">
+      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
+      <div class="skeleton h-32 w-full rounded"></div>
+    </div>
+  </div>`
 
   try {
     console.log('[CEO] 1. 시작')
@@ -44889,3 +45223,120 @@ window.qrDownload = (empId, name) => {
 }
 
 window.qrOpenLink = (url) => { window.open(url, '_blank') }
+
+// ══════════════════════════════════════════════════════════════════
+// Phase 5: 발주 입력 시 cost_type(비용유형) 분리 입력 지원
+// ══════════════════════════════════════════════════════════════════
+// 예: 삼성웰스토리 100만원 발주 중 10만원은 이벤트 비용으로 분리
+// → food: 90만원, event: 10만원으로 2개 레코드 저장
+
+/**
+ * 비용유형 분리 입력 모달 열기
+ * @param {number} vendorId - 업체 ID
+ * @param {string} vendorName - 업체명
+ * @param {string} orderDate - 발주일 (YYYY-MM-DD)
+ * @param {number} catId - 환자군 카테고리 ID
+ */
+window.openCostSplitModal = function(vendorId, vendorName, orderDate, catId) {
+  const existingModal = document.getElementById('costSplitModal')
+  if (existingModal) existingModal.remove()
+
+  const modal = document.createElement('div')
+  modal.id = 'costSplitModal'
+  modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[300]'
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 mx-4">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold text-lg">비용유형 분리 입력</h3>
+        <button onclick="document.getElementById('costSplitModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+      </div>
+      <p class="text-sm text-gray-500 mb-4">
+        <span class="font-medium text-gray-700">${vendorName}</span> · ${orderDate}<br>
+        <span class="text-amber-600">💡 식재료비와 이벤트/소모품 비용을 분리하여 각각 저장합니다.</span>
+      </p>
+      <input type="hidden" id="csmVendorId" value="${vendorId}">
+      <input type="hidden" id="csmOrderDate" value="${orderDate}">
+      <input type="hidden" id="csmCatId" value="${catId || ''}">
+      <div class="space-y-3">
+        ${['food', 'supply', 'event', 'utility'].map(ct => {
+          const icons = {food:'🍚', supply:'🗃', event:'🎉', utility:'⚡'}
+          const labels = {food:'식재료비', supply:'소모품비', event:'이벤트/운영비', utility:'공과금'}
+          const colors = {food:'#dcfce7', supply:'#fef9c3', event:'#fed7aa', utility:'#dbeafe'}
+          return `
+          <div style="background:${colors[ct]};border-radius:8px;padding:8px 10px">
+            <label class="text-xs font-semibold text-gray-700 mb-1 block">${icons[ct]} ${labels[ct]}</label>
+            <div class="flex gap-2">
+              <div class="flex-1">
+                <div class="text-xs text-gray-500 mb-0.5">과세</div>
+                <input type="text" inputmode="numeric" id="csm-${ct}-taxable"
+                  class="w-full text-right text-sm border border-gray-300 rounded px-2 py-1" placeholder="0">
+              </div>
+              <div class="flex-1">
+                <div class="text-xs text-gray-500 mb-0.5">면세</div>
+                <input type="text" inputmode="numeric" id="csm-${ct}-exempt"
+                  class="w-full text-right text-sm border border-gray-300 rounded px-2 py-1" placeholder="0">
+              </div>
+            </div>
+          </div>`
+        }).join('')}
+      </div>
+      <div class="flex gap-2 mt-4">
+        <button onclick="document.getElementById('costSplitModal').remove()"
+          class="flex-1 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50">취소</button>
+        <button onclick="saveCostSplitOrders()"
+          class="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700">
+          <i class="fas fa-save mr-1"></i>분리 저장
+        </button>
+      </div>
+    </div>`
+  document.body.appendChild(modal)
+
+  // 숫자 포맷 자동 적용
+  modal.querySelectorAll('input[inputmode="numeric"]').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const raw = inp.value.replace(/[^0-9]/g, '')
+      inp.value = raw ? parseInt(raw).toLocaleString() : ''
+    })
+  })
+}
+
+/**
+ * 비용유형 분리 저장 실행
+ */
+window.saveCostSplitOrders = async function() {
+  const vendorId = parseInt(document.getElementById('csmVendorId').value)
+  const orderDate = document.getElementById('csmOrderDate').value
+  const catId = document.getElementById('csmCatId').value ? parseInt(document.getElementById('csmCatId').value) : null
+  const costTypes = ['food', 'supply', 'event', 'utility']
+
+  const promises = []
+  for (const ct of costTypes) {
+    const taxable = parseCommaNum(document.getElementById(`csm-${ct}-taxable`)?.value) || 0
+    const exempt  = parseCommaNum(document.getElementById(`csm-${ct}-exempt`)?.value) || 0
+    if (taxable === 0 && exempt === 0) continue
+    const vat = Math.round(taxable * 0.1)
+    promises.push(api('POST', '/api/orders/save', {
+      vendorId, orderDate,
+      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat,
+      cost_type: ct,
+      payment_method: 'invoice',
+      ...(catId ? { patientCategoryId: catId } : {})
+    }))
+  }
+
+  if (promises.length === 0) {
+    showToast('입력된 금액이 없습니다', 'warning')
+    return
+  }
+
+  const results = await Promise.all(promises)
+  const ok = results.every(r => r?.success)
+  if (ok) {
+    document.getElementById('costSplitModal').remove()
+    showToast(`${promises.length}건 비용유형 분리 저장 완료!`, 'success')
+    if (typeof renderOrders === 'function') renderOrders()
+    if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
+  } else {
+    showToast('일부 저장 실패', 'error')
+  }
+}

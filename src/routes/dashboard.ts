@@ -1,4 +1,17 @@
 import { Hono } from 'hono'
+import {
+  rowToCategoryConfig,
+  buildMealsFromKeys as calcMealsFromKeys,
+  buildMealsBreakdown as calcMealsBreakdown,
+  calcCategoryDietPrice,
+  aggregateByCostType,
+  aggregateCardByCostType,
+  calcOverallDietPrices,
+  ORDERS_BY_COST_TYPE_SQL,
+  CARD_BY_COST_TYPE_SQL,
+  ORDERS_BY_COST_TYPE_TODAY_SQL,
+  CARD_BY_COST_TYPE_TODAY_SQL,
+} from '../lib/hospitalCalc'
 
 const dashboard = new Hono<{ Bindings: { DB: D1Database } }>()
 
@@ -84,7 +97,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
     prev3MonthsData,
     supplyExcludeConfig,
     todaySupplyRow,
-    todayCardRow
+    todayCardRow,
+    // ★ cost_type별 집계 (공통 계산 서비스용)
+    ordersByCostTypeRaw,
+    cardByCostTypeRaw,
+    ordersByCostTypeTodayRaw,
+    cardByCostTypeTodayRaw
   ] = await Promise.all([
     // 업체별 발주 합계 (BETWEEN으로 인덱스 활용)
     c.env.DB.prepare(
@@ -299,18 +317,24 @@ dashboard.get('/summary/:year/:month', async (c) => {
       `SELECT supply_exclude_keys FROM hospital_info WHERE hospital_id = ?`
     ).bind(hospitalId).first<any>(),
 
-    // 오늘 소모품 발주 합계 (extra_include_keys='supply' 카테고리용)
+    // 오늘 소모품 발주 합계 (레거시 호환)
     c.env.DB.prepare(
       `SELECT COALESCE(SUM(d.total_amount),0) as total
        FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
        WHERE d.hospital_id=? AND d.order_date=? AND v.category='supply'`
     ).bind(hospitalId, today).first<any>(),
 
-    // 오늘 카드 발주 합계 (extra_include_keys='card' 카테고리용)
+    // 오늘 카드 발주 합계 (레거시 호환)
     c.env.DB.prepare(
       `SELECT COALESCE(SUM(amount),0) as total FROM card_expenses
        WHERE hospital_id=? AND expense_date=?`
-    ).bind(hospitalId, today).first<any>()
+    ).bind(hospitalId, today).first<any>(),
+
+    // ★ cost_type별 월 발주 집계 (공통 계산 서비스 신규)
+    c.env.DB.prepare(ORDERS_BY_COST_TYPE_SQL).bind(hospitalId, dateStart, dateEnd).all<any>(),
+    c.env.DB.prepare(CARD_BY_COST_TYPE_SQL).bind(hospitalId, dateStart, dateEnd).all<any>(),
+    c.env.DB.prepare(ORDERS_BY_COST_TYPE_TODAY_SQL).bind(hospitalId, today).all<any>(),
+    c.env.DB.prepare(CARD_BY_COST_TYPE_TODAY_SQL).bind(hospitalId, today).all<any>()
   ])
 
   // 커스텀 필드별 월 합계 계산
@@ -389,6 +413,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
       return true
     })
     .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
+
+  // ★ cost_type별 집계 변환 (공통 계산 서비스)
+  const ordersByCostType = aggregateByCostType(ordersByCostTypeRaw?.results || [])
+  const cardByCostType = aggregateCardByCostType(cardByCostTypeRaw?.results || [])
+  const ordersByCostTypeToday = aggregateByCostType(ordersByCostTypeTodayRaw?.results || [])
+  const cardByCostTypeToday = aggregateCardByCostType(cardByCostTypeTodayRaw?.results || [])
 
   // totalUsed: daily_orders 직접 집계 (vendor_id가 다른 병원 업체를 참조해도 포함)
   // vendors 집계와 별도로 계산해야 정확한 발주 합계 산출 가능
@@ -506,26 +536,30 @@ dashboard.get('/summary/:year/:month', async (c) => {
 
   const supplyCardUsed = supplyUsed + cardExcluded + eventExcluded + otherExcluded
 
-  // extra_include_keys용: 소모품/카드 월별·오늘 합계 (카테고리별 가산에 사용)
-  const monthSupplyTotal = (vendors.results || [])
-    .filter((v: any) => v.category === 'supply')
-    .reduce((s: number, v: any) => s + (v.total_used || 0), 0)
-  const monthCardTotal = cardExpensesUsed
-  const todaySupplyTotal = todaySupplyRow?.total || 0
-  const todayCardTotal = todayCardRow?.total || 0
+  // ★ cost_type 기반 월별·오늘 합계 (공통 계산 서비스 연동)
+  // 기존 vendor.category 기반 집계와 병행 유지 (하위호환)
+  const monthSupplyTotal = ordersByCostType.supply
+  const monthEventTotal  = ordersByCostType.event
+  const monthCardTotal   = cardByCostType.total
+  const todaySupplyTotal = ordersByCostTypeToday.supply
+  const todayEventTotal  = ordersByCostTypeToday.event
+  const todayCardTotal   = cardByCostTypeToday.total
 
-  // ① 전체 식단가: 총금액 ÷ (환자+직원+보호자) — 비급여 제외
-  const mealPriceTotal = totalMealsForPrice > 0 ? Math.round(totalUsed / totalMealsForPrice) : 0
-  // ② 직원식 제외 식단가:
-  //    분자: 월 총 발주금액 그대로
-  //    분모: 전체 식수 - 직원식 식수 (커스텀 필드 st_key_ 또는 legacy total_staff)
-  //    mealCustomTotal에는 직원식도 포함될 수 있으므로 직원식 식수를 별도 차감
-  const mealsNoStaff = totalMealsForPrice - staffMealsForCalc
-  const mealPriceNoStaff = mealsNoStaff > 0
-    ? Math.round(totalUsed / mealsNoStaff) : 0
-  // ③ 소모품/카드 제외 식단가: (총금액 - 소모품 - 법인카드) ÷ 전체 식수
-  const mealPriceNoSupply = totalMealsForPrice > 0
-    ? Math.round((totalUsed - supplyCardUsed) / totalMealsForPrice) : 0
+  // ★ 공통 계산 서비스로 전체 식단가 3종 계산
+  const overallPrices = calcOverallDietPrices({
+    totalUsed,
+    ordersByType: ordersByCostType,
+    cardByType: cardByCostType,
+    totalMealsForPrice,
+    staffMealsForCalc,
+    supplyExcludeKeys
+  })
+  // ① 전체 식단가
+  const mealPriceTotal = overallPrices.mealPriceTotal
+  // ② 직원식 제외 식단가
+  const mealPriceNoStaff = overallPrices.mealPriceNoStaff
+  // ③ 소모품/카드 제외 식단가
+  const mealPriceNoSupply = overallPrices.mealPriceNoSupply
 
   // 전월 식단가 비교용 데이터 (Promise.all에서 이미 조회됨)
   const prevCustomFieldTotals: Record<string, number> = {}
@@ -794,102 +828,64 @@ dashboard.get('/summary/:year/:month', async (c) => {
     try { budgetKeys = JSON.parse(cat.budget_include_keys || 'null') || [] } catch(e) {}
     try { mealsKeys = JSON.parse(cat.meals_include_keys || 'null') || [] } catch(e) {}
     try { extraIncludeKeys = JSON.parse(cat.extra_include_keys || 'null') || [] } catch(e) {}
-    // 카테고리별 소모품/카드 반영 여부 (신규: budget_include_supply, budget_include_card 컬럼)
-    const catIncludeSupply = cat.budget_include_supply === 1
-    const catIncludeCard = cat.budget_include_card === 1
-    const isMainCategory = budgetKeys.length > 0  // 주요 환자군 여부
 
-    // ★★★ targetPrice: KPI 고정 기준 = target_meal_price (사용자 직접 입력값) 우선
-    // target_meal_price = 관리자가 직접 입력한 목표 식단가 (항암 6,500 / 요양 1,800 등) → KPI 고정 기준
-    // ref_meal_price = fallback 보조용 (동일값 또는 구버전 호환)
-    // 어떠한 계산/시뮬레이션 결과도 target_meal_price를 덮어쓰지 않음
-    // 보조 카테고리(budgetKeys 없음)는 0으로 처리
-    const targetPrice = s3.target_meal_price || s3.ref_meal_price || (isMainCategory ? (settings?.meal_price || 0) : 0)
-    // ★★★ monthBudget: target_meal_price × 해당 월 실제 식수로 동적 계산 (DB monthly_budget 우선, 없으면 계산)
-    // DB monthly_budget이 잘못된 경우를 대비해 target_meal_price × monthMeals로 나중에 재계산
-    // (meals 계산 후 아래에서 재설정됨)
-    const dbMonthBudget = s3.monthly_budget || 0
-    const workDays = s3.working_days || workingDays
+    // ★ 공통 계산 서비스: CategoryMasterConfig 변환
+    const catConfig = rowToCategoryConfig(cat, s3)
+    // settings.meal_price fallback (budgetKeys가 있는 주요 환자군만)
+    if (catConfig.target_meal_price === 0 && budgetKeys.length > 0 && settings?.meal_price) {
+      catConfig.target_meal_price = settings.meal_price
+    }
+    // extra_include_keys 하위호환 (구버전 데이터)
+    if (extraIncludeKeys.includes('supply')) catConfig.budget_include_supply = true
+    if (extraIncludeKeys.includes('card'))   catConfig.card_food_include = true
+    if (extraIncludeKeys.includes('event'))  catConfig.budget_include_event = true
+
+    const catIncludeSupply = catConfig.budget_include_supply
+    const catIncludeCard   = catConfig.budget_include_card
+    const isMainCategory   = budgetKeys.length > 0
+
+    const dbMonthBudget = s3?.monthly_budget || 0
+    const workDays = s3?.working_days || workingDays
     const catRatio = totalCatBudgetDash > 0 ? (dbMonthBudget / totalCatBudgetDash) : (1 / Math.max((patientCatsDash.results||[]).length, 1))
 
-    // formula 설정이 없으면 기존 방식 (해당 카테고리 발주 ÷ 카테고리+직원+보호자)
-    const hasFormula = budgetKeys.length > 0 || mealsKeys.length > 0
+    // ★ 공통 계산 함수로 이번 달 식단가 계산
+    const monthCalc = calcCategoryDietPrice({
+      config: catConfig,
+      catMonthMap: catMonthMap2,
+      catKeyToId: catKeyToIdMap,
+      ordersByType: ordersByCostType,
+      cardByType: cardByCostType,
+      mealCounts: { total_staff: ms.total_staff||0, total_guardian: ms.total_guardian||0, customTotals: customFieldTotals },
+      workingDays: workDays
+    })
 
-    // ── 이번 달 발주금액 계산 (budget_include_keys 기반) ──
-    let monthAmt: number
-    if (hasFormula && budgetKeys.length > 0) {
-      monthAmt = budgetKeys.reduce((sum: number, key: string) => {
-        const catId = catKeyToIdMap[key]
-        return sum + (catId ? (catMonthMap2[catId] || 0) : 0)
-      }, 0)
-    } else {
-      monthAmt = catMonthMap2[cat.id] || 0
-    }
-    // extra_include_keys 가산: 소모품(supply), 카드(card) 등의 월 합계를 식단가에 포함
-    if (extraIncludeKeys.includes('supply') || catIncludeSupply) monthAmt += monthSupplyTotal
-    if (extraIncludeKeys.includes('card') || catIncludeCard) monthAmt += monthCardTotal
-
-    // ── 이번 달 식수 계산 (meals_include_keys 기반) ──
-    let monthMeals: number
-    let mealsBreakdown: { patientMeals: number, staffMeals: number, guardianMeals: number, therapyMeals: number, ncMeals: number, hasStaff: boolean, hasGuardian: boolean }
-    if (hasFormula && mealsKeys.length > 0) {
-      monthMeals = buildMealsFromKeys(mealsKeys, monthMealStatsRow, customFieldTotals)
-      mealsBreakdown = buildMealsBreakdown(mealsKeys, monthMealStatsRow, customFieldTotals)
-    } else {
-      // 기존 방식: 카테고리 식수 + 직원 + 보호자
-      const defaultCatKey = `cat_${cat.category_key}`
-      monthMeals = (customFieldTotals[defaultCatKey] || 0) + (ms.total_staff||0) + (ms.total_guardian||0)
-      mealsBreakdown = {
-        patientMeals: customFieldTotals[defaultCatKey] || 0,
-        staffMeals: ms.total_staff||0,
-        guardianMeals: ms.total_guardian||0,
-        therapyMeals: 0, ncMeals: 0,
-        hasStaff: (ms.total_staff||0) > 0,
-        hasGuardian: (ms.total_guardian||0) > 0
-      }
-    }
+    const monthAmt       = monthCalc.monthAmt
+    const monthMeals     = monthCalc.monthMeals
+    const monthDietPrice = monthCalc.dietPrice
+    const monthBudget    = monthCalc.monthBudget || dbMonthBudget
+    const targetPrice    = monthCalc.targetPrice
+    const mealsBreakdown = monthCalc.mealsBreakdown
 
     // 환자식 단독 식수 (직원식/보호자식 제외)
     const patientOnlyMeals = mealsBreakdown.patientMeals + mealsBreakdown.therapyMeals
-
-    // ★★★ monthBudget: target_meal_price × 실제 식수 (정확한 목표 금액)
-    // DB monthly_budget이 잘못된 값일 수 있으므로, 식수 데이터가 있으면 실시간 계산 우선
-    const monthBudget = (targetPrice > 0 && monthMeals > 0)
-      ? Math.round(targetPrice * monthMeals)
-      : dbMonthBudget
-
-    // ── 이번 달 식단가 계산 ──
-    const monthDietPrice = monthMeals > 0 ? Math.round(monthAmt / monthMeals) : 0
-    // 환자식 단독 식단가 (직원식/보호자식 제외) - 참고용
     const patientOnlyDietPrice = patientOnlyMeals > 0 ? Math.round(monthAmt / patientOnlyMeals) : 0
 
     // ── 오늘 발주금액 계산 (budget_include_keys 기반) ──
-    let todayAmt: number
-    if (hasFormula && budgetKeys.length > 0) {
-      todayAmt = budgetKeys.reduce((sum: number, key: string) => {
-        const catId = catKeyToIdMap[key]
-        return sum + (catId ? (catTodayMap2[catId] || 0) : 0)
-      }, 0)
-    } else {
-      todayAmt = catTodayMap2[cat.id] || 0
-    }
-    // extra_include_keys 가산: 오늘 소모품/카드 발주금액 포함
-    if (extraIncludeKeys.includes('supply') || catIncludeSupply) todayAmt += todaySupplyTotal
-    if (extraIncludeKeys.includes('card') || catIncludeCard) todayAmt += todayCardTotal
+    const todayCalc = calcCategoryDietPrice({
+      config: catConfig,
+      catMonthMap: catTodayMap2,
+      catKeyToId: catKeyToIdMap,
+      ordersByType: ordersByCostTypeToday,
+      cardByType: cardByCostTypeToday,
+      mealCounts: { total_staff: todayMealStatsRow.total_staff||0, total_guardian: todayMealStatsRow.total_guardian||0, customTotals: todayCatCustomMap },
+      workingDays: workDays
+    })
+    const todayAmt      = todayCalc.monthAmt
+    const todayCatMeals = todayCalc.monthMeals
+    const todayDietPrice = todayCalc.dietPrice
 
-    // ── 오늘 식수 계산 (meals_include_keys 기반) ──
-    let todayCatMeals: number
-    if (hasFormula && mealsKeys.length > 0) {
-      todayCatMeals = buildMealsFromKeys(mealsKeys, todayMealStatsRow, todayCatCustomMap)
-    } else {
-      // 기존 방식: 카테고리 식수 + 직원 + 보호자
-      const defaultCatKey = `cat_${cat.category_key}`
-      todayCatMeals = (todayCatCustomMap[defaultCatKey] || 0) + (todayMealRow?.staff_total || 0) + (todayMealRow?.guardian_total || 0)
-    }
-
-    const todayDietPrice = todayCatMeals > 0 ? Math.round(todayAmt / todayCatMeals) : 0
     const prevSet = prevCatSetMap3[cat.id] || {}
-    const prevTargetPrice = prevSet.target_meal_price || 0
+    const prevTargetPrice = prevSet.ref_meal_price || prevSet.target_meal_price || 0
     const prevMonthBudget = prevSet.monthly_budget || 0
     return {
       id: cat.id, category_key: cat.category_key, category_name: cat.category_name,
@@ -900,9 +896,15 @@ dashboard.get('/summary/:year/:month', async (c) => {
       prevTargetPrice, prevMonthBudget,
       budgetKeys, mealsKeys, extraIncludeKeys,
       catIncludeSupply, catIncludeCard,
-      refMealPrice: s3.ref_meal_price || 0,  // 관리자 설정 기준 식단가
-      settingsMealPrice: settings?.meal_price || 0,  // monthly_settings 기준 식단가
-      // ★ 식수 구성 breakdown (직원식/보호자식 포함 여부 명시)
+      catIncludeEvent: catConfig.budget_include_event,   // ★ 신규
+      catCardFoodInclude: catConfig.card_food_include,   // ★ 신규
+      catCardSupplyInclude: catConfig.card_supply_include, // ★ 신규
+      catCardEventInclude: catConfig.card_event_include,   // ★ 신규
+      refMealPrice: s3?.ref_meal_price || 0,  // 관리자 설정 기준 식단가 (= targetPrice)
+      settingsMealPrice: settings?.meal_price || 0,
+      // 금액 구성 명세 (관리자 설정 검증용)
+      monthAmtBreakdown: monthCalc.monthAmtBreakdown,
+      // ★ 식수 구성 breakdown
       mealsBreakdown: {
         patientMeals: mealsBreakdown.patientMeals,
         staffMeals: mealsBreakdown.staffMeals,
@@ -911,8 +913,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
         hasStaff: mealsBreakdown.hasStaff,
         hasGuardian: mealsBreakdown.hasGuardian
       },
-      patientOnlyMeals,   // 환자식+치료식 단독 식수 (직원/보호자 제외)
-      patientOnlyDietPrice  // 환자식 단독 식단가 (참고용)
+      patientOnlyMeals,
+      patientOnlyDietPrice
     }
   })
 

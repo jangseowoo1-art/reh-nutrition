@@ -1,5 +1,17 @@
 import { Hono } from 'hono'
 
+// 법인카드 purpose → cost_type 자동 매핑
+// purpose 텍스트에 키워드가 포함되면 해당 cost_type으로 분류
+function inferCostTypeFromPurpose(purpose: string, expenseType?: string): string {
+  const p = (purpose || '').toLowerCase()
+  const et = (expenseType || '').toLowerCase()
+  if (p.includes('이벤트') || p.includes('행사') || et.includes('이벤트')) return 'event'
+  if (p.includes('소모품') || p.includes('세제') || p.includes('위생') || et.includes('소모품')) return 'supply'
+  if (p.includes('공과금') || p.includes('인터넷') || p.includes('전기') || p.includes('수도')) return 'utility'
+  // 기본값: 식재료비
+  return 'food'
+}
+
 const cardExpenses = new Hono<{ Bindings: { DB: D1Database } }>()
 
 // admin은 query hospitalId, 일반 사용자는 user.hospitalId
@@ -115,30 +127,34 @@ cardExpenses.post('/save', async (c) => {
     if (!item.amount || !item.itemName || !item.vendorName || !item.purpose) continue
     if (item.id) {
       // 업데이트
+      const updCostType = item.cost_type || inferCostTypeFromPurpose(item.purpose, item.expenseType)
       await c.env.DB.prepare(`
         UPDATE card_expenses SET
           vendor_name=?, item_name=?, purpose=?, amount=?, memo=?,
-          expense_type=?,
+          expense_type=?, cost_type=?,
           updated_at=CURRENT_TIMESTAMP
         WHERE id = ? AND hospital_id = ?
       `).bind(
         item.vendorName, item.itemName, item.purpose,
         item.amount, item.memo || null,
         item.expenseType || '법인카드',
+        updCostType,
         item.id, hospitalId
       ).run()
       savedIds.push(item.id)
     } else {
       // 신규 삽입
+      const insCostType = item.cost_type || inferCostTypeFromPurpose(item.purpose, item.expenseType)
       const r = await c.env.DB.prepare(`
         INSERT INTO card_expenses
-          (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo, expense_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo, expense_type, cost_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         hospitalId, vendorId, date,
         item.vendorName, item.itemName, item.purpose,
         item.amount, item.memo || null,
-        item.expenseType || '법인카드'
+        item.expenseType || '법인카드',
+        insCostType
       ).run()
       if (r.meta?.last_row_id) savedIds.push(r.meta.last_row_id as number)
     }
@@ -243,19 +259,23 @@ cardExpenses.post('/direct', async (c) => {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
   const body = await c.req.json()
-  const { expense_date, vendor_name, item_name, purpose, amount, memo, expense_type } = body
+  const { expense_date, vendor_name, item_name, purpose, amount, memo, expense_type, cost_type } = body
 
   if (!expense_date || !vendor_name || !item_name || !purpose || !amount) {
     return c.json({ error: '필수 항목 누락' }, 400)
   }
 
+  // cost_type: 명시 전달 우선, 없으면 purpose 텍스트에서 자동 추론
+  const resolvedCostType = cost_type || inferCostTypeFromPurpose(purpose, expense_type)
+
   const r = await c.env.DB.prepare(`
     INSERT INTO card_expenses
-      (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo, expense_type)
-    VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)
+      (hospital_id, vendor_id, expense_date, vendor_name, item_name, purpose, amount, memo, expense_type, cost_type)
+    VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     hospitalId, expense_date, vendor_name, item_name, purpose,
-    parseInt(amount), memo || null, expense_type || '법인카드'
+    parseInt(amount), memo || null, expense_type || '법인카드',
+    resolvedCostType
   ).run()
 
   return c.json({ success: true, id: r.meta?.last_row_id })
@@ -267,21 +287,24 @@ cardExpenses.put('/direct/:id', async (c) => {
   const hospitalId = Number(user.hospitalId)
   const { id } = c.req.param()
   const body = await c.req.json()
-  const { expense_date, vendor_name, item_name, purpose, amount, memo, expense_type } = body
+  const { expense_date, vendor_name, item_name, purpose, amount, memo, expense_type, cost_type } = body
 
   const existing = await c.env.DB.prepare(
     `SELECT id FROM card_expenses WHERE id = ? AND hospital_id = ?`
   ).bind(id, hospitalId).first<any>()
   if (!existing) return c.json({ error: 'not found' }, 404)
 
+  const resolvedCostType = cost_type || inferCostTypeFromPurpose(purpose, expense_type)
+
   await c.env.DB.prepare(`
     UPDATE card_expenses SET
       expense_date=?, vendor_name=?, item_name=?, purpose=?, amount=?,
-      memo=?, expense_type=?, updated_at=CURRENT_TIMESTAMP
+      memo=?, expense_type=?, cost_type=?, updated_at=CURRENT_TIMESTAMP
     WHERE id = ? AND hospital_id = ?
   `).bind(
     expense_date, vendor_name, item_name, purpose,
     parseInt(amount), memo || null, expense_type || '법인카드',
+    resolvedCostType,
     id, hospitalId
   ).run()
 

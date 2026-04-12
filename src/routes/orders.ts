@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { isBlockedVendorCategory } from '../lib/hospitalCalc'
 
 const orders = new Hono<{ Bindings: { DB: D1Database } }>()
 
@@ -237,7 +238,13 @@ orders.post('/save', async (c) => {
   const user = c.get('user')
   const hospitalId = Number(user.hospitalId)
   const body = await c.req.json()
-  const { vendorId, orderDate, taxableAmount, exemptAmount, vatAmount, totalAmount: directTotal, note, isMultiDay, multiDayStart, multiDayEnd, multiDayCount } = body
+  const {
+    vendorId, orderDate, taxableAmount, exemptAmount, vatAmount,
+    totalAmount: directTotal, note, isMultiDay, multiDayStart, multiDayEnd, multiDayCount,
+    // ★ 신규: cost_type (프론트엔드가 명시적으로 전달하거나, vendor category에서 자동 결정)
+    cost_type: inputCostType,
+    payment_method: inputPaymentMethod,
+  } = body
 
   // mixed_total 타입: directTotal이 직접 전달된 경우 그대로 사용
   // 일반 과세/면세 타입: taxable+exempt+vat 합산
@@ -250,6 +257,29 @@ orders.post('/save', async (c) => {
     const roundedVat = Math.round((taxableAmount || 0) * 0.1)
     totalAmount = (taxableAmount || 0) + (exemptAmount || 0) + (vatAmount !== undefined ? vatAmount : roundedVat)
   }
+
+  // ★ cost_type 자동 결정: 프론트에서 명시 전달 시 그대로 사용, 없으면 vendor.category 기반 매핑
+  // vendor.category → cost_type 매핑 규칙
+  const CATEGORY_TO_COST_TYPE: Record<string, string> = {
+    supply: 'supply',
+    event:  'event',
+    utility: 'utility',
+    // 식재료 계통은 모두 'food'
+    major:   'food', general: 'food', meat: 'food',
+    organic: 'food', fruit:   'food', delivery: 'food',
+    other:   'food',
+  }
+  let resolvedCostType = inputCostType
+  if (!resolvedCostType) {
+    const vendorRow = await c.env.DB.prepare(
+      `SELECT category, cost_type_default FROM vendors WHERE id=? AND hospital_id=?`
+    ).bind(vendorId, hospitalId).first<any>()
+    // cost_type_default 컬럼이 있으면 우선 사용, 없으면 category로 매핑
+    resolvedCostType = vendorRow?.cost_type_default
+      || CATEGORY_TO_COST_TYPE[vendorRow?.category || '']
+      || 'food'
+  }
+  const resolvedPaymentMethod = inputPaymentMethod || 'invoice'
 
   const existing = await c.env.DB.prepare(
     `SELECT id, input_source FROM daily_orders WHERE hospital_id=? AND vendor_id=? AND order_date=? AND patient_category_id IS NULL`
@@ -272,17 +302,20 @@ orders.post('/save', async (c) => {
       `UPDATE daily_orders SET
        taxable_amount=?, exempt_amount=?, vat_amount=?, total_amount=?,
        note=?, is_multi_day=?, multi_day_start=?, multi_day_end=?,
+       cost_type=?, payment_method=?,
        input_source=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`
     ).bind(taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
            note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null,
+           resolvedCostType, resolvedPaymentMethod,
            inputSource, existing.id).run()
   } else {
     await c.env.DB.prepare(
       `INSERT INTO daily_orders
-       (hospital_id,vendor_id,order_date,taxable_amount,exempt_amount,vat_amount,total_amount,note,is_multi_day,multi_day_start,multi_day_end,input_source)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+       (hospital_id,vendor_id,order_date,taxable_amount,exempt_amount,vat_amount,total_amount,note,is_multi_day,multi_day_start,multi_day_end,cost_type,payment_method,input_source)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(hospitalId, vendorId, orderDate, taxableAmount||0, exemptAmount||0, vatAmount||0, totalAmount,
-           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null, inputSource).run()
+           note||null, isMultiDay?1:0, multiDayStart||null, multiDayEnd||null,
+           resolvedCostType, resolvedPaymentMethod, inputSource).run()
   }
 
   return c.json({ success: true, totalAmount })

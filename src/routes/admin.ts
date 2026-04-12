@@ -1,5 +1,14 @@
 import { Hono } from 'hono'
 import { hashPassword } from '../utils/auth'
+import {
+  isBlockedVendorCategory,
+  BLOCKED_CATEGORY_LABELS,
+  rowToCategoryConfig,
+  aggregateByCostType,
+  aggregateCardByCostType,
+  ORDERS_BY_COST_TYPE_SQL,
+  CARD_BY_COST_TYPE_SQL,
+} from '../lib/hospitalCalc'
 
 const adminRouter = new Hono<{ Bindings: { DB: D1Database } }>()
 
@@ -1160,6 +1169,17 @@ adminRouter.post('/hospitals/:id/vendors', async (c) => {
   const hospitalId = c.req.param('id')
   const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle } = await c.req.json()
   if (!name?.trim()) return c.json({ error: '업체명을 입력하세요' }, 400)
+
+  // ★ vendor로 등록 불가한 비용유형 카테고리 차단 (event/supply/utility)
+  // 이 항목들은 발주 입력 시 cost_type으로만 관리
+  if (isBlockedVendorCategory(category)) {
+    return c.json({
+      error: `'${category}' 카테고리는 업체로 등록할 수 없습니다. ${BLOCKED_CATEGORY_LABELS[category] || 'cost_type으로 관리하세요.'}`,
+      blocked: true,
+      category
+    }, 400)
+  }
+
   await c.env.DB.prepare(`
     INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active, is_card_type, card_subtype, order_cycle)
     VALUES (?,?,?,?,?,?,1,?,?,?)
@@ -1196,6 +1216,21 @@ adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
 adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
   const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle } = await c.req.json()
+
+  // ★ 수정 시에도 차단 카테고리로 변경 불가 (기존 event/supply 데이터는 마이그레이션 제외)
+  // 기존 레코드의 category를 먼저 확인
+  const existing = await c.env.DB.prepare(
+    `SELECT category FROM vendors WHERE id=? AND hospital_id=?`
+  ).bind(vid, hospitalId).first<any>()
+  const isLegacyBlocked = existing && isBlockedVendorCategory(existing.category)
+
+  if (!isLegacyBlocked && isBlockedVendorCategory(category)) {
+    return c.json({
+      error: `'${category}' 카테고리로 변경할 수 없습니다. ${BLOCKED_CATEGORY_LABELS[category] || ''}`,
+      blocked: true
+    }, 400)
+  }
+
   await c.env.DB.prepare(`
     UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?,
                        is_card_type=?, card_subtype=?, order_cycle=?
@@ -1720,18 +1755,33 @@ adminRouter.get('/hospitals/:id/patient-categories', async (c) => {
 // 카테고리별 식단가 계산 기준 저장 (budget_include_keys, meals_include_keys, budget_include_supply, budget_include_card)
 adminRouter.put('/hospitals/:id/patient-categories/:catId/formula', async (c) => {
   const { id, catId } = c.req.param()
-  const { budget_include_keys, meals_include_keys, budget_include_supply, budget_include_card } = await c.req.json() as any
+  const {
+    budget_include_keys, meals_include_keys,
+    budget_include_supply, budget_include_card,
+    // ★ 신규 필드
+    budget_include_event,
+    card_food_include, card_supply_include, card_event_include
+  } = await c.req.json() as any
+
+  // budget_include_card는 card_food_include의 레거시 alias
+  const cardFoodVal = (card_food_include !== undefined ? card_food_include : budget_include_card) ? 1 : 0
 
   await c.env.DB.prepare(`
     UPDATE hospital_patient_categories
     SET budget_include_keys = ?, meals_include_keys = ?,
-        budget_include_supply = ?, budget_include_card = ?
+        budget_include_supply = ?, budget_include_card = ?,
+        budget_include_event = ?,
+        card_food_include = ?, card_supply_include = ?, card_event_include = ?
     WHERE hospital_id = ? AND id = ?
   `).bind(
     budget_include_keys ? JSON.stringify(budget_include_keys) : null,
     meals_include_keys ? JSON.stringify(meals_include_keys) : null,
     budget_include_supply ? 1 : 0,
-    budget_include_card ? 1 : 0,
+    cardFoodVal,
+    budget_include_event ? 1 : 0,
+    cardFoodVal,
+    card_supply_include ? 1 : 0,
+    card_event_include ? 1 : 0,
     id, catId
   ).run()
 
@@ -2491,6 +2541,166 @@ adminRouter.get('/staff-labor/:year/:month', async (c) => {
   }), { empTotal:0, activeEmp:0, otHours:0, dispatchDays:0, parttimeDays:0, totalLaborCost:0 })
 
   return c.json({ hospitals: results, totals, period: { year: y, month: m } })
+})
+
+// ══════════════════════════════════════════════════════════════════
+// Phase 7: Master Config API
+// GET /api/admin/hospitals/:id/master-config/:year/:month
+// 병원 설정의 Single Source of Truth — 모든 화면(대시보드/발주/보고서)이 이 API를 통해
+// 동일한 예산/식단가 기준을 참조
+// ══════════════════════════════════════════════════════════════════
+adminRouter.get('/hospitals/:id/master-config/:year/:month', async (c) => {
+  try {
+    const hospitalId = Number(c.req.param('id'))
+    const year  = c.req.param('year')
+    const month = c.req.param('month')
+    const DB_BASE_YEAR = 2026, DB_BASE_MONTH = 3
+    const reqYear = parseInt(year), reqMonth = parseInt(month)
+
+    // 1. 월 설정 (monthly_settings) — 기준월 fallback 포함
+    let settings = await c.env.DB.prepare(
+      `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+    ).bind(hospitalId, year, month).first<any>()
+    if (!settings) {
+      const isBefore = (reqYear < DB_BASE_YEAR) || (reqYear === DB_BASE_YEAR && reqMonth < DB_BASE_MONTH)
+      if (isBefore) {
+        settings = await c.env.DB.prepare(
+          `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+        ).bind(hospitalId, DB_BASE_YEAR, DB_BASE_MONTH).first<any>()
+      } else {
+        settings = await c.env.DB.prepare(`
+          SELECT * FROM monthly_settings WHERE hospital_id=?
+            AND (CAST(year AS INTEGER) < ? OR (CAST(year AS INTEGER)=? AND CAST(month AS INTEGER)<?))
+          ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1
+        `).bind(hospitalId, reqYear, reqYear, reqMonth).first<any>()
+      }
+    }
+
+    // 2. 환자군 목록 (hospital_patient_categories)
+    const cats = await c.env.DB.prepare(`
+      SELECT * FROM hospital_patient_categories
+      WHERE hospital_id=? AND is_active=1
+      ORDER BY sort_order, id
+    `).bind(hospitalId).all<any>()
+
+    // 3. 카테고리별 설정 (category_order_settings) — 기준월 fallback
+    let catSettings = await c.env.DB.prepare(`
+      SELECT cos.*, hpc.category_key, hpc.category_name, hpc.budget_include_keys as cat_budget_keys,
+             hpc.meals_include_keys, hpc.budget_include_supply, hpc.budget_include_card,
+             hpc.budget_include_event, hpc.card_food_include, hpc.card_supply_include, hpc.card_event_include
+      FROM category_order_settings cos
+      JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+      WHERE cos.hospital_id=? AND cos.year=? AND cos.month=?
+    `).bind(hospitalId, year, month).all<any>()
+
+    if (!catSettings.results || catSettings.results.length === 0) {
+      const isBefore = (reqYear < DB_BASE_YEAR) || (reqYear === DB_BASE_YEAR && reqMonth < DB_BASE_MONTH)
+      if (isBefore) {
+        catSettings = await c.env.DB.prepare(`
+          SELECT cos.*, hpc.category_key, hpc.category_name, hpc.budget_include_keys as cat_budget_keys,
+                 hpc.meals_include_keys, hpc.budget_include_supply, hpc.budget_include_card,
+                 hpc.budget_include_event, hpc.card_food_include, hpc.card_supply_include, hpc.card_event_include
+          FROM category_order_settings cos
+          JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+          WHERE cos.hospital_id=? AND cos.year=? AND cos.month=?
+        `).bind(hospitalId, DB_BASE_YEAR, DB_BASE_MONTH).all<any>()
+      } else {
+        catSettings = await c.env.DB.prepare(`
+          SELECT cos.*, hpc.category_key, hpc.category_name, hpc.budget_include_keys as cat_budget_keys,
+                 hpc.meals_include_keys, hpc.budget_include_supply, hpc.budget_include_card,
+                 hpc.budget_include_event, hpc.card_food_include, hpc.card_supply_include, hpc.card_event_include
+          FROM category_order_settings cos
+          JOIN hospital_patient_categories hpc ON cos.patient_category_id = hpc.id
+          WHERE cos.hospital_id=?
+            AND cos.id IN (
+              SELECT MAX(id) FROM category_order_settings
+              WHERE hospital_id=?
+                AND (CAST(year AS INTEGER)<? OR (CAST(year AS INTEGER)=? AND CAST(month AS INTEGER)<?))
+              GROUP BY patient_category_id
+            )
+        `).bind(hospitalId, hospitalId, reqYear, reqYear, reqMonth).all<any>()
+      }
+    }
+
+    // 4. 업체 목록 (vendors) — 예산 포함
+    const vendors = await c.env.DB.prepare(`
+      SELECT id, name, category, tax_type, monthly_budget, sort_order, is_card_type, card_subtype, order_cycle
+      FROM vendors WHERE hospital_id=? AND is_active=1 ORDER BY sort_order, id
+    `).bind(hospitalId).all<any>()
+
+    // 5. 병원 기본 정보
+    const hospitalInfo = await c.env.DB.prepare(`
+      SELECT hospital_id, supply_exclude_keys, staff_diet_mode, target_meal_price, current_meal_price
+      FROM hospital_info WHERE hospital_id=?
+    `).bind(hospitalId).first<any>()
+
+    // 6. 카테고리 설정을 CategoryMasterConfig로 변환
+    const categoryConfigs = (catSettings.results || []).map((row: any) => {
+      const config = rowToCategoryConfig(row, row)
+      return {
+        ...config,
+        patient_category_id: row.patient_category_id,
+        monthly_budget: row.monthly_budget || 0,
+        ref_meal_price: row.ref_meal_price || 0,
+        target_meal_price_db: row.target_meal_price || 0,
+        working_days: row.working_days || 0,
+        daily_meal_count: row.daily_meal_count || 0,
+      }
+    })
+
+    // 7. supply_exclude_keys 파싱
+    let supplyExcludeKeys: string[] = []
+    try { supplyExcludeKeys = JSON.parse(hospitalInfo?.supply_exclude_keys || 'null') || ['card', 'supply'] } catch {}
+
+    // 8. 총 카테고리 예산 집계
+    const totalCatBudget = categoryConfigs.reduce((s: number, c: any) => s + (c.monthly_budget || 0), 0)
+    const totalBudget = settings?.total_budget || 0
+    const eventBudget = settings?.event_budget || 0
+    const supplyBudget = settings?.supply_budget || 0
+    const cardBudget = settings?.card_budget || 0
+    const workingDays = settings?.working_days || 0
+    const mealPrice = settings?.meal_price || 0
+
+    // 차단된 vendor 카테고리 목록 노출 (프론트엔드가 UI 차단에 활용)
+    const blockedCategories = ['event', 'supply', 'utility']
+
+    return c.json({
+      // ── 단일 진실 공급원 (Single Source of Truth) ──
+      hospitalId,
+      year: reqYear,
+      month: reqMonth,
+
+      // 월간 설정
+      monthlySettings: {
+        totalBudget,
+        eventBudget,
+        supplyBudget,
+        cardBudget,
+        mealPrice,
+        workingDays,
+        foodWasteBudget: settings?.food_waste_budget || 0,
+      },
+
+      // 환자군별 마스터 설정
+      categoryConfigs,
+
+      // 총 카테고리 예산
+      totalCatBudget,
+
+      // 업체 목록 (예산 포함)
+      vendors: vendors.results || [],
+
+      // 제외 키 설정
+      supplyExcludeKeys,
+      blockedCategories,
+
+      // 환자군 원본 목록
+      patientCategories: cats.results || [],
+    })
+  } catch (err: any) {
+    console.error('[master-config]', err)
+    return c.json({ error: err.message || 'master-config error' }, 500)
+  }
 })
 
 export default adminRouter
