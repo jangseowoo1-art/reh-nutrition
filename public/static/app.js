@@ -591,6 +591,7 @@ function _showPanel(page) {
 
 function navigateTo(page, forceReload = false) {
   if (!App._panelReady) App._panelReady = {}
+  if (!App._htmlCache) App._htmlCache = {}  // 페이지 HTML 캐시
 
   // 메뉴 활성화
   document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'))
@@ -666,9 +667,27 @@ function navigateTo(page, forceReload = false) {
 
   if (pages[page]) {
     if (page === 'meals') App._panelReady[cacheKey] = true
+
+    // ── 빠른 로딩: 캐시된 HTML 즉시 표시 후 백그라운드 갱신 ──
+    // orders/meals는 입력 페이지라 캐시 표시 안 함 (입력값 유지 필요)
+    const htmlCacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
+    const noCachePages = ['orders', 'meals', 'settings']
+    if (!forceReload && !noCachePages.includes(page) && App._htmlCache[htmlCacheKey]) {
+      const content = document.getElementById('pageContent')
+      if (content) content.innerHTML = App._htmlCache[htmlCacheKey]
+    }
+
     const _pageResult = pages[page]()
-    if (_pageResult && typeof _pageResult.catch === 'function') {
-      _pageResult.catch(e => {
+    if (_pageResult && typeof _pageResult.then === 'function') {
+      _pageResult.then(() => {
+        // 렌더 완료 후 HTML 캐시 저장 (orders/meals 제외)
+        if (!noCachePages.includes(page)) {
+          const content = document.getElementById('pageContent')
+          if (content && content.innerHTML.length > 100) {
+            App._htmlCache[htmlCacheKey] = content.innerHTML
+          }
+        }
+      }).catch(e => {
         console.error('[navigateTo] 페이지 렌더링 오류:', e)
         const _c = document.getElementById('pageContent')
         if (_c) _c.innerHTML = '<div class="text-red-500 p-6 text-center" style="font-size:14px"><i class="fas fa-exclamation-triangle mr-2"></i>페이지 로딩 중 오류가 발생했습니다.<br><small style="color:#9ca3af;font-size:12px">' + (e?.message || String(e)) + '</small><br><button onclick="navigateTo(\'' + page + '\')" style="margin-top:12px;padding:6px 16px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer">다시 시도</button></div>'
@@ -689,11 +708,41 @@ function changeMonth(delta) {
   if (App.currentMonth < 1)  { App.currentMonth = 12; App.currentYear-- }
   updateMonthDisplay()
   App._panelReady = {}  // 월 변경 시 캐시 초기화
+  App._htmlCache = {}   // HTML 캐시도 초기화
+  _apiCacheClear()      // API 캐시도 초기화
   navigateTo(App.currentPage)
 }
 
+// ── API 응답 캐시 (GET 요청 30초 캐시로 빠른 로딩) ──────────────
+const _apiCache = new Map()
+const _API_CACHE_TTL = 30000  // 30초
+
+function _apiCacheKey(url) { return url }
+function _apiCacheGet(url) {
+  const entry = _apiCache.get(_apiCacheKey(url))
+  if (!entry) return null
+  if (Date.now() - entry.ts > _API_CACHE_TTL) { _apiCache.delete(_apiCacheKey(url)); return null }
+  return entry.data
+}
+function _apiCacheSet(url, data) {
+  _apiCache.set(_apiCacheKey(url), { data, ts: Date.now() })
+}
+function _apiCacheInvalidate(pattern) {
+  // pattern: 문자열 포함 여부로 무효화 (저장/수정 시 관련 캐시 삭제)
+  for (const key of _apiCache.keys()) {
+    if (key.includes(pattern)) _apiCache.delete(key)
+  }
+}
+// 월 변경 시 캐시 전체 초기화
+function _apiCacheClear() { _apiCache.clear() }
+
 async function api(method, url, data = null) {
   try {
+    // GET 요청은 캐시 우선 반환
+    if (method === 'GET' && !data) {
+      const cached = _apiCacheGet(url)
+      if (cached !== null) return cached
+    }
     const opts = {
       method,
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${App.token}` }
@@ -701,7 +750,15 @@ async function api(method, url, data = null) {
     if (data) opts.body = JSON.stringify(data)
     const res = await fetch(url, opts)
     if (res.status === 401) { logout(); return null }
-    return await res.json()
+    const json = await res.json()
+    // GET 성공 시 캐시 저장
+    if (method === 'GET' && !data && json) _apiCacheSet(url, json)
+    // POST/PUT/DELETE 시 관련 캐시 무효화
+    if (method !== 'GET') {
+      const pathParts = url.split('/api/')[1]?.split('/') || []
+      if (pathParts[0]) _apiCacheInvalidate(`/api/${pathParts[0]}`)
+    }
+    return json
   } catch(e) { console.error('API Error:', e); return null }
 }
 
