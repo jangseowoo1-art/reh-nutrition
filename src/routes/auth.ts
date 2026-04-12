@@ -29,6 +29,12 @@ auth.post('/login', async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, is_active, role)
       VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'dashboard', 1, ?)
+      ON CONFLICT(hospital_id, user_id) DO UPDATE SET
+        last_active_at = CURRENT_TIMESTAMP,
+        last_page = 'dashboard',
+        is_active = 1,
+        username = excluded.username,
+        role = excluded.role
     `).bind(user.hospital_id, user.id, user.username, user.role).run()
   }
 

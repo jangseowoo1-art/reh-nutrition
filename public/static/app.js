@@ -1062,7 +1062,12 @@ async function renderDashboard() {
   }
 
   if (!data || data.error) {
-    content.innerHTML = `<div class="text-red-500 p-6">데이터 로드 실패: ${data?.error || '알 수 없는 오류'}</div>`
+    content.innerHTML = `<div class="flex flex-col items-center justify-center p-10 gap-4">
+      <div class="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-red-400 text-2xl"></i></div>
+      <div class="text-red-500 font-semibold text-base">데이터 로드 실패</div>
+      <div class="text-gray-400 text-sm">${data?.error || '서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.'}</div>
+      <button onclick="navigateTo('dashboard')" class="mt-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-medium transition shadow-sm"><i class="fas fa-redo mr-2"></i>다시 시도</button>
+    </div>`
     return
   }
 
@@ -2654,7 +2659,7 @@ async function renderOrders() {
     window._cardDailyCountMap[r.vendor_id][r.expense_date] = r.item_count || 0
   })
 
-  if (!vendors) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+  if (!vendors) { content.innerHTML = \`<div class="flex flex-col items-center justify-center p-10 gap-4"><div class="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-red-400 text-2xl"></i></div><div class="text-red-500 font-semibold text-base">데이터 로드 실패</div><div class="text-gray-400 text-sm">업체 정보를 불러올 수 없습니다.</div><button onclick="navigateTo('orders')" class="mt-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-medium transition shadow-sm"><i class="fas fa-redo mr-2"></i>다시 시도</button></div>\`; return }
 
   // 업체 목록 캐시 (법인카드 모달에서 업체 정보 조회에 사용)
   window._vendorsCache = vendors || []
@@ -9505,7 +9510,7 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     api('GET', annualUrl2),
     api('GET', annualUrl3)
   ])
-  if (!data) { content.innerHTML = '<div class="text-red-500 p-6">데이터 로드 실패</div>'; return }
+  if (!data) { content.innerHTML = \`<div class="flex flex-col items-center justify-center p-10 gap-4"><div class="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-red-400 text-2xl"></i></div><div class="text-red-500 font-semibold text-base">데이터 로드 실패</div><div class="text-gray-400 text-sm">잠시 후 다시 시도해주세요.</div><button onclick="navigateTo('analysis')" class="mt-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-medium transition shadow-sm"><i class="fas fa-redo mr-2"></i>다시 시도</button></div>\`; return }
 
   // 환자군 카테고리 연간 데이터 처리
   const patientCatsForAnalysis = catAnnualData?.categories || []

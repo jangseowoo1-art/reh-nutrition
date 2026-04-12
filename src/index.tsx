@@ -128,7 +128,7 @@ function getLoginPage(): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>급식 예산 관리 - 로그인</title>
+<title>Re&amp;H 급식 예산관리 시스템</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
 <script src="/static/tailwind.min.js"></script>
 <link href="/static/fontawesome.min.css" rel="stylesheet">
@@ -145,8 +145,8 @@ function getLoginPage(): string {
     <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4" style="background:linear-gradient(135deg,#1a4731,#16a34a)">
       <i class="fas fa-hospital text-white text-2xl"></i>
     </div>
-    <h1 class="text-2xl font-bold text-gray-800">병원 급식 예산 관리</h1>
-    <p class="text-gray-500 text-sm mt-1">Hospital Meal Budget System</p>
+    <h1 class="text-2xl font-bold text-gray-800">Re&amp;H 급식 예산관리</h1>
+    <p class="text-gray-500 text-sm mt-1">Re&amp;H Nutrition Management System</p>
   </div>
   
   <div id="errorMsg" class="hidden bg-red-50 border border-red-200 text-red-600 rounded-lg p-3 mb-4 text-sm"></div>
@@ -183,9 +183,7 @@ function getLoginPage(): string {
   </form>
   
   <div class="mt-6 p-4 bg-gray-50 rounded-xl text-xs text-gray-500">
-    <p class="font-medium mb-1">🔐 테스트 계정</p>
-    <p>관리자: <span class="font-mono bg-white px-1 rounded">admin</span> / <span class="font-mono bg-white px-1 rounded">admin123</span></p>
-    <p>병원: <span class="font-mono bg-white px-1 rounded">amina</span> / <span class="font-mono bg-white px-1 rounded">hospital1234</span></p>
+
   </div>
 </div>
 
@@ -258,7 +256,7 @@ function getAppShell(): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>병원 급식 예산 관리</title>
+<title>Re&amp;H 급식 예산관리 시스템</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
 <script src="/static/tailwind.min.js"></script>
 <link href="/static/fontawesome.min.css" rel="stylesheet">
@@ -285,7 +283,7 @@ function getAppShell(): string {
           <i class="fas fa-hospital text-white text-base"></i>
         </div>
         <div class="flex-1 min-w-0">
-          <div class="text-white font-bold text-sm leading-tight">급식 예산 관리</div>
+          <div class="text-white font-bold text-sm leading-tight">Re&amp;H 급식 예산관리</div>
           <div id="hospitalNameDisplay" class="text-white/60 text-xs mt-0.5 truncate">로딩중...</div>
         </div>
         <!-- 모바일 전용 닫기 버튼 -->
