@@ -376,22 +376,45 @@ function initMobileUtils() {
 }
 
 // ── 세션 heartbeat (병원 계정 전용) ─────────────────────────
+// D1 write 최적화: 120초 간격으로 변경 (기존 60초 → 하루 720회/계정으로 50% 절감)
 let _heartbeatTimer = null
+let _heartbeatFailCount = 0  // 연속 실패 횟수 추적
 function startHeartbeat() {
   if (_heartbeatTimer) clearInterval(_heartbeatTimer)
+  _heartbeatFailCount = 0
   sendHeartbeat()
-  _heartbeatTimer = setInterval(sendHeartbeat, 60000) // 60초마다
+  _heartbeatTimer = setInterval(sendHeartbeat, 120000) // 120초마다 (D1 write 절감)
 }
 async function sendHeartbeat() {
   if (App.role === 'admin') return
   try {
-    await api('POST', '/api/settings/session/heartbeat', { page: App.currentPage })
-  } catch(e) {}
+    const res = await api('POST', '/api/settings/session/heartbeat', { page: App.currentPage })
+    if (res?.ok !== false) _heartbeatFailCount = 0  // 성공 시 실패 카운트 초기화
+  } catch(e) {
+    _heartbeatFailCount++
+    // 3회 연속 실패 시 30초 후 재시도 (네트워크 일시 오류 대응)
+    if (_heartbeatFailCount >= 3) {
+      _heartbeatFailCount = 0
+      if (_heartbeatTimer) clearInterval(_heartbeatTimer)
+      setTimeout(() => {
+        _heartbeatTimer = setInterval(sendHeartbeat, 120000)
+        sendHeartbeat()
+      }, 30000)
+    }
+  }
 }
 
 // ── 실시간 활동 로그 전송 (실제 편집 시에만 호출) ─────────────
+// D1 write 최적화: 동일 액션 3초 이내 중복 호출 방지 (debounce)
+let _lastActivityAction = null
+let _lastActivityTime = 0
 async function sendActivityLog(action) {
   if (App.role === 'admin') return
+  const now = Date.now()
+  // 동일 액션이 3초 이내 중복 호출되면 스킵 (D1 write 중복 방지)
+  if (action === _lastActivityAction && now - _lastActivityTime < 3000) return
+  _lastActivityAction = action
+  _lastActivityTime = now
   try {
     await api('POST', '/api/settings/session/activity', {
       page: App.currentPage,

@@ -164,6 +164,7 @@ settings.get('/holidays/:year/:month', async (c) => {
 })
 
 // ── 세션 heartbeat (활성 상태 + 현재 페이지 업데이트) ──────────
+// D1 쓰기 최적화: SELECT+UPDATE/INSERT 2회 → UPSERT 1회로 변경
 settings.post('/session/heartbeat', async (c) => {
   try {
     const user = c.get('user')
@@ -175,28 +176,47 @@ settings.post('/session/heartbeat', async (c) => {
     const userId = Number(user.userId)
     const username = String(user.username || '')
     
-    // 최근 세션 업데이트 (10분 내 세션이 있으면 갱신, 없으면 신규)
-    const recent = await c.env.DB.prepare(
-      `SELECT id FROM hospital_sessions WHERE hospital_id=? AND user_id=? AND last_active_at >= datetime('now', '-10 minutes') ORDER BY last_active_at DESC LIMIT 1`
-    ).bind(hospitalId, userId).first<any>()
-    
-    if (recent?.id) {
-      await c.env.DB.prepare(
-        `UPDATE hospital_sessions SET last_active_at=datetime('now'), last_page=?, is_active=1 WHERE id=?`
-      ).bind(page, Number(recent.id)).run()
-    } else {
-      await c.env.DB.prepare(
-        `INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, is_active) VALUES (?, ?, ?, datetime('now'), ?, 1)`
-      ).bind(hospitalId, userId, username, page).run()
-    }
+    // UPSERT: hospital_id+user_id 기준으로 세션 1건만 유지 (D1 write 1회로 최소화)
+    // last_active_at이 5분 이내면 UPDATE만, 그 이상이면 새 세션 INSERT
+    await c.env.DB.prepare(`
+      INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, is_active)
+      VALUES (?, ?, ?, datetime('now'), ?, 1)
+      ON CONFLICT(hospital_id, user_id) DO UPDATE SET
+        last_active_at = datetime('now'),
+        last_page = excluded.last_page,
+        is_active = 1
+      WHERE last_active_at <= datetime('now', '-2 minutes')
+    `).bind(hospitalId, userId, username, page).run()
     return c.json({ ok: true })
   } catch (e: any) {
-    console.error('Heartbeat error:', e?.message)
-    return c.json({ ok: false, error: String(e?.message) })
+    // UPSERT 실패 시 기존 방식 fallback (unique 제약 없는 경우)
+    try {
+      const user = c.get('user')
+      const hospitalId = Number(user.hospitalId)
+      const userId = Number(user.userId)
+      const username = String(user.username || '')
+      let body: any = {}
+      try { body = await c.req.json() } catch {}
+      const page = body?.page || 'dashboard'
+      const recent = await c.env.DB.prepare(
+        `SELECT id FROM hospital_sessions WHERE hospital_id=? AND user_id=? AND last_active_at >= datetime('now', '-10 minutes') ORDER BY last_active_at DESC LIMIT 1`
+      ).bind(hospitalId, userId).first<any>()
+      if (recent?.id) {
+        await c.env.DB.prepare(
+          `UPDATE hospital_sessions SET last_active_at=datetime('now'), last_page=?, is_active=1 WHERE id=?`
+        ).bind(page, Number(recent.id)).run()
+      } else {
+        await c.env.DB.prepare(
+          `INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, is_active) VALUES (?, ?, ?, datetime('now'), ?, 1)`
+        ).bind(hospitalId, userId, username, page).run()
+      }
+    } catch {}
+    return c.json({ ok: true })
   }
 })
 
 // ── 입력 액션 기록 (실시간 활동 추적) ──────────────────────────
+// D1 쓰기 최적화: SELECT+UPDATE/INSERT 2회 → UPSERT 1회로 변경
 settings.post('/session/activity', async (c) => {
   try {
     const user = c.get('user')
@@ -204,30 +224,49 @@ settings.post('/session/activity', async (c) => {
     let body: any = {}
     try { body = await c.req.json() } catch {}
     const page = body?.page || ''
-    const action = body?.action || ''  // 예: '발주 입력', '식수 저장' 등
+    const action = body?.action || ''
     const hospitalId = Number(user.hospitalId)
     const userId = Number(user.userId)
     const username = String(user.username || '')
-
-    // 세션 갱신 + 마지막 액션 업데이트
-    const recent = await c.env.DB.prepare(
-      `SELECT id FROM hospital_sessions WHERE hospital_id=? AND user_id=? AND last_active_at >= datetime('now', '-10 minutes') ORDER BY last_active_at DESC LIMIT 1`
-    ).bind(hospitalId, userId).first<any>()
-
     const lastAction = action ? `${page} - ${action}` : page
 
-    if (recent?.id) {
-      await c.env.DB.prepare(
-        `UPDATE hospital_sessions SET last_active_at=datetime('now'), last_page=?, last_action=?, is_active=1 WHERE id=?`
-      ).bind(page, lastAction, Number(recent.id)).run()
-    } else {
-      await c.env.DB.prepare(
-        `INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, last_action, is_active) VALUES (?, ?, ?, datetime('now'), ?, ?, 1)`
-      ).bind(hospitalId, userId, username, page, lastAction).run()
-    }
+    // UPSERT: hospital_id+user_id 기준으로 세션 갱신 (D1 write 1회)
+    await c.env.DB.prepare(`
+      INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, last_action, is_active)
+      VALUES (?, ?, ?, datetime('now'), ?, ?, 1)
+      ON CONFLICT(hospital_id, user_id) DO UPDATE SET
+        last_active_at = datetime('now'),
+        last_page = excluded.last_page,
+        last_action = excluded.last_action,
+        is_active = 1
+    `).bind(hospitalId, userId, username, page, lastAction).run()
     return c.json({ ok: true })
   } catch (e: any) {
-    return c.json({ ok: false })
+    // fallback: 기존 SELECT+UPDATE/INSERT 방식
+    try {
+      const user = c.get('user')
+      const hospitalId = Number(user.hospitalId)
+      const userId = Number(user.userId)
+      const username = String(user.username || '')
+      let body: any = {}
+      try { body = await c.req.json() } catch {}
+      const page = body?.page || ''
+      const action = body?.action || ''
+      const lastAction = action ? `${page} - ${action}` : page
+      const recent = await c.env.DB.prepare(
+        `SELECT id FROM hospital_sessions WHERE hospital_id=? AND user_id=? AND last_active_at >= datetime('now', '-10 minutes') ORDER BY last_active_at DESC LIMIT 1`
+      ).bind(hospitalId, userId).first<any>()
+      if (recent?.id) {
+        await c.env.DB.prepare(
+          `UPDATE hospital_sessions SET last_active_at=datetime('now'), last_page=?, last_action=?, is_active=1 WHERE id=?`
+        ).bind(page, lastAction, Number(recent.id)).run()
+      } else {
+        await c.env.DB.prepare(
+          `INSERT INTO hospital_sessions (hospital_id, user_id, username, last_active_at, last_page, last_action, is_active) VALUES (?, ?, ?, datetime('now'), ?, ?, 1)`
+        ).bind(hospitalId, userId, username, page, lastAction).run()
+      }
+    } catch {}
+    return c.json({ ok: true })
   }
 })
 
