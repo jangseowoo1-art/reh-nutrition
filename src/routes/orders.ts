@@ -16,6 +16,257 @@ function getHospId(user: any, c: any): number {
 // Hono는 등록 순서대로 매칭하므로 /patient-categories, /category-monthly/:y/:m 등은
 // /:year/:month 보다 반드시 먼저 등록되어야 합니다.
 
+// ══════════════════════════════════════════════════════════════
+// /api/orders/init  ─  발주 페이지 단일 초기화 API
+// vendors + monthly orders + settings + patient-categories +
+// category-monthly 를 DB 병렬 쿼리로 묶어 1 RTT에 응답
+// (dashboard/card 데이터는 제외 → 프론트에서 백그라운드 로드)
+// ══════════════════════════════════════════════════════════════
+orders.get('/init/:year/:month', async (c) => {
+  const t0 = Date.now()
+  try {
+    const user = c.get('user')
+    const hospitalId = getHospId(user, c)
+    const { year, month } = c.req.param()
+    const mm = month.padStart(2, '0')
+    const monthPadded = mm
+    const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate()
+    const dateStart = `${year}-${monthPadded}-01`
+    const dateEnd   = `${year}-${monthPadded}-${String(lastDay).padStart(2, '0')}`
+
+    // ── 모든 쿼리를 병렬 실행 ──────────────────────────────────
+    const [
+      vendorsRes,
+      ordersRes,
+      multidayRes,
+      settingsRow,
+      patientCatsRes,
+      catMonthlyRes,
+      catMonthlyTotalsRes,
+      supplyVendorMonthlyRes,
+      supplyDailyRes,
+      catDailyByCatRes,
+      catSettingsRes,
+      todayMealsRes,
+    ] = await Promise.all([
+      // 1) vendors
+      c.env.DB.prepare(
+        `SELECT id, name, category, tax_type, monthly_budget, sort_order, is_active
+         FROM vendors WHERE hospital_id=? AND is_active=1 ORDER BY sort_order`
+      ).bind(hospitalId).all<any>(),
+
+      // 2) monthly orders
+      c.env.DB.prepare(
+        `SELECT d.*, v.name as vendor_name, v.category, v.tax_type
+         FROM daily_orders d
+         JOIN vendors v ON d.vendor_id = v.id
+         WHERE d.hospital_id=? AND d.order_date BETWEEN ? AND ?
+         ORDER BY d.order_date, v.sort_order`
+      ).bind(hospitalId, dateStart, dateEnd).all<any>(),
+
+      // 3) multiday settings
+      c.env.DB.prepare(
+        `SELECT order_date, day_count, multi_day_end FROM order_multiday_settings
+         WHERE hospital_id=? AND order_date BETWEEN ? AND ?`
+      ).bind(hospitalId, dateStart, dateEnd).all<any>(),
+
+      // 4) monthly settings (fallback 포함 - 단순화하여 해당 월 또는 직전 설정)
+      c.env.DB.prepare(
+        `SELECT * FROM monthly_settings
+         WHERE hospital_id=? AND year=? AND month=?`
+      ).bind(hospitalId, year, month).first<any>(),
+
+      // 5) patient categories
+      c.env.DB.prepare(
+        `SELECT *, category_name as name FROM hospital_patient_categories
+         WHERE hospital_id=? AND is_active=1 ORDER BY sort_order, id`
+      ).bind(hospitalId).all<any>(),
+
+      // 6) category monthly totals (식재료/소모품 제외)
+      c.env.DB.prepare(
+        `SELECT d.patient_category_id,
+                COALESCE(SUM(d.taxable_amount),0) as taxable,
+                COALESCE(SUM(d.exempt_amount),0) as exempt,
+                COALESCE(SUM(d.vat_amount),0) as vat,
+                COALESCE(SUM(d.total_amount),0) as total
+         FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+         WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=?
+           AND strftime('%m',d.order_date)=?
+           AND v.category NOT IN ('supply','card','event')
+         GROUP BY d.patient_category_id`
+      ).bind(hospitalId, year, mm).all<any>(),
+
+      // 7) overall monthly totals (NULL cat 포함)
+      c.env.DB.prepare(
+        `SELECT COALESCE(SUM(total_amount),0) as total FROM daily_orders
+         WHERE hospital_id=? AND order_date BETWEEN ? AND ?`
+      ).bind(hospitalId, dateStart, dateEnd).first<any>(),
+
+      // 8) supply vendor monthly
+      c.env.DB.prepare(
+        `SELECT d.vendor_id, COALESCE(SUM(d.total_amount),0) as total
+         FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+         WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=?
+           AND strftime('%m',d.order_date)=?
+           AND v.category IN ('supply','card','event')
+         GROUP BY d.vendor_id`
+      ).bind(hospitalId, year, mm).all<any>(),
+
+      // 9) supply daily by vendor
+      c.env.DB.prepare(
+        `SELECT d.order_date, d.vendor_id,
+                SUM(COALESCE(d.taxable_amount,0)) as taxable,
+                SUM(COALESCE(d.exempt_amount,0)) as exempt,
+                SUM(COALESCE(d.total_amount,0)) as total
+         FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+         WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=?
+           AND strftime('%m',d.order_date)=?
+           AND v.category IN ('supply','card','event')
+         GROUP BY d.order_date, d.vendor_id ORDER BY d.order_date, d.vendor_id`
+      ).bind(hospitalId, year, mm).all<any>(),
+
+      // 10) daily by vendor + category (for sub-row rendering)
+      c.env.DB.prepare(
+        `SELECT d.order_date, d.vendor_id, d.patient_category_id,
+                COALESCE(d.taxable_amount,0) as taxable,
+                COALESCE(d.exempt_amount,0) as exempt,
+                COALESCE(d.vat_amount,0) as vat,
+                COALESCE(d.total_amount,0) as total, d.id
+         FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+         WHERE d.hospital_id=? AND strftime('%Y',d.order_date)=?
+           AND strftime('%m',d.order_date)=?
+         ORDER BY d.order_date, d.vendor_id, d.patient_category_id`
+      ).bind(hospitalId, year, mm).all<any>(),
+
+      // 11) category order settings (해당 월 or 직전)
+      c.env.DB.prepare(
+        `SELECT cos.*, hpc.category_key, hpc.category_name
+         FROM category_order_settings cos
+         JOIN hospital_patient_categories hpc ON cos.patient_category_id=hpc.id
+         WHERE cos.hospital_id=? AND cos.year=? AND cos.month=?`
+      ).bind(hospitalId, year, month).all<any>(),
+
+      // 12) today's meals
+      (async () => {
+        const today = new Date()
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
+        return c.env.DB.prepare(
+          `SELECT COALESCE(breakfast_patient,0)+COALESCE(lunch_patient,0)+COALESCE(dinner_patient,0) as patient_total,
+                  COALESCE(breakfast_staff,0)+COALESCE(lunch_staff,0)+COALESCE(dinner_staff,0) as staff_total,
+                  COALESCE(breakfast_guardian,0)+COALESCE(lunch_guardian,0)+COALESCE(dinner_guardian,0) as guardian_total
+           FROM daily_meals WHERE hospital_id=? AND meal_date=?`
+        ).bind(hospitalId, todayStr).first<any>()
+      })(),
+    ])
+
+    // ── fallback 쿼리 3개를 병렬 실행 (직렬 await 제거 → latency 감소) ──────────────
+    const t_fallback = Date.now()
+    const reqYear = parseInt(year), reqMonth = parseInt(month)
+    const BASE_YEAR = 2026, BASE_MONTH = 3
+    const isBeforeBase = (reqYear < BASE_YEAR) || (reqYear === BASE_YEAR && reqMonth < BASE_MONTH)
+    const prevMonthNum = reqMonth === 1 ? 12 : reqMonth - 1
+    const prevYearNum  = reqMonth === 1 ? reqYear - 1 : reqYear
+
+    // 3가지 fallback을 동시에 시작 (settingsRow가 있으면 null resolve, 없으면 실제 쿼리)
+    const [settingsFallbackRow, catSettingsFallbackRes, prevCatSettingsRes] = await Promise.all([
+      // A) settings fallback: settingsRow가 있으면 skip
+      settingsRow ? Promise.resolve(null) : (
+        isBeforeBase
+          ? c.env.DB.prepare(
+              `SELECT * FROM monthly_settings WHERE hospital_id=? AND year=? AND month=?`
+            ).bind(hospitalId, BASE_YEAR, BASE_MONTH).first<any>()
+          : c.env.DB.prepare(
+              `SELECT * FROM monthly_settings
+               WHERE hospital_id=?
+                 AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                      OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+               ORDER BY CAST(year AS INTEGER) DESC, CAST(month AS INTEGER) DESC LIMIT 1`
+            ).bind(hospitalId, reqYear, reqYear, reqMonth).first<any>()
+      ),
+
+      // B) category settings fallback: catSettingsRes.results가 있으면 skip
+      (catSettingsRes.results || []).length > 0 ? Promise.resolve(null) : c.env.DB.prepare(
+        `SELECT cos.*, hpc.category_key, hpc.category_name
+         FROM category_order_settings cos
+         JOIN hospital_patient_categories hpc ON cos.patient_category_id=hpc.id
+         WHERE cos.hospital_id=?
+           AND cos.id IN (
+             SELECT MAX(id) FROM category_order_settings
+             WHERE hospital_id=?
+               AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                    OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+             GROUP BY patient_category_id
+           )
+         ORDER BY hpc.sort_order`
+      ).bind(hospitalId, hospitalId, reqYear, reqYear, reqMonth).all<any>(),
+
+      // C) prev month category settings (항상 쿼리)
+      c.env.DB.prepare(
+        `SELECT cos.*, hpc.category_key, hpc.category_name
+         FROM category_order_settings cos
+         JOIN hospital_patient_categories hpc ON cos.patient_category_id=hpc.id
+         WHERE cos.hospital_id=? AND cos.year=? AND cos.month=?`
+      ).bind(hospitalId, prevYearNum, prevMonthNum).all<any>(),
+    ])
+
+    // settings 결정
+    const finalSettings = settingsRow || settingsFallbackRow || {}
+
+    // category settings 결정
+    let catSettingsFinal = catSettingsRes.results || []
+    if (catSettingsFinal.length === 0 && catSettingsFallbackRes) {
+      catSettingsFinal = (catSettingsFallbackRes as any).results || []
+    }
+
+    // prev month category settings: 결과 없으면 추가 fallback (이것만 직렬 - 드문 케이스)
+    let prevCatSettings = (prevCatSettingsRes as any).results || []
+    if (prevCatSettings.length === 0) {
+      const fb = await c.env.DB.prepare(
+        `SELECT cos.*, hpc.category_key, hpc.category_name
+         FROM category_order_settings cos
+         JOIN hospital_patient_categories hpc ON cos.patient_category_id=hpc.id
+         WHERE cos.hospital_id=?
+           AND cos.id IN (
+             SELECT MAX(id) FROM category_order_settings
+             WHERE hospital_id=?
+               AND (CAST(year AS INTEGER) < CAST(? AS INTEGER)
+                    OR (CAST(year AS INTEGER) = CAST(? AS INTEGER) AND CAST(month AS INTEGER) < CAST(? AS INTEGER)))
+             GROUP BY patient_category_id
+           )
+         ORDER BY hpc.sort_order`
+      ).bind(hospitalId, hospitalId, prevYearNum, prevYearNum, prevMonthNum).all<any>()
+      prevCatSettings = fb.results || []
+    }
+
+    const dbMs = Date.now() - t0
+    const fallbackMs = Date.now() - t_fallback
+    console.log(`[orders/init] total=${dbMs}ms, parallel12=${t_fallback - t0}ms, fallback=${fallbackMs}ms`)
+    return c.json({
+      _dbMs: dbMs,
+      _fallbackMs: fallbackMs,
+      vendors: vendorsRes.results || [],
+      orders: ordersRes.results || [],
+      multidaySettings: multidayRes.results || [],
+      settings: finalSettings || {},
+      // category-monthly 구조 (프론트 catOrderData와 호환)
+      catOrderData: {
+        categories: patientCatsRes.results || [],
+        monthly: catMonthlyRes.results || [],
+        dailyByVendorCat: catDailyByCatRes.results || [],
+        supplyVendorMonthly: supplyVendorMonthlyRes.results || [],
+        supplyDailyByVendor: supplyDailyRes.results || [],
+        settings: catSettingsFinal,
+        todayMeals: todayMealsRes || { patient_total: 0, staff_total: 0, guardian_total: 0 },
+        prevSettings: prevCatSettings,
+      },
+      totalMonthlyAmount: catMonthlyTotalsRes?.total || 0,
+    })
+  } catch (e: any) {
+    console.error('[orders/init] ERROR:', e?.message || e)
+    return c.json({ error: e?.message || 'unknown', vendors: [], orders: [], settings: {}, catOrderData: null }, 200)
+  }
+})
+
 // 특정 날짜의 발주 조회 (업체 목록 포함)
 orders.get('/date/:date', async (c) => {
   const user = c.get('user')
