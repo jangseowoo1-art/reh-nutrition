@@ -741,6 +741,9 @@ function _apiCacheGet(url) {
   return entry.data
 }
 function _apiCacheSet(url, data) {
+  // 발주/대시보드/업체 관련 API는 캐시하지 않음 (데이터 불일치 방지)
+  const noCachePatterns = ['/api/orders', '/api/dashboard', '/api/vendors', '/api/card-expenses']
+  if (noCachePatterns.some(p => url.includes(p))) return
   _apiCache.set(_apiCacheKey(url), { data, ts: Date.now() })
 }
 function _apiCacheInvalidate(pattern) {
@@ -2656,24 +2659,42 @@ async function renderOrders() {
     </div>
   </div>`
 
-  const [vendors, orderData, settingsData, dashData, patientCats, catOrderData, cardData] = await Promise.all([
+  // ── 1단계: 핵심 데이터 우선 로드 (화면 표시에 필수) ──
+  const [vendors, orderData, settingsData, patientCats, catOrderData] = await Promise.all([
     api('GET', '/api/vendors'),
     api('GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/settings/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
     api('GET', '/api/orders/patient-categories'),
-    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`),
-    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}`)
+    api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
   ])
-  // 법인카드 일별 합계 맵 구성 { vendorId: { dateStr: total } }
-  window._cardDailyMap = {}
-  window._cardDailyCountMap = {}
-  ;(cardData?.dailyTotals || []).forEach(r => {
-    if (!window._cardDailyMap[r.vendor_id]) window._cardDailyMap[r.vendor_id] = {}
-    if (!window._cardDailyCountMap[r.vendor_id]) window._cardDailyCountMap[r.vendor_id] = {}
-    window._cardDailyMap[r.vendor_id][r.expense_date] = r.daily_total || 0
-    window._cardDailyCountMap[r.vendor_id][r.expense_date] = r.item_count || 0
-  })
+  // ── 2단계: 부수 데이터는 백그라운드 로드 (KPI 패널용) ──
+  let dashData = null, cardData = null
+  Promise.all([
+    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
+    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}`)
+  ]).then(([d, c]) => {
+    dashData = d; cardData = c
+    // 법인카드 일별 합계 맵 갱신
+    window._cardDailyMap = {}
+    window._cardDailyCountMap = {}
+    ;(cardData?.dailyTotals || []).forEach(r => {
+      if (!window._cardDailyMap[r.vendor_id]) window._cardDailyMap[r.vendor_id] = {}
+      if (!window._cardDailyCountMap[r.vendor_id]) window._cardDailyCountMap[r.vendor_id] = {}
+      window._cardDailyMap[r.vendor_id][r.expense_date] = r.daily_total || 0
+      window._cardDailyCountMap[r.vendor_id][r.expense_date] = r.item_count || 0
+    })
+    if (dashData?.catDietPrices && dashData.catDietPrices.length > 0) {
+      window._catDietPricesData = dashData.catDietPrices
+    }
+    // KPI 패널 업데이트
+    requestAnimationFrame(() => {
+      if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
+      if (typeof updateInsightPanel === 'function') updateInsightPanel()
+    })
+  }).catch(() => {})
+  // 법인카드 맵은 백그라운드 로드 후 갱신됨 (2단계 로딩)
+  if (!window._cardDailyMap) window._cardDailyMap = {}
+  if (!window._cardDailyCountMap) window._cardDailyCountMap = {}
 
   if (!vendors) { content.innerHTML = `<div class="flex flex-col items-center justify-center p-10 gap-4"><div class="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-red-400 text-2xl"></i></div><div class="text-red-500 font-semibold text-base">데이터 로드 실패</div><div class="text-gray-400 text-sm">업체 정보를 불러올 수 없습니다.</div><button onclick="navigateTo('orders')" class="mt-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-medium transition shadow-sm"><i class="fas fa-redo mr-2"></i>다시 시도</button></div>`; return }
 
@@ -2700,13 +2721,9 @@ async function renderOrders() {
     const existing = window._supplyDailyMap[r.vendor_id][r.order_date] || 0
     window._supplyDailyMap[r.vendor_id][r.order_date] = existing + (r.total || 0)
   })
-  // 발주 페이지 로드 시 항상 최신 dashData로 catDietPricesData 갱신
-  // (대시보드에서 다른 병원을 보다가 넘어온 경우 stale 데이터 방지)
-  if (dashData?.catDietPrices && dashData.catDietPrices.length > 0) {
-    window._catDietPricesData = dashData.catDietPrices
-  } else if (!window._catDietPricesData || window._catDietPricesData.length === 0) {
-    window._catDietPricesData = []
-  }
+  // catDietPricesData: dashData는 백그라운드 로드 후 갱신됨 (2단계 로딩)
+  // 기존 전역값 초기화만 보장 (null이면 빈 배열)
+  if (!window._catDietPricesData) window._catDietPricesData = []
   // 발주 입력/모달/엑셀에 사용할 주요 환자군만 필터링
   // 보조 카테고리(항암 보호자, 경관식 등 - 예산/기준가 미설정) 제외
   const patientCatsMain = filterMainPatientCats(
