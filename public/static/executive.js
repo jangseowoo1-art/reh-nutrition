@@ -1,5 +1,5 @@
 // ── executive.js ── 운영진 전용 대시보드
-// 버전: 20260601-riskaccordion
+// 버전: 20260601-tabscrolltop
 
 ;(function() {
 'use strict'
@@ -156,6 +156,11 @@ window.execDownloadCSV = async function(type) {
 
 // ── 뷰 스타일 전환 ────────────────────────────────────────────────
 window.execSetViewStyle = function(style) {
+  if (State.viewStyle === style && State.data) {
+    // 같은 탭 재클릭 시에도 최상단으로 이동만 수행
+    scrollExecToTop()
+    return
+  }
   State.viewStyle = style
   localStorage.setItem('execViewStyle', style)
   // 토글 버튼 active 클래스 갱신
@@ -166,7 +171,33 @@ window.execSetViewStyle = function(style) {
     else btn.classList.remove('vs-active')
   })
   // 데이터가 이미 있으면 재렌더 (API 재호출 없이)
-  if (State.data) renderAll()
+  if (State.data) {
+    renderAll()
+    // 탭 전환 시 반드시 화면 최상단으로 이동 (이전 탭 스크롤 위치 잔존 방지)
+    scrollExecToTop()
+  }
+}
+
+// 운영진 페이지 최상단으로 스크롤 (window + 셸 컨테이너 모두 대응)
+function scrollExecToTop() {
+  try {
+    // 운영 리스크 아코디언이 열려 있으면 접어서 다음 탭에 잔존하지 않도록 초기화
+    const acc = document.getElementById('execRiskAccordion')
+    if (acc) acc.classList.remove('open')
+    const chevron = document.getElementById('execRiskChevron')
+    if (chevron) chevron.style.transform = 'rotate(0deg)'
+  } catch(e) {}
+  // 즉시 + 렌더 직후 한 번 더 (innerHTML 교체로 인한 레이아웃 변동 대응)
+  const doScroll = () => {
+    window.scrollTo({ top: 0, behavior: 'auto' })
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0
+    const main = document.getElementById('execMain')
+    if (main && typeof main.scrollIntoView === 'function') {
+      main.scrollIntoView({ block: 'start', behavior: 'auto' })
+    }
+  }
+  doScroll()
+  requestAnimationFrame(doScroll)
 }
 
 function initViewStyleButtons() {
