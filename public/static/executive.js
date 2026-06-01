@@ -1,5 +1,5 @@
 // ── executive.js ── 운영진 전용 대시보드
-// 버전: 20260529-bugfix3
+// 버전: 20260601-viewtoggle
 
 ;(function() {
 'use strict'
@@ -236,6 +236,10 @@ window.loadExecData = async function() {
     if (pl) pl.textContent = `${State.year}년 ${State.month}월 현황`
 
     if (loading) loading.classList.add('hidden')
+    // 뷰 전환 토글 바 표시 + 활성 버튼 갱신
+    const toggleBar = document.getElementById('execViewToggle')
+    if (toggleBar) toggleBar.classList.remove('hidden')
+    initViewStyleButtons()
     if (content) {
       content.classList.remove('hidden')
       try {

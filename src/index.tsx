@@ -399,6 +399,10 @@ function getExecutiveShell(): string {
   .progress-fill { height: 100%; border-radius: 4px; transition: width 0.8s ease; }
   .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
   .tab-active { border-bottom: 3px solid #1e40af; color: #1e40af; font-weight: 700; }
+  .vs-btn { cursor: pointer; border: none; background: transparent; white-space: nowrap; }
+  .vs-btn:hover { background: #f1f5f9; color: #334155; }
+  .vs-active { background: linear-gradient(135deg, #166534, #16a34a) !important; color: #fff !important; box-shadow: 0 2px 8px rgba(22,163,74,0.35); }
+  .vs-active:hover { color: #fff !important; }
   .loading-spin { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (max-width: 768px) {
@@ -452,11 +456,23 @@ function getExecutiveShell(): string {
       <p class="text-gray-500">데이터 불러오는 중...</p>
     </div>
   </div>
+  <!-- 뷰 전환 토글 (요약 / 분석 / 원본) -->
+  <div id="execViewToggle" class="hidden mb-5 flex items-center gap-1 bg-white border border-gray-200 rounded-2xl p-1 shadow-sm w-full sm:w-auto">
+    <button id="vsBtn-SUMMARY" onclick="execSetViewStyle('SUMMARY')" class="vs-btn flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-gray-500 transition">
+      <i class="fas fa-gauge-high text-xs"></i><span>요약</span>
+    </button>
+    <button id="vsBtn-ANALYSIS" onclick="execSetViewStyle('ANALYSIS')" class="vs-btn flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-gray-500 transition">
+      <i class="fas fa-chart-column text-xs"></i><span>분석</span>
+    </button>
+    <button id="vsBtn-DETAIL" onclick="execSetViewStyle('DETAIL')" class="vs-btn flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-gray-500 transition">
+      <i class="fas fa-table-list text-xs"></i><span>원본</span>
+    </button>
+  </div>
   <!-- 콘텐츠 영역 -->
   <div id="execContent" class="hidden space-y-6"></div>
 </main>
 
-<script src="/static/executive.js?v=20260529-bugfix3"></script>
+<script src="/static/executive.js?v=20260601-viewtoggle"></script>
 </body>
 </html>`
 }
