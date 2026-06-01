@@ -1,5 +1,5 @@
 // ── executive.js ── 운영진 전용 대시보드
-// 버전: 20260601-viewtoggle
+// 버전: 20260601-riskaccordion
 
 ;(function() {
 'use strict'
@@ -28,9 +28,45 @@ function initExec() {
     location.href = '/login'
     return
   }
+  injectExecStyles()
   updateMonthDisplay()
   initViewStyleButtons()
   loadExecData()
+}
+
+// ── 운영진 대시보드 전용 스타일 1회 주입 ──────────────────────────
+// exec-modal-overlay / exec-modal-box CSS 누락으로 모달이 페이지 하단에
+// 렌더링되던 버그 수정 + 운영 리스크 아코디언 스타일 포함
+function injectExecStyles() {
+  if (document.getElementById('exec-inline-styles')) return
+  const style = document.createElement('style')
+  style.id = 'exec-inline-styles'
+  style.textContent = `
+    .exec-modal-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(15, 23, 42, 0.55);
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px; animation: execModalFade 0.18s ease;
+      -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+    }
+    .exec-modal-box {
+      background: #fff; border-radius: 20px;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.25);
+      width: 100%; max-width: 440px; max-height: 88vh;
+      overflow-y: auto; animation: execModalPop 0.2s ease;
+    }
+    @keyframes execModalFade { from { opacity: 0 } to { opacity: 1 } }
+    @keyframes execModalPop { from { opacity: 0; transform: translateY(12px) scale(0.98) } to { opacity: 1; transform: none } }
+    /* 운영 리스크 아코디언 */
+    #execRiskAccordion {
+      overflow: hidden; transition: max-height 0.28s ease, opacity 0.2s ease, margin 0.2s ease;
+      max-height: 0; opacity: 0; margin: 0;
+    }
+    #execRiskAccordion.open {
+      max-height: 1200px; opacity: 1; margin: 4px 0 16px;
+    }
+  `
+  document.head.appendChild(style)
 }
 
 // DOMContentLoaded가 이미 발생했거나 발생 전이나 모두 처리
@@ -328,6 +364,8 @@ function renderSummaryView(content, budget, dp, sl, mealStats, progressPct, repP
       ${kpiCardMeals(mealStats, totalMeals)}
       ${kpiCardScore(State.scoreData)}
     </div>
+    <!-- 운영 리스크 아코디언 (카드 바로 아래 펼침) -->
+    <div id="execRiskAccordion">${riskAccordionBody(sl, budget, dp, State.data || {})}</div>
     <!-- 경영 트렌드 Sparkline -->
     ${renderTrendSparklines()}
     <!-- SUMMARY 안내 -->
@@ -575,6 +613,9 @@ function renderAnalysisView(content, budget, dp, sl, mealStats, vendorOrders, pr
       ${kpiCardMeals(mealStats, totalMeals)}
       ${kpiCardScore(State.scoreData)}
     </div>
+
+    <!-- 운영 리스크 아코디언 (카드 바로 아래 펼침) -->
+    <div id="execRiskAccordion">${riskAccordionBody(sl, budget, dp, State.data || {})}</div>
 
     <!-- ANALYSIS 전용 뷰 안내 칩 -->
     <div style="display:flex;align-items:center;gap:8px;padding:8px 4px;margin-bottom:-4px">
@@ -1102,10 +1143,14 @@ function kpiCardRisk(sl, budget, repPrice, targetPrice) {
     ? `<div style="font-size:11px;font-weight:600;color:#16a34a">현재 리스크 없음</div>`
     : risks.slice(0,2).map(r=>`<div style="font-size:10px;color:${r.level==='risk'?'#dc2626':'#b45309'};font-weight:500;margin-bottom:1px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">· ${r.msg}</div>`).join('')
       + (risks.length>2 ? `<div style="font-size:10px;color:#94a3b8;margin-top:2px">+${risks.length-2}건 더 →</div>` : '')
-  return _kpiWrap(c.b, "openModal('risk')", `
+  return _kpiWrap(c.b, "toggleRiskAccordion()", `
     ${_kpiHeader(topLevel==='ok'?'fa-shield-alt':'fa-exclamation-triangle', c.g, '운영 리스크')}
     <div style="font-size:13px;font-weight:800;color:${c.b};margin-bottom:6px;line-height:1">${stateEmoji} ${stateLabel}</div>
     <div style="min-height:32px">${riskRows}</div>
+    <div style="display:flex;align-items:center;gap:4px;margin-top:6px;font-size:10px;font-weight:600;color:#94a3b8">
+      <i class="fas fa-chevron-down" id="execRiskChevron" style="transition:transform 0.25s ease;font-size:9px"></i>
+      <span>클릭하여 상세 펼치기</span>
+    </div>
   `)
 }
 
@@ -2901,7 +2946,7 @@ function renderExecRiskBannerEnhanced(sl, budget, repPrice, targetPrice) {
     </div>
     <!-- 하단 버튼 -->
     <div style="padding:0 12px 10px">
-      <button onclick="openModal('risk')" style="width:100%;padding:7px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:0.03em;transition:background 0.15s"
+      <button onclick="toggleRiskAccordion()" style="width:100%;padding:7px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:0.03em;transition:background 0.15s"
         onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='#f1f5f9'">
         전체 리스크 상세 확인 →
       </button>
@@ -3000,6 +3045,24 @@ window.openModal = function(type) {
 window.closeModal = function() {
   const el = document.getElementById('execModalOverlay')
   if (el) el.remove()
+}
+
+// ── 운영 리스크 아코디언 토글 ─────────────────────────────────────
+// 운영 리스크는 즉시 조치가 필요한 경고성 데이터이므로 모달 대신
+// 카드 바로 아래에서 펼쳐지는 아코디언으로 표시한다.
+window.toggleRiskAccordion = function() {
+  const acc = document.getElementById('execRiskAccordion')
+  if (!acc) return
+  const chevron = document.getElementById('execRiskChevron')
+  const willOpen = !acc.classList.contains('open')
+  acc.classList.toggle('open', willOpen)
+  if (chevron) chevron.style.transform = willOpen ? 'rotate(180deg)' : 'rotate(0deg)'
+  // 펼칠 때만 해당 영역으로 부드럽게 스크롤
+  if (willOpen) {
+    setTimeout(() => {
+      acc.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 180)
+  }
 }
 
 window.modalGoTab = function(tab) {
@@ -3142,7 +3205,59 @@ function modalLabor(sl) {
   </div>`
 }
 
-// ④ 운영 리스크 모달
+// ④ 운영 리스크 — 아코디언 본문 (카드 바로 아래 인라인 펼침)
+// modalRisk와 동일한 리스크 산정 로직을 사용하되, 오버레이/모달 헤더 없이
+// 카드 하단에 펼쳐지는 경고 패널 형태로 렌더링한다.
+function riskAccordionBody(sl, budget, dp, d) {
+  const risks = []
+  const pct = budget.progress || 0
+  const repPrice = dp.representative || 0
+  const targetPrice = budget.targetMealPrice || 0
+  if (pct >= 100)     risks.push({ level:'risk', msg:`예산 사용률 ${pct.toFixed(1)}% — 즉시 지출 검토 필요` })
+  else if (pct >= 95) risks.push({ level:'risk', msg:`예산 사용률 ${pct.toFixed(1)}% — 위험 수준` })
+  else if (pct >= 85) risks.push({ level:'warn', msg:`예산 사용률 ${pct.toFixed(1)}% — 잔여 15% 미만` })
+  if (targetPrice > 0 && repPrice > targetPrice) {
+    const over = Math.round(((repPrice-targetPrice)/targetPrice)*100)
+    risks.push({ level: over>5?'risk':'warn', msg:`대표 식단가 목표 대비 +${over}% 초과` })
+  }
+  const extRatio = State.scoreData?.meta?.externalRatio ?? -1
+  if (extRatio >= 60) risks.push({ level:'risk', msg:`외부인력 비중 ${extRatio.toFixed(0)}%` })
+  else if (extRatio >= 30) risks.push({ level:'warn', msg:`외부인력 비중 ${extRatio.toFixed(0)}% — 주의` })
+  const ext = sl?.externalSummary || {}
+  if ((ext.dispatchDays||0) >= 30) risks.push({ level:'risk', msg:`파출 ${ext.dispatchDays}회 — 과다` })
+  ;(sl?.warnings||[]).forEach(w => risks.push({ level:w.level||'warn', msg:w.message }))
+
+  const headerColor = risks.length === 0 ? 'linear-gradient(135deg,#166534,#16a34a)' : 'linear-gradient(135deg,#991b1b,#ef4444)'
+  return `
+  <div style="border-radius:16px;overflow:hidden;border:1px solid ${risks.length===0?'#bbf7d0':'#fecaca'};box-shadow:0 6px 20px rgba(0,0,0,0.06)">
+    <div style="background:${headerColor};padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
+      <span style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;color:#fff;letter-spacing:0.02em">
+        <i class="fas fa-${risks.length===0?'shield-alt':'exclamation-triangle'}" style="font-size:12px"></i>
+        운영 리스크 현황${risks.length>0?` (${risks.length}건)`:''}
+      </span>
+      <button onclick="toggleRiskAccordion()" aria-label="닫기"
+        style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:24px;height:24px;border-radius:7px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div style="background:#fff;padding:14px 16px">
+      ${risks.length === 0
+        ? `<div style="text-align:center;padding:18px 0">
+             <i class="fas fa-check-circle" style="font-size:34px;color:#22c55e;margin-bottom:10px;display:block"></i>
+             <p style="font-weight:700;color:#15803d;margin:0">이번 달 운영 리스크 없음</p>
+             <p style="font-size:12px;color:#94a3b8;margin:4px 0 0">예산·인력·식단가 모두 정상 범위입니다.</p>
+           </div>`
+        : risks.map(r => `
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border-radius:11px;margin-bottom:8px;background:${r.level==='risk'?'#fef2f2':'#fffbeb'};border:1px solid ${r.level==='risk'?'#fecaca':'#fde68a'}">
+            <i class="fas fa-${r.level==='risk'?'times-circle':'exclamation-circle'}" style="margin-top:2px;flex-shrink:0;color:${r.level==='risk'?'#dc2626':'#d97706'};font-size:13px"></i>
+            <span style="font-size:13px;line-height:1.5;color:${r.level==='risk'?'#991b1b':'#92400e'}">${r.msg}</span>
+          </div>`).join('')
+      }
+    </div>
+  </div>`
+}
+
+// ④ 운영 리스크 모달 (구버전 — 다른 진입점 호환용 유지)
 function modalRisk(sl, budget, dp, d) {
   const risks = []
   const pct = budget.progress || 0
