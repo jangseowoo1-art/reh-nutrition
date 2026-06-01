@@ -456,7 +456,7 @@ function getExecutiveShell(): string {
   <div id="execContent" class="hidden space-y-6"></div>
 </main>
 
-<script src="/static/executive.js?v=20260330d"></script>
+<script src="/static/executive.js?v=20260529-bugfix3"></script>
 </body>
 </html>`
 }
