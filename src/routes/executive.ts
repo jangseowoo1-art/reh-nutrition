@@ -741,4 +741,244 @@ executive.get('/staff-labor/:year/:month', async (c) => {
   })
 })
 
+// ══════════════════════════════════════════════════════════════════
+// ── CSV Export 라우트 (운영진 DETAIL 뷰 다운로드) ─────────────────
+// ══════════════════════════════════════════════════════════════════
+// 공통 헬퍼: hospitalId 결정
+function resolveHospitalId(c: any): string | number | null {
+  const user = c.get('user')
+  const hid = user?.role === 'admin'
+    ? (c.req.query('hospitalId') || user?.hospitalId)
+    : user?.hospitalId
+  return hid || null
+}
+
+// 공통 헬퍼: CSV 셀 escape (큰따옴표 처리)
+function csvCell(v: any): string {
+  const s = (v === null || v === undefined) ? '' : String(v)
+  return '"' + s.replace(/"/g, '""') + '"'
+}
+
+// 공통 헬퍼: 천단위 콤마
+function nf(n: any): string {
+  const num = Number(n) || 0
+  return num.toLocaleString('en-US')
+}
+
+// 공통 헬퍼: CSV 응답 생성 (UTF-8 BOM + CRLF + 한글 파일명)
+function csvResponse(c: any, rows: string[][], baseFileName: string) {
+  const BOM = '\uFEFF'
+  const body = BOM + rows.map(r => r.map(csvCell).join(',')).join('\r\n')
+  const encodedName = encodeURIComponent(baseFileName + '.csv')
+  c.header('Content-Type', 'text/csv; charset=utf-8')
+  c.header('Content-Disposition', `attachment; filename*=UTF-8''${encodedName}`)
+  c.header('Access-Control-Allow-Origin', '*')
+  return c.body(body)
+}
+
+// vendors.category → CSV 분류 표기 매핑 (배포본 형식 유지)
+function categoryLabel(cat: string): string {
+  const map: Record<string, string> = {
+    card: '카드', event: '이벤트', supply: '소모품',
+  }
+  return map[cat] || cat || '-'
+}
+
+// ── 1. 예산 CSV (업체별 사용금액 + 카드합계 + 총예산) ─────────────
+executive.get('/export/budget/:year/:month', async (c) => {
+  const hospitalId = resolveHospitalId(c)
+  if (!hospitalId) return c.json({ error: 'Hospital not found' }, 400)
+  const { year, month } = c.req.param()
+
+  const vendorRows = await c.env.DB.prepare(
+    `SELECT v.name, v.category,
+            COALESCE(SUM(d.total_amount), 0) as total_used
+     FROM vendors v
+     LEFT JOIN daily_orders d ON d.vendor_id = v.id
+       AND d.hospital_id = ?
+       AND strftime('%Y', d.order_date) = ?
+       AND strftime('%m', d.order_date) = printf('%02d', ?)
+     WHERE v.hospital_id = ? AND v.is_active = 1
+     GROUP BY v.id
+     HAVING total_used > 0
+     ORDER BY total_used DESC`
+  ).bind(hospitalId, year, month, hospitalId).all<any>()
+  const vendors = vendorRows.results || []
+
+  const settings = await c.env.DB.prepare(
+    `SELECT total_budget FROM monthly_settings WHERE hospital_id = ? AND year = ? AND month = ?`
+  ).bind(hospitalId, year, month).first<any>()
+  const totalBudget = settings?.total_budget || 0
+
+  const cardTotalRow = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(amount),0) as total FROM card_expenses
+     WHERE hospital_id = ?
+       AND strftime('%Y', expense_date) = ?
+       AND strftime('%m', expense_date) = printf('%02d', ?)`
+  ).bind(hospitalId, year, month).first<any>()
+  const cardTotal = cardTotalRow?.total || 0
+
+  const rows: string[][] = [['업체명', '분류', '비용유형', '사용금액(원)']]
+  if (vendors.length === 0) {
+    rows.push(['데이터 없음', '-', '-', '0'])
+  } else {
+    vendors.forEach((v: any) => {
+      const costType = v.category === 'supply' ? 'supply' : 'food'
+      rows.push([v.name, categoryLabel(v.category), costType, nf(v.total_used)])
+    })
+  }
+  rows.push(['법인카드 합계', '카드', '-', nf(cardTotal)])
+  rows.push(['총 예산', '-', '-', nf(totalBudget)])
+
+  const hospital = await c.env.DB.prepare(`SELECT name FROM hospitals WHERE id = ?`).bind(hospitalId).first<any>()
+  const fname = `${hospital?.name || '병원'}_${year}년${String(month).padStart(2,'0')}월_예산상세`
+  return csvResponse(c, rows, fname)
+})
+
+// ── 2. 발주 CSV (업체별 발주금액·횟수·월예산) ────────────────────
+executive.get('/export/vendors/:year/:month', async (c) => {
+  const hospitalId = resolveHospitalId(c)
+  if (!hospitalId) return c.json({ error: 'Hospital not found' }, 400)
+  const { year, month } = c.req.param()
+
+  const vendorRows = await c.env.DB.prepare(
+    `SELECT v.name, v.category, v.monthly_budget,
+            COALESCE(SUM(d.total_amount), 0) as total_used,
+            COUNT(d.id) as order_count
+     FROM vendors v
+     LEFT JOIN daily_orders d ON d.vendor_id = v.id
+       AND d.hospital_id = ?
+       AND strftime('%Y', d.order_date) = ?
+       AND strftime('%m', d.order_date) = printf('%02d', ?)
+     WHERE v.hospital_id = ? AND v.is_active = 1
+     GROUP BY v.id
+     HAVING total_used > 0
+     ORDER BY total_used DESC`
+  ).bind(hospitalId, year, month, hospitalId).all<any>()
+  const vendors = vendorRows.results || []
+
+  const rows: string[][] = [['업체명', '분류', '발주금액(원)', '발주횟수', '월예산(원)']]
+  if (vendors.length === 0) {
+    rows.push(['데이터 없음', '-', '0', '0', '0'])
+  } else {
+    vendors.forEach((v: any) => {
+      rows.push([v.name, categoryLabel(v.category), nf(v.total_used), String(v.order_count || 0), nf(v.monthly_budget || 0)])
+    })
+  }
+
+  const hospital = await c.env.DB.prepare(`SELECT name FROM hospitals WHERE id = ?`).bind(hospitalId).first<any>()
+  const fname = `${hospital?.name || '병원'}_${year}년${String(month).padStart(2,'0')}월_발주현황`
+  return csvResponse(c, rows, fname)
+})
+
+// ── 3. 인건비 CSV (정규직 + 외부인력) ────────────────────────────
+executive.get('/export/labor/:year/:month', async (c) => {
+  const hospitalId = resolveHospitalId(c)
+  if (!hospitalId) return c.json({ error: 'Hospital not found' }, 400)
+  const { year, month } = c.req.param()
+  const y = parseInt(year), m = parseInt(month)
+
+  // 정규/계약 직원
+  const empRows = await c.env.DB.prepare(
+    `SELECT id, name, position, employment_type
+     FROM employees
+     WHERE hospital_id = ? AND is_active = 1
+     ORDER BY sort_order, id`
+  ).bind(hospitalId).all<any>()
+  const emps = empRows.results || []
+
+  // 직원별 근무일수 / OT일수
+  const schedRows = await c.env.DB.prepare(
+    `SELECT ds.employee_id,
+            SUM(CASE WHEN ds.shift_code NOT IN ('연차','반차','병가','경조','공가','휴','무급') THEN 1 ELSE 0 END) as work_days,
+            SUM(CASE WHEN ds.is_overtime = 1 THEN 1 ELSE 0 END) as ot_days
+     FROM daily_schedules ds
+     WHERE ds.hospital_id = ?
+       AND strftime('%Y', ds.work_date) = ?
+       AND strftime('%m', ds.work_date) = printf('%02d', ?)
+     GROUP BY ds.employee_id`
+  ).bind(hospitalId, String(y), m).all<any>()
+  const schedMap: Record<number, any> = {}
+  ;(schedRows.results || []).forEach((r: any) => { schedMap[r.employee_id] = r })
+
+  // 외부인력 (파출/알바) 투입일수
+  const extRows = await c.env.DB.prepare(
+    `SELECT ew.name, ew.worker_type, COUNT(es.id) as days
+     FROM external_workers ew
+     LEFT JOIN external_schedules es ON es.worker_id = ew.id
+       AND es.hospital_id = ?
+       AND strftime('%Y', es.work_date) = ?
+       AND strftime('%m', es.work_date) = printf('%02d', ?)
+     WHERE ew.hospital_id = ? AND ew.is_active = 1
+     GROUP BY ew.id
+     HAVING days > 0
+     ORDER BY ew.worker_type, ew.name`
+  ).bind(hospitalId, String(y), m, hospitalId).all<any>()
+  const exts = extRows.results || []
+
+  const empTypeLabel: Record<string, string> = { full: 'full', part: 'part', contract: 'contract', temp: 'temp', daily: 'daily' }
+
+  const rows: string[][] = [['구분', '이름', '고용형태', '직책', '근무/투입일수', '비고']]
+  if (emps.length === 0 && exts.length === 0) {
+    rows.push(['데이터 없음', '-', '-', '-', '0', '-'])
+  } else {
+    emps.forEach((e: any) => {
+      const s = schedMap[e.id] || {}
+      rows.push([
+        '정규직', e.name || '', empTypeLabel[e.employment_type] || (e.employment_type || 'full'),
+        e.position || '-', String(s.work_days || 0), `OT ${s.ot_days || 0}일`
+      ])
+    })
+    exts.forEach((x: any) => {
+      const typeLabel = x.worker_type === 'dispatch' ? '파출' : x.worker_type === 'parttime' ? '알바' : x.worker_type
+      rows.push(['외부인력', x.name || '', typeLabel, '-', String(x.days || 0), '-'])
+    })
+  }
+
+  const hospital = await c.env.DB.prepare(`SELECT name FROM hospitals WHERE id = ?`).bind(hospitalId).first<any>()
+  const fname = `${hospital?.name || '병원'}_${year}년${String(month).padStart(2,'0')}월_인건비`
+  return csvResponse(c, rows, fname)
+})
+
+// ── 4. 카드 CSV (법인카드 지출 내역) ─────────────────────────────
+executive.get('/export/card/:year/:month', async (c) => {
+  const hospitalId = resolveHospitalId(c)
+  if (!hospitalId) return c.json({ error: 'Hospital not found' }, 400)
+  const { year, month } = c.req.param()
+
+  const cardRows = await c.env.DB.prepare(
+    `SELECT ce.expense_date, ce.vendor_name, ce.item_name, ce.purpose,
+            ce.expense_type, ce.amount, ce.memo,
+            v.name as card_vendor_name
+     FROM card_expenses ce
+     LEFT JOIN vendors v ON v.id = ce.vendor_id
+     WHERE ce.hospital_id = ?
+       AND strftime('%Y', ce.expense_date) = ?
+       AND strftime('%m', ce.expense_date) = printf('%02d', ?)
+     ORDER BY ce.expense_date DESC, ce.id DESC`
+  ).bind(hospitalId, year, month).all<any>()
+  const cards = cardRows.results || []
+
+  const rows: string[][] = [['날짜', '사용처', '품목', '용도', '비용유형', '금액(원)', '메모']]
+  if (cards.length === 0) {
+    rows.push(['데이터 없음', '-', '-', '-', '-', '0', '-'])
+  } else {
+    cards.forEach((ce: any) => {
+      rows.push([
+        ce.expense_date || '',
+        ce.card_vendor_name || ce.vendor_name || '',
+        ce.vendor_name || ce.item_name || '',
+        ce.purpose || ce.item_name || '',
+        ce.expense_type || '법인카드',
+        nf(ce.amount),
+        ce.memo || '-'
+      ])
+    })
+  }
+
+  const hospital = await c.env.DB.prepare(`SELECT name FROM hospitals WHERE id = ?`).bind(hospitalId).first<any>()
+  const fname = `${hospital?.name || '병원'}_${year}년${String(month).padStart(2,'0')}월_법인카드`
+  return csvResponse(c, rows, fname)
+})
+
 export default executive
