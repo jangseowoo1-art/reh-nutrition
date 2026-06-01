@@ -472,7 +472,7 @@ function getExecutiveShell(): string {
   <div id="execContent" class="hidden space-y-6"></div>
 </main>
 
-<script src="/static/executive.js?v=20260601-tabscrolltop"></script>
+<script src="/static/executive.js?v=20260601-analysissplit"></script>
 </body>
 </html>`
 }

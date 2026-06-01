@@ -1,5 +1,5 @@
 // ── executive.js ── 운영진 전용 대시보드
-// 버전: 20260601-tabscrolltop
+// 버전: 20260601-analysissplit
 
 ;(function() {
 'use strict'
@@ -178,7 +178,7 @@ window.execSetViewStyle = function(style) {
   }
 }
 
-// 운영진 페이지 최상단으로 스크롤 (window + 셸 컨테이너 모두 대응)
+// 운영진 페이지: 탭 바가 sticky 헤더에 가려지지 않는 위치로 스크롤 보정
 function scrollExecToTop() {
   try {
     // 운영 리스크 아코디언이 열려 있으면 접어서 다음 탭에 잔존하지 않도록 초기화
@@ -187,16 +187,21 @@ function scrollExecToTop() {
     const chevron = document.getElementById('execRiskChevron')
     if (chevron) chevron.style.transform = 'rotate(0deg)'
   } catch(e) {}
-  // 즉시 + 렌더 직후 한 번 더 (innerHTML 교체로 인한 레이아웃 변동 대응)
+  // 탭 바(#execViewToggle)가 sticky 헤더 바로 아래에서 정상적으로 보이도록 위치 계산
   const doScroll = () => {
-    window.scrollTo({ top: 0, behavior: 'auto' })
-    if (document.scrollingElement) document.scrollingElement.scrollTop = 0
-    const main = document.getElementById('execMain')
-    if (main && typeof main.scrollIntoView === 'function') {
-      main.scrollIntoView({ block: 'start', behavior: 'auto' })
+    const header = document.querySelector('header.sticky')
+    const headerH = header ? header.getBoundingClientRect().height : 64
+    const tabs = document.getElementById('execViewToggle')
+    if (tabs) {
+      // 탭 바 상단이 헤더 바로 아래에 오도록 (헤더 높이 + 약간의 여백)
+      const y = tabs.getBoundingClientRect().top + window.pageYOffset - headerH - 12
+      window.scrollTo({ top: y > 0 ? y : 0, behavior: 'auto' })
+    } else {
+      window.scrollTo({ top: 0, behavior: 'auto' })
     }
   }
   doScroll()
+  // innerHTML 교체로 인한 레이아웃 변동 대응 (렌더 직후 한 번 더 보정)
   requestAnimationFrame(doScroll)
 }
 
@@ -632,28 +637,25 @@ function initSparklineCharts() {
 // ══════════════════════════════════════════════════════════════════
 function renderAnalysisView(content, budget, dp, sl, mealStats, vendorOrders, prevMonth, progressPct, repPrice, operPrice, targetPrice, totalMeals, supplyPerMeal, cardTotal, eventTotal, cardVendorTotal) {
   content.innerHTML = `
-    <!-- 리스크 배너 (Enhanced) -->
-    ${renderExecRiskBannerEnhanced(sl, budget, repPrice, targetPrice)}
-
-    <!-- KPI 카드 -->
-    <div class="grid grid-cols-2 gap-4" id="kpiGrid">
-      ${kpiCardBudget(budget, progressPct)}
-      ${kpiCardMealPrice(repPrice, targetPrice, operPrice)}
-      ${kpiCardLabor(sl)}
-      ${kpiCardRisk(sl, budget, repPrice, targetPrice)}
-      ${kpiCardMeals(mealStats, totalMeals)}
-      ${kpiCardScore(State.scoreData)}
-    </div>
-
-    <!-- 운영 리스크 아코디언 (카드 바로 아래 펼침) -->
-    <div id="execRiskAccordion">${riskAccordionBody(sl, budget, dp, State.data || {})}</div>
-
-    <!-- ANALYSIS 전용 뷰 안내 칩 -->
-    <div style="display:flex;align-items:center;gap:8px;padding:8px 4px;margin-bottom:-4px">
-      <span style="display:inline-flex;align-items:center;gap:5px;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:99px;padding:4px 12px;font-size:10px;font-weight:700;letter-spacing:0.04em">
-        <i class="fas fa-chart-bar" style="font-size:9px"></i>차트 분석 모드
-      </span>
-      <span style="font-size:11px;color:#94a3b8">원본 테이블·스케줄은 <strong style="color:#475569">상세</strong> 모드에서 확인</span>
+    <!-- ANALYSIS 전용 헤더 (요약 화면과 명확히 구분) -->
+    <div style="background:linear-gradient(135deg,#1e3a8a,#2563eb);border-radius:14px;padding:16px 18px;margin-bottom:14px;color:#fff">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-chart-column" style="font-size:15px"></i>
+          </div>
+          <div>
+            <div style="font-size:15px;font-weight:800;letter-spacing:-0.01em">이번 달 운영 분석</div>
+            <div style="font-size:11px;color:#bfdbfe;margin-top:1px">${State.year}년 ${State.month}월 · 예산·식단가·발주·식수·인력 분석</div>
+          </div>
+        </div>
+        <span style="display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,0.15);border-radius:99px;padding:4px 12px;font-size:10px;font-weight:700">
+          <i class="fas fa-chart-bar" style="font-size:9px"></i>차트 분석 모드
+        </span>
+      </div>
+      <div style="font-size:10.5px;color:#dbeafe;margin-top:10px;opacity:0.9">
+        <i class="fas fa-info-circle" style="font-size:9px;margin-right:4px"></i>KPI 카드 요약은 <strong>요약</strong> 모드, 원본 테이블·스케줄은 <strong>원본</strong> 모드에서 확인하세요
+      </div>
     </div>
 
     <!-- ① 예산 분석 -->
