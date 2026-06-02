@@ -519,6 +519,50 @@ dashboard.get('/summary/:year/:month', async (c) => {
     supplyExcludeKeys = ['card', 'supply']
   }
 
+  // ──────────────────────────────────────────────────────────────────
+  // ★ [A 전면 적용] 관리자 업체관리 비용구분(cost_type_default) 계산 시점 재분류
+  //   - 유효 cost_type = vendors.cost_type_default 가 운영비 유형(supply/event/card/utility)이면
+  //     그 값을, 아니면 daily_orders.cost_type(원본) 을 사용.
+  //   - 식재료(cost_type='food')로 발주됐지만 업체의 비용구분이 운영비성인 발주를
+  //     계산 시점에만 운영비로 재분류한다. (daily_orders 원본은 절대 UPDATE 하지 않음)
+  //   - 재분류 금액(reclass*)은 supplyExcludeKeys 설정과 무관하게 항상
+  //     ① 대표 식단가(mealPriceNoSupply) 분자에서 제외
+  //     ② costBreakdown food → operating 으로 이동
+  //   ※ card/event 등 원본 운영비 cost_type 을 food 로 강등하지 않음 (food → 운영비 끌어올림만).
+  // ──────────────────────────────────────────────────────────────────
+  let reclassSupply = 0, reclassEvent = 0, reclassCard = 0, reclassUtility = 0
+  let reclassVendors: Array<{ vendorId: number; vendorName: string; category: string; vdef: string; used: number }> = []
+  try {
+    const reclassRaw = await c.env.DB.prepare(`
+      SELECT d.vendor_id AS vendorId, v.name AS vendorName, v.category AS category,
+             v.cost_type_default AS vdef,
+             COALESCE(SUM(d.total_amount), 0) AS used
+      FROM daily_orders d
+      JOIN vendors v ON d.vendor_id = v.id
+      WHERE d.hospital_id = ?
+        AND d.order_date BETWEEN ? AND ?
+        AND d.cost_type = 'food'
+        AND v.cost_type_default IN ('supply','event','card','utility')
+      GROUP BY d.vendor_id, v.name, v.category, v.cost_type_default
+      HAVING used > 0
+      ORDER BY used DESC
+    `).bind(hospitalId, dateStart, dateEnd).all<any>()
+    reclassVendors = (reclassRaw?.results || []).map((r: any) => ({
+      vendorId: r.vendorId, vendorName: r.vendorName, category: r.category,
+      vdef: r.vdef, used: r.used || 0,
+    }))
+    reclassVendors.forEach(r => {
+      if (r.vdef === 'supply')  reclassSupply  += r.used
+      else if (r.vdef === 'event')   reclassEvent   += r.used
+      else if (r.vdef === 'card')    reclassCard    += r.used
+      else if (r.vdef === 'utility') reclassUtility += r.used
+    })
+  } catch (e) {
+    reclassVendors = []
+  }
+  // 운영비로 재분류된 식재료 발주 합계 (대표 식단가 제외 + costBreakdown food→operating 이동분)
+  const reclassToOperating = reclassSupply + reclassEvent + reclassCard + reclassUtility
+
   // 업체 발주 소모품 제외 금액 (category='supply')
   const supplyUsed = supplyExcludeKeys.includes('supply')
     ? (vendors.results || [])
@@ -560,12 +604,17 @@ dashboard.get('/summary/:year/:month', async (c) => {
     staffMealsForCalc,
     supplyExcludeKeys
   })
-  // ① 전체 식단가
+  // ① 전체 식단가 (운영반영) — totalUsed 기준, 재분류 영향 없음(총액 불변)
   const mealPriceTotal = overallPrices.mealPriceTotal
   // ② 직원식 제외 식단가
   const mealPriceNoStaff = overallPrices.mealPriceNoStaff
-  // ③ 소모품/카드 제외 식단가
-  const mealPriceNoSupply = overallPrices.mealPriceNoSupply
+  // ③ 소모품/카드 제외 식단가 (대표 식단가)
+  //   ★ [A 전면 적용] 기존 supplyCardUsed 에 더해 "운영비로 재분류된 식재료 발주(reclassToOperating)"도
+  //     제외금액에 가산하여 대표 식단가를 재계산한다. (supplyExcludeKeys 와 무관하게 항상 제외)
+  const effSupplyCardUsed = overallPrices.supplyCardUsed + reclassToOperating
+  const mealPriceNoSupply = totalMealsForPrice > 0
+    ? Math.round((totalUsed - effSupplyCardUsed) / totalMealsForPrice)
+    : 0
 
   // 전월 식단가 비교용 데이터 (Promise.all에서 이미 조회됨)
   const prevCustomFieldTotals: Record<string, number> = {}
@@ -1348,14 +1397,18 @@ dashboard.get('/summary/:year/:month', async (c) => {
   //     - daily_orders / daily_meals / daily_schedules 데이터는 일절 수정하지 않는 읽기 전용 집계.
   //     - 식단가(foodDietPrice=mealPriceNoSupply)는 기존 계산 그대로 사용 (변동 없음).
   // ──────────────────────────────────────────────────────────────────
-  const cbSupplyUsed  = (ordersByCostType.supply  || 0) + (cardByCostType.supply || 0)
-  const cbEventUsed   = (ordersByCostType.event   || 0) + (cardByCostType.event  || 0)
-  const cbUtilityUsed = (ordersByCostType.utility || 0)
-  // 법인카드: daily_orders cost_type='card' + card_expenses 전체 합산
-  const cbCardUsed    = ordersCardUsed + (cardByCostType.total || 0)
+  // ★ [A 전면 적용] 유효 cost_type 재분류 반영:
+  //   식재료(food)로 발주됐으나 업체 비용구분이 운영비성인 발주(reclass*)를 각 운영비 항목에 가산하고,
+  //   식재료비(food)에서는 차감한다. (daily_orders 원본 무변경 — 계산 시점 재분류)
+  const cbSupplyUsed  = (ordersByCostType.supply  || 0) + (cardByCostType.supply || 0) + reclassSupply
+  const cbEventUsed   = (ordersByCostType.event   || 0) + (cardByCostType.event  || 0) + reclassEvent
+  const cbUtilityUsed = (ordersByCostType.utility || 0) + reclassUtility
+  // 법인카드: daily_orders cost_type='card' + card_expenses 전체 합산 + 재분류 card
+  const cbCardUsed    = ordersCardUsed + (cardByCostType.total || 0) + reclassCard
   const cbOperatingUsed = cbSupplyUsed + cbEventUsed + cbUtilityUsed + cbCardUsed
-  // 식재료비: cost_type='food' (daily_orders) — card_expenses의 food는 운영성 카드지출이므로 식재료비에 합산하지 않음
-  const cbFoodUsed = ordersByCostType.food || 0
+  // 식재료비: cost_type='food' (daily_orders) 에서 운영비로 재분류된 금액 차감
+  // card_expenses의 food는 운영성 카드지출이므로 식재료비에 합산하지 않음
+  const cbFoodUsed = Math.max(0, (ordersByCostType.food || 0) - reclassToOperating)
 
   // 예산: monthly_settings 기준. 식재료비 예산 = 전체예산 - 운영비 예산 합계
   const cbSupplyBudget = settings?.supply_budget || 0
@@ -1367,35 +1420,17 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const _ratio = (used: number, budget: number) =>
     budget > 0 ? parseFloat(((used / budget) * 100).toFixed(1)) : null
 
-  // ★ "식재료비 포함 발주 → 운영비 분리" (참고 표시용)
-  //   발주는 cost_type='food'(식재료비)로 집계되어 있으나, 해당 업체의 비용 구분(cost_type_default)이
-  //   운영비성(supply/event/card/utility)인 경우 → 어떤 업체가 그러한지 업체별로 분리 표시한다.
-  //   ※ 참고 표시 전용: food.used / operating.used / 식단가 등 어떤 합계·계산도 변경하지 않는다 (읽기 전용).
-  let cbOtherVendors: Array<{ vendorId: number; vendorName: string; category: string; used: number }> = []
-  try {
-    const otherRaw = await c.env.DB.prepare(`
-      SELECT d.vendor_id AS vendorId, v.name AS vendorName, v.category AS category,
-             COALESCE(SUM(d.total_amount), 0) AS used
-      FROM daily_orders d
-      JOIN vendors v ON d.vendor_id = v.id
-      WHERE d.hospital_id = ?
-        AND d.order_date BETWEEN ? AND ?
-        AND d.cost_type = 'food'
-        AND v.cost_type_default IN ('supply','event','card','utility')
-      GROUP BY d.vendor_id, v.name, v.category
-      HAVING used > 0
-      ORDER BY used DESC
-    `).bind(hospitalId, dateStart, dateEnd).all<any>()
-    cbOtherVendors = (otherRaw?.results || []).map((r: any) => ({
-      vendorId: r.vendorId,
-      vendorName: r.vendorName,
-      category: r.category,
-      used: r.used || 0,
-    }))
-  } catch (e) {
-    cbOtherVendors = []
-  }
-  const cbOtherUsed = cbOtherVendors.reduce((s, v) => s + (v.used || 0), 0)
+  // ★ "관리자 설정 반영 완료" (재분류 내역 표시용)
+  //   발주는 cost_type='food'(식재료비)로 입력되어 있으나, 해당 업체의 비용 구분(cost_type_default)이
+  //   운영비성(supply/event/card/utility)이어서 → 계산 시점에 운영비로 재분류된 업체별 내역.
+  //   ※ 위 food/operating 합계 및 대표 식단가에 이미 반영 완료된 금액 (reclassVendors 재사용).
+  const cbOtherVendors = reclassVendors.map(r => ({
+    vendorId: r.vendorId,
+    vendorName: r.vendorName,
+    category: r.category,
+    used: r.used || 0,
+  }))
+  const cbOtherUsed = reclassToOperating
 
   const costBreakdown = {
     food: {

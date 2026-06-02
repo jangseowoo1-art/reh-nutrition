@@ -367,7 +367,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260602-opcost-split"></script>
+<script src="/static/app.js?v=20260602-effcost-apply"></script>
 </body>
 </html>`
 }

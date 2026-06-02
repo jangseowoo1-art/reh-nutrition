@@ -2657,10 +2657,10 @@ async function renderDashboard() {
               <span class="font-semibold text-gray-700">${fmtW(v.used)}</span>
             </div>`
           ).join('')
-          return `<div class="mt-2 bg-gray-50 rounded-lg px-2.5 py-2 border border-gray-100">
+          return `<div class="mt-2 bg-green-50 rounded-lg px-2.5 py-2 border border-green-100">
             <div class="flex items-center gap-1 mb-1.5">
-              <i class="fas fa-tags text-gray-400 text-xs"></i>
-              <span class="text-xs font-semibold text-gray-500">식재료비 포함 발주 → 운영비 분리</span>
+              <i class="fas fa-check-circle text-green-500 text-xs"></i>
+              <span class="text-xs font-semibold text-green-600">관리자 설정 반영 완료 (운영비 재분류)</span>
             </div>
             ${rows}
           </div>`
