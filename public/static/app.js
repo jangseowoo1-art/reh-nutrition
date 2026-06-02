@@ -21197,9 +21197,10 @@ window.confirmLeaveUnitTypeChange = async () => {
 // 반차 입력 모달 (hourly: 시간선택 / halfday: 0.5일 고정)
 // ════════════════════════════════════════════════════════════════
 function renderPartialLeaveModal() {
-  // [RECOVERY-GUARD] 부분연차/반차 서버 API 미비 → 진입 차단
+  // [RECOVERY-GUARD] 부분연차/반차 서버 API 미비 → 모달 HTML만 비움(alert 없음)
+  // 화면 렌더 시 자동 호출되므로 여기서는 alert을 띄우지 않고 빈 문자열만 반환한다.
+  // 준비중 안내는 실제 버튼 클릭 시 호출되는 openPartialLeaveModal()에서 처리한다.
   if (window.__FEATURE_OFF_PARTIAL_LEAVE) {
-    alert('부분연차/반차 입력 기능은 현재 준비 중입니다.')
     return ''
   }
   const hourBtns = [1,2,3,4,5,6,7,8].map(h =>
@@ -21363,6 +21364,11 @@ window.onPartialEmpChange = async () => {
 
 // 반차 모달 열기
 window.openPartialLeaveModal = async (empId, empName) => {
+  // [RECOVERY-GUARD] 부분연차/반차 서버 API 미비 → 버튼 클릭 시에만 준비중 안내
+  if (window.__FEATURE_OFF_PARTIAL_LEAVE) {
+    alert('부분연차/반차 입력 기능은 현재 준비 중입니다.')
+    return
+  }
   _plSelectedPeriod = 'am'
   _plStandardHours  = 8
   _plShiftFetched   = false
