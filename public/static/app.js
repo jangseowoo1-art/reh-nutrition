@@ -6,7 +6,7 @@
 // (서버 라우트 준비 후 아래 값을 false 로 바꾸면 즉시 기능 복구됨)
 window.__FEATURE_OFF_KPI = true            // KPI 입력/기여도 분석
 window.__FEATURE_OFF_EVENT_EXPENSE = true  // 행사식 비용
-window.__FEATURE_OFF_PARTIAL_LEAVE = true  // 부분연차/반차
+window.__FEATURE_OFF_PARTIAL_LEAVE = false  // 부분연차/반차 (작업 C: 서버 API 구현 완료, 기능 활성화)
 window.__FEATURE_OFF_LEAVE_BALANCE = true  // 연차잔액 자동적립
 window.__FEATURE_OFF_HOSPITAL_CLONE = true // 병원 복제/초기화
 // ─────────────────────────────────────────────────────────────
