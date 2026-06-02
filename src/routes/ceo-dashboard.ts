@@ -273,6 +273,9 @@ app.get('/kpi/:year/:month', async (c) => {
   let budgetPctSum = 0, budgetPctCnt = 0
   let mealPriceSum = 0, mealPriceCnt = 0
   let dangerBudgetCount = 0, dangerMealCount = 0
+  // [옵션A] 대표식단가(avgMealPrice) 를 영양사/운영진과 동일하게 totalUsed ÷ totalMeals 기준으로 산출하기 위한
+  //          전체 병원 식수 합계. (기존 카테고리별 단순평균은 mealPriceByCategory 보조지표로만 유지)
+  let kpiTotalMeals = 0
 
   // KPI용 카테고리별 전체 합산 (모든 병원)
   const kpiCatMeals: Record<string, number> = {}
@@ -305,6 +308,9 @@ app.get('/kpi/:year/:month', async (c) => {
       kpiCatMeals[cat.category_key] += m
       kpiCatOrds[cat.category_key]  += o
     })
+
+    // [옵션A] 영양사/운영진과 동일한 totalUsed÷totalMeals 산출을 위해 병원별 식수 누적
+    kpiTotalMeals += totalMeals
 
     if (budget > 0) {
       const pct = used / budget * 100
@@ -353,9 +359,12 @@ app.get('/kpi/:year/:month', async (c) => {
     hospitalCount:    hids.length,
     totalBudget,      totalUsed,
     avgBudgetPct:     budgetPctCnt > 0 ? Math.round(budgetPctSum / budgetPctCnt) : 0,
-    avgMealPrice:     mealPriceCnt  > 0 ? Math.round(mealPriceSum / mealPriceCnt) : 0,
+    // [옵션A] 대표식단가 = totalUsed ÷ totalMeals (영양사/운영진/DB 실측과 동일 기준)
+    //          예) 아미나 2026-05: 55,803,781 ÷ 6,633 = 8,413
+    //              무이재 2026-05: 100,335,471 ÷ 13,238 = 7,579
+    avgMealPrice:     kpiTotalMeals > 0 ? Math.round(totalUsed / kpiTotalMeals) : 0,
     dangerBudgetCount, dangerMealCount, pendingInspectCount,
-    mealPriceByCategory  // { cancer: {avgPrice:8400, label:'항암', targetPrice:8000}, nursing: {...} }
+    mealPriceByCategory  // 보조지표: 카테고리별 평균/목표 식단가 (현행 유지)
   })
 })
 
