@@ -91,6 +91,218 @@ adminRouter.put('/hospitals/:id/info', async (c) => {
   return c.json({ success: true })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 신규 병원 생성 + 기준 병원 설정 복제
+//   POST /api/admin/hospitals
+//   body: { name, code, hospital_type?, dietitian_name?, dietitian_phone?,
+//           username?, password?, clone_from_hospital_id?,
+//           clone_labor?, clone_kpi? }
+//
+// ⚠️ 안전 규칙:
+//   - 복제 대상은 화이트리스트(설정성 테이블)만. 운영/실적 데이터 미접근.
+//   - daily_orders / daily_meals / daily_schedules / employees / 거래·실적 제외
+//   - order_multiday_settings 제외 (특정 날짜 발주 = 운영성)
+//   - category_order_settings 는 patient_category_id 재매핑 필수
+//   - INSERT 만 사용 (DROP/DELETE/UPDATE/RESET/seed 없음)
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * 기준 병원(srcId)의 설정 구조를 신규 병원(newId)으로 복제.
+ * 반환: 테이블별 복제 행 수 (검증/리포트용)
+ */
+async function cloneHospitalSettings(
+  db: D1Database,
+  srcId: number,
+  newId: number,
+  opts: { cloneLabor?: boolean; cloneKpi?: boolean } = {}
+): Promise<Record<string, number>> {
+  const report: Record<string, number> = {}
+
+  // ── 단순 복제 헬퍼 ──────────────────────────────────────────────
+  // id(AUTOINCREMENT PK) 제외, hospital_id 만 newId 로 치환하여 복제.
+  // ⚠️ 스키마 드리프트 안전성:
+  //   실제 테이블에 존재하는 컬럼만 PRAGMA 로 조회해 사용하므로,
+  //   로컬/프로덕션 컬럼 차이(예: schedule_shifts.standard_hours)에도
+  //   존재하는 컬럼만 안전하게 복제한다.
+  async function copyAllColumns(table: string): Promise<number> {
+    const columns = await getTableColumns(db, table)  // id 제외
+    if (!columns.length) return 0
+    const colList = columns.join(', ')
+    // hospital_id 자리에는 newId 를, 나머지는 원본 값을 그대로 SELECT
+    const selectList = columns.map(col => (col === 'hospital_id' ? '?' : col)).join(', ')
+    const res = await db.prepare(
+      `INSERT INTO ${table} (${colList})
+       SELECT ${selectList} FROM ${table} WHERE hospital_id = ?`
+    ).bind(newId, srcId).run()
+    return res.meta?.changes ?? 0
+  }
+
+  // 1) hospital_work_settings (근무 설정)
+  report.hospital_work_settings = await copyAllColumns('hospital_work_settings')
+
+  // 2) schedule_shifts (근무조 — standard_hours/half_type 등 존재 컬럼 전체)
+  report.schedule_shifts = await copyAllColumns('schedule_shifts')
+
+  // 3) diet_categories (식단 카테고리)
+  report.diet_categories = await copyAllColumns('diet_categories')
+
+  // 4) meal_custom_fields (식수 커스텀 필드)
+  report.meal_custom_fields = await copyAllColumns('meal_custom_fields')
+
+  // 5) hospital_patient_categories (환자 분류)
+  //    → category_order_settings FK 재매핑을 위해 (원본 id → 신규 id) 매핑 생성
+  //    동적 컬럼 방식: 실제 존재 컬럼만 복제 (스키마 드리프트 안전).
+  const catCols = await getTableColumns(db, 'hospital_patient_categories')  // id 제외
+  const catColList = catCols.join(', ')
+  const catPlaceholders = catCols.map(() => '?').join(', ')
+
+  const srcCats = await db.prepare(
+    `SELECT id, ${catColList} FROM hospital_patient_categories
+     WHERE hospital_id = ? ORDER BY id`
+  ).bind(srcId).all<any>()
+
+  const catIdMap: Record<number, number> = {}  // 원본 patient_category_id → 신규 id
+  let catCount = 0
+  for (const cat of (srcCats.results || [])) {
+    // 컬럼 순서대로 값 매핑 (hospital_id 만 newId 로 치환)
+    const values = catCols.map(col => (col === 'hospital_id' ? newId : cat[col]))
+    const ins = await db.prepare(
+      `INSERT INTO hospital_patient_categories (${catColList}) VALUES (${catPlaceholders})`
+    ).bind(...values).run()
+    const newCatId = ins.meta?.last_row_id
+    if (newCatId != null) catIdMap[cat.id] = Number(newCatId)
+    catCount++
+  }
+  report.hospital_patient_categories = catCount
+
+  // 6) category_order_settings (A-1: patient_category_id 재매핑하여 복제)
+  //    동적 컬럼 방식 + patient_category_id 만 신규 id 로 재매핑.
+  const ordCols = await getTableColumns(db, 'category_order_settings')  // id 제외
+  const ordColList = ordCols.join(', ')
+  const ordPlaceholders = ordCols.map(() => '?').join(', ')
+
+  const srcOrders = await db.prepare(
+    `SELECT ${ordColList} FROM category_order_settings WHERE hospital_id = ?`
+  ).bind(srcId).all<any>()
+
+  let orderCount = 0
+  for (const o of (srcOrders.results || [])) {
+    const mappedCatId = catIdMap[o.patient_category_id]
+    // 매핑 실패(원본 FK 누락 등) 시 안전하게 skip — 잘못된 FK 를 만들지 않음
+    if (mappedCatId == null) continue
+    const values = ordCols.map(col => {
+      if (col === 'hospital_id') return newId
+      if (col === 'patient_category_id') return mappedCatId  // ★ FK 재매핑
+      return o[col]
+    })
+    await db.prepare(
+      `INSERT INTO category_order_settings (${ordColList}) VALUES (${ordPlaceholders})`
+    ).bind(...values).run()
+    orderCount++
+  }
+  report.category_order_settings = orderCount
+
+  // ── 선택 항목 (기본 OFF) ──────────────────────────────────────
+  // 7) labor_cost_settings (clone_labor 플래그)
+  if (opts.cloneLabor) {
+    report.labor_cost_settings = await copyAllColumns('labor_cost_settings')
+  }
+  // 8) hospital_kpi_settings (clone_kpi 플래그)
+  if (opts.cloneKpi) {
+    report.hospital_kpi_settings = await copyAllColumns('hospital_kpi_settings')
+  }
+
+  return report
+}
+
+/** 테이블의 컬럼 목록을 PRAGMA 로 조회 (id 제외, hospital_id 포함) */
+async function getTableColumns(db: D1Database, table: string): Promise<string[]> {
+  const info = await db.prepare(`PRAGMA table_info(${table})`).all<any>()
+  return (info.results || [])
+    .map((r: any) => r.name as string)
+    .filter((name: string) => name !== 'id')  // AUTOINCREMENT PK 제외
+}
+
+adminRouter.post('/hospitals', async (c) => {
+  const body = await c.req.json().catch(() => ({} as any))
+  const {
+    name, code, hospital_type, dietitian_name, dietitian_phone,
+    username, password, clone_from_hospital_id, clone_labor, clone_kpi
+  } = body
+
+  if (!name?.trim()) return c.json({ error: '병원명을 입력하세요' }, 400)
+  if (!code?.trim()) return c.json({ error: '병원 코드를 입력하세요' }, 400)
+  if (username?.trim() && !password?.trim())
+    return c.json({ error: '비밀번호를 입력하세요' }, 400)
+
+  const db = c.env.DB
+
+  // 코드 중복 체크
+  const dupCode = await db.prepare(`SELECT id FROM hospitals WHERE code = ?`)
+    .bind(code.trim()).first<any>()
+  if (dupCode) return c.json({ error: '이미 사용 중인 병원 코드입니다' }, 409)
+
+  // 계정 아이디 중복 체크 (생성 시)
+  if (username?.trim()) {
+    const dupUser = await db.prepare(`SELECT id FROM users WHERE username = ?`)
+      .bind(username.trim()).first<any>()
+    if (dupUser) return c.json({ error: '이미 사용 중인 아이디입니다' }, 409)
+  }
+
+  // 복제 기준 병원 검증 (있을 경우)
+  let srcId: number | null = null
+  if (clone_from_hospital_id != null && clone_from_hospital_id !== '') {
+    srcId = parseInt(String(clone_from_hospital_id))
+    const src = await db.prepare(`SELECT id FROM hospitals WHERE id = ?`).bind(srcId).first<any>()
+    if (!src) return c.json({ error: '복제 기준 병원을 찾을 수 없습니다' }, 404)
+  }
+
+  // 1) hospitals INSERT → 신규 id 확보
+  const hRes = await db.prepare(`INSERT INTO hospitals (name, code, address) VALUES (?, ?, '')`)
+    .bind(name.trim(), code.trim()).run()
+  const newId = Number(hRes.meta?.last_row_id)
+  if (!newId) return c.json({ error: '병원 생성에 실패했습니다' }, 500)
+
+  // 2) hospital_info 기본 행 생성
+  await db.prepare(`
+    INSERT INTO hospital_info (
+      hospital_id, hospital_type, care_type, address,
+      dietitian_name, dietitian_phone,
+      current_year, current_month, updated_at
+    ) VALUES (?, ?, 'general', '', ?, ?, 2026, 3, CURRENT_TIMESTAMP)
+    ON CONFLICT(hospital_id) DO NOTHING
+  `).bind(
+    newId, hospital_type || 'general',
+    dietitian_name?.trim() || '', dietitian_phone?.trim() || ''
+  ).run()
+
+  // 3) (선택) 영양사 계정 생성
+  if (username?.trim()) {
+    const hash = await hashPassword(password)
+    await db.prepare(`
+      INSERT INTO users (hospital_id, username, password_hash, password_plain, role, nutritionist_name)
+      VALUES (?, ?, ?, ?, 'hospital', ?)
+    `).bind(newId, username.trim(), hash, password, dietitian_name?.trim() || '').run()
+  }
+
+  // 4) 설정 복제 (기준 병원이 지정된 경우)
+  let cloneReport: Record<string, number> | null = null
+  if (srcId != null) {
+    cloneReport = await cloneHospitalSettings(db, srcId, newId, {
+      cloneLabor: !!clone_labor,
+      cloneKpi: !!clone_kpi,
+    })
+  }
+
+  return c.json({
+    success: true,
+    id: newId,
+    name: name.trim(),
+    cloned_from: srcId,
+    clone_report: cloneReport,
+  })
+})
+
 // ── 직원식 관리 방식 조회 ─────────────────────────────────────
 adminRouter.get('/hospitals/:id/staff-diet-config', async (c) => {
   const id = c.req.param('id')

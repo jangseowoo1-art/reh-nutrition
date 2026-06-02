@@ -30981,6 +30981,17 @@ function showAddHospitalModal() {
             <option value="">-- 복제하지 않음 (항암식 기본 필드만 생성) --</option>
             ${existingHospitals.map(h => `<option value="${h.id}">${h.name}</option>`).join('')}
           </select>
+          <div class="pt-2 mt-1 border-t border-amber-200 space-y-1.5">
+            <p class="text-xs font-medium text-amber-700">추가 복제 항목 (선택)</p>
+            <label class="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input id="newHospCloneLabor" type="checkbox" class="rounded" />
+              <span>인건비 설정(labor_cost_settings) 복제</span>
+            </label>
+            <label class="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+              <input id="newHospCloneKpi" type="checkbox" class="rounded" />
+              <span>KPI 설정(hospital_kpi_settings) 복제</span>
+            </label>
+          </div>
         </div>` : ''}
 
       </div>
@@ -31005,6 +31016,8 @@ async function submitAddHospital() {
   const password = document.getElementById('newHospPassword')?.value?.trim() || ''
   const cloneFromEl = document.getElementById('newHospCloneFrom')
   const cloneFrom = cloneFromEl ? Number(cloneFromEl.value) || null : null
+  const cloneLabor = !!document.getElementById('newHospCloneLabor')?.checked
+  const cloneKpi = !!document.getElementById('newHospCloneKpi')?.checked
 
   if (!name) { alert('병원명을 입력하세요'); return }
   if (!code) { alert('병원 코드를 입력하세요'); return }
@@ -31022,6 +31035,8 @@ async function submitAddHospital() {
       username: username || undefined,
       password: password || undefined,
       clone_from_hospital_id: cloneFrom || undefined,
+      clone_labor: cloneFrom ? cloneLabor : undefined,
+      clone_kpi: cloneFrom ? cloneKpi : undefined,
     })
 
     if (res?.success) {
