@@ -420,6 +420,12 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const ordersByCostTypeToday = aggregateByCostType(ordersByCostTypeTodayRaw?.results || [])
   const cardByCostTypeToday = aggregateCardByCostType(cardByCostTypeTodayRaw?.results || [])
 
+  // ★ daily_orders 중 cost_type='card' 직접 추출 (aggregateByCostType은 card 키를 매핑하지 않으므로 raw에서 직접 합산)
+  // 법인카드 운영비 = daily_orders(cost_type='card') + card_expenses 합산 기준
+  const ordersCardUsed = (ordersByCostTypeRaw?.results || [])
+    .filter((r: any) => r.cost_type === 'card')
+    .reduce((s: number, r: any) => s + (r.total || 0), 0)
+
   // totalUsed: daily_orders 직접 집계 (vendor_id가 다른 병원 업체를 참조해도 포함)
   // vendors 집계와 별도로 계산해야 정확한 발주 합계 산출 가능
   const totalUsed = totalUsedRow?.total || 0
@@ -1332,8 +1338,61 @@ dashboard.get('/summary/:year/:month', async (c) => {
     autoAnalysis.push(`이미 예산이 초과된 상태입니다.`)
   }
 
+  // ──────────────────────────────────────────────────────────────────
+  // ★ costBreakdown — 비용 구조 분리 현황 (식재료비 vs 운영비)
+  //   목적: 월별 대시보드 '운영비 사용 현황' 카드 데이터 공급
+  //   원칙:
+  //     - 운영비 사용 현황은 "식단가 반영 여부(cost_type_default)"와 무관하게
+  //       cost_type 으로 분류된 실제 운영비성 지출(supply/event/utility/card)을 집계한다.
+  //     - 법인카드 = daily_orders(cost_type='card') + card_expenses 합산.
+  //     - daily_orders / daily_meals / daily_schedules 데이터는 일절 수정하지 않는 읽기 전용 집계.
+  //     - 식단가(foodDietPrice=mealPriceNoSupply)는 기존 계산 그대로 사용 (변동 없음).
+  // ──────────────────────────────────────────────────────────────────
+  const cbSupplyUsed  = (ordersByCostType.supply  || 0) + (cardByCostType.supply || 0)
+  const cbEventUsed   = (ordersByCostType.event   || 0) + (cardByCostType.event  || 0)
+  const cbUtilityUsed = (ordersByCostType.utility || 0)
+  // 법인카드: daily_orders cost_type='card' + card_expenses 전체 합산
+  const cbCardUsed    = ordersCardUsed + (cardByCostType.total || 0)
+  const cbOperatingUsed = cbSupplyUsed + cbEventUsed + cbUtilityUsed + cbCardUsed
+  // 식재료비: cost_type='food' (daily_orders) — card_expenses의 food는 운영성 카드지출이므로 식재료비에 합산하지 않음
+  const cbFoodUsed = ordersByCostType.food || 0
+
+  // 예산: monthly_settings 기준. 식재료비 예산 = 전체예산 - 운영비 예산 합계
+  const cbSupplyBudget = settings?.supply_budget || 0
+  const cbEventBudget  = settings?.event_budget  || 0
+  const cbCardBudget   = settings?.card_budget   || 0
+  const cbOperatingBudget = cbSupplyBudget + cbEventBudget + cbCardBudget
+  const cbFoodBudget = Math.max(0, (settings?.total_budget || 0) - cbOperatingBudget)
+
+  const _ratio = (used: number, budget: number) =>
+    budget > 0 ? parseFloat(((used / budget) * 100).toFixed(1)) : null
+
+  const costBreakdown = {
+    food: {
+      used: cbFoodUsed,
+      budget: cbFoodBudget,
+      ratio: _ratio(cbFoodUsed, cbFoodBudget),
+    },
+    operating: {
+      used: cbOperatingUsed,
+      budget: cbOperatingBudget,
+      ratio: _ratio(cbOperatingUsed, cbOperatingBudget),
+    },
+    items: {
+      supply:  { used: cbSupplyUsed,  budget: cbSupplyBudget },
+      event:   { used: cbEventUsed,   budget: cbEventBudget  },
+      card:    { used: cbCardUsed,    budget: cbCardBudget   },
+      utility: { used: cbUtilityUsed },
+      other:   { used: 0, vendors: [] as any[] },
+    },
+    // 식재료 기준 식단가 (운영비 제외) — 기존 mealPriceNoSupply 그대로, 계산 변동 없음
+    foodDietPrice: mealPriceNoSupply || 0,
+    foodVendorIds: [] as number[],
+  }
+
   return c.json({
     totalUsed,
+    costBreakdown,
     settings,
     vendors: vendors.results,
     dailyOrders: dailyOrders.results,
