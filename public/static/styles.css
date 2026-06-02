@@ -666,14 +666,17 @@ header { border-bottom: 2px solid #dcfce7 !important; }
 }
 
 /* ══════════════════════════════════════════
-   인쇄 스타일 - A4 문서형 레이아웃
+   인쇄 스타일 - 통합 A4 인쇄 품질 (Chrome → 인쇄 → PDF 저장)
+   ① printLayer 방식 (월간보고서 캡처 이미지)
+   ② 일반 window.print() 방식 (원장보고서·직원표·분석보고서·법인카드)
 ══════════════════════════════════════════ */
 
-/* 인쇄 전용 레이어 (JS로 동적 생성) */
+/* ──────────────────────────────────────────
+   화면: printLayer 기본 숨김
+   ────────────────────────────────────────── */
 #printLayer {
   display: none;
 }
-/* 화면 미표시 상태에서 각 페이지 기본 스타일 */
 #printLayer .print-page {
   width: 100%;
   margin: 0;
@@ -685,8 +688,6 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   page-break-inside: avoid;
 }
 #printLayer .print-page:last-child { page-break-after: avoid; }
-
-/* 이미지 기반 출력: 비율 100% 유지, 절대 짤리지 않음 */
 #printLayer .print-page img {
   width: 100%;
   height: auto;
@@ -694,15 +695,37 @@ header { border-bottom: 2px solid #dcfce7 !important; }
   max-width: 100%;
 }
 
+/* ──────────────────────────────────────────
+   @media print 통합 규칙
+   ────────────────────────────────────────── */
 @media print {
-  @page {
-    size: A4 landscape;
-    margin: 0;
+  /* ① 공통: 색상 보정 */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
   }
 
-  /* 화면 요소 모두 숨김, printLayer만 표시 */
-  body > *:not(#printLayer) { display: none !important; }
-  .no-print { display: none !important; }
+  /* ② 공통: 항상 숨길 UI 요소 */
+  .no-print,
+  nav,
+  .bottom-bar,
+  .month-nav,
+  #toastContainer,
+  #modalBackdrop,
+  .modal-backdrop {
+    display: none !important;
+  }
+
+  /* ③ printLayer 방식 (월간보고서 캡처 경로)
+     → printLayer가 존재하면 body의 다른 자식만 숨김 */
+  body:has(#printLayer[style*="display:block"]) > *:not(#printLayer) {
+    display: none !important;
+  }
+  /* IE/구형 Chrome fallback: JS에서 body에 print-layer-active 클래스 추가 방식 */
+  body.print-layer-active > *:not(#printLayer) {
+    display: none !important;
+  }
 
   #printLayer {
     display: block !important;
@@ -710,8 +733,6 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     width: 100% !important;
     background: white !important;
   }
-
-  /* 각 페이지: 이미지 비율 그대로, 짤림 없음 */
   #printLayer .print-page {
     display: block !important;
     width: 100% !important;
@@ -721,7 +742,7 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     page-break-inside: avoid !important;
     break-after: page !important;
     break-inside: avoid !important;
-    overflow: hidden !important;
+    overflow: visible !important;
     box-sizing: border-box !important;
     background: white !important;
   }
@@ -729,22 +750,177 @@ header { border-bottom: 2px solid #dcfce7 !important; }
     page-break-after: avoid !important;
     break-after: avoid !important;
   }
-
-  /* 이미지 색상 보정 */
   #printLayer .print-page img {
     width: 100% !important;
     height: auto !important;
     display: block !important;
     max-width: 100% !important;
+  }
+
+  /* ④ 일반 window.print() 방식 (직원 근무표, 원장보고서 등)
+     → body에 특수 클래스 없이 직접 인쇄 */
+  body {
+    background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* 보고서 슬라이드 (월간보고서 직접 인쇄) */
+  .report-slide {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    aspect-ratio: unset !important;      /* 16:9 고정비율 해제 */
+    min-height: 0 !important;
+    height: auto !important;
+    background: white !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    overflow: visible !important;        /* 잘림 방지 */
+    box-sizing: border-box !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    margin-bottom: 0 !important;
+  }
+  .report-slide:last-child {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  /* 보고서 내부 콘텐츠 영역 */
+  .rpt-report-page {
+    overflow: visible !important;
+    flex: none !important;
+    height: auto !important;
+    padding: 0 14mm 14mm 14mm !important;
+  }
+
+  /* 슬라이드 내 모든 직접 자식 div: flex 레이아웃 인쇄 해제 */
+  .report-slide * {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+  /* flex:1 + min-height:0 조합 인쇄 시 자동 높이로 */
+  .report-slide [style*="flex:1"],
+  .report-slide [style*="min-height:0"] {
+    flex: none !important;
+    min-height: auto !important;
+    height: auto !important;
+  }
+  /* 프로그레스 바 등 의도적 고정 높이는 유지 */
+  .report-slide [style*="height:10px"],
+  .report-slide [style*="height:5px"],
+  .report-slide [style*="height:4px"] {
+    height: 8px !important;
+    flex: none !important;
+    min-height: 8px !important;
+  }
+
+  /* SH 섹션 헤더 - 인쇄 여백에 맞게 음수 마진 재조정 + 내부 패딩 복원 */
+  .rpt-report-page > div:first-child[style*="background:#064e3b"] {
+    margin-left: -14mm !important;
+    margin-right: -14mm !important;
+    padding-left: 14mm !important;
+    padding-right: 14mm !important;
+  }
+
+  /* AI 분석/경고 박스 - 인쇄 시 잘림 방지 */
+  .rpt-report-page [style*="border-left:5px solid"] {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    overflow: visible !important;
+  }
+
+  /* KPI 카드 - 인쇄 시 잘림 방지 */
+  .rpt-report-page [style*="border-left:5px solid"][style*="border-radius:12px"] {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* 차트 컨테이너 - 인쇄 시 높이 자동 조정 */
+  .rpt-report-page canvas {
+    max-height: 200px !important;
+    width: 100% !important;
+    height: auto !important;
+  }
+
+  /* 그리드 레이아웃 - 인쇄 시 단순화 */
+  .rpt-report-page [style*="display:grid"] {
+    overflow: visible !important;
+    min-height: auto !important;
+  }
+
+  /* 텍스트 잘림 방지: 업체명, 길이름 등 줄바꿈 허용 */
+  .report-slide [style*="white-space:nowrap"],
+  .rpt-report-page [style*="white-space:nowrap"] {
+    white-space: normal !important;
+    word-break: keep-all !important;
+    overflow-wrap: break-word !important;
+  }
+
+  /* 카드/박스: 잘림 방지, 높이 자동 확장 */
+  .kpi-card,
+  [class*="card"],
+  [style*="border-radius"] {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    overflow: visible !important;
+  }
+
+  /* 표: 헤더 반복, 행 잘림 방지 */
+  table {
+    page-break-inside: auto !important;
+  }
+  thead {
+    display: table-header-group !important;
+  }
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* 오버플로우 해제 (스크롤 컨테이너) */
+  [style*="overflow-x:auto"],
+  [style*="overflow-y:auto"],
+  [style*="max-height"],
+  [style*="overflow:hidden"] {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  /* 법인카드 지출결의서 인쇄 */
+  #expenseDocBody {
+    display: block !important;
+  }
+  #expenseDocBody * {
+    page-break-inside: avoid !important;
+  }
+
+  /* 그라디언트 배경 색상 보정 */
+  [style*="linear-gradient"],
+  [style*="background:linear"],
+  [class*="bg-gradient"] {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 
-  #printLayer * {
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-    color-adjust: exact !important;
+  /* 링크 URL 숨김 */
+  a[href]::after { content: none !important; }
+}
+
+/* ──────────────────────────────────────────
+   @page 기본 설정 (A4 가로, 여백 8mm)
+   ────────────────────────────────────────── */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm 10mm;
   }
+  /* 특수 보고서: 여백 없음 (이미지 캡처 방식) */
+  @page :blank { margin: 0; }
 }
 
 /* ════════════════════════════════════════

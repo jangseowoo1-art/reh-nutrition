@@ -2,6 +2,15 @@
 //  병원 급식 예산 관리 - 메인 앱 JS v2.0
 // ══════════════════════════════════════════════════════════════
 
+// ── [RECOVERY-GUARD] 서버 API 미비 기능 임시 잠금 플래그 ──────────
+// (서버 라우트 준비 후 아래 값을 false 로 바꾸면 즉시 기능 복구됨)
+window.__FEATURE_OFF_KPI = true            // KPI 입력/기여도 분석
+window.__FEATURE_OFF_EVENT_EXPENSE = true  // 행사식 비용
+window.__FEATURE_OFF_PARTIAL_LEAVE = true  // 부분연차/반차
+window.__FEATURE_OFF_LEAVE_BALANCE = true  // 연차잔액 자동적립
+window.__FEATURE_OFF_HOSPITAL_CLONE = true // 병원 복제/초기화
+// ─────────────────────────────────────────────────────────────
+
 // ══════════════════════════════════════════════════════════════
 //  CALC_ENGINE — 중앙 계산 엔진 (Single Source of Truth)
 //  ※ 이 객체의 함수만 사용하고 각 페이지에서 인라인 계산 금지
@@ -153,6 +162,22 @@ const CALC_ENGINE = (() => {
     let maxConsec = 0, curConsec = 0
     const weeklyHoursMap = {}
 
+    // ── 이전 달 말미의 연속 근무를 이월: 이전 달 마지막 날부터 역순으로 연속 근무일 수 파악 ──
+    const prevMonth = month === 1 ? 12 : month - 1
+    const prevYear  = month === 1 ? year - 1 : year
+    const prevDays  = new Date(prevYear, prevMonth, 0).getDate()
+    for (let pd = prevDays; pd >= 1; pd--) {
+      const pdStr = `${prevYear}-${String(prevMonth).padStart(2,'0')}-${String(pd).padStart(2,'0')}`
+      const ps    = schedMap[`${emp.id}_${pdStr}`]
+      const pc    = ps?.shift_code || ''
+      const plt   = ps?.leave_type || ''
+      if (pc && pc !== '-' && !REST_CODES_SET.has(pc) && !plt) {
+        curConsec++
+      } else {
+        break  // 공백/휴무 만나면 중단
+      }
+    }
+
     for (let d = 1; d <= days; d++) {
       const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
       const sched   = schedMap[`${emp.id}_${dateStr}`]
@@ -209,11 +234,490 @@ const CALC_ENGINE = (() => {
 // 하위 호환 단축 참조 (기존 코드에서 직접 사용하는 경우 대비)
 const _CE = CALC_ENGINE
 
+// ══════════════════════════════════════════════════════════════
+//  DIET_CALC — 식단가/예산 공통 계산 헬퍼 (Single Source of Truth)
+//
+//  ★ 모든 화면에서 반드시 이 모듈의 함수를 사용할 것
+//    인라인 계산 금지 → 수치 불일치 방지
+//
+//  식단가 3종 정의:
+//    representative  = 대표 식단가 (식재료비 ÷ 전체 식수)
+//    operating       = 운영반영 식단가 (전체 발주액 ÷ 전체 식수)
+//    patient         = 환자 식단가 (환자군 전용 목표/실적)
+//
+//  공통 기준값 추출:
+//    extractDietPrices(data)  — API 응답(dashboard / executive)에서 3종 추출
+//    extractBudgetSummary(data) — 총사용액·예산·진행률 추출
+// ══════════════════════════════════════════════════════════════
+const DIET_CALC = (() => {
+  /**
+   * API 응답에서 식단가 3종을 추출한다.
+   * dashboard.ts / executive.ts 모두 동일 구조의 dietPrices 필드를 반환.
+   *
+   * @param {object} data  - API 응답 객체
+   * @returns {{ representative:number, operating:number, patient:number,
+   *             totalMeals:number, foodUsed:number, totalUsed:number }}
+   */
+  function extractDietPrices(data) {
+    if (!data) return { representative:0, operating:0, patient:0, totalMeals:0, foodUsed:0, totalUsed:0, noEvent:0, noSupplyOnly:0, noOperating:0, eventExpensesTotal:0, supplyUsed:0, cardUsed:0 }
+
+    // 안전한 숫자 변환 (NaN/undefined/null → 0, 음수 → 0)
+    const safeNum = (v) => { const n = Number(v); return (!isNaN(n) && n > 0) ? n : 0 }
+
+    // ① dietPrices 통합 필드가 있으면 그것을 우선 사용
+    if (data.dietPrices) {
+      return {
+        representative : safeNum(data.dietPrices.representative),
+        operating      : safeNum(data.dietPrices.operating),
+        patient        : safeNum(data.dietPrices.patient),
+        totalMeals     : safeNum(data.dietPrices.totalMeals),
+        foodUsed       : safeNum(data.dietPrices.foodUsed),
+        totalUsed      : safeNum(data.dietPrices.totalUsed) || safeNum(data.totalUsed),
+        // ★ KPI ③④⑤ — 0원 달: safeNum으로 NaN/음수 방지
+        // noEvent=0: 이벤트 없는 달 → 표시 안 함 (kpiDetailBlock 조건: > 0)
+        // noOperating=0: 운영비 없는 달 → 표시 안 함 (대표식단가와 동일하므로 굳이 표시 불필요)
+        noEvent        : safeNum(data.dietPrices.noEvent),
+        noSupplyOnly   : safeNum(data.dietPrices.noSupplyOnly),
+        noOperating    : safeNum(data.dietPrices.noOperating),
+        eventExpensesTotal : safeNum(data.dietPrices.eventExpensesTotal),
+        supplyUsed     : safeNum(data.dietPrices.supplyUsed),
+        cardUsed       : safeNum(data.dietPrices.cardUsed),
+      }
+    }
+
+    // ② fallback: 기존 개별 필드에서 조합 (dietPrices 미지원 구 API 대비)
+    const totalUsed  = data.totalUsed || 0
+    const totalMeals = data.totalMeals || 0
+    // 대표 = costBreakdown.foodDietPrice > mealPriceNoSupply > mealPriceTotal
+    const rep = (data.costBreakdown?.foodDietPrice)
+      || data.mealPriceNoSupply
+      || data.mealPriceTotal
+      || 0
+    // 운영반영 = mealPriceTotal (전체 ÷ 식수)
+    const oper = data.mealPriceTotal || 0
+    // 환자 = catDietPrices[0].patientOnlyDietPrice > settings.meal_price
+    const patDp = (data.catDietPrices || []).find(c => (c.patientOnlyDietPrice || 0) > 0)
+    const pat  = (patDp?.patientOnlyDietPrice) || (data.settings?.meal_price) || rep
+
+    return { representative: rep, operating: oper, patient: pat, totalMeals, foodUsed: 0, totalUsed }
+  }
+
+  /**
+   * API 응답에서 예산 요약 정보를 추출한다.
+   *
+   * @param {object} data  - API 응답 객체
+   * @returns {{ totalUsed:number, totalBudget:number, progress:number,
+   *             remaining:number, isCurrentMonth:boolean }}
+   */
+  function extractBudgetSummary(data) {
+    if (!data) return { totalUsed:0, totalBudget:0, progress:0, remaining:0, isCurrentMonth:true }
+
+    // dashboard.ts: summary 하위 객체
+    const s = data.summary || data.budget || {}
+    const totalUsed   = s.totalUsed   || data.totalUsed   || 0
+    const totalBudget = s.totalBudget || data.totalBudget || 0
+    const progress    = totalBudget > 0
+      ? parseFloat((totalUsed / totalBudget * 100).toFixed(1))
+      : (s.progress || 0)
+    const remaining   = s.remaining ?? (totalBudget - totalUsed)
+    const isCurrentMonth = s.isCurrentMonth !== undefined ? s.isCurrentMonth : true
+
+    return { totalUsed, totalBudget, progress, remaining, isCurrentMonth }
+  }
+
+  /**
+   * 숫자를 한국식 금액 문자열로 변환 (예: 8187 → "8,187원")
+   * @param {number} n
+   * @param {boolean} [withUnit=true]  — true면 "원" 접미 포함
+   */
+  function fmtKRW(n, withUnit = true) {
+    if (n == null || isNaN(n)) return withUnit ? '-원' : '-'
+    return Math.round(n).toLocaleString('ko-KR') + (withUnit ? '원' : '')
+  }
+
+  /**
+   * 식단가 3종 카드 HTML을 생성한다 (모든 화면에서 동일한 UI 사용).
+   *
+   * @param {object} dp   - extractDietPrices() 결과
+   * @param {object} [opts]
+   *   opts.targetPrice   - 목표 식단가 (비교 기준선)
+   *   opts.compact       - true면 소형 카드
+   * @returns {string} HTML 문자열
+   */
+  function dietPriceCards(dp, opts = {}) {
+    const target = opts.targetPrice || 0
+    const rep    = dp.representative || 0
+    const oper   = dp.operating      || 0
+    const pat    = dp.patient        || 0
+
+    const repDiff  = target > 0 ? rep  - target : null
+    const operDiff = target > 0 ? oper - target : null
+    const patDiff  = target > 0 ? pat  - target : null
+
+    function diffBadge(diff) {
+      if (diff === null) return ''
+      const cls = diff > 0 ? 'color:#dc2626' : diff < 0 ? 'color:#059669' : 'color:#6b7280'
+      const sign = diff > 0 ? '+' : ''
+      return `<span style="font-size:11px;${cls}">${sign}${Math.round(diff).toLocaleString()}원</span>`
+    }
+
+    const cardStyle = opts.compact
+      ? 'padding:8px 12px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;min-width:120px'
+      : 'padding:12px 16px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;min-width:140px'
+
+    function card(label, val, diff, color, tooltip) {
+      return `<div style="${cardStyle};border-top:3px solid ${color}" title="${tooltip}">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px">${label}</div>
+        <div style="font-size:${opts.compact?'15px':'18px'};font-weight:700;color:${color}">${fmtKRW(val)}</div>
+        ${diff !== null ? `<div style="margin-top:2px">${diffBadge(diff)}</div>` : ''}
+      </div>`
+    }
+
+    return `<div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${card('대표 식단가', rep, repDiff, '#1d4ed8', '식재료비 기준 (소모품·운영비 제외)')}
+      ${card('운영반영 식단가', oper, operDiff, '#7c3aed', '전체 발주액 기준 (운영비 포함)')}
+      ${card('환자 식단가', pat, patDiff, '#059669', '환자군 전용 기준')}
+    </div>`
+  }
+
+  /**
+   * 업체 카테고리 영문 코드를 한글 명칭으로 변환
+   * @param {string} cat
+   * @returns {string}
+   */
+  function vendorCatLabel(cat) {
+    const map = {
+      market:  '일반식품',
+      meat:    '육류',
+      fruit:   '과일·채소',
+      seafood: '수산물',
+      organic: '유기농',
+      major:   '주식품',
+      delivery:'배달',
+      general: '일반',
+      supply:  '소모품',
+      event:   '이벤트',
+      card:    '법인카드',
+      utility: '공과금/기타',
+      other:   '기타',
+    }
+    return map[cat] || cat || '미분류'
+  }
+
+  /**
+   * 업체별 발주에서 식단가/운영비 포함 여부 설명 텍스트 반환
+   * @param {string} cat  - vendor category
+   * @param {string} [rule] - vendor_hospital_cost_rules
+   * @returns {string}
+   */
+  function vendorCostIncludeLabel(cat, rule) {
+    if (['supply','event','card','utility'].includes(cat)) {
+      if (rule === 'food') return '식단가 포함 · 운영비 참고'
+      return '운영비 · 식단가 미포함'
+    }
+    return '식재료비 · 식단가 포함'
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  /**
+   * 식단가 흐름 구조 HTML 생성 (전 화면 공통)
+   *
+   * "값 → 이유 → 판단" 구조 (3단계 플로우):
+   *   ① 대표 식단가 (기준값, 항상 강조) - 식재료비 ÷ 전체 식수
+   *   → 운영비 영향 (+N원) 화살표
+   *   ② 운영반영 식단가 (보조값, 흐리게) - 전체 발주액 ÷ 전체 식수
+   *   ③ 원인 분해: 소모품 / 이벤트 / 법인카드 (per-meal)
+   *   ④ 환자 식단가 (별도 섹션, 목표 비교 전용)
+   *   ⑤ 자동 해석 문장 (왜 값이 다른지 설명)
+   *
+   * UI 원칙:
+   *   - 대표 식단가 = 굵은 파란 테두리, 큰 폰트, "★ 기준" 배지
+   *   - 운영반영 식단가 = 얇은 보라 테두리, 작은 폰트, "참고" 배지 (보조값)
+   *   - 환자 식단가 = 별도 초록 섹션, 대표와 혼동 방지
+   *
+   * @param {object} dp            - extractDietPrices() 결과
+   * @param {object} [cb]          - costBreakdown (null 허용)
+   *   cb.items.supply.used, cb.items.event.used, cb.items.card.used
+   * @param {object} [opts]
+   *   opts.targetPrice  - 목표 식단가 (대표 식단가와 비교)
+   *   opts.totalMeals   - 총 식수 (원인 분해 per-meal 계산용)
+   *   opts.compact      - true면 소형 레이아웃
+   *   opts.showPatient  - true면 환자 식단가 섹션 표시 (기본 true)
+   *   opts.context      - 'dashboard'|'order'|'report'|'executive' (레이블 미세 조정)
+   * @returns {string} HTML 문자열
+   */
+  function dietPriceFlowHtml(dp, cb, opts = {}) {
+    const rep    = dp.representative || 0
+    const oper   = dp.operating      || 0
+    const pat    = dp.patient        || 0
+    const target = opts.targetPrice  || 0
+    const meals  = opts.totalMeals   || dp.totalMeals || 0
+    const compact = !!opts.compact
+    const showPat = opts.showPatient !== false
+
+    // 운영비 영향 = 운영반영 - 대표 (per-meal 차이)
+    const opDiff = (rep > 0 && oper > 0) ? oper - rep : 0
+    const opDiffSign = opDiff >= 0 ? '+' : ''
+
+    // ── 원인 분해: costBreakdown.items 기반 per-meal 환산 ──────
+    // ★ 원칙: items.*.used (cost_type 기반 실제 운영비)만 원인 분해에 사용
+    // reference.* 는 "운영 성격이지만 식단가에 포함된 업체" → 이미 대표식단가에 포함
+    // 따라서 reference는 원인 분해에서 제외 (표시만 하면 중복 계산 발생)
+    const supUsed  = cb?.items?.supply?.used  || 0
+    const evUsed   = cb?.items?.event?.used   || 0
+    const cardUsed = cb?.items?.card?.used    || 0
+    const utilUsed = cb?.items?.utility?.used || 0
+    // reference: 대표식단가에 포함된 운영 성격 업체 금액 (표시 전용, 원인분해 미사용)
+    // const refSup  = cb?.reference?.supply || 0  // 사용하지 않음
+    // const refEv   = cb?.reference?.event  || 0  // 사용하지 않음
+    // const refCard = cb?.reference?.card   || 0  // 사용하지 않음
+
+    const supPM   = meals > 0 && supUsed  > 0 ? Math.round(supUsed  / meals) : 0
+    const evPM    = meals > 0 && evUsed   > 0 ? Math.round(evUsed   / meals) : 0
+    const cardPM  = meals > 0 && cardUsed > 0 ? Math.round(cardUsed / meals) : 0
+    const utilPM  = meals > 0 && utilUsed > 0 ? Math.round(utilUsed / meals) : 0
+
+    // ── 목표 대비 판단 (대표 식단가 기준) ──────────────────────
+    const repVsTarget  = target > 0 && rep > 0 ? rep - target : null
+    const repIsOver    = repVsTarget !== null && repVsTarget > 0
+    const repIsWarn    = repVsTarget !== null && !repIsOver && rep >= target * 0.9
+    const repIsGood    = repVsTarget !== null && !repIsOver && !repIsWarn
+
+    // ── 대표 식단가 색상 (초과→빨, 경고→주황, 양호→파) ────────
+    const repStatusColor = repIsOver ? '#dc2626' : repIsWarn ? '#d97706' : '#1d4ed8'
+    const repBorderColor = repIsOver ? '#fca5a5' : repIsWarn ? '#fde68a' : '#93c5fd'
+    const repBgColor     = repIsOver ? '#fef2f2' : repIsWarn ? '#fffbeb' : '#eff6ff'
+    const repBadgeBg     = repIsOver ? '#dc2626' : repIsWarn ? '#d97706' : '#1d4ed8'
+
+    // ── 크기 변수 ──────────────────────────────────────────────
+    const repFontSize  = compact ? '22px' : '28px'
+    const operFontSize = compact ? '14px' : '16px'
+    const padding      = compact ? '10px 12px' : '14px 18px'
+
+    // ── 원인 아이템 배열 ─────────────────────────────────────
+    const causeItems = [
+      supPM  > 0 ? { label: '소모품/세제', val: supPM,  icon: '🗃' } : null,
+      evPM   > 0 ? { label: '이벤트',      val: evPM,   icon: '🎉' } : null,
+      cardPM > 0 ? { label: '법인카드',    val: cardPM, icon: '💳' } : null,
+      utilPM > 0 ? { label: '공과금',      val: utilPM, icon: '🔌' } : null,
+    ].filter(Boolean)
+
+    // ── ① 대표 식단가 카드 (기준값, 항상 강조) ────────────────
+    const repStatusLabel = repIsOver
+      ? `<span style="color:#dc2626;font-size:10px;font-weight:700">▲ 목표 +${Math.abs(Math.round(repVsTarget)).toLocaleString()}원 초과</span>`
+      : repIsWarn
+      ? `<span style="color:#d97706;font-size:10px;font-weight:700">⚠ 목표 근접 (${Math.abs(Math.round(repVsTarget)).toLocaleString()}원 여유)</span>`
+      : repIsGood
+      ? `<span style="color:#059669;font-size:10px;font-weight:700">✓ 목표 대비 ${Math.abs(Math.round(repVsTarget)).toLocaleString()}원 절감</span>`
+      : ''
+
+    const repCard = `
+      <div style="background:${repBgColor};border:2.5px solid ${repBorderColor};border-radius:12px;padding:${padding};flex:1.2;min-width:${compact?'140px':'170px'}">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">
+          <span style="background:${repBadgeBg};color:white;font-size:9px;font-weight:800;padding:2px 7px;border-radius:4px;letter-spacing:.3px">★ 기준</span>
+          <span style="font-size:11px;font-weight:800;color:${repStatusColor}">대표 식단가</span>
+        </div>
+        <div style="font-size:${repFontSize};font-weight:900;color:${repStatusColor};line-height:1.1;letter-spacing:-.5px">
+          ${rep > 0 ? Math.round(rep).toLocaleString() : '—'}<span style="font-size:12px;font-weight:500;color:#6b7280;margin-left:1px">원/식</span>
+        </div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px;line-height:1.4">
+          식재료비 기준 <span style="color:#94a3b8">· 소모품·운영비 제외</span>
+          ${meals > 0 ? `<span style="display:inline-block;margin-left:4px;font-size:9px;color:#3b82f6;background:#eff6ff;border:1px solid #bfdbfe;padding:1px 5px;border-radius:4px;font-weight:600">÷ 전체 ${meals.toLocaleString()}식</span>` : ''}
+        </div>
+        ${target > 0 ? `<div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          ${repStatusLabel}
+          <span style="font-size:9px;color:#9ca3af">목표 ${Math.round(target).toLocaleString()}원</span>
+        </div>` : ''}
+      </div>`
+
+    // ── ② 화살표 + 운영비 영향 표시 ──────────────────────────
+    const arrowBlock = (opDiff !== 0 && oper > 0) ? `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:0 2px;flex-shrink:0;opacity:.85">
+        <div style="font-size:16px;color:#94a3b8;line-height:1">→</div>
+        <div style="font-size:10px;font-weight:700;color:${opDiff>0?'#7c3aed':'#059669'};white-space:nowrap;background:${opDiff>0?'#f3e8ff':'#dcfce7'};padding:2px 5px;border-radius:5px">
+          ${opDiffSign}${Math.abs(Math.round(opDiff)).toLocaleString()}원
+        </div>
+        <div style="font-size:8px;color:#9ca3af;white-space:nowrap;text-align:center;line-height:1.3">운영비<br>영향</div>
+      </div>` : `
+      <div style="display:flex;align-items:center;justify-content:center;padding:0 2px;flex-shrink:0;opacity:.4">
+        <div style="font-size:14px;color:#cbd5e1">→</div>
+      </div>`
+
+    // ── ③ 운영반영 식단가 카드 (보조값, 시각적으로 약하게) ────
+    const operCard = oper > 0 ? `
+      <div style="background:#faf5ff;border:1px solid #ddd6fe;border-radius:10px;padding:${compact?'8px 10px':'10px 14px'};flex:1;min-width:${compact?'110px':'130px'};opacity:.88">
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px">
+          <span style="background:#7c3aed20;color:#7c3aed;border:1px solid #c4b5fd;font-size:8px;font-weight:700;padding:1px 5px;border-radius:4px">참고</span>
+          <span style="font-size:10px;font-weight:700;color:#7c3aed">운영반영 식단가</span>
+        </div>
+        <div style="font-size:${operFontSize};font-weight:700;color:#7c3aed;line-height:1.1">
+          ${Math.round(oper).toLocaleString()}<span style="font-size:10px;font-weight:500;color:#9ca3af;margin-left:1px">원/식</span>
+        </div>
+        <div style="font-size:9px;color:#8b5cf6;margin-top:3px;line-height:1.3">전체 발주액 ÷ 전체 식수</div>
+        ${opDiff !== 0 ? `<div style="margin-top:4px;font-size:9px;color:#7c3aed;background:#f3e8ff;border-radius:4px;padding:2px 6px;display:inline-block;border:1px solid #ddd6fe">
+          대표 대비 ${opDiffSign}${Math.abs(Math.round(opDiff)).toLocaleString()}원
+        </div>` : ''}
+      </div>` : ''
+
+    // ── ④ 운영비 원인 분해 블록 ──────────────────────────────
+    const breakdownBlock = (opDiff > 0) ? `
+      <div style="margin-top:7px;background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:${compact?'7px 10px':'9px 13px'}">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:${causeItems.length>0?'7px':'3px'}">
+          <span style="font-size:10px;font-weight:700;color:#92400e"><i class="fas fa-search-plus" style="margin-right:3px"></i>운영비 영향 원인 분해</span>
+          <span style="font-size:9px;color:#d97706;font-weight:700">(1식당 +${Math.abs(Math.round(opDiff)).toLocaleString()}원)</span>
+        </div>
+        ${causeItems.length > 0 ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
+          ${causeItems.map(c => `<div style="background:white;border:1px solid #fcd34d;border-radius:7px;padding:4px 9px;text-align:center;min-width:52px;flex:1">
+            <div style="font-size:10px;color:#78350f;margin-bottom:1px">${c.icon}</div>
+            <div style="font-size:9px;color:#78350f;font-weight:700">${c.label}</div>
+            <div style="font-size:12px;font-weight:800;color:#92400e">+${c.val.toLocaleString()}<span style="font-size:8px;font-weight:400">원</span></div>
+          </div>`).join('')}
+        </div>` : ''}
+        <div style="font-size:9px;color:#92400e;line-height:1.5;padding:4px 6px;background:#fef9c3;border-radius:5px;border-left:2px solid #fbbf24">
+          <strong>왜 값이 다른가?</strong><br>
+          대표 식단가(${rep>0?Math.round(rep).toLocaleString():'—'}원)는 <u>식재료비만</u> 계산합니다.<br>
+          운영반영 식단가(${oper>0?Math.round(oper).toLocaleString():'—'}원)는 소모품·이벤트·카드 등 운영비도 포함합니다.<br>
+          ${causeItems.length>0?`차이 +${Math.abs(Math.round(opDiff)).toLocaleString()}원 = ${causeItems.map(c=>`${c.label} ${c.val.toLocaleString()}원`).join(' + ')}`:
+          `차이 +${Math.abs(Math.round(opDiff)).toLocaleString()}원 = 운영비 항목 포함`}
+        </div>
+      </div>` : (opDiff < 0 && oper > 0 && rep > 0) ? `
+      <div style="margin-top:7px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px">
+        <div style="font-size:9px;color:#166534;line-height:1.5">
+          <strong>왜 값이 다른가?</strong>  운영비를 포함해도 대표 식단가보다 낮습니다. 운영비 항목이 식단가에서 제외되어 있거나 소액입니다.
+        </div>
+      </div>` : ''
+
+    // ── ⑤ 환자 식단가 (별도 분리, 목표 비교 전용) ────────────
+    const patVsTarget = target > 0 && pat > 0 ? pat - target : null
+    const patIsOver   = patVsTarget !== null && patVsTarget > 0
+    const patBlock = (showPat && pat > 0) ? `
+      <div style="margin-top:7px;background:#f0fdf4;border:2px solid #86efac;border-radius:10px;padding:${compact?'7px 10px':'9px 13px'}">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div>
+            <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">
+              <span style="background:#16a34a;color:white;font-size:8px;font-weight:700;padding:2px 6px;border-radius:4px">환자 전용</span>
+              <span style="font-size:10px;font-weight:700;color:#166534">환자 식단가</span>
+              <span style="font-size:9px;color:#6b7280">· 대표 식단가와 별도 집계</span>
+            </div>
+            <div style="font-size:${compact?'16px':'19px'};font-weight:800;color:#16a34a;line-height:1">
+              ${Math.round(pat).toLocaleString()}<span style="font-size:10px;font-weight:500;color:#6b7280;margin-left:1px">원/식</span>
+            </div>
+            <div style="font-size:9px;color:#4ade80;margin-top:2px">환자군 식수 기준 · 목표가 설정 시 비교</div>
+          </div>
+          ${target > 0 ? `<div style="text-align:right;flex-shrink:0">
+            <div style="font-size:11px;font-weight:700;color:${patIsOver?'#dc2626':'#059669'}">
+              ${patIsOver ? `▲ +${Math.abs(Math.round(patVsTarget)).toLocaleString()}원 초과` : `✓ ${Math.abs(Math.round(patVsTarget)).toLocaleString()}원 여유`}
+            </div>
+            <div style="font-size:9px;color:#9ca3af;margin-top:1px">환자 목표 ${Math.round(target).toLocaleString()}원 기준</div>
+          </div>` : ''}
+        </div>
+        <div style="margin-top:5px;font-size:9px;color:#166534;background:#dcfce7;border-radius:5px;padding:3px 7px;line-height:1.4">
+          환자 식단가는 환자군 식수만으로 계산 — 직원·보호자 식수 제외. 대표 식단가(전체 기준)와 다를 수 있습니다.
+        </div>
+      </div>` : ''
+
+    // ── ★ KPI ③④⑤ 세부 식단가 (접기/펼치기) ─────────────────
+    const kpiNoEvent      = dp.noEvent      || 0
+    const kpiNoSupplyOnly = dp.noSupplyOnly || 0
+    const kpiNoOperating  = dp.noOperating  || 0
+    const kpiSectionId    = 'kpi-detail-' + Math.random().toString(36).slice(2,8)
+
+    const kpiDetailBlock = (kpiNoEvent > 0 || kpiNoSupplyOnly > 0 || kpiNoOperating > 0) ? `
+      <details class="kpi-detail-section" style="margin-top:8px">
+        <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;padding:6px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:11px;font-weight:700;color:#374151;user-select:none" onclick="this.parentElement.toggleAttribute('open')">
+          <span style="font-size:10px;color:#64748b;transition:transform .2s">▶</span>
+          <span>세부 식단가 비교 <span style="font-weight:400;color:#9ca3af">(이벤트·소모품·운영비 제외)</span></span>
+        </summary>
+        <div style="margin-top:6px;display:flex;flex-direction:column;gap:5px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 8px 8px;border-top:none">
+          ${kpiNoEvent > 0 ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:white;border:1px solid #fed7aa;border-radius:7px">
+            <div>
+              <span style="font-size:9px;font-weight:700;color:#ea580c;background:#fff7ed;padding:1px 6px;border-radius:4px;margin-right:5px">③</span>
+              <span style="font-size:11px;font-weight:600;color:#374151">이벤트 제외 식단가</span>
+              <div style="font-size:9px;color:#9ca3af;margin-top:1px">(전체 − event_expenses) ÷ 식수</div>
+            </div>
+            <div style="font-size:15px;font-weight:800;color:#ea580c">${Math.round(kpiNoEvent).toLocaleString()}<span style="font-size:10px;font-weight:400;color:#9ca3af">원</span></div>
+          </div>` : ''}
+          ${kpiNoSupplyOnly > 0 ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:white;border:1px solid #a3e635;border-radius:7px">
+            <div>
+              <span style="font-size:9px;font-weight:700;color:#65a30d;background:#f7fee7;padding:1px 6px;border-radius:4px;margin-right:5px">④</span>
+              <span style="font-size:11px;font-weight:600;color:#374151">소모품 제외 식단가</span>
+              <div style="font-size:9px;color:#9ca3af;margin-top:1px">(전체 − supply 발주) ÷ 식수</div>
+            </div>
+            <div style="font-size:15px;font-weight:800;color:#65a30d">${Math.round(kpiNoSupplyOnly).toLocaleString()}<span style="font-size:10px;font-weight:400;color:#9ca3af">원</span></div>
+          </div>` : ''}
+          ${kpiNoOperating > 0 ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:white;border:1px solid #93c5fd;border-radius:7px">
+            <div>
+              <span style="font-size:9px;font-weight:700;color:#2563eb;background:#eff6ff;padding:1px 6px;border-radius:4px;margin-right:5px">⑤</span>
+              <span style="font-size:11px;font-weight:600;color:#374151">운영비 제외 식단가</span>
+              <div style="font-size:9px;color:#9ca3af;margin-top:1px">(전체 − 이벤트 − 소모품 − 카드) ÷ 식수</div>
+            </div>
+            <div style="font-size:15px;font-weight:800;color:#2563eb">${Math.round(kpiNoOperating).toLocaleString()}<span style="font-size:10px;font-weight:400;color:#9ca3af">원</span></div>
+          </div>` : ''}
+          <div style="font-size:9px;color:#9ca3af;text-align:right;margin-top:2px;padding-right:4px">
+            대표 식단가(①) ${rep>0?Math.round(rep).toLocaleString():'—'}원 · 운영반영(②) ${oper>0?Math.round(oper).toLocaleString():'—'}원 기준
+          </div>
+        </div>
+      </details>
+      <style>
+        .kpi-detail-section[open] > summary > span:first-child { transform: rotate(90deg) }
+      </style>` : ''
+
+    // ── ⑥ 자동 해석 문장 (값→이유→판단) ─────────────────────
+    const interp = (() => {
+      if (!rep) return ''
+      const sentences = []
+      if (opDiff > 0) {
+        const causeStr = causeItems.length > 0
+          ? ` (${causeItems.map(c=>`${c.label} +${c.val.toLocaleString()}원`).join(' · ')})`
+          : ''
+        sentences.push(`운영비 반영으로 대표 식단가 대비 <strong>+${Math.round(opDiff).toLocaleString()}원 상승</strong>했습니다${causeStr}.`)
+      } else if (opDiff < 0) {
+        sentences.push(`운영비 반영 후에도 대표 식단가보다 <strong>${Math.abs(Math.round(opDiff)).toLocaleString()}원 낮습니다</strong> — 운영비 포함 설정을 확인해 주세요.`)
+      }
+      if (repIsOver && target > 0) {
+        sentences.push(`<span style="color:#dc2626">⚠ 대표 식단가가 목표(${Math.round(target).toLocaleString()}원) 대비 <strong>+${Math.abs(Math.round(repVsTarget)).toLocaleString()}원 초과</strong> — 식재료비 및 운영비 점검이 필요합니다.</span>`)
+      } else if (repIsWarn && target > 0) {
+        sentences.push(`<span style="color:#d97706">대표 식단가가 목표에 근접 (여유 ${Math.abs(Math.round(repVsTarget)).toLocaleString()}원) — 추이를 모니터링하세요.</span>`)
+      } else if (repIsGood && target > 0) {
+        sentences.push(`<span style="color:#059669">대표 식단가 목표 범위 내 — 현재 ${Math.abs(Math.round(repVsTarget)).toLocaleString()}원 절감 중입니다.</span>`)
+      }
+      if (!sentences.length) return ''
+      return `<div style="margin-top:7px;background:#f8fafc;border-left:3px solid ${repIsOver?'#dc2626':repIsWarn?'#d97706':'#3b82f6'};border-radius:0 8px 8px 0;padding:6px 10px;font-size:10px;color:#374151;line-height:1.7">
+        ${sentences.map((s,i) => i>0?`<div style="margin-top:3px">${s}</div>`:`<div>${s}</div>`).join('')}
+      </div>`
+    })()
+
+    return `
+      <div class="diet-price-flow" style="font-family:inherit">
+        <div style="display:flex;align-items:stretch;gap:4px;flex-wrap:wrap">
+          ${repCard}
+          ${oper > 0 ? arrowBlock : ''}
+          ${operCard}
+        </div>
+        ${breakdownBlock}
+        ${patBlock}
+        ${kpiDetailBlock}
+        ${interp}
+      </div>`
+  }
+
+  return {
+    extractDietPrices,
+    extractBudgetSummary,
+    fmtKRW,
+    dietPriceCards,
+    dietPriceFlowHtml,
+    vendorCatLabel,
+    vendorCostIncludeLabel,
+  }
+})()
+
 const App = {
   token: localStorage.getItem('token'),
   role: localStorage.getItem('role'),
   hospitalName: localStorage.getItem('hospitalName'),
   username: localStorage.getItem('username'),
+  hospitalId: localStorage.getItem('hospitalId') ? Number(localStorage.getItem('hospitalId')) : null,
   currentYear: new Date().getFullYear(),
   currentMonth: new Date().getMonth() + 1,
   currentPage: '',
@@ -313,6 +817,23 @@ window.addEventListener('DOMContentLoaded', async () => {
     '/schedule': 'schedule', '/analysis': 'analysis',
     '/settings': 'settings', '/admin': 'admin'
   }
+  // ★ 프리페치: active-month API 완료 후 대시보드 API 백그라운드 선호출
+  // (navigateTo가 'dashboard'가 아닌 경우에도 대시보드 이동 대비)
+  setTimeout(() => { try { prefetchDashboard() } catch(e) {} }, 100)
+
+  // ★ admin 전용 prefetch: 전체현황(dashboard/:y/:m) + 직원인건비 캐시 선적재
+  // - navigateTo('admin') 진입 시 api() 캐시 히트 → 스켈레톤 없이 즉시 렌더
+  // - 기존 로직 완전 무관 (fetchWithCache만 사용, 에러 무시)
+  if (App.role === 'admin') {
+    setTimeout(() => {
+      try {
+        const _nowD = new Date(), _y = String(_nowD.getFullYear()), _m = String(_nowD.getMonth()+1)
+        fetchWithCache(`/api/admin/dashboard/${_y}/${_m}`).catch(() => {})
+        fetchWithCache(`/api/admin/staff-labor/${_y}/${_m}`).catch(() => {})
+      } catch(e) {}
+    }, 300)
+  }
+
   navigateTo(pageMap[path] || 'dashboard')
 })
 
@@ -486,6 +1007,30 @@ function initSidebar() {
   document.getElementById('menuContainer').innerHTML = menus.map(renderMenuItem).join('')
   // 관리자면 알림 배지 로드
   if (App.role === 'admin') loadNotificationBadge()
+  // ★ Phase 3: admin 메뉴 호버/터치 시 prefetchAdmin 선호출 (클릭 전 미리 캐시)
+  if (App.role === 'admin') _bindAdminMenuPrefetch()
+}
+
+// ★ Phase 3: admin 전체현황 메뉴 hover/touch → prefetchAdmin 선호출
+// 중복 호출 방지(쿨다운 3초), 클릭 핸들링에 간섭 없음
+let _adminPrefetchLastAt = 0
+function _bindAdminMenuPrefetch() {
+  const _trigger = () => {
+    const now = Date.now()
+    if (now - _adminPrefetchLastAt < 3000) return   // 3초 쿨다운
+    _adminPrefetchLastAt = now
+    try { prefetchAdmin() } catch(e) {}
+  }
+  // 메뉴 컨테이너 전체에 이벤트 위임 (admin 메뉴 항목 대상)
+  const mc = document.getElementById('menuContainer')
+  if (!mc) return
+  const _onEvent = (e) => {
+    const item = e.target.closest('#menu-admin')
+    if (item) _trigger()
+  }
+  mc.addEventListener('mouseenter', _onEvent, true)
+  mc.addEventListener('mousedown', _onEvent, true)
+  mc.addEventListener('touchstart', _onEvent, { passive: true, capture: true })
 }
 
 async function loadNotificationBadge() {
@@ -556,11 +1101,15 @@ function getAdminMenus() {
     { id: 'analysis', icon: 'fa-chart-bar', label: '비교 분석', section: '분석' },
     { id: 'report', icon: 'fa-file-pdf', label: '보고서 출력', section: null },
     { id: 'ceo-dashboard', icon: 'fa-crown', label: '경영 대시보드', section: '경영' },
-    { id: 'transaction-analysis', icon: 'fa-file-invoice', label: '거래명세서 분석', section: '데이터 분석' }
+    { id: 'transaction-analysis', icon: 'fa-file-invoice', label: '거래명세서 분석', section: '데이터 분석' },
+    { id: 'kpi-input', icon: 'fa-chart-line', label: 'KPI 입력', section: '기여도 분석', hidden: window.__FEATURE_OFF_KPI },
+    { id: 'kpi-analysis', icon: 'fa-trophy', label: '기여도 분석', section: null, hidden: window.__FEATURE_OFF_KPI }
   ]
 }
 
 function renderMenuItem(item) {
+  // [RECOVERY-GUARD] 임시 잠금된 메뉴는 렌더링하지 않음
+  if (item.hidden) return ''
   const sectionHtml = item.section ? `<div class="menu-section-title">${item.section}</div>` : ''
   // 병원 관리 메뉴에는 마감요청 + 이슈 배지 슬롯 두 개 포함
   const badgeHtml = item.id === 'hospital-manage'
@@ -605,7 +1154,55 @@ function _showPanel(page) {
   }
 }
 
+// ── 대시보드 API 선호출 (prefetch) ───────────────────────────────
+// 로그인 직후 또는 다른 페이지 진입 시 백그라운드에서 대시보드 API를 미리 호출해
+// API 캐시(60초 TTL)에 저장해두면 navigateTo('dashboard') 즉시 렌더링 가능
+function prefetchDashboard() {
+  if (!App.token) return
+  // 이미 캐시에 있으면 스킵
+  const hqParam = App.role === 'admin' && App.adminHospitalId ? `?hospitalId=${App.adminHospitalId}` : ''
+  const _urls = [
+    `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}${hqParam}`,
+    `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}${hqParam}`,
+    `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParam}`
+  ]
+  // 이미 캐시된 URL은 제외
+  const _uncached = _urls.filter(u => !_apiCacheGet || _apiCacheGet(u) === null)
+  if (_uncached.length === 0) return
+  console.log('[Prefetch] 대시보드 API 선호출 시작:', _uncached.length, '개')
+  // 조용히 백그라운드 호출 (에러 무시)
+  Promise.all(_uncached.map(u =>
+    fetch(u, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${App.token}` } })
+      .then(r => r.json())
+      .then(data => { if (typeof _apiCacheSet === 'function') _apiCacheSet(u, data) })
+      .catch(() => {})
+  )).then(() => {
+    console.log('[Prefetch] 대시보드 API 선호출 완료')
+  })
+}
+
+// ── admin 전체현황 API 선호출 (admin 계정 전용) ──────────────────
+// fetchWithCache를 사용하므로 이미 캐시된 경우 네트워크 호출 없음
+// renderAdminDashboard 진입 시 api() 호출이 즉시 캐시 히트됨
+function prefetchAdmin() {
+  if (!App.token || App.role !== 'admin') return
+  const _nowA = new Date(), _y = String(_nowA.getFullYear()), _m = String(_nowA.getMonth()+1)
+  const _adminUrls = [
+    `/api/admin/dashboard/${_y}/${_m}`,
+    `/api/admin/staff-labor/${_y}/${_m}`
+  ]
+  const _uncachedAdmin = _adminUrls.filter(u => _apiCacheGet(u) === null)
+  if (_uncachedAdmin.length === 0) return
+  console.log('[Prefetch] admin 전체현황 API 선호출:', _uncachedAdmin.length, '개')
+  _uncachedAdmin.forEach(u => fetchWithCache(u).catch(() => {}))
+}
+
 function navigateTo(page, forceReload = false) {
+  // [RECOVERY-GUARD] 서버 API 미비 페이지 진입 차단 (메뉴 외 직접 URL 접근 대비)
+  if (window.__FEATURE_OFF_KPI && (page === 'kpi-input' || page === 'kpi-analysis')) {
+    alert('KPI / 기여도 분석 기능은 현재 준비 중입니다.')
+    page = 'dashboard'
+  }
   if (!App._panelReady) App._panelReady = {}
   if (!App._htmlCache) App._htmlCache = {}  // 페이지 HTML 캐시
 
@@ -629,7 +1226,9 @@ function navigateTo(page, forceReload = false) {
     report: { title: '보고서 출력', sub: 'PPT/PDF 월별 리포트' },
     'expense-doc': { title: '지출결의서', sub: '법인카드 사용 내역 결의서' },
     'ceo-dashboard': { title: '경영 대시보드', sub: 'CEO · 경영진 운영 현황 분석' },
-    'transaction-analysis': { title: '거래명세서 분석', sub: '업체별 납품 명세서 업로드 · 파싱 · 비용 분석' }
+    'transaction-analysis': { title: '거래명세서 분석', sub: '업체별 납품 명세서 업로드 · 파싱 · 비용 분석' },
+    'kpi-input': { title: 'KPI 입력', sub: '병원별 월간 KPI 데이터 입력 (유입 · 전환 · 유지 · 식이)' },
+    'kpi-analysis': { title: '기여도 분석', sub: '리엔에이치 도입 전후 성과 비교 · 매출 기여 추정' }
   }
   const t = titles[page] || { title: page, sub: '' }
   const titleEl = document.getElementById('pageTitle')
@@ -670,11 +1269,13 @@ function navigateTo(page, forceReload = false) {
     'expense-doc': renderExpenseDoc,
     'ingredient-prices': renderIngredientPricesPage,  // #8 독립 메뉴
     'ceo-dashboard': renderCeoDashboard,
-    'transaction-analysis': renderTransactionAnalysis
+    'transaction-analysis': renderTransactionAnalysis,
+    'kpi-input': renderKpiInput,
+    'kpi-analysis': renderKpiAnalysis
   }
 
   // 영양사 역할에서 관리자 전용 메뉴 접근 차단
-  const adminOnlyPages = ['analysis', 'ingredient-prices', 'staff-manage']
+  const adminOnlyPages = ['analysis', 'ingredient-prices', 'staff-manage', 'kpi-input', 'kpi-analysis']
   if (App.role !== 'admin' && adminOnlyPages.includes(page)) {
     document.getElementById('pageContent').innerHTML =
       '<div class="text-center text-gray-400 py-20"><i class="fas fa-lock text-4xl mb-3 block"></i>관리자 전용 메뉴입니다</div>'
@@ -685,29 +1286,79 @@ function navigateTo(page, forceReload = false) {
     if (page === 'meals') App._panelReady[cacheKey] = true
 
     // ── 빠른 로딩: 캐시된 HTML 즉시 표시 후 백그라운드 갱신 ──
-    // orders/meals는 입력 페이지라 캐시 표시 안 함 (입력값 유지 필요)
-    const htmlCacheKey = `${page}-${App.currentYear}-${App.currentMonth}`
+    // orders/meals/settings는 입력 페이지라 캐시 표시 안 함 (입력값 유지 필요)
+    // ★ hospitalId를 캐시 키에 포함 → 병원 전환 시 다른 병원 캐시 혼입 방지
+    const _cacheHospId = App.hospitalId || App.adminHospitalId || 'x'
+    const htmlCacheKey = `${page}-${App.currentYear}-${App.currentMonth}-h${_cacheHospId}`
     const noCachePages = ['orders', 'meals', 'settings']
-    if (!forceReload && !noCachePages.includes(page) && App._htmlCache[htmlCacheKey]) {
-      const content = document.getElementById('pageContent')
-      if (content) content.innerHTML = App._htmlCache[htmlCacheKey]
+    const _t_nav = performance.now()
+
+    // ★ orders/meals 진입 시 대시보드 API prefetch (다음 이동 대비)
+    if ((page === 'orders' || page === 'meals') && typeof prefetchDashboard === 'function') {
+      setTimeout(() => { try { prefetchDashboard() } catch(e) {} }, 500)
+    }
+    // ★ dashboard/orders/meals 진입 시 admin 전체현황 API prefetch (다음 admin 이동 대비)
+    if ((page === 'dashboard' || page === 'orders' || page === 'meals') && App.role === 'admin') {
+      setTimeout(() => { try { prefetchAdmin() } catch(e) {} }, 600)
     }
 
-    const _pageResult = pages[page]()
-    if (_pageResult && typeof _pageResult.then === 'function') {
-      _pageResult.then(() => {
-        // 렌더 완료 후 HTML 캐시 저장 (orders/meals 제외)
-        if (!noCachePages.includes(page)) {
-          const content = document.getElementById('pageContent')
-          if (content && content.innerHTML.length > 100) {
-            App._htmlCache[htmlCacheKey] = content.innerHTML
+    const _content = document.getElementById('pageContent')
+    const _hasCachedHtml = !forceReload && !noCachePages.includes(page) && App._htmlCache[htmlCacheKey]
+
+    if (_hasCachedHtml) {
+      // ★ 캐시된 HTML 즉시 표시 (사용자 체감 0ms)
+      if (_content) _content.innerHTML = App._htmlCache[htmlCacheKey]
+      console.log(`[Nav] ${page} 캐시 즉시표시: 0ms`)
+    } else if (!noCachePages.includes(page) && _content) {
+      // ★ Phase 1: 캐시 없을 때 공통 페이지 셸 즉시 삽입 → 첫 프레임에 뭔가 보임
+      const _skelTitle = (titles[page] || {}).title || page
+      _content.innerHTML = `<div class="animate-pulse space-y-3 p-1" id="_navShell_${page}">
+        <div class="flex items-center gap-2 mb-2">
+          <div class="skeleton h-5 w-32 rounded"></div>
+          <div class="skeleton h-4 w-20 rounded ml-auto"></div>
+        </div>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          ${Array(4).fill(0).map(()=>`<div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-14 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>`).join('')}
+        </div>
+        <div class="bg-white rounded-2xl p-4 border border-gray-100 space-y-2">
+          <div class="skeleton h-4 w-1/3 rounded"></div>
+          <div class="skeleton h-3 w-full rounded"></div>
+          <div class="skeleton h-3 w-5/6 rounded"></div>
+          <div class="skeleton h-3 w-2/3 rounded"></div>
+        </div>
+        <div class="bg-white rounded-2xl p-4 border border-gray-100 space-y-2">
+          <div class="skeleton h-4 w-1/4 rounded"></div>
+          <div class="skeleton h-24 w-full rounded-xl"></div>
+        </div>
+      </div>`
+    }
+
+    // ★ Phase 1: requestAnimationFrame으로 렌더러 호출 → 브라우저가 셸을 먼저 페인트한 후 렌더 시작
+    const _runRender = () => {
+      const _pageResult = pages[page]()
+      if (_pageResult && typeof _pageResult.then === 'function') {
+        _pageResult.then(() => {
+          console.log(`[Nav] ${page} 렌더완료: ${Math.round(performance.now() - _t_nav)}ms`)
+          // 렌더 완료 후 HTML 캐시 저장 (orders/meals 제외)
+          if (!noCachePages.includes(page)) {
+            const content = document.getElementById('pageContent')
+            if (content && content.innerHTML.length > 100) {
+              App._htmlCache[htmlCacheKey] = content.innerHTML
+            }
           }
-        }
-      }).catch(e => {
-        console.error('[navigateTo] 페이지 렌더링 오류:', e)
-        const _c = document.getElementById('pageContent')
-        if (_c) _c.innerHTML = '<div class="text-red-500 p-6 text-center" style="font-size:14px"><i class="fas fa-exclamation-triangle mr-2"></i>페이지 로딩 중 오류가 발생했습니다.<br><small style="color:#9ca3af;font-size:12px">' + (e?.message || String(e)) + '</small><br><button onclick="navigateTo(\'' + page + '\')" style="margin-top:12px;padding:6px 16px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer">다시 시도</button></div>'
-      })
+        }).catch(e => {
+          console.error('[navigateTo] 페이지 렌더링 오류:', e)
+          const _c = document.getElementById('pageContent')
+          if (_c) _c.innerHTML = '<div class="text-red-500 p-6 text-center" style="font-size:14px"><i class="fas fa-exclamation-triangle mr-2"></i>페이지 로딩 중 오류가 발생했습니다.<br><small style="color:#9ca3af;font-size:12px">' + (e?.message || String(e)) + '</small><br><button onclick="navigateTo(\'' + page + '\')" style="margin-top:12px;padding:6px 16px;background:#2563eb;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer">다시 시도</button></div>'
+        })
+      }
+    }
+
+    // HTML 캐시가 있거나 noCachePages면 즉시 실행, 아니면 rAF로 지연(셸 페인트 후 실행)
+    if (_hasCachedHtml || noCachePages.includes(page)) {
+      _runRender()
+    } else {
+      requestAnimationFrame(_runRender)
     }
   } else {
     document.getElementById('pageContent').innerHTML =
@@ -726,24 +1377,67 @@ function changeMonth(delta) {
   App._panelReady = {}  // 월 변경 시 캐시 초기화
   App._htmlCache = {}   // HTML 캐시도 초기화
   _apiCacheClear()      // API 캐시도 초기화
+  window._schedulePublishedAt = null  // 확정 상태 캐시 초기화
+  // ★ 월 변경 시 이벤트 발주 일별 맵 초기화 (stale state 방지)
+  // renderOrders 진입 시에도 초기화되지만 명시적으로 여기서도 초기화
+  window._eventDailyMap = {}
+  window._eventDailyCountMap = {}
   navigateTo(App.currentPage)
 }
 
-// ── API 응답 캐시 (GET 요청 30초 캐시로 빠른 로딩) ──────────────
+// ── API 응답 캐시 (GET 요청 캐시로 빠른 로딩) ──────────────
 const _apiCache = new Map()
-const _API_CACHE_TTL = 30000  // 30초
+const _API_CACHE_TTL = 300000  // 5분 (기본 TTL: prefetch 효과 유지 + 재클릭 즉시 표시)
+
+// URL별 TTL 설정 (ms)
+// - vendors: 5분 (업체 정보는 자주 안 바뀜, PUT/POST 시 자동 무효화)
+// - patient-categories: 5분 (카테고리 구조는 자주 안 바뀜, PUT 시 자동 무효화)
+// - settings: 60초 (설정은 상대적으로 자주 변경 가능)
+// - dashboard/summary: 서버 캐시로 별도 관리 (클라이언트 TTL 30초)
+// - orders (발주 실데이터): 캐시 안 함 (실시간 반영 필수)
+function _apiCacheTtl(url) {
+  if (url.includes('/api/vendors')) return 300000            // 5분
+  if (url.includes('/api/orders/patient-categories')) return 300000  // 5분 (구조 데이터)
+  if (url.includes('/api/admin/hospitals/') && url.includes('/patient-categories')) return 300000  // 5분
+  if (url.includes('/api/dashboard/summary')) return 30000   // 30초 (서버 캐시와 연동)
+  // 연차/월차 잔액: 탭 진입 시 자동 갱신되므로 10분 유지 (자주 안 바뀌는 데이터)
+  if (url.includes('/api/schedule/leave-balance')) return 600000      // 10분
+  // 병원 설정·권한 데이터: 구조적 데이터라 자주 안 바뀜
+  if (url.includes('/api/schedule/work-settings')) return 600000      // 10분
+  if (url.includes('/api/schedule/holiday-policy-summary')) return 600000 // 10분
+  if (url.includes('/api/schedule/positions')) return 600000           // 10분
+  if (url.includes('/api/schedule/shifts')) return 600000              // 10분 (근무조 변경 빈도 낮음)
+  // 연차 알림·부여휴무: 월별 데이터, 스케줄 탭 내 수동 저장 시 무효화됨
+  if (url.includes('/api/schedule/alerts/leave')) return 300000        // 5분
+  if (url.includes('/api/schedule/off-grants')) return 300000          // 5분
+  if (url.includes('/api/schedule/monthly-leave/summary')) return 300000 // 5분
+  return _API_CACHE_TTL  // 기본 5분
+}
 
 function _apiCacheKey(url) { return url }
 function _apiCacheGet(url) {
   const entry = _apiCache.get(_apiCacheKey(url))
   if (!entry) return null
-  if (Date.now() - entry.ts > _API_CACHE_TTL) { _apiCache.delete(_apiCacheKey(url)); return null }
+  const ttl = _apiCacheTtl(url)
+  if (Date.now() - entry.ts > ttl) { _apiCache.delete(_apiCacheKey(url)); return null }
   return entry.data
 }
 function _apiCacheSet(url, data) {
-  // 발주/대시보드/업체 관련 API는 캐시하지 않음 (데이터 불일치 방지)
-  const noCachePatterns = ['/api/orders', '/api/dashboard', '/api/vendors', '/api/card-expenses']
-  if (noCachePatterns.some(p => url.includes(p))) return
+  // 발주 실데이터(저장/수정 대상)는 캐시 안 함
+  // /api/orders/patient-categories, /api/orders/category-monthly 등 정적성 높은 하위경로는 캐시 허용
+  const hardNoCachePatterns = [
+    '/api/orders/save',
+    '/api/orders/inspection',
+    '/api/orders/multiday',
+  ]
+  if (hardNoCachePatterns.some(p => url.includes(p))) return
+  // /api/orders/ 중에서 캐시 허용 예외 (정적 구조 데이터)
+  const ordersAllowCache = [
+    '/api/orders/patient-categories',
+    '/api/orders/category-monthly',
+    '/api/orders/category-annual',
+  ]
+  if (url.includes('/api/orders') && !ordersAllowCache.some(p => url.includes(p))) return
   _apiCache.set(_apiCacheKey(url), { data, ts: Date.now() })
 }
 function _apiCacheInvalidate(pattern) {
@@ -754,6 +1448,63 @@ function _apiCacheInvalidate(pattern) {
 }
 // 월 변경 시 캐시 전체 초기화
 function _apiCacheClear() { _apiCache.clear() }
+
+// ── fetchWithCache: 캐시 우선 GET 요청 (prefetch 전용) ──────────
+// 기존 api() 함수를 건드리지 않고 prefetch 전용으로만 사용
+// - 캐시 히트: 즉시 반환
+// - 캐시 미스: fetch 후 _apiCacheSet에 저장
+async function fetchWithCache(url) {
+  try {
+    const cached = _apiCacheGet(url)
+    if (cached !== null) return cached
+    const res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${App.token}` }
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    if (json) _apiCacheSet(url, json)
+    return json
+  } catch(e) { return null }
+}
+
+// ── Phase 4: 무거운 라이브러리 지연 로드 (promise 캐시) ────────────
+// xlsx.bundle.js (416KB): 엑셀 기능 사용 시에만 로드
+// jspdf, html2canvas: 이미 defer / 동적 로드 처리 중
+let _xlsxLoadPromise = null
+function _loadXlsx() {
+  if (window.XLSX) return Promise.resolve(true)
+  if (_xlsxLoadPromise) return _xlsxLoadPromise
+  _xlsxLoadPromise = new Promise(resolve => {
+    // 로컬 파일 우선 시도
+    const s = document.createElement('script')
+    s.src = '/static/xlsx.bundle.js'
+    s.onload = () => resolve(true)
+    s.onerror = () => {
+      // 로컬 실패 시 CDN fallback
+      const s2 = document.createElement('script')
+      s2.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+      s2.onload = () => resolve(true)
+      s2.onerror = () => { _xlsxLoadPromise = null; resolve(false) }
+      document.head.appendChild(s2)
+    }
+    document.head.appendChild(s)
+  })
+  return _xlsxLoadPromise
+}
+// Chart.js defer로 변경했으므로, app.js 실행 시점에 Chart가 없을 수 있음 → 로더 제공
+let _chartLoadPromise = null
+function _loadChart() {
+  if (window.Chart) return Promise.resolve(true)
+  if (_chartLoadPromise) return _chartLoadPromise
+  _chartLoadPromise = new Promise(resolve => {
+    const s = document.createElement('script')
+    s.src = '/static/chart.umd.min.js'
+    s.onload = () => resolve(true)
+    s.onerror = () => { _chartLoadPromise = null; resolve(false) }
+    document.head.appendChild(s)
+  })
+  return _chartLoadPromise
+}
 
 async function api(method, url, data = null) {
   try {
@@ -776,6 +1527,16 @@ async function api(method, url, data = null) {
     if (method !== 'GET') {
       const pathParts = url.split('/api/')[1]?.split('/') || []
       if (pathParts[0]) _apiCacheInvalidate(`/api/${pathParts[0]}`)
+      // 발주/식수/설정 저장 시 dashboard/summary 캐시도 함께 무효화 (숫자 즉시 반영)
+      if (['orders', 'meals', 'settings', 'card-expenses'].includes(pathParts[0])) {
+        _apiCacheInvalidate('/api/dashboard')
+        // 서버 캐시 무효화 요청 (백그라운드, 실패해도 무방)
+        fetch('/api/dashboard/cache-invalidate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${App.token}` },
+          body: JSON.stringify({ reason: pathParts[0] })
+        }).catch(() => {})
+      }
       // 발주 관련 저장 시 _slowCache(5분 TTL) 도 무효화 → 재진입 시 최신 데이터 반영
       if (pathParts[0] === 'orders' && window._slowCache) {
         Object.keys(window._slowCache).forEach(k => {
@@ -952,6 +1713,23 @@ function isWeekend(year, month, day) {
   const d = new Date(year, month-1, day).getDay()
   return d === 0 || d === 6
 }
+// 공휴일 여부 체크 (전역 Set 활용)
+function isPublicHoliday(dateStr) {
+  return !!(window._publicHolidaySet && window._publicHolidaySet.has(dateStr))
+}
+// 공휴일 데이터 로드 후 전역 Set에 저장 (월 단위, 캐시)
+async function loadPublicHolidays(year, month) {
+  const key = `${year}-${String(month).padStart(2,'0')}`
+  if (window._publicHolidaySet && window._publicHolidaySetKey === key) return // 이미 로드됨
+  try {
+    const data = await api('GET', `/api/settings/holidays/${year}/${String(month).padStart(2,'0')}`)
+    window._publicHolidaySet = new Set((data || []).map(h => h.holiday_date || h.date || h))
+    window._publicHolidaySetKey = key
+  } catch(e) {
+    window._publicHolidaySet = new Set()
+    window._publicHolidaySetKey = key
+  }
+}
 function getCategoryColor(cat) {
   const map = { major:'bg-blue-400', meat:'bg-red-400', seafood:'bg-cyan-400', fruit:'bg-yellow-400',
     organic:'bg-green-400', delivery:'bg-purple-400', market:'bg-orange-400', event:'bg-pink-400',
@@ -959,8 +1737,21 @@ function getCategoryColor(cat) {
   return map[cat] || 'bg-gray-300'
 }
 function getCategoryLabel(cat) {
-  const map = { major:'대기업급식', meat:'육류', seafood:'해산물', fruit:'청과', organic:'유기농',
-    delivery:'인터넷배송', market:'시장', event:'이벤트', card:'법인카드', supply:'소모품', general:'기타' }
+  const map = {
+    major:   '대기업·급식',
+    meat:    '육류',
+    seafood: '해산물',
+    fruit:   '청과·과채',
+    organic: '유기농',
+    delivery:'인터넷배송',
+    market:  '일반식품',
+    event:   '이벤트',
+    card:    '법인카드',
+    supply:  '소모품',
+    utility: '공과금/기타',
+    general: '일반',
+    other:   '기타',
+  }
   return map[cat] || '기타'
 }
 function getTaxTypeLabel(t) {
@@ -1033,8 +1824,17 @@ function logout() { localStorage.clear(); window.location.href = '/login' }
 //  대시보드 페이지 (v2.0)
 // ══════════════════════════════════════════════════════════════
 async function renderDashboard() {
+  // ══ [PERF] 대시보드 타이밍 측정 ══
+  const _t_dash_click = performance.now()
+  console.log('[Dashboard] 클릭 → renderDashboard 진입:', Math.round(_t_dash_click), 'ms')
+
   const content = document.getElementById('pageContent')
-  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
+  // ★ STEP 0: 캐시 없을 때만 스켈레톤 표시 (캐시 있으면 navigateTo에서 이미 즉시 표시됨)
+  const _cacheHospId2 = App.hospitalId || App.adminHospitalId || 'x'
+  const _dashCacheKey = `dashboard-${App.currentYear}-${App.currentMonth}-h${_cacheHospId2}`
+  const _hasDashCache = !!(App._htmlCache && App._htmlCache[_dashCacheKey])
+  if (!_hasDashCache) {
+    content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
       <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
@@ -1052,6 +1852,10 @@ async function renderDashboard() {
       <div class="skeleton h-32 w-full rounded"></div>
     </div>
   </div>`
+    console.log('[Dashboard] STEP 0 스켈레톤 표시 (캐시 없음)')
+  } else {
+    console.log('[Dashboard] STEP 0 캐시 HTML 유지 (navigateTo에서 이미 표시됨)')
+  }
 
   // ── 관리자: 병원 선택 처리 ──────────────────────────────────────
   if (App.role === 'admin') {
@@ -1069,21 +1873,35 @@ async function renderDashboard() {
   }
 
   const hqParam = App.role === 'admin' ? `?hospitalId=${App.adminHospitalId}` : ''
+  console.log('[Dashboard] STEP 0 스켈레톤 표시:', Math.round(performance.now() - _t_dash_click), 'ms')
 
-  const [data, catData, dashCardData] = await Promise.all([
+  const _t_dash_api = performance.now()
+  const [data, catData, dashCardData, dashEventData] = await Promise.all([
     api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}${hqParam}`),
     api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}${hqParam}`),
-    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParam}`)
+    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParam}`),
+    api('GET', `/api/event-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParam}`).catch(() => null)
   ])
+  console.log('[Dashboard] STEP 1 API 응답:', Math.round(performance.now() - _t_dash_api), 'ms')
 
   // 인력/인건비 요약 (병원 계정만, admin 제외)
   let dashStaffLaborData = null
   let dashEmployees = []
   let dashLeaveAlerts = []
   if (App.role === 'hospital') {
-    try { dashStaffLaborData = await api('GET', `/api/dashboard/staff-labor/${App.currentYear}/${App.currentMonth}${hqParam}`) } catch(e) {}
-    try { dashEmployees = await api('GET', '/api/schedule/employees') || [] } catch(e) {}
-    try { dashLeaveAlerts = await api('GET', '/api/schedule/alerts/leave') || [] } catch(e) {}
+    // ★ 3개 순차 await → Promise.all 병렬화 (절감: ~80-150ms)
+    const _t_labor0 = performance.now()
+    try {
+      const [_labor, _emps, _alerts] = await Promise.all([
+        api('GET', `/api/dashboard/staff-labor/${App.currentYear}/${App.currentMonth}${hqParam}`).catch(() => null),
+        api('GET', '/api/schedule/employees').catch(() => []),
+        api('GET', '/api/schedule/alerts/leave').catch(() => [])
+      ])
+      dashStaffLaborData = _labor
+      dashEmployees = _emps || []
+      dashLeaveAlerts = _alerts || []
+    } catch(e) {}
+    console.log('[Dashboard] 인력데이터 병렬로딩:', Math.round(performance.now() - _t_labor0), 'ms')
   }
 
   if (!data || data.error) {
@@ -1124,6 +1942,30 @@ async function renderDashboard() {
   // total > 0인 subtype만 필터링
   const _dashCardBySubtypeFiltered = Object.values(dashCardBySubtype).filter(st => st.total > 0)
 
+  // 이벤트 운영비 집계
+  const dashEventExpenses = dashEventData?.expenses || []
+  const dashEventVendors = dashEventData?.eventVendors || []
+  const dashEventMonthTotal = dashEventExpenses.reduce((s, e) => s + (e.amount || 0), 0)
+  const dashEventItemSummary = dashEventData?.itemSummary || []
+  const dashEventPurposeSummary = dashEventData?.purposeSummary || []
+  // ★ 실제 구매 업체별 합계 (rowVendorTotals: row_vendor_id 기준)
+  // API가 rowVendorTotals를 제공하면 우선 사용, 없으면 expenses에서 직접 집계
+  const dashEventVendorList = (() => {
+    if (dashEventData?.rowVendorTotals && dashEventData.rowVendorTotals.length > 0) {
+      return dashEventData.rowVendorTotals.filter(v => v.total > 0)
+    }
+    // fallback: expenses에서 vendor_display_name 기준 집계
+    const m = {}
+    dashEventExpenses.forEach(e => {
+      const key = e.row_vendor_id || ('txt_' + (e.vendor_name || ''))
+      const name = e.vendor_display_name || e.vendor_name || ''
+      if (!m[key]) m[key] = { vendor_name: name, total: 0, count: 0 }
+      m[key].total += e.amount || 0
+      m[key].count += 1
+    })
+    return Object.values(m).filter(v => v.total > 0)
+  })()
+
   const patientCats = catData?.categories || []
   const catMonthly = catData?.monthly || []
   const catSettings = catData?.settings || []
@@ -1144,12 +1986,52 @@ async function renderDashboard() {
   const pm = data.prevMonth || {}  // 전월 데이터
   // 백엔드에서 계산된 카테고리별 식단가 데이터 (있으면 우선 사용)
   const catDietPricesData = data.catDietPrices || []
+  // ★ 비용 구조 분리 (식재료비 vs 운영비) — 전체 화면 공통 기준
+  // 식재료비 = cost_type='food' / 운영비 = cost_type IN ('supply','event','utility','card')
+  const cb = data.costBreakdown || null
   // ── 2.2 월말 예상 식단가 / 2.3 예산 소진 예상일 / 2.4 적정성 / 2.5 이상탐지 ──
   const proj = data.projection || {}
   const budgetDepl = data.budgetDepletion || {}
   const orderAppr = data.orderAppropriateness || {}
   const anomalies = data.anomalies || []
-  const autoAnalysis = data.autoAnalysis || []
+  const autoAnalysis = (() => {
+    const base = data.autoAnalysis || []
+    const extra = []
+    // ── 식수 증감 분석 강화 ──
+    const pm2 = data.prevMonth || {}
+    const prevMeals2 = pm2.totalMeals || 0
+    const curMeals2  = data.totalMeals || 0
+    if (prevMeals2 > 0 && curMeals2 > 0) {
+      const diff2 = curMeals2 - prevMeals2
+      const pct2  = parseFloat((diff2 / prevMeals2 * 100).toFixed(1))
+      if (Math.abs(pct2) >= 5) {
+        const dir = diff2 > 0 ? '증가' : '감소'
+        const costImpact = (data.mealPriceTotal || 0) > 0 ? Math.abs(Math.round(diff2 * (data.mealPriceTotal || 0))) : 0
+        const impactTxt = costImpact > 0 ? ` (비용 영향 약 ${(costImpact/10000).toFixed(0)}만원)` : ''
+        const alreadyHas = base.some(m => typeof m === 'string' && m.includes('식수'))
+        if (!alreadyHas) {
+          extra.push(`전월 대비 식수 ${Math.abs(pct2)}% ${dir} (${diff2 > 0 ? '+' : ''}${diff2.toLocaleString()}식)${impactTxt} — 발주 금액에 직접 반영됩니다.`)
+        }
+      }
+    }
+    // ── 공급사 집중도 분석 강화 ──
+    const vendors2 = data.vendors || []
+    const totalUsed2 = data.totalUsed || 0
+    if (vendors2.length >= 2 && totalUsed2 > 0) {
+      const sorted2 = [...vendors2].sort((a,b)=>(b.totalAmount||0)-(a.totalAmount||0))
+      const top3amt = sorted2.slice(0,3).reduce((s,v)=>s+(v.totalAmount||0),0)
+      const top3pct2 = Math.round(top3amt / totalUsed2 * 100)
+      if (top3pct2 >= 60) {
+        const alreadyHas = base.some(m => typeof m === 'string' && (m.includes('집중') || m.includes('의존')))
+        if (!alreadyHas) {
+          const top1 = sorted2[0]
+          const top1pct = Math.round((top1?.totalAmount||0)/totalUsed2*100)
+          extra.push(`공급사 집중도: 상위 3개사 ${top3pct2}%${top1pct >= 40 ? ` (${top1?.name||''} ${top1pct}% 단독 집중)` : ''} — 공급 다변화를 권장합니다.`)
+        }
+      }
+    }
+    return [...base, ...extra]
+  })()
   window._catDietPricesData = catDietPricesData  // 실시간 패널에서 참조
   const todayPatientMealsDash = data.todayPatientMeals || 0
   const mealCustomFields = data.mealCustomFields || []
@@ -1167,11 +2049,11 @@ async function renderDashboard() {
   const mealPriceNoSupply = data.mealPriceNoSupply || 0
   const mealPriceOperating = data.mealPriceOperating || 0  // 총 운영원가 (식재료+소모품+카드)
   const targetMealPrice = data.settings?.meal_price || 0
-  // ★★★ KPI 목표 식단가: catDietPricesData[0].targetPrice (target_meal_price) 우선 — 가중평균 사용 금지
-  // 카테고리 1개: 해당 카테고리 목표 / 카테고리 2개 이상: settings.meal_price 폴백
+  // ★★★ KPI 목표 식단가: refMealPrice(관리자 직접 입력) 최우선 → targetPrice → settings.meal_price 폴백
+  // 카테고리 1개: ref_meal_price(직접 입력) 우선 / 카테고리 2개 이상: settings.meal_price 폴백
   const effectiveTargetPrice = (() => {
     const cdp = catDietPricesData || []
-    if (cdp.length === 1) return cdp[0].targetPrice || targetMealPrice || 0
+    if (cdp.length === 1) return cdp[0].refMealPrice || cdp[0].targetPrice || targetMealPrice || 0
     if (cdp.length > 1) return targetMealPrice || 0  // 다중 카테고리는 전체 목표 식단가 사용
     return targetMealPrice || 0
   })()
@@ -1209,18 +2091,24 @@ async function renderDashboard() {
     e.health_cert_expire <= d10Str
   ).sort((a, b) => a.health_cert_expire.localeCompare(b.health_cert_expire))
 
-  // 잔반 데이터 비동기 로드
+  // ★ STEP 1b: 잔반 + 검수 - 렌더링 후 비동기 로드 (224ms 절감)
+  // 렌더링 전에는 기본값으로 표시, 렌더 완료 후 setTimeout으로 업데이트
   let foodWasteData = []
-  try {
-    foodWasteData = await api('GET', `/api/settings/food-waste/${App.currentYear}/${App.currentMonth}`) || []
-  } catch(e) {}
-
-  // 검수 미완료 데이터 비동기 로드
   let inspectionSummary = null
-  try {
-    const inspResult = await api('GET', `/api/orders/inspection/pending/${App.currentYear}/${App.currentMonth}`)
-    inspectionSummary = inspResult?.summary || null
-  } catch(e) {}
+  // 캐시에서 이전 값 복원 (재방문 시 즉시 표시)
+  const _step1bCacheKey = `step1b-${App.currentYear}-${App.currentMonth}`
+  // 전역 캐시에서 먼저 확인 (발주현황 배너용)
+  if (window._inspectionSummaryCache) inspectionSummary = window._inspectionSummaryCache
+  if (App._htmlCache && App._htmlCache[_step1bCacheKey]) {
+    try {
+      const _cached1b = App._htmlCache[_step1bCacheKey]
+      foodWasteData = _cached1b.foodWasteData || []
+      if (_cached1b.inspectionSummary) {
+        inspectionSummary = _cached1b.inspectionSummary
+        window._inspectionSummaryCache = inspectionSummary  // 전역 동기화
+      }
+    } catch(e) {}
+  }
 
   // ── 관리자: 병원 선택 드롭다운 HTML ──────────────────────────────
   const adminHospitalBar = App.role === 'admin' && App._adminHospitals?.length > 0 ? `
@@ -1233,6 +2121,7 @@ async function renderDashboard() {
     </select>
   </div>` : ''
 
+  console.log('[Dashboard] STEP 2 렌더링 시작:', Math.round(performance.now() - _t_dash_click), 'ms')
   content.innerHTML = `
   ${adminHospitalBar}
 
@@ -1390,108 +2279,61 @@ async function renderDashboard() {
     </div>
   </div>` : ''}
 
-  <!-- ────────────────────────────────────────────────────────
-       2.2 월말 예상 식단가 / 2.3 예산 소진 예상일 / 2.4 적정성 / 2.5 이상탐지
-       ──────────────────────────────────────────────────────── -->
-  ${(proj.projectedMonthEndMealPrice > 0 || budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined) ? `
-  <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+  <!-- ════════════════════════════════════════════════════════
+       1층 대표 KPI: 대표 식단가(식재료 기준) + 핵심 판단 카드
+       ════════════════════════════════════════════════════════ -->
+  <!-- 층 구분 레이블 -->
+  <div class="flex items-center gap-2 mb-2 mt-1">
+    <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">📊 핵심 판단 지표</span>
+    <div class="flex-1 h-px bg-gray-100"></div>
+  </div>
 
-    <!-- 2.2 월말 예상 식단가 -->
-    <div class="bg-white rounded-2xl shadow-sm border ${(() => {
-      const catProjs2 = proj.catProjections || []
-      const mainCats2 = catProjs2.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
-      if (mainCats2.length > 0) {
-        // 다중 카테고리: 하나라도 초과면 빨강
-        const anyOver2 = mainCats2.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice)
-        return anyOver2 ? 'border-red-200' : 'border-green-200'
-      }
-      return proj.projectedMealPriceDiff > 0 ? 'border-red-200' : 'border-green-200'
-    })()} p-4">
-      <div class="flex items-center gap-2 mb-2">
-        <div class="w-8 h-8 rounded-lg ${(() => {
-          const cps = proj.catProjections || []
-          const mcs = cps.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
-          if (mcs.length > 0) return mcs.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice) ? 'bg-red-50' : 'bg-green-50'
-          return proj.projectedMealPriceDiff > 0 ? 'bg-red-50' : 'bg-green-50'
-        })()} flex items-center justify-center">
-          <i class="fas fa-chart-line ${(() => {
-            const cps = proj.catProjections || []
-            const mcs = cps.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
-            if (mcs.length > 0) return mcs.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice) ? 'text-red-500' : 'text-green-500'
-            return proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-500'
-          })()} text-sm"></i>
+  ${(budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined || cb) ? `
+  <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-2">
+
+    <!-- ★ 1-1. 대표 식단가 (식재료 기준) — 메인 KPI -->
+    ${cb ? (() => {
+      const fUsed2 = cb.food?.used || 0
+      const foodDPMain = cb.foodDietPrice || 0
+      const tgtP2 = effectiveTargetPrice
+      const stateColor2 = foodDPMain > 0 && tgtP2 > 0
+        ? (foodDPMain > tgtP2 * 1.1 ? '#b91c1c' : foodDPMain > tgtP2 ? '#dc2626' : foodDPMain > tgtP2 * 0.9 ? '#d97706' : '#16a34a')
+        : '#374151'
+      const stateLabel2 = foodDPMain > 0 && tgtP2 > 0
+        ? (foodDPMain > tgtP2 * 1.1 ? '🚨 110% 초과' : foodDPMain > tgtP2 ? '🔴 목표 초과' : foodDPMain > tgtP2 * 0.95 ? '🟡 주의' : '🟢 목표 내')
+        : (tgtP2 > 0 ? '집계중' : '목표 미설정')
+      const borderC2 = foodDPMain > 0 && tgtP2 > 0
+        ? (foodDPMain > tgtP2 ? 'border-red-300' : foodDPMain > tgtP2 * 0.95 ? 'border-amber-200' : 'border-emerald-300')
+        : 'border-indigo-200'
+      const bgBadge2 = foodDPMain > 0 && tgtP2 > 0
+        ? (foodDPMain > tgtP2 ? 'bg-red-50' : 'bg-emerald-50')
+        : 'bg-indigo-50'
+      const priceDiffMain = tgtP2 > 0 && foodDPMain > 0 ? foodDPMain - tgtP2 : null
+      return `<div class="bg-white rounded-2xl shadow-sm border-2 ${borderC2} p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <div class="w-8 h-8 rounded-lg ${bgBadge2} flex items-center justify-center">
+            <i class="fas fa-utensils text-sm" style="color:${stateColor2}"></i>
+          </div>
+          <div>
+            <span class="text-xs font-bold text-gray-700">대표 식단가</span>
+            <div class="text-xs text-gray-400">식재료비 ÷ 기준 식수</div>
+          </div>
         </div>
-        <span class="text-xs text-gray-500 font-semibold">월말 예상 식단가</span>
-      </div>
-      ${(() => {
-        const catProjs = proj.catProjections || []
-        const mainCatProjs = catProjs.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
-        if (mainCatProjs.length > 0) {
-          // 카테고리별 + 전체 표시
-          const catRows = mainCatProjs.map(c => {
-            const catColor = getCategoryColorHex ? getCategoryColorHex(c.category_key) : '#6b7280'
-            const isOver = c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice
-            const isDanger = c.targetPrice > 0 && c.projectedMealPrice >= c.targetPrice * 1.1
-            const projDiff = c.targetPrice > 0 && c.projectedMealPrice > 0 ? c.projectedMealPrice - c.targetPrice : null
-            const projDiffPct = c.targetPrice > 0 && projDiff !== null ? parseFloat((projDiff / c.targetPrice * 100).toFixed(1)) : null
-            const prColor = isDanger ? '#b91c1c' : isOver ? '#dc2626' : (c.projectedMealPrice > 0 && c.targetPrice > 0 ? '#16a34a' : '#1d4ed8')
-            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #f3f4f6">
-              <div style="display:flex;align-items:center;gap:4px">
-                <span style="width:7px;height:7px;border-radius:50%;background:${catColor};display:inline-block;flex-shrink:0"></span>
-                <span style="font-size:11px;font-weight:600;color:#374151">${c.category_name}</span>
-                <span style="font-size:8px;color:#9ca3af">환자군 식수 기준</span>
-              </div>
-              <div style="text-align:right">
-                <span style="font-size:13px;font-weight:800;color:${c.projectedMealPrice>0?prColor:'#9ca3af'}">${c.projectedMealPrice>0?fmt(c.projectedMealPrice)+'원':'집계중'}</span>
-                ${c.targetPrice > 0 && c.projectedMealPrice > 0 ? `
-                  <div style="font-size:9px;font-weight:700;color:${prColor}">
-                    ${projDiff !== null && projDiff > 0 ? `🔴 +${fmt(projDiff)}원(+${projDiffPct}%)` : projDiff !== null && projDiff < 0 ? `🟢 ${fmt(Math.abs(projDiff))}원(${projDiffPct}%)` : '✅목표'}
-                  </div>` : c.targetPrice > 0 ? `<div style="font-size:9px;color:#9ca3af">목표: ${fmt(c.targetPrice)}원</div>` : ''}
-              </div>
-            </div>`
-          }).join('')
-          const overallColor = proj.projectedMealPriceDiff > 0 ? '#dc2626' : '#16a34a'
-          // 다중 카테고리에서 전체 평균은 참고용이므로 중립 색상 사용
-          return `<div style="margin-bottom:6px">${catRows}</div>
-          <div style="border-top:2px solid #e5e7eb;padding-top:6px;display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:#374151">전체 평균<span style="font-size:8px;font-weight:400;color:#9ca3af;margin-left:3px">(참고)</span></span>
-            <div style="text-align:right">
-              <div class="text-lg font-bold" style="color:${proj.projectedMonthEndMealPrice>0?'#6b7280':'#9ca3af'}">${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}</div>
-              <div style="font-size:9px;color:#9ca3af">전체 발주액 ÷ 전체 식수 (카테고리별 위 참고)</div>
-            </div>
-          </div>`
-        }
-        // 카테고리 없는 경우: 기존 단일 표시
-        return `<div class="text-lg font-bold ${proj.projectedMealPriceDiff > 0 ? 'text-red-600' : 'text-gray-800'}">
-          ${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}
+        <div class="text-2xl font-black mb-1" style="color:${stateColor2}">${foodDPMain > 0 ? fmt(foodDPMain) : '-'}<span class="text-sm font-normal text-gray-400 ml-1">원/식</span></div>
+        <div class="flex items-center justify-between mt-1">
+          <div class="text-xs text-gray-500">목표: <span class="font-semibold text-gray-700">${tgtP2 > 0 ? fmt(tgtP2)+'원' : '미설정'}</span></div>
+          <span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:${stateColor2}18;color:${stateColor2}">${stateLabel2}</span>
         </div>
-        <div class="text-xs text-gray-400 mt-1">현재: ${fmt(data.mealPriceTotal||0)}원 · 목표: ${fmt(proj.targetMealPrice||0)}원</div>`
-      })()}
-      ${(() => {
-        const catProjs3 = proj.catProjections || []
-        const mainCats3 = catProjs3.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
-        if (mainCats3.length > 0) {
-          // 다중 카테고리: 카테고리별 over/ok 요약
-          const overCats = mainCats3.filter(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice)
-          const okCats   = mainCats3.filter(c => c.targetPrice > 0 && c.projectedMealPrice > 0 && c.projectedMealPrice <= c.targetPrice)
-          if (overCats.length > 0) {
-            return `<div class="text-xs font-semibold mt-1 text-red-500">⚠ ${overCats.map(c=>c.category_name).join(', ')} 초과 예상</div>`
-          } else if (okCats.length > 0) {
-            return `<div class="text-xs text-green-600 font-semibold mt-1">✓ 모든 카테고리 목표 범위 내</div>`
-          }
-          return ''
-        }
-        if (proj.projectedMealPriceDiff !== 0 && proj.projectedMonthEndMealPrice > 0) {
-          return `<div class="text-xs font-semibold mt-1 ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-600'}">
-            ${proj.projectedMealPriceDiff > 0 ? '▲' : '▼'} ${fmt(Math.abs(proj.projectedMealPriceDiff))}원
-            (${proj.projectedMealPriceDiff > 0 ? '+' : ''}${proj.projectedMealPriceDiffPct}%)
-            ${proj.projectedMealPriceDiff > 0 ? '초과 예상' : '여유'}
-          </div>`
-        }
-        return proj.projectedMonthEndMealPrice > 0 ? '<div class="text-xs text-green-600 font-semibold mt-1">✓ 목표 범위 내</div>' : ''
-      })()}
-      <div class="text-xs text-gray-300 mt-1">${proj.elapsedDays||0}일 경과 기준 추세</div>
-    </div>
+        ${priceDiffMain !== null ? `<div class="text-xs mt-1 font-semibold" style="color:${stateColor2}">${priceDiffMain > 0 ? '▲ +'+fmt(priceDiffMain)+'원 초과' : '▼ '+fmt(Math.abs(priceDiffMain))+'원 절감'}</div>` : ''}
+      </div>`
+    })() : `<div class="bg-white rounded-2xl shadow-sm border-2 border-indigo-200 p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <div class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center"><i class="fas fa-utensils text-indigo-400 text-sm"></i></div>
+          <div><span class="text-xs font-bold text-gray-700">대표 식단가</span><div class="text-xs text-gray-400">식재료비 ÷ 기준 식수</div></div>
+        </div>
+        <div class="text-2xl font-black text-gray-400 mb-1">-<span class="text-sm font-normal ml-1">원/식</span></div>
+        <div class="text-xs text-gray-400 mt-1">비용구조 데이터 없음</div>
+      </div>`}
 
     <!-- 2.3 예산 소진 예상일 -->
     <div class="bg-white rounded-2xl shadow-sm border ${budgetDepl.budgetDepletionStatus==='exceeded'?'border-red-300':budgetDepl.budgetDepletionStatus==='warning'?'border-yellow-300':'border-gray-100'} p-4">
@@ -1701,6 +2543,146 @@ async function renderDashboard() {
     </div>
   </div>
 
+  <!-- ★ 비용 구조 분리 카드: 식재료비 vs 운영비 (cost_type 기준) -->
+  ${cb ? (() => {
+    const fmtW = (v) => {
+      const av = Math.abs(v||0)
+      return av >= 10000000 ? (Math.round((v||0)/10000)).toLocaleString('ko-KR')+'만원'
+           : av >= 10000   ? (Math.round((v||0)/10000)).toLocaleString('ko-KR')+'만원'
+           : (v||0).toLocaleString('ko-KR')+'원'
+    }
+    const colorCls = (used, budget) => budget > 0
+      ? (used > budget ? 'text-red-600' : used > budget * 0.85 ? 'text-amber-600' : 'text-emerald-600')
+      : 'text-gray-700'
+    const fBudget = cb.food?.budget || 0, oBudget = cb.operating?.budget || 0
+    const fUsed = cb.food?.used || 0, oUsed = cb.operating?.used || 0
+    const fRatio = cb.food?.ratio, oRatio = cb.operating?.ratio
+    const supUsed = cb.items?.supply?.used || 0, evUsed = cb.items?.event?.used || 0
+    const cardUsed = cb.items?.card?.used || 0, utilUsed = cb.items?.utility?.used || 0
+    const otherUsed = cb.items?.other?.used || 0  // ★ vendor_hospital_cost_rules 재분류 금액
+    const otherVendors = cb.items?.other?.vendors || []  // [{vendorId, vendorName, category, used}]
+    const supBudget = cb.items?.supply?.budget || 0
+    const evBudget = cb.items?.event?.budget || 0
+    const cardBudget = cb.items?.card?.budget || 0
+    const foodDietPrice = cb.foodDietPrice || 0
+    // ★ 참고 표시용 (식단가에 포함되어 있으나 운영 성격인 업체 금액)
+    const refSupply = cb.reference?.supply || 0
+    const refEvent  = cb.reference?.event  || 0
+    const refCard   = cb.reference?.card   || 0
+    const refUtil   = cb.reference?.utility || 0
+    const hasReference = (refSupply + refEvent + refCard + refUtil) > 0
+    const totalForRatio = fUsed + oUsed
+    const settingsMonth = `${App.currentYear}년 ${App.currentMonth}월`
+    const sfb = s?.settingsFallback  // fallback 정보 (null이면 현재 달 설정 사용 중)
+    const sfbMsg = sfb ? `<div class="px-5 py-2 bg-amber-50 border-b border-amber-100 flex items-center gap-2"><i class="fas fa-info-circle text-amber-500 text-xs"></i><span class="text-xs text-amber-700">${sfb.year}년 ${sfb.month}월 예산 설정 기준 (${App.currentMonth}월 예산 미설정 — 관리자 페이지에서 설정 후 저장해 주세요)</span></div>` : ''
+    return `<div class="mb-4 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-100 flex items-center gap-2">
+      <i class="fas fa-layer-group text-indigo-500 text-sm"></i>
+      <span class="font-bold text-gray-800 text-sm">비용 구조 분리 현황</span>
+      <span class="text-xs text-gray-400 ml-1">식재료비 vs 운영비</span>
+      <span class="text-xs text-indigo-400 ml-auto">${settingsMonth} 기준</span>
+    </div>
+    ${sfbMsg}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-0 divide-y md:divide-y-0 md:divide-x divide-gray-100">
+      <div class="p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+          <span class="text-xs font-bold text-emerald-700">식재료비</span>
+          <span class="text-xs text-gray-400 bg-emerald-50 px-1.5 rounded">cost_type = food</span>
+        </div>
+        <div class="flex items-end justify-between mb-2">
+          <div>
+            <div class="text-2xl font-bold ${colorCls(fUsed,fBudget)}">${fmtW(fUsed)}</div>
+            <div class="text-xs text-gray-400 mt-0.5">목표 ${fmtW(fBudget)}${fRatio!==null&&fRatio!==undefined?' · <span class="'+colorCls(fUsed,fBudget)+' font-semibold">'+fRatio+'%</span>':''}</div>
+          </div>
+          ${foodDietPrice > 0 ? '<div class="text-right"><div class="text-xs text-gray-400">식재료 기준 식단가</div><div class="text-lg font-bold text-emerald-600">'+foodDietPrice.toLocaleString('ko-KR')+'<span class="text-xs font-normal text-gray-400">원/식</span></div></div>' : ''}
+        </div>
+        ${fBudget > 0 ? '<div class="h-1.5 bg-gray-100 rounded-full overflow-hidden mt-1"><div class="h-full rounded-full '+(fUsed>fBudget?'bg-red-500':fUsed>fBudget*0.85?'bg-amber-400':'bg-emerald-500')+'" style="width:'+Math.min(fRatio||0,100)+'%;transition:width 0.5s"></div></div><div class="text-xs '+colorCls(fUsed,fBudget)+' font-semibold mt-1">'+fRatio+'% 사용 · 잔여 '+fmtW(Math.max(0,fBudget-fUsed))+'</div>' : '<div class="text-xs text-gray-400 mt-1">예산 미설정 (자동계산 후 저장 필요)</div>'}
+      </div>
+      <div class="p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+          <span class="text-xs font-bold text-amber-700">운영비</span>
+          <span class="text-xs text-gray-400 bg-amber-50 px-1.5 rounded">supply · event · card · utility</span>
+          ${totalForRatio > 0 ? '<span class="text-xs font-bold text-amber-600 ml-auto">비중 '+((oUsed/totalForRatio)*100).toFixed(1)+'%</span>' : ''}
+        </div>
+        <div class="text-2xl font-bold ${colorCls(oUsed,oBudget)} mb-1">${fmtW(oUsed)}</div>
+        <div class="text-xs text-gray-400 mb-2">목표 ${oBudget>0?fmtW(oBudget)+(oRatio!==null&&oRatio!==undefined?' · <span class="'+colorCls(oUsed,oBudget)+' font-semibold">'+oRatio+'%</span>':''):'미설정'}</div>
+        <div class="grid grid-cols-3 gap-1.5">
+          <div class="bg-purple-50 rounded-lg p-2 text-center">
+            <div class="text-xs text-purple-600 font-semibold">소모품</div>
+            <div class="text-sm font-bold ${colorCls(supUsed,supBudget)}">${fmtW(supUsed)}</div>
+            <div class="text-xs text-gray-400">${supBudget>0?Math.round(supUsed/supBudget*100)+'% 사용':'목표 미설정'}</div>
+          </div>
+          <div class="bg-orange-50 rounded-lg p-2 text-center">
+            <div class="text-xs text-orange-600 font-semibold">이벤트</div>
+            <div class="text-sm font-bold ${colorCls(evUsed,evBudget)}">${fmtW(evUsed)}</div>
+            <div class="text-xs text-gray-400">${evBudget>0?Math.round(evUsed/evBudget*100)+'% 사용':'목표 미설정'}</div>
+          </div>
+          <div class="bg-blue-50 rounded-lg p-2 text-center">
+            <div class="text-xs text-blue-600 font-semibold">법인카드</div>
+            <div class="text-sm font-bold ${colorCls(cardUsed,cardBudget)}">${fmtW(cardUsed)}</div>
+            <div class="text-xs text-gray-400">${cardBudget>0?Math.round(cardUsed/cardBudget*100)+'% 사용':'목표 미설정'}</div>
+          </div>
+        </div>
+        ${utilUsed>0?'<div class="mt-2 text-xs text-gray-500"><i class="fas fa-bolt mr-1 text-gray-400"></i>공과금/기타: '+fmtW(utilUsed)+'</div>':''}
+        ${otherVendors.length > 0 ? (() => {
+          // 비용 성격 한국어 레이블 (vendors.category 기반)
+          const catLabel = (cat) => ({
+            supply: '소모품', event: '이벤트', card: '법인카드',
+            utility: '공과금', market: '운영비', organic: '운영비',
+            delivery: '운영비', other: '운영비'
+          }[cat] || '운영비')
+          const rows = otherVendors.map(v =>
+            `<div class="flex items-center justify-between py-0.5">
+              <span class="text-gray-600"><span class="font-medium text-gray-700">${v.vendorName}</span> <span class="text-gray-400 text-xs">${catLabel(v.category)}</span></span>
+              <span class="font-semibold text-gray-700">${fmtW(v.used)}</span>
+            </div>`
+          ).join('')
+          return `<div class="mt-2 bg-gray-50 rounded-lg px-2.5 py-2 border border-gray-100">
+            <div class="flex items-center gap-1 mb-1.5">
+              <i class="fas fa-tags text-gray-400 text-xs"></i>
+              <span class="text-xs font-semibold text-gray-500">식재료비 포함 발주 → 운영비 분리</span>
+            </div>
+            ${rows}
+          </div>`
+        })() : ''}        ${hasReference ? `
+        <div class="mt-3 pt-3 border-t border-dashed border-yellow-200">
+          <div class="flex items-center gap-1.5 mb-2">
+            <i class="fas fa-info-circle text-yellow-500 text-xs"></i>
+            <span class="text-xs font-semibold text-yellow-700">식단가 포함 비용 (운영 성격 참고)</span>
+          </div>
+          <div class="text-xs text-yellow-600 bg-yellow-50 rounded-lg px-2.5 py-1.5 mb-2 leading-relaxed">
+            ※ 아래 금액은 식단가에 포함되어 있으며 <strong>운영비 합계에는 더해지지 않습니다.</strong>
+          </div>
+          <div class="grid grid-cols-3 gap-1.5">
+            ${refSupply>0?`<div class="bg-yellow-50 rounded-lg p-2 text-center border border-yellow-100">
+              <div class="text-xs text-yellow-700 font-semibold">소모품</div>
+              <div class="text-sm font-bold text-yellow-800">${fmtW(refSupply)}</div>
+              <div class="text-xs text-yellow-500">식단가 포함</div>
+            </div>`:''}
+            ${refEvent>0?`<div class="bg-yellow-50 rounded-lg p-2 text-center border border-yellow-100">
+              <div class="text-xs text-yellow-700 font-semibold">이벤트</div>
+              <div class="text-sm font-bold text-yellow-800">${fmtW(refEvent)}</div>
+              <div class="text-xs text-yellow-500">식단가 포함</div>
+            </div>`:''}
+            ${refCard>0?`<div class="bg-yellow-50 rounded-lg p-2 text-center border border-yellow-100">
+              <div class="text-xs text-yellow-700 font-semibold">법인카드</div>
+              <div class="text-sm font-bold text-yellow-800">${fmtW(refCard)}</div>
+              <div class="text-xs text-yellow-500">식단가 포함</div>
+            </div>`:''}
+            ${refUtil>0?`<div class="bg-yellow-50 rounded-lg p-2 text-center border border-yellow-100">
+              <div class="text-xs text-yellow-700 font-semibold">공과금/기타</div>
+              <div class="text-sm font-bold text-yellow-800">${fmtW(refUtil)}</div>
+              <div class="text-xs text-yellow-500">식단가 포함</div>
+            </div>`:''}
+          </div>
+        </div>` : ''}
+      </div>
+    </div>
+  </div>`
+  })() : ''}
+
   <!-- 업체별 진행률 + 일별 차트 -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
     <!-- 업체별 진행률 -->
@@ -1833,16 +2815,60 @@ async function renderDashboard() {
         const warn = pct !== null && pct >= 80 && !over
         const catColor = getCategoryColorHex(cat.category_key)
         const borderColor = over ? '#ef4444' : warn ? '#f59e0b' : catColor
+        // ── 발주 구성 설명 태그 만들기 ──────────────────────────────
+        const amtBd = catDietEntry?.monthAmtBreakdown || {}
+        const mealBd = catDietEntry?.mealsBreakdown || {}
+        // 포함 항목 태그
+        const incTags = []
+        if ((amtBd.food||0) > 0) incTags.push({label:'식재료', color:'#10b981'})
+        if ((amtBd.event||0) > 0) incTags.push({label:'이벤트', color:'#f59e0b'})
+        if ((amtBd.supply||0) > 0) incTags.push({label:'소모품', color:'#6366f1'})
+        if (((amtBd.card_food||0)+(amtBd.card_supply||0)+(amtBd.card_event||0)) > 0) incTags.push({label:'법인카드', color:'#8b5cf6'})
+        const incTagsHtml = incTags.map(t =>
+          `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${t.color}20;color:${t.color};font-weight:600">${t.label}</span>`
+        ).join('')
+        // 식수 구성 설명 (환자/직원/보호자)
+        const mealParts = []
+        if ((mealBd.patientMeals||0) > 0) mealParts.push(`환자 ${fmt(mealBd.patientMeals)}식`)
+        if ((mealBd.staffMeals||0) > 0) mealParts.push(`직원 ${fmt(mealBd.staffMeals)}식`)
+        if ((mealBd.guardianMeals||0) > 0) mealParts.push(`보호자 ${fmt(mealBd.guardianMeals)}식`)
+        if ((mealBd.therapyMeals||0) > 0) mealParts.push(`치료식 ${fmt(mealBd.therapyMeals)}식`)
+        const mealDescHtml = mealParts.length > 0
+          ? `<div style="margin-top:5px;padding:4px 6px;border-radius:6px;background:${catColor}10;font-size:9px;color:#6b7280;line-height:1.5">
+               <span style="font-weight:600;color:${catColor}">식수 구성</span><br>${mealParts.join(' · ')}
+             </div>`
+          : ''
+        // 발주 구성 금액 상세
+        const amtParts = []
+        if ((amtBd.food||0) > 0) amtParts.push(`식재료 ${fmtMan(amtBd.food)}`)
+        if ((amtBd.event||0) > 0) amtParts.push(`이벤트 ${fmtMan(amtBd.event)}`)
+        if ((amtBd.supply||0) > 0) amtParts.push(`소모품 ${fmtMan(amtBd.supply)}`)
+        const cardTotal = (amtBd.card_food||0)+(amtBd.card_supply||0)+(amtBd.card_event||0)
+        if (cardTotal > 0) amtParts.push(`법인카드 ${fmtMan(cardTotal)}`)
+        const amtDescHtml = amtParts.length > 1
+          ? `<div style="margin-top:4px;padding:4px 6px;border-radius:6px;background:#f9fafb;font-size:9px;color:#6b7280;line-height:1.5">
+               <span style="font-weight:600;color:#374151">발주 구성</span><br>${amtParts.join(' · ')}
+             </div>`
+          : ''
+        // 식단가 표시 (현재식단가 vs 목표)
+        const dietPriceHtml = (catDietEntry?.monthDietPrice && catDietEntry.monthDietPrice > 0)
+          ? `<div style="display:flex;align-items:center;gap:4px;margin-top:5px">
+               <span style="font-size:9px;color:#9ca3af">현재 식단가</span>
+               <span style="font-size:11px;font-weight:700;color:${catDietEntry.monthDietPrice > (catDietEntry.targetPrice||0) ? '#ef4444' : '#10b981'}">${fmt(catDietEntry.monthDietPrice)}원</span>
+               ${catDietEntry.targetPrice > 0 ? `<span style="font-size:9px;color:#9ca3af">/ 목표 ${fmt(catDietEntry.targetPrice)}원</span>` : ''}
+             </div>`
+          : ''
         return `<div style="border:2px solid ${borderColor}20;border-radius:12px;padding:12px;background:${catColor}08;position:relative;overflow:hidden">
           <div style="position:absolute;top:0;right:0;width:40px;height:40px;border-radius:0 0 0 40px;background:${catColor}15"></div>
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
             <div style="width:24px;height:24px;border-radius:6px;background:${catColor};display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700">${cat.category_name.charAt(0)}</div>
             <span style="font-weight:700;color:#374151;font-size:13px">${cat.category_name}</span>
             ${cat.order_code ? `<span style="font-size:10px;color:#9ca3af">(${cat.order_code})</span>` : ''}
           </div>
-          <div style="font-size:20px;font-weight:900;color:${over?'#dc2626':catColor};line-height:1;margin-bottom:4px">${fmtMan(used)}</div>
+          ${incTagsHtml ? `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px">${incTagsHtml}</div>` : ''}
+          <div style="font-size:20px;font-weight:900;color:${over?'#dc2626':catColor};line-height:1;margin-bottom:2px">${fmtMan(used)}</div>
           ${budget > 0 ? `
-          <div style="font-size:10px;color:#9ca3af;margin-bottom:6px">목표: ${fmtMan(budget)}</div>
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:6px">목표: ${fmtMan(budget)} <span style="font-size:9px">(${fmt(catDietEntry?.targetPrice||0)}원 × ${fmt(catDietEntry?.monthMeals||0)}식)</span></div>
           <div style="background:${catColor}20;border-radius:4px;height:5px;overflow:hidden;margin-bottom:4px">
             <div style="height:5px;width:${Math.min(pct||0,100)}%;background:${over?'#ef4444':warn?'#f59e0b':catColor};border-radius:4px;transition:width 0.3s"></div>
           </div>
@@ -1850,16 +2876,20 @@ async function renderDashboard() {
             <span style="font-size:11px;font-weight:700;color:${over?'#dc2626':warn?'#d97706':catColor}">${pct}%</span>
             <span style="font-size:10px;color:#9ca3af">${over?'<span style="color:#dc2626">초과</span>':fmtMan(budget-used)+' 남음'}</span>
           </div>` : `<div style="font-size:10px;color:#9ca3af">목표미설정</div>`}
+          ${dietPriceHtml}
+          ${mealDescHtml}
+          ${amtDescHtml}
           ${(taxable > 0 || exempt > 0) ? `
           <div style="margin-top:6px;padding-top:6px;border-top:1px solid ${catColor}20;display:flex;gap:8px;font-size:10px;color:#6b7280">
-            <span>과: ${fmtMan(taxable)}</span>
-            <span>면: ${fmtMan(exempt)}</span>
+            <span>과세: ${fmtMan(taxable)}</span>
+            <span>면세: ${fmtMan(exempt)}</span>
           </div>` : ''}
         </div>`
       }).join('')
       })()}
     </div>
   </div>` : ''}
+
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
       <div class="flex items-center justify-between mb-3">
@@ -1946,35 +2976,29 @@ async function renderDashboard() {
           </div>`
         }
       })()}
-      <!-- 식단가 3종 -->
-      <div class="mt-3 space-y-2">
-        <div class="flex items-center justify-between mb-1">
-          <span class="text-xs font-semibold text-gray-600"><i class="fas fa-utensils mr-1 text-blue-400"></i>식단가 현황</span>
-          <!-- 전체 목표 식단가는 가중 계산값이므로 표시 제거 -->
-        </div>
-        <div class="flex items-center justify-between p-2.5 bg-blue-50 rounded-xl">
-          <div>
-            <span class="text-xs font-medium text-blue-600">전체 식단가 (전체 식수 기준)</span>
+      <!-- 식단가 흐름 구조 (DIET_CALC.dietPriceFlowHtml) — 영양사 월별 대시보드 -->
+      ${(() => {
+        const dp = DIET_CALC.extractDietPrices(data)
+        if (!dp.representative && !dp.operating) return ''
+        const hasDiff = dp.representative > 0 && dp.operating > 0 && Math.abs(dp.operating - dp.representative) > 1
+        return `<div class="mt-3" style="border-top:1px solid #e5e7eb;padding-top:10px">
+          <div class="flex items-center justify-between mb-2">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="background:#1d4ed8;color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px">식단가 구조</span>
+              <span class="text-xs font-semibold text-gray-700">대표 식단가 기준 흐름</span>
+              ${hasDiff ? `<span style="font-size:9px;color:#7c3aed;background:#f3e8ff;padding:1px 5px;border-radius:4px">운영비 차이 있음</span>` : ''}
+            </div>
+            ${effectiveTargetPrice>0?`<span class="text-xs text-gray-400">목표 <strong class="text-blue-700">${fmt(effectiveTargetPrice)}원</strong></span>`:''}
           </div>
-          <span class="font-bold text-lg text-blue-700">${totalMeals>0?fmt(mealPriceTotal):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
-        </div>
-        ${catDietPricesData.length >= 2 ? `
-        <div class="flex items-center justify-between p-2.5 bg-teal-50 rounded-xl">
-          <div>
-            <span class="text-xs font-medium text-teal-700">총 운영원가 (식재료+소모품+카드)</span>
-            ${mealPriceOperating>mealPriceTotal?`<span class="text-xs text-teal-500 ml-1">+${fmt(mealPriceOperating-mealPriceTotal)}원/식</span>`:''}
-          </div>
-          <span class="font-bold text-teal-800">${totalMeals>0?fmt(mealPriceOperating):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
-        </div>` : `
-        <div class="flex items-center justify-between p-2.5 bg-purple-50 rounded-xl">
-          <span class="text-xs font-medium text-purple-600">직원식 제외</span>
-          <span class="font-bold text-purple-700">${totalMeals>0?fmt(mealPriceNoStaff):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
-        </div>
-        <div class="flex items-center justify-between p-2.5 bg-orange-50 rounded-xl">
-          <span class="text-xs font-medium text-orange-600">소모품 제외</span>
-          <span class="font-bold text-orange-700">${totalMeals>0?fmt(mealPriceNoSupply):'집계중'}<span class="text-xs font-normal ml-1">원/식</span></span>
-        </div>`}
-      </div>
+          ${DIET_CALC.dietPriceFlowHtml(dp, cb, {
+            targetPrice: effectiveTargetPrice,
+            totalMeals: totalMeals,
+            compact: true,
+            showPatient: (dp.patient||0) > 0,
+            context: 'dashboard'
+          })}
+        </div>`
+      })()}
 
       <!-- 환자군별 식단가 현황 -->
       ${(() => {
@@ -2025,22 +3049,27 @@ async function renderDashboard() {
           const hasGuardianInMeals = breakdown.hasGuardian || (cat.mealsKeys||[]).some(k => k.startsWith('nc_key_') || k === 'guardian')
           const hasMixedMeals = hasStaffInMeals || hasGuardianInMeals  // 직원/보호자식 포함형
 
-          // ★ 환자식 단독 식단가 (참고용) - hasMixedMeals인 경우 표시
+          // ★ 환자식 단독 식단가 (hasMixedMeals 시 목표와 직접 비교용)
           const patientOnlyDietPrice = cat.patientOnlyDietPrice || 0
           const patientOnlyMeals = cat.patientOnlyMeals || 0
 
-          // 월 식단가 기준으로 초과/경고 판단
-          const isOverM2 = targetP > 0 && monthDietPrice2 > targetP
-          const isDangerM2 = targetP > 0 && monthDietPrice2 >= targetP * 1.1  // 110% 이상 위험
-          const isWarnM2 = targetP > 0 && monthDietPrice2 >= targetP * 0.9 && !isOverM2
+          // ★ 비교 기준 결정:
+          //   - hasMixedMeals + patientOnlyDietPrice 있음 → 환자만 식단가로 목표 비교 (정확한 비교)
+          //   - 그 외 → 전체 식단가(monthDietPrice2)로 목표 비교
+          const cmpPrice = (hasMixedMeals && patientOnlyDietPrice > 0) ? patientOnlyDietPrice : monthDietPrice2
+
+          // 월 식단가 기준으로 초과/경고 판단 (cmpPrice 기준)
+          const isOverM2 = targetP > 0 && cmpPrice > targetP
+          const isDangerM2 = targetP > 0 && cmpPrice >= targetP * 1.1  // 110% 이상 위험
+          const isWarnM2 = targetP > 0 && cmpPrice >= targetP * 0.9 && !isOverM2
           const priceColorM2 = isDangerM2 ? '#b91c1c' : isOverM2 ? '#dc2626' : isWarnM2 ? '#d97706' : '#16a34a'
           const prevTargetP = cat.prevTargetPrice || 0
           const budgetPct = CALC_ENGINE.calcBudgetPct(catMonthAmt, monthBudget) || null // ✅ CALC_ENGINE
-          // 식단가 차이 계산
-          const priceDiff = monthDietPrice2 > 0 && targetP > 0 ? monthDietPrice2 - targetP : null
+          // 식단가 차이 계산 (cmpPrice 기준)
+          const priceDiff = cmpPrice > 0 && targetP > 0 ? cmpPrice - targetP : null
           const priceDiffPct = targetP > 0 && priceDiff !== null ? parseFloat((priceDiff / targetP * 100).toFixed(1)) : null
-          const borderColor = isDangerM2 ? '#b91c1c' : isOverM2 ? '#dc2626' : isWarnM2 ? '#d97706' : (monthDietPrice2 > 0 && targetP > 0 ? '#16a34a' : color)
-          const bgColor = isDangerM2 ? '#fef2f2' : isOverM2 ? '#fff1f2' : isWarnM2 ? '#fffbeb' : (monthDietPrice2 > 0 && targetP > 0 ? '#f0fdf4' : `${color}06`)
+          const borderColor = isDangerM2 ? '#b91c1c' : isOverM2 ? '#dc2626' : isWarnM2 ? '#d97706' : (cmpPrice > 0 && targetP > 0 ? '#16a34a' : color)
+          const bgColor = isDangerM2 ? '#fef2f2' : isOverM2 ? '#fff1f2' : isWarnM2 ? '#fffbeb' : (cmpPrice > 0 && targetP > 0 ? '#f0fdf4' : `${color}06`)
 
           // ★ 식수 구성 태그 (직원식/보호자식 포함 여부 표시)
           const mealTypeBadges = [
@@ -2079,21 +3108,30 @@ async function renderDashboard() {
             ${targetP > 0 ? `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
               <div style="text-align:center;padding:6px 5px;background:white;border-radius:7px;border:2px solid ${borderColor}50">
-                <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">${hasMixedMeals ? '전체 식단가' : '현재 식단가'}</div>
-                <div style="font-size:15px;font-weight:900;color:${monthDietPrice2>0?priceColorM2:'#d1d5db'}">${monthDietPrice2>0?fmt(monthDietPrice2):'-'}</div>
-                <div style="font-size:8px;color:#6b7280">원/식</div>
-                ${hasMixedMeals && patientOnlyDietPrice > 0 ? `<div style="font-size:8px;color:#6b7280;margin-top:2px;border-top:1px dashed #e5e7eb;padding-top:2px">환자만: <strong style="color:#374151">${fmt(patientOnlyDietPrice)}원</strong></div>` : ''}
+                ${hasMixedMeals && patientOnlyDietPrice > 0 ? `
+                  <div style="font-size:8px;color:#3b82f6;font-weight:600;margin-bottom:2px">환자 기준 식단가 ★비교기준</div>
+                  <div style="font-size:15px;font-weight:900;color:${priceColorM2}">${fmt(patientOnlyDietPrice)}</div>
+                  <div style="font-size:8px;color:#6b7280">원/식</div>
+                  <div style="font-size:8px;color:#9ca3af;margin-top:2px;border-top:1px dashed #e5e7eb;padding-top:2px">전체: ${monthDietPrice2>0?fmt(monthDietPrice2)+' 원':'-'}</div>
+                ` : `
+                  <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">현재 식단가</div>
+                  <div style="font-size:15px;font-weight:900;color:${monthDietPrice2>0?priceColorM2:'#d1d5db'}">${monthDietPrice2>0?fmt(monthDietPrice2):'-'}</div>
+                  <div style="font-size:8px;color:#6b7280">원/식</div>
+                `}
               </div>
               <div style="text-align:center;padding:6px 5px;background:white;border-radius:7px;border:1px solid #e5e7eb">
                 <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">목표 식단가</div>
                 <div style="font-size:15px;font-weight:900;color:#374151">${fmt(targetP)}</div>
                 <div style="font-size:8px;color:#6b7280">원/식</div>
-                ${hasMixedMeals ? `<div style="font-size:8px;color:#f59e0b;margin-top:2px">※ 환자식 기준</div>` : ''}
+                ${hasMixedMeals ? `<div style="font-size:8px;color:#3b82f6;margin-top:2px;font-weight:600">환자식 기준 목표</div>` : ''}
               </div>
             </div>
-            ${hasMixedMeals ? `
+            ${hasMixedMeals && patientOnlyDietPrice > 0 ? `
+            <div style="padding:4px 8px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:7px;margin-bottom:5px;font-size:8px;color:#1d4ed8">
+              <i class="fas fa-info-circle" style="margin-right:3px"></i>직원식·보호자식 포함형: <strong>환자 기준 식단가(${fmt(patientOnlyDietPrice)}원)</strong>를 환자식 목표(${fmt(targetP)}원)와 비교합니다.
+            </div>` : hasMixedMeals ? `
             <div style="padding:4px 8px;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;margin-bottom:5px;font-size:8px;color:#92400e">
-              <i class="fas fa-info-circle" style="margin-right:3px"></i>직원식·보호자식 포함형: 목표는 환자식 기준 설정값입니다. 전체 식수로 나눈 실제 식단가와 단순 비교 불가.
+              <i class="fas fa-info-circle" style="margin-right:3px"></i>직원식·보호자식 포함형: 환자 기준 식단가 산출 중 - 환자식 기준으로 설정된 목표와 비교 불가.
             </div>` : ''}
             <div style="padding:5px 8px;background:${isDangerM2?'#fee2e2':isOverM2?'#fff1f2':isWarnM2?'#fffbeb':'#f0fdf4'};border-radius:7px;display:flex;align-items:center;justify-content:space-between">
               <span style="font-size:10px;font-weight:700;color:${priceColorM2}">
@@ -2104,18 +3142,24 @@ async function renderDashboard() {
               </span>
             </div>` : `
             <div style="text-align:center;padding:8px 5px;background:white;border-radius:7px;border:1px solid #e5e7eb;margin-bottom:4px">
-              <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">현재 식단가</div>
-              <div style="font-size:15px;font-weight:900;color:${color}">${monthDietPrice2>0?fmt(monthDietPrice2):'-'}</div>
+              <div style="font-size:8px;color:#9ca3af;margin-bottom:2px">현재 식단가${hasMixedMeals&&patientOnlyDietPrice>0?' (환자만)':''}</div>
+              <div style="font-size:15px;font-weight:900;color:${color}">${(hasMixedMeals&&patientOnlyDietPrice>0?patientOnlyDietPrice:monthDietPrice2)>0?fmt(hasMixedMeals&&patientOnlyDietPrice>0?patientOnlyDietPrice:monthDietPrice2):'-'}</div>
               <div style="font-size:8px;color:#6b7280">원/식 · 목표 미설정</div>
+              ${hasMixedMeals && patientOnlyDietPrice > 0 ? `<div style="font-size:8px;color:#9ca3af;margin-top:2px">전체: ${monthDietPrice2>0?fmt(monthDietPrice2)+' 원':'-'}</div>` : ''}
             </div>`}
             <!-- 월 발주 / 식수 -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px">
-              <div style="text-align:center;font-size:9px;color:#6b7280">월 발주: <strong>${fmtMan(catMonthAmt)}</strong></div>
+              <div style="text-align:center;font-size:9px;color:#6b7280">
+                월 발주: <strong>${fmtMan(catMonthAmt)}</strong>
+                <div style="font-size:8px;color:#9ca3af">${cat.catIncludeSupply||cat.catIncludeCard?'식재료+운영비':'식재료비 기준'}</div>
+              </div>
               <div style="text-align:center;font-size:9px;color:#6b7280">
                 식수: <strong>${catMonthMeals2>0?fmt(catMonthMeals2)+'식':'-'}</strong>
                 ${mealsDetailHtml}
               </div>
             </div>
+            <!-- 목표 출처 안내 -->
+            ${targetP > 0 ? `<div style="font-size:8px;color:#9ca3af;text-align:right;margin-top:3px">목표: 관리자 직접 설정</div>` : ''}
           </div>`
         }).join('')
         return `<div style="border-top:1px solid #e5e7eb;margin-top:10px;padding-top:10px">
@@ -2341,6 +3385,39 @@ async function renderDashboard() {
         </div>` : ''}
       </div>` : ''}
 
+      <!-- 이벤트 운영비 현황 (데이터 있을 때만) -->
+      ${dashEventMonthTotal > 0 ? `
+      <div class="mt-3 border-t border-gray-100 pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold text-gray-700"><i class="fas fa-star text-orange-500 mr-1"></i>이벤트 운영비 현황</span>
+          <span class="text-sm font-bold" style="color:#ea580c">${fmtMan(dashEventMonthTotal)}원</span>
+        </div>
+        ${dashEventVendorList.length > 0 ? `
+        <div class="max-h-28 overflow-y-auto space-y-1 mb-2">
+          ${dashEventVendorList.map(v => `<div class="flex items-center justify-between text-xs rounded-lg px-2 py-1 border" style="background:#fff7ed;border-color:#fed7aa">
+            <span class="text-gray-700 font-medium truncate">${v.vendor_name || v.name || ''}</span>
+            <div class="flex items-center gap-2 shrink-0 ml-1">
+              <span class="font-bold" style="color:#ea580c">${fmtMan(v.total)}원</span>
+              <span class="text-gray-400">${v.count}건</span>
+            </div>
+          </div>`).join('')}
+        </div>` : ''}
+        ${dashEventItemSummary.length > 0 ? `
+        <div class="mt-1.5">
+          <div class="text-xs text-gray-500 mb-1 font-medium">사용 품목</div>
+          <div class="flex flex-wrap gap-1">
+            ${dashEventItemSummary.slice(0,5).map(it => `<span class="text-xs px-2 py-0.5 rounded-full border font-medium" style="background:#fff7ed;border-color:#fed7aa;color:#c2410c">${it.item_name} ${fmtMan(it.total)}원</span>`).join('')}
+          </div>
+        </div>` : ''}
+        ${dashEventPurposeSummary.length > 0 ? `
+        <div class="mt-1.5">
+          <div class="text-xs text-gray-500 mb-1 font-medium">진행 용도</div>
+          <div class="flex flex-wrap gap-1">
+            ${dashEventPurposeSummary.slice(0,4).map(p => `<span class="text-xs px-2 py-0.5 rounded-full border" style="background:#fff7ed;border-color:#fed7aa;color:#92400e">${p.purpose} ${p.count}건</span>`).join('')}
+          </div>
+        </div>` : ''}
+      </div>` : ''}
+
       <!-- 2.8 잔반 비용 분석 -->
       <div class="mt-3 border-t border-gray-100 pt-3">
         <div class="flex items-center justify-between mb-2">
@@ -2412,7 +3489,106 @@ async function renderDashboard() {
         <div id="vendorPieDetailContent" style="flex:1;min-width:0"></div>
       </div>
     </div>
-  </div>`
+  </div>
+  <!-- ════════════════════════════════════════════════════════
+       3층 비교·상세 KPI — 월말 예상 식단가 (추세 분석) [최하단]
+       ════════════════════════════════════════════════════════ -->
+  ${proj.projectedMonthEndMealPrice > 0 || (proj.catProjections && proj.catProjections.length > 0) ? `
+  <div class="flex items-center gap-2 mb-2 mt-4">
+    <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">📈 추세 분석</span>
+    <div class="flex-1 h-px bg-gray-100"></div>
+  </div>
+  <div class="mb-4 bg-white rounded-2xl shadow-sm border ${(() => {
+    const catProjs2 = proj.catProjections || []
+    const mainCats2 = catProjs2.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+    if (mainCats2.length > 0) {
+      const anyOver2 = mainCats2.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice)
+      return anyOver2 ? 'border-red-200' : 'border-green-200'
+    }
+    return proj.projectedMealPriceDiff > 0 ? 'border-red-200' : 'border-green-200'
+  })()} p-4">
+    <div class="flex items-center gap-2 mb-3">
+      <div class="w-8 h-8 rounded-lg ${(() => {
+        const cps = proj.catProjections || []
+        const mcs = cps.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+        if (mcs.length > 0) return mcs.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice) ? 'bg-red-50' : 'bg-green-50'
+        return proj.projectedMealPriceDiff > 0 ? 'bg-red-50' : 'bg-green-50'
+      })()} flex items-center justify-center flex-shrink-0">
+        <i class="fas fa-chart-line ${(() => {
+          const cps = proj.catProjections || []
+          const mcs = cps.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+          if (mcs.length > 0) return mcs.some(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice) ? 'text-red-500' : 'text-green-500'
+          return proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-500'
+        })()} text-sm"></i>
+      </div>
+      <div>
+        <span class="text-sm font-bold text-gray-700">월말 예상 식단가</span>
+        <div class="text-xs text-gray-400">현재 추세 기준 월말 예상값 · ${proj.elapsedDays||0}일 경과</div>
+      </div>
+    </div>
+    ${(() => {
+      const catProjs = proj.catProjections || []
+      const mainCatProjs = catProjs.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+      if (mainCatProjs.length > 0) {
+        const catRows = mainCatProjs.map(c => {
+          const catColor = getCategoryColorHex ? getCategoryColorHex(c.category_key) : '#6b7280'
+          const isOver = c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice
+          const isDanger = c.targetPrice > 0 && c.projectedMealPrice >= c.targetPrice * 1.1
+          const projDiff = c.targetPrice > 0 && c.projectedMealPrice > 0 ? c.projectedMealPrice - c.targetPrice : null
+          const projDiffPct = c.targetPrice > 0 && projDiff !== null ? parseFloat((projDiff / c.targetPrice * 100).toFixed(1)) : null
+          const prColor = isDanger ? '#b91c1c' : isOver ? '#dc2626' : (c.projectedMealPrice > 0 && c.targetPrice > 0 ? '#16a34a' : '#1d4ed8')
+          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #f3f4f6">
+            <div style="display:flex;align-items:center;gap:4px">
+              <span style="width:7px;height:7px;border-radius:50%;background:${catColor};display:inline-block;flex-shrink:0"></span>
+              <span style="font-size:11px;font-weight:600;color:#374151">${c.category_name}</span>
+              <span style="font-size:8px;color:#9ca3af">환자군 식수 기준</span>
+            </div>
+            <div style="text-align:right">
+              <span style="font-size:13px;font-weight:800;color:${c.projectedMealPrice>0?prColor:'#9ca3af'}">${c.projectedMealPrice>0?fmt(c.projectedMealPrice)+'원':'집계중'}</span>
+              ${c.targetPrice > 0 && c.projectedMealPrice > 0 ? `
+                <div style="font-size:9px;font-weight:700;color:${prColor}">
+                  ${projDiff !== null && projDiff > 0 ? `🔴 +${fmt(projDiff)}원(+${projDiffPct}%)` : projDiff !== null && projDiff < 0 ? `🟢 ${fmt(Math.abs(projDiff))}원(${projDiffPct}%)` : '✅목표'}
+                </div>` : c.targetPrice > 0 ? `<div style="font-size:9px;color:#9ca3af">목표: ${fmt(c.targetPrice)}원</div>` : ''}
+            </div>
+          </div>`
+        }).join('')
+        return `<div style="margin-bottom:6px">${catRows}</div>
+        <div style="border-top:2px solid #e5e7eb;padding-top:6px;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:11px;font-weight:700;color:#374151">전체 평균<span style="font-size:8px;font-weight:400;color:#9ca3af;margin-left:3px">(참고)</span></span>
+          <div style="text-align:right">
+            <div class="text-lg font-bold" style="color:${proj.projectedMonthEndMealPrice>0?'#6b7280':'#9ca3af'}">${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}</div>
+            <div style="font-size:9px;color:#9ca3af">전체 발주액 ÷ 전체 식수 (카테고리별 위 참고)</div>
+          </div>
+        </div>`
+      }
+      return `<div class="text-lg font-bold ${proj.projectedMealPriceDiff > 0 ? 'text-red-600' : 'text-gray-800'}">
+        ${proj.projectedMonthEndMealPrice > 0 ? fmt(proj.projectedMonthEndMealPrice) + '원' : '집계중'}
+      </div>
+      <div class="text-xs text-gray-400 mt-1">현재: ${fmt(data.mealPriceTotal||0)}원 · 목표: ${fmt(proj.targetMealPrice||0)}원</div>`
+    })()}
+    ${(() => {
+      const catProjs3 = proj.catProjections || []
+      const mainCats3 = catProjs3.filter(c => c.projectedMealPrice > 0 || c.targetPrice > 0)
+      if (mainCats3.length > 0) {
+        const overCats = mainCats3.filter(c => c.targetPrice > 0 && c.projectedMealPrice > c.targetPrice)
+        const okCats   = mainCats3.filter(c => c.targetPrice > 0 && c.projectedMealPrice > 0 && c.projectedMealPrice <= c.targetPrice)
+        if (overCats.length > 0) {
+          return `<div class="text-xs font-semibold mt-2 text-red-500">⚠ ${overCats.map(c=>c.category_name).join(', ')} 초과 예상</div>`
+        } else if (okCats.length > 0) {
+          return `<div class="text-xs text-green-600 font-semibold mt-2">✓ 모든 카테고리 목표 범위 내</div>`
+        }
+        return ''
+      }
+      if (proj.projectedMealPriceDiff !== 0 && proj.projectedMonthEndMealPrice > 0) {
+        return `<div class="text-xs font-semibold mt-2 ${proj.projectedMealPriceDiff > 0 ? 'text-red-500' : 'text-green-600'}">
+          ${proj.projectedMealPriceDiff > 0 ? '▲' : '▼'} ${fmt(Math.abs(proj.projectedMealPriceDiff))}원
+          (${proj.projectedMealPriceDiff > 0 ? '+' : ''}${proj.projectedMealPriceDiffPct}%)
+          ${proj.projectedMealPriceDiff > 0 ? '초과 예상' : '여유'}
+        </div>`
+      }
+      return proj.projectedMonthEndMealPrice > 0 ? '<div class="text-xs text-green-600 font-semibold mt-2">✓ 목표 범위 내</div>' : ''
+    })()}
+  </div>` : ''}`
 
   // ── 업체 카테고리별 상세 분석 데이터 계산 ──
   const _vendorAnalysis = (() => {
@@ -2443,6 +3619,17 @@ async function renderDashboard() {
 
     return { totalUsed, cats, top3, overBudget, noOrder, totalTaxable, totalExempt, totalVat }
   })()
+
+  // 인력 & 인건비, 연차 알림은 content.innerHTML 상단에 직접 포함됨 (위 참조)
+  console.log('[Dashboard] ✅ 1단계 렌더완료 (KPI/알림/테이블):', Math.round(performance.now() - _t_dash_click), 'ms')
+
+  // ★★★ 2단계 로딩: 차트 및 상세 분석 뷰를 requestAnimationFrame으로 지연 렌더링
+  // - 1단계: KPI 카드, 알림 배너, 환자군 현황, 업체 테이블 → 즉시 표시
+  // - 2단계: 일별 누적 차트, 도넛 차트, 범례, 상세 분석 뷰 → 첫 페인트 후 렌더링
+  requestAnimationFrame(() => {
+  setTimeout(() => {
+  const _t_chart_start = performance.now()
+  console.log('[Dashboard] 2단계 차트 렌더링 시작')
 
   // 일별 누적 차트 (daysInMonth는 위에서 이미 선언됨)
   const dailyMap = {}
@@ -2633,8 +3820,83 @@ async function renderDashboard() {
         <div style="font-size:9px;color:#9ca3af">${noOrder.map(v=>v.name).join(' · ')}</div>
       </div>` : ''}
     `
+  } // if (detailEl && _vendorAnalysis) 종료
+
+  console.log('[Dashboard] ✅ 2단계 차트 렌더완료:', Math.round(performance.now() - _t_chart_start), 'ms')
+  }, 0) // setTimeout 0ms: 브라우저에 첫 페인트 기회 부여 후 차트 렌더링
+  }) // requestAnimationFrame 종료
 
   // 인력 & 인건비, 연차 알림은 content.innerHTML 상단에 직접 포함됨 (위 참조)
+  console.log('[Dashboard] ✅ 전체 렌더완료:', Math.round(performance.now() - _t_dash_click), 'ms (클릭 기준)')
+  console.log('[Dashboard] ─────────────────────────────────────────────')
+
+  // ★ STEP 1b 백그라운드 로드: 렌더링 완료 후 잔반+검수 데이터 업데이트 (224ms 절감)
+  // 이미 캐시에 있으면 즉시 표시됐으므로 스킵 (60초 TTL)
+  const _step1bKey2 = `step1b-${App.currentYear}-${App.currentMonth}`
+  const _step1bCacheFresh = App._htmlCache && App._htmlCache[_step1bKey2] && App._htmlCache[_step1bKey2]._ts && (Date.now() - App._htmlCache[_step1bKey2]._ts < 60000)
+  if (!_step1bCacheFresh) {
+    setTimeout(async () => {
+      try {
+        const _t1b = performance.now()
+        const [_waste2, _insp2] = await Promise.all([
+          api('GET', `/api/settings/food-waste/${App.currentYear}/${App.currentMonth}`).catch(() => []),
+          api('GET', `/api/orders/inspection/pending/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+        ])
+        const _fwd2 = _waste2 || []
+        const _ins2 = _insp2?.summary || null
+        // 캐시에 저장 (다음 방문 시 즉시 사용)
+        if (!App._htmlCache) App._htmlCache = {}
+        App._htmlCache[_step1bKey2] = { foodWasteData: _fwd2, inspectionSummary: _ins2, _ts: Date.now() }
+        // ★ 전역 검수 캐시 저장 (발주 현황 배너에서 참조)
+        if (_ins2) {
+          window._inspectionSummaryCache = _ins2
+          // 발주 현황 배너 실시간 업데이트 (이미 렌더링된 경우)
+          const _inspBannerEl = document.getElementById('_inspSummaryBanner')
+          const _inspLabelEl = document.getElementById('_inspLabelSpan')
+          const _inspDetailEl = document.getElementById('_inspDetailSpan')
+          if (_inspBannerEl && _inspLabelEl) {
+            const _pendingCnt = _ins2.pendingCount || 0
+            const _completedCnt = _ins2.completedCount || 0
+            const _totalInsp = _pendingCnt + _completedCnt
+            const _inspColor = _pendingCnt > 0 ? '#dc2626' : '#16a34a'
+            const _inspLabel = _pendingCnt > 0 ? `⚠ ${_pendingCnt}건 미완료` : (_totalInsp > 0 ? '✅ 전체 완료' : '검수 없음')
+            const _inspPct = _totalInsp > 0 ? Math.round(_completedCnt/_totalInsp*100) : null
+            _inspLabelEl.textContent = _inspLabel
+            _inspLabelEl.style.color = _inspColor
+            _inspBannerEl.style.background = _pendingCnt > 0 ? '#fef2f2' : '#f0fdf4'
+            _inspBannerEl.style.borderColor = _pendingCnt > 0 ? '#fca5a5' : '#bbf7d0'
+            if (_inspDetailEl) {
+              if (_inspPct !== null) {
+                _inspDetailEl.textContent = `완료 ${_completedCnt}/${_totalInsp}건 (${_inspPct}%)`
+                _inspDetailEl.style.color = '#6b7280'
+              } else {
+                _inspDetailEl.textContent = '검수 데이터 없음'
+                _inspDetailEl.style.color = '#9ca3af'
+              }
+            }
+          }
+        }
+        console.log('[Dashboard] STEP 1b 백그라운드 완료:', Math.round(performance.now() - _t1b), 'ms')
+        // 검수 미완료 배너 업데이트 (DOM에 이미 없는 경우만)
+        if (_ins2 && _ins2.pendingCount > 0) {
+          const _inspEl = document.querySelector('#inspStatusTable')
+          if (!_inspEl) {
+            // 배너가 없으면 페이지 새로고침 없이 알림 표시
+            const _firstSection = document.querySelector('#pageContent > div:first-child')
+            if (_firstSection) {
+              const _inspBanner = document.createElement('div')
+              _inspBanner.id = 'inspBannerDeferred'
+              _inspBanner.className = 'mb-4 bg-orange-50 border border-orange-300 rounded-xl p-3'
+              _inspBanner.innerHTML = `<div class="flex items-center gap-2"><div class="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center"><i class="fas fa-clipboard-check text-orange-500 text-sm"></i></div><div><div class="font-bold text-orange-700 text-sm"><i class="fas fa-exclamation-circle mr-1"></i>검수 미완료 ${_ins2.pendingCount}건</div><div class="text-xs text-orange-600">미검수 금액: ${typeof fmtMan !== 'undefined' ? fmtMan(_ins2.pendingAmount) : _ins2.pendingAmount}원</div></div><button onclick="openInspectionModal()" class="ml-auto text-xs font-semibold px-3 py-1.5 rounded-lg text-white" style="background:#ea580c"><i class="fas fa-clipboard-check mr-1"></i>검수 현황</button></div>`
+              const _pageContent = document.getElementById('pageContent')
+              if (_pageContent && _pageContent.firstChild) {
+                _pageContent.insertBefore(_inspBanner, _pageContent.firstChild)
+              }
+            }
+          }
+        }
+      } catch(e) { console.warn('[Dashboard] STEP 1b 백그라운드 오류:', e) }
+    }, 300)  // 렌더링 완료 후 300ms 지연
   }
 
   // switchVendorPieView는 더 이상 차트/상세를 전환하지 않음 (동시 표시로 변경됨)
@@ -2645,190 +3907,123 @@ async function renderDashboard() {
 //  발주 입력 페이지 (v2.0 - 다일치 발주 지원)
 // ══════════════════════════════════════════════════════════════
 async function renderOrders() {
-  // ══ [PERF] 타이밍 측정 시작 ══
-  const _t_click = performance.now()
-  console.log('[Orders] 클릭 후 renderOrders 진입:', Math.round(_t_click), 'ms (페이지 로드 기준)')
+  // ── [PERF] Stage 1: 전체 타이밍 측정 시작 ──
+  const _t_orders_click = performance.now()
+  console.log(`[Orders] ▶ renderOrders 진입: ${Math.round(_t_orders_click)}ms (페이지 로드 기준)`)
 
   const content = document.getElementById('orders-panel') || document.getElementById('pageContent')
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // STEP 0 ── 즉시(0ms): 테이블 틀 + 빈 스켈레톤 주입
-  // 빈 화면 0ms, API 대기 없이 레이아웃 바로 표시
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  if (!content) { console.error('[Orders] content 패널을 찾을 수 없음'); return }
   content.innerHTML = `
-  <!-- KPI 패널: 별도 비동기로 채워짐 -->
-  <div id="mealPricePanel" style="background:white;border-radius:16px;border:1px solid #f3f4f6;padding:16px;margin-bottom:12px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <span style="font-weight:700;font-size:13px;color:#374151"><i class="fas fa-utensils" style="color:#3b82f6;margin-right:4px"></i>실시간 식단가</span>
-      <span style="font-size:11px;color:#9ca3af">식수: <strong id="realMealCount">-</strong>식</span>
+  <!-- [PERF] Page Shell: 클릭 즉시 실제 구조 표시 → API 완료 후 데이터 채움 -->
+  <div class="space-y-3 p-1">
+    <!-- KPI 카드 4개 (stat-card 구조 그대로) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 animate-pulse">
+      <div class="stat-card"><div class="skeleton h-3 w-20 mb-2 rounded"></div><div class="skeleton h-8 w-16 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-20 mb-2 rounded"></div><div class="skeleton h-8 w-16 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-20 mb-2 rounded"></div><div class="skeleton h-8 w-16 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-20 mb-2 rounded"></div><div class="skeleton h-8 w-16 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
-      <div id="mpCard-total" style="background:#eff6ff;border-radius:10px;padding:12px">
-        <div style="font-size:11px;color:#2563eb;margin-bottom:3px;font-weight:500">전체 식단가</div>
-        <div style="font-size:17px;font-weight:700" id="mpVal-total"><span class="skeleton-inline" style="display:inline-block;width:60px;height:20px;background:#dbeafe;border-radius:4px"></span></div>
-        <div style="font-size:11px;font-weight:600;margin-top:2px" id="mpDiff-total"></div>
+    <!-- 날짜 헤더 바 (실제 날짜 컨트롤 위치 미리 확보) -->
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3 animate-pulse">
+      <div class="skeleton h-5 w-5 rounded-full"></div>
+      <div class="skeleton h-4 w-28 rounded"></div>
+      <div class="skeleton h-7 w-7 rounded-lg ml-auto"></div>
+      <div class="skeleton h-7 w-7 rounded-lg"></div>
+    </div>
+    <!-- 업체 행 플레이스홀더 4개 (실제 업체 카드 구조 반영) -->
+    ${Array(4).fill(0).map(() => `
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 animate-pulse">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="skeleton h-5 w-5 rounded"></div>
+        <div class="skeleton h-4 w-32 rounded"></div>
+        <div class="skeleton h-5 w-16 rounded-full ml-auto"></div>
+        <div class="skeleton h-5 w-20 rounded-full"></div>
       </div>
-      <div style="background:#faf5ff;border-radius:10px;padding:12px">
-        <div style="font-size:11px;color:#7c3aed;margin-bottom:3px;font-weight:500">직원식 제외</div>
-        <div style="font-size:17px;font-weight:700;color:#7c3aed" id="mpVal-nostaff"><span class="skeleton-inline" style="display:inline-block;width:60px;height:20px;background:#ede9fe;border-radius:4px"></span></div>
+      <div class="grid grid-cols-7 gap-1">
+        ${Array(7).fill(0).map(() => `<div class="skeleton h-14 rounded-lg"></div>`).join('')}
       </div>
-      <div style="background:#fff7ed;border-radius:10px;padding:12px">
-        <div style="font-size:11px;color:#c2410c;margin-bottom:3px;font-weight:500">소모품 제외</div>
-        <div style="font-size:17px;font-weight:700;color:#c2410c" id="mpVal-nosupply"><span class="skeleton-inline" style="display:inline-block;width:60px;height:20px;background:#fed7aa;border-radius:4px"></span></div>
-      </div>
-    </div>
-    <div id="catDietPriceRows" style="margin-top:10px"></div>
-  </div>
-
-  <!-- 예산 진행률 패널 스켈레톤 -->
-  <div id="budgetProgressPanel" style="background:white;border-radius:16px;border:1px solid #f3f4f6;padding:16px;margin-bottom:12px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-weight:700;font-size:13px;color:#374151"><i class="fas fa-chart-bar" style="color:#10b981;margin-right:4px"></i>예산 진행률</span>
-      <span id="budgetProgressBadge" style="font-size:11px;color:#9ca3af">로딩 중...</span>
-    </div>
-    <div id="budgetProgressContent" style="min-height:40px">
-      <div style="background:#f3f4f6;border-radius:6px;height:8px;margin-bottom:6px;overflow:hidden"><div class="skeleton-bar" style="height:100%;width:0%;background:#d1fae5;border-radius:6px;transition:width 0.6s"></div></div>
-    </div>
-  </div>
-
-  <!-- 인사이트 패널 스켈레톤 -->
-  <div id="insightPanel" style="background:white;border-radius:16px;border:1px solid #f3f4f6;padding:16px;margin-bottom:12px;min-height:48px">
-    <span style="font-size:12px;color:#9ca3af"><i class="fas fa-lightbulb" style="margin-right:4px"></i>분석 데이터 로딩 중...</span>
-  </div>
-
-  <!-- 발주 입력 테이블 영역 -->
-  <div id="ordersTableWrap" style="background:white;border-radius:16px;border:1px solid #f3f4f6;overflow:hidden">
-    <div id="ordersTableHeader" style="padding:12px 16px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px">
-      <span style="font-weight:700;font-size:13px;color:#374151"><i class="fas fa-clipboard-list" style="color:#6366f1;margin-right:4px"></i>발주 입력</span>
-      <span id="ordersHeaderBadge" style="font-size:11px;color:#9ca3af;background:#f9fafb;padding:2px 8px;border-radius:20px">업체 로딩 중...</span>
-    </div>
-    <!-- 테이블 스켈레톤: 업체 로딩 전 즉시 표시 -->
-    <div id="ordersTableSkeleton" style="padding:16px">
-      ${Array(5).fill(0).map((_,i) => `<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
-        <div style="width:80px;height:28px;background:#f3f4f6;border-radius:6px;flex-shrink:0"></div>
-        <div style="width:50px;height:28px;background:#f3f4f6;border-radius:6px;flex-shrink:0"></div>
-        ${Array(6).fill(0).map(() => `<div style="flex:1;height:28px;background:#f3f4f6;border-radius:6px;min-width:60px"></div>`).join('')}
-      </div>`).join('')}
-    </div>
-    <!-- 실제 테이블: 데이터 도착 후 교체 -->
-    <div id="ordersTableReal" style="display:none;overflow-x:auto;-webkit-overflow-scrolling:touch">
-      <table id="ordersTable" style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead id="ordersThead"></thead>
-        <tbody id="ordersTbody"></tbody>
-        <tfoot id="ordersTfoot"></tfoot>
-      </table>
-    </div>
+    </div>`).join('')}
   </div>`
 
-  const _t_paint = performance.now()
-  console.log('[Orders] ① First Paint (틀 표시):', Math.round(_t_paint - _t_click), 'ms')
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // STEP 1 ── 느린 캐시 확인 (vendors/settings/patientCats)
-  // 5분 TTL: 자주 안 바뀌는 데이터는 재요청 없이 캐시 사용
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  if (!window._slowCache) window._slowCache = {}
-  const _cacheKey = `orders_init_${App.currentYear}_${App.currentMonth}_${App.adminHospitalId||'own'}`
-  const _cacheEntry = window._slowCache[_cacheKey]
-  const _CACHE_TTL = 5 * 60 * 1000  // 5분
-  const _useCache = _cacheEntry && (Date.now() - _cacheEntry.ts) < _CACHE_TTL
-
+  // ── [PERF] Stage 1: 7개 API 병렬 호출 타이밍 ──
   const _t_api_start = performance.now()
-  let initData
-  if (_useCache) {
-    initData = _cacheEntry.data
-    console.log('[Orders] ② 캐시 HIT - API 요청 생략, 캐시 연령:', Math.round((Date.now() - _cacheEntry.ts)/1000), '초')
-  } else {
-    const hqParam = (App.role === 'admin' || App.role === 'hq') && App.adminHospitalId
-      ? `?hospitalId=${App.adminHospitalId}` : ''
-    initData = await api('GET', `/api/orders/init/${App.currentYear}/${App.currentMonth}${hqParam}`)
-    const _t_api_end = performance.now()
-    console.log('[Orders] ② Init API 응답:', Math.round(_t_api_end - _t_api_start), 'ms',
-                '(DB 처리:', initData?._dbMs || '?', 'ms)')
-    // 캐시 저장
-    if (initData && !initData.error) {
-      window._slowCache[_cacheKey] = { data: initData, ts: Date.now() }
-    }
-  }
-
-  if (!initData || initData.error || !initData.vendors) {
-    content.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;gap:12px">
-      <div style="width:56px;height:56px;border-radius:50%;background:#fef2f2;display:flex;align-items:center;justify-content:center">
-        <i class="fas fa-exclamation-triangle" style="color:#f87171;font-size:24px"></i></div>
-      <div style="color:#ef4444;font-weight:600;font-size:14px">데이터 로드 실패</div>
-      <div style="color:#9ca3af;font-size:13px">업체 정보를 불러올 수 없습니다.</div>
-      <button onclick="navigateTo('orders')" style="margin-top:8px;padding:8px 20px;background:#10b981;color:white;border:none;border-radius:10px;font-size:13px;cursor:pointer;font-weight:500">
-        <i class="fas fa-redo" style="margin-right:6px"></i>다시 시도</button></div>`
-    return
-  }
-
-  // ── init API 응답 구조 분해 ──
-  const vendors = initData.vendors || []
-  const orderData = { orders: initData.orders || [], multidaySettings: initData.multidaySettings || [] }
-  const settingsData = { settings: initData.settings || {} }
-  const catOrderData = initData.catOrderData || {}
-  const patientCats = catOrderData.categories || []
-
-  // ── 2단계: 대시보드/카드 데이터 완전 분리 비동기 ──
-  let dashData = null, cardData = null
-  if (!window._cardDailyMap) window._cardDailyMap = {}
-  if (!window._cardDailyCountMap) window._cardDailyCountMap = {}
-  const hqParamBg = (App.role === 'admin' || App.role === 'hq') && App.adminHospitalId
-    ? `?hospitalId=${App.adminHospitalId}` : ''
-  const _t_bg_start = performance.now()
-  Promise.all([
-    api('GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}${hqParamBg}`),
-    api('GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}${hqParamBg}`)
-  ]).then(([d, ce]) => {
-    dashData = d; cardData = ce
-    const _t_bg_end = performance.now()
-    console.log('[Orders] ④ 백그라운드 API (dashboard+card):', Math.round(_t_bg_end - _t_bg_start), 'ms',
-                '| dashboard:', Math.round(_t_bg_end - _t_bg_start), 'ms')
-    window._cardDailyMap = {}
-    window._cardDailyCountMap = {}
-    ;(cardData?.dailyTotals || []).forEach(r => {
-      if (!window._cardDailyMap[r.vendor_id]) window._cardDailyMap[r.vendor_id] = {}
-      if (!window._cardDailyCountMap[r.vendor_id]) window._cardDailyCountMap[r.vendor_id] = {}
-      window._cardDailyMap[r.vendor_id][r.expense_date] = r.daily_total || 0
-      window._cardDailyCountMap[r.vendor_id][r.expense_date] = r.item_count || 0
+  const _apiTimers = {}
+  const _timedApi = (label, method, url) => {
+    const t0 = performance.now()
+    return api(method, url).then(res => {
+      _apiTimers[label] = Math.round(performance.now() - t0)
+      return res
     })
-    if (dashData?.catDietPrices?.length > 0) window._catDietPricesData = dashData.catDietPrices
-    // KPI 패널 업데이트 (백그라운드 완료 후)
-    requestAnimationFrame(() => {
-      if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
-      if (typeof updateInsightPanel === 'function') updateInsightPanel()
-      // 식단가 KPI 업데이트
-      if (dashData) {
-        const mpTotalEl = document.getElementById('mpVal-total')
-        const mpNostaffEl = document.getElementById('mpVal-nostaff')
-        const mpNosupplyEl = document.getElementById('mpVal-nosupply')
-        if (mpTotalEl) mpTotalEl.innerHTML = fmt(dashData.mealPriceTotal||0) + '<span style="font-size:11px;font-weight:400;margin-left:2px">원/식</span>'
-        if (mpNostaffEl) mpNostaffEl.innerHTML = fmt(dashData.mealPriceNoStaff||0) + '<span style="font-size:11px;font-weight:400;margin-left:2px">원/식</span>'
-        if (mpNosupplyEl) mpNosupplyEl.innerHTML = fmt(dashData.mealPriceNoSupply||0) + '<span style="font-size:11px;font-weight:400;margin-left:2px">원/식</span>'
-      }
-    })
-  }).catch(e => { console.warn('[Orders] 백그라운드 API 실패:', e) })
+  }
+  const [vendors, orderData, settingsData, dashData, patientCats, catOrderData, cardData, eventData] = await Promise.all([
+    _timedApi('vendors',          'GET', '/api/vendors'),
+    _timedApi('orders',           'GET', `/api/orders/${App.currentYear}/${App.currentMonth}`),
+    _timedApi('settings',         'GET', `/api/settings/${App.currentYear}/${App.currentMonth}`),
+    _timedApi('dashboard',        'GET', `/api/dashboard/summary/${App.currentYear}/${App.currentMonth}`),
+    _timedApi('patientCats',      'GET', '/api/orders/patient-categories'),
+    _timedApi('categoryMonthly',  'GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`),
+    _timedApi('cardExpenses',     'GET', `/api/card-expenses/monthly/${App.currentYear}/${App.currentMonth}`),
+    _timedApi('eventExpenses',    'GET', `/api/event-expenses/monthly/${App.currentYear}/${App.currentMonth}`)
+  ])
+  // 공휴일 데이터 로드 (날짜 빨간색 표시용, 병렬 처리와 무관하게 캐시 활용)
+  await loadPublicHolidays(App.currentYear, App.currentMonth)
+  const _t_api_done = performance.now()
+  console.log(`[Orders] ✅ 7개 API 병렬 완료: ${Math.round(_t_api_done - _t_api_start)}ms`, _apiTimers)
 
-  // 업체 목록 캐시
-  window._vendorsCache = vendors
+  // 법인카드 일별 합계 맵 구성 { vendorId: { dateStr: total } }
+  window._cardDailyMap = {}
+  window._cardDailyCountMap = {}
+  ;(cardData?.dailyTotals || []).forEach(r => {
+    if (!window._cardDailyMap[r.vendor_id]) window._cardDailyMap[r.vendor_id] = {}
+    if (!window._cardDailyCountMap[r.vendor_id]) window._cardDailyCountMap[r.vendor_id] = {}
+    window._cardDailyMap[r.vendor_id][r.expense_date] = r.daily_total || 0
+    window._cardDailyCountMap[r.vendor_id][r.expense_date] = r.item_count || 0
+  })
 
-  // 환자군 카테고리 전역 저장
-  window._patientCatsAll = patientCats
-  window._catOrderSettings = catOrderData.settings || []
-  window._monthlyTargetMealPrice = settingsData.settings?.meal_price || 0
-  window._catDailyOrders = catOrderData.dailyByVendorCat || []
-  window._catTodayMeals = catOrderData.todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 }
-  window._catPrevSettings = catOrderData.prevSettings || []
+  if (!vendors) { content.innerHTML = `<div class="flex flex-col items-center justify-center p-10 gap-4"><div class="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-red-400 text-2xl"></i></div><div class="text-red-500 font-semibold text-base">데이터 로드 실패</div><div class="text-gray-400 text-sm">업체 정보를 불러올 수 없습니다.</div><button onclick="navigateTo('orders')" class="mt-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-medium transition shadow-sm"><i class="fas fa-redo mr-2"></i>다시 시도</button></div>`; return }
+
+  // 업체 목록 캐시 (법인카드 모달에서 업체 정보 조회에 사용)
+  window._vendorsCache = vendors || []
+
+  // 환자군 카테고리 전역 저장 (전체: 보조 카테고리 포함)
+  window._patientCatsAll = patientCats || []
+  window._catOrderSettings = (catOrderData?.settings) || []
+  // 목표 식단가 일원화: monthly_settings.meal_price 전역 저장
+  window._monthlyTargetMealPrice = settingsData?.meal_price || 0
+  window._catDailyOrders = (catOrderData?.dailyByVendorCat) || []  // 실제 카테고리 발주 데이터
+  window._catTodayMeals = catOrderData?.todayMeals || { patient_total: 0, staff_total: 0, guardian_total: 0 }
+  window._catPrevSettings = catOrderData?.prevSettings || []
+  // 소모품 업체별 월 합계 (vendor_id → total 맵) - 진행률 바 표시용
   window._supplyVendorMonthlyMap = {}
-  ;(catOrderData.supplyVendorMonthly || []).forEach(r => {
+  ;(catOrderData?.supplyVendorMonthly || []).forEach(r => {
     window._supplyVendorMonthlyMap[r.vendor_id] = r.total || 0
   })
+  // 소모품 업체별 일별 발주 맵 (vendor_id → date → total) - 날짜별 누적 계산용
   window._supplyDailyMap = {}
-  ;(catOrderData.supplyDailyByVendor || []).forEach(r => {
+  ;(catOrderData?.supplyDailyByVendor || []).forEach(r => {
     if (!window._supplyDailyMap[r.vendor_id]) window._supplyDailyMap[r.vendor_id] = {}
-    window._supplyDailyMap[r.vendor_id][r.order_date] = (window._supplyDailyMap[r.vendor_id][r.order_date] || 0) + (r.total || 0)
+    const existing = window._supplyDailyMap[r.vendor_id][r.order_date] || 0
+    window._supplyDailyMap[r.vendor_id][r.order_date] = existing + (r.total || 0)
   })
-  if (!window._catDietPricesData) window._catDietPricesData = []
+  // 이벤트 업체별 일별 발주 맵 (vendor_id+'_'+date → total, count) - 이벤트 상세입력 버튼 표시용
+  window._eventDailyMap = {}
+  window._eventDailyCountMap = {}
+  ;(eventData?.dailyTotals || []).forEach(r => {
+    const key = r.vendor_id + '_' + r.expense_date
+    window._eventDailyMap[key] = r.daily_total || 0
+    window._eventDailyCountMap[key] = r.item_count || 0
+  })
+
+  // 발주 페이지 로드 시 항상 최신 dashData로 catDietPricesData 갱신
+  // (대시보드에서 다른 병원을 보다가 넘어온 경우 stale 데이터 방지)
+  if (dashData?.catDietPrices && dashData.catDietPrices.length > 0) {
+    window._catDietPricesData = dashData.catDietPrices
+  } else if (!window._catDietPricesData || window._catDietPricesData.length === 0) {
+    window._catDietPricesData = []
+  }
+  // ★ 비용 구조 분리 데이터 전역 저장 (발주 화면 KPI 패널에서 사용)
+  // 기준: 식재료비 = cost_type='food', 운영비 = cost_type IN ('supply','event','utility','card')
+  window._bpCostBreakdown = dashData?.costBreakdown || null
   // 발주 입력/모달/엑셀에 사용할 주요 환자군만 필터링
   // 보조 카테고리(항암 보호자, 경관식 등 - 예산/기준가 미설정) 제외
   const patientCatsMain = filterMainPatientCats(
@@ -2985,12 +4180,18 @@ async function renderOrders() {
     const wPct = wBudget>0?Math.round(wTotal/wBudget*100):0
     // 이번 주 여부
     const isCurWeek = todayStr>=wk && todayStr<=wkEnd
-    weeklyData.push({ wk, wkEnd, wTotal, wPct, isCurWeek, wDays, wBudget })
+    // 주간 카드 표시용 레이블: MM/DD~MM/DD 형식
+    const wLabel = `${wk.slice(5).replace('-','/')}~${wkEnd.slice(5).replace('-','/')}`
+    weeklyData.push({ wk, wkEnd, wTotal, wPct, isCurWeek, wDays, wBudget, label: wLabel })
   }
 
   // 현재 주 예산: 이번 주차의 실제 일수 기반 (todayStr이 속한 주)
   const curWeekData = weeklyData.find(w => w.isCurWeek)
   const weekBudget = curWeekData ? curWeekData.wBudget : (dailyBudget * 5)
+
+  // ── [PERF] Stage 1: 데이터 처리 완료 타이밍 ──
+  const _t_data_done = performance.now()
+  console.log(`[Orders] 📊 데이터 처리 완료: ${Math.round(_t_data_done - _t_api_done)}ms | weeklyData: ${weeklyData.length}주차`)
 
   const monthPct = CALC_ENGINE.calcBudgetPct(monthTotal, totalBudget) // ✅ CALC_ENGINE
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
@@ -3014,63 +4215,618 @@ async function renderOrders() {
   const weightedAvgTargetMealPrice = dashData?.projection?.weightedAvgTargetPrice || targetMealPrice
   window._weightedAvgTargetMealPrice = weightedAvgTargetMealPrice
 
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // STEP 2 ── 데이터 도착 후: 실제 테이블 구조 주입
-  // content.innerHTML 전체 교체 대신 기존 스켈레톤 DOM 재사용
-  // KPI 패널은 이미 STEP 0에서 틀이 그려져 있음
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  const _t_render_start = performance.now()
-  window._ordersRenderStart = _t_render_start
-  console.log('[Orders] ③ 데이터 파싱 완료→렌더 시작:', Math.round(_t_render_start - _t_click), 'ms')
+  // ── [PERF] Stage 1: HTML 빌드 시작 ──
+  const _t_html_start = performance.now()
+  content.innerHTML = `
+  ${_ordersReadOnly ? readOnlyBanner() : ''}
+  <!-- ── 식단가 실시간 패널 ── -->
+  <div id="mealPricePanel" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-utensils text-blue-500 mr-1"></i>실시간 식단가</h3>
+      <div class="flex items-center gap-2">
+        <span id="repDietPrice-basisMeals" class="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full" style="display:none"></span>
+        <span class="text-xs text-gray-400">식수: <strong id="realMealCount">${fmt(initTotalMeals)}</strong>식</span>
+      </div>
+    </div>
+    <!-- ★ 식단가 흐름 구조 (발주 KPI) -->
+    ${(() => {
+      const cbNow = window._bpCostBreakdown
+      const dpNow = DIET_CALC.extractDietPrices(dashData || {})
+      // foodDietPrice → representative 보완
+      if (cbNow?.foodDietPrice && !dpNow.representative) dpNow.representative = cbNow.foodDietPrice
+      // ★ 목표 식단가: ref_meal_price(관리자 직접 입력) 우선, 없으면 settings.meal_price 폴백
+      const tgtP = dashData?.catDietPrices?.[0]?.refMealPrice || dashData?.settings?.meal_price || 0
+      // ★ 전체 식수: dietPrices.totalMeals(서버 전체 식수) 우선, fallback은 기존 합산
+      const mealsNow = dpNow.totalMeals || (mealStats?.total_patient||0)+(mealStats?.total_staff||0)+(mealStats?.total_guardian||0)
+      if (!dpNow.representative && !dpNow.operating) {
+        // 아직 데이터 없음 → 빈 placeholder (실시간 업데이트 후 교체)
+        return `<div id="repDietPrice-card" class="mb-3 p-3 rounded-xl border border-gray-200 bg-gray-50 text-xs text-gray-400 text-center">식단가 집계 중...</div>`
+      }
+      const hasDiffNow = dpNow.representative > 0 && dpNow.operating > 0 && Math.abs(dpNow.operating - dpNow.representative) > 1
+      return `<div id="repDietPrice-card" class="mb-3">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <span style="background:#1d4ed8;color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px">★ 기준</span>
+          <span class="text-xs font-semibold text-gray-700">대표 식단가 흐름 (발주 KPI)</span>
+          ${hasDiffNow ? `<span style="font-size:9px;color:#7c3aed;background:#f3e8ff;padding:1px 5px;border-radius:4px">운영비 포함 차이</span>` : ''}
+          ${tgtP>0?`<span style="font-size:9px;color:#6b7280;margin-left:auto">목표 ${tgtP.toLocaleString()}원</span>`:''}
+        </div>
+        ${DIET_CALC.dietPriceFlowHtml(dpNow, cbNow, {
+          targetPrice: tgtP,
+          totalMeals: mealsNow,
+          compact: true,
+          showPatient: (dpNow.patient||0) > 0,
+          context: 'order'
+        })}
+      </div>`
+    })()}
+    ${(() => {
+      // 카테고리별 실시간 식단가 섹션
+      const allCats = patientCatsMain || []
+      if (allCats.length === 0) return ''
+      // 식단가 표시 대상: budget_include_keys(budgetKeys)가 있는 주요 환자군만 표시
+      // budget_include_keys=NULL인 보조 카테고리(항암 보호자, 경관식 등) 제외
+      const cats = allCats.filter(cat => {
+        const dcEntry = (dashData?.catDietPrices||[]).find(d => d.id === cat.id)
+        // budgetKeys가 1개 이상 있어야 주요 환자군
+        if (dcEntry && (dcEntry.budgetKeys||[]).length > 0) return true
+        // catDietPrices에 없는 경우, catSettings에서 ref_meal_price/monthly_budget 확인
+        const tmpSet = (catOrderData?.settings||[]).find(s => s.patient_category_id === cat.id) || {}
+        if ((tmpSet.ref_meal_price||0) > 0 || (tmpSet.monthly_budget||0) > 0) {
+          // catDietPrices에 등록되어 있고 budgetKeys=[]이면 보조 카테고리 → 제외
+          if (dcEntry) return false
+          return true
+        }
+        return false
+      })
+      if (cats.length === 0) return ''
+      const todayMeals2 = catOrderData?.todayMeals || { patient_total: 0 }
+      const totalPatientMeals = todayMeals2.patient_total || 0
+      // 카테고리 설정 맵 (target_meal_price 포함)
+      const catSetMap = {}
+      ;(catOrderData?.settings || []).forEach(s => { catSetMap[s.patient_category_id] = s })
+      const prevSetMap = {}
+      ;(catOrderData?.prevSettings || []).forEach(s => { prevSetMap[s.patient_category_id] = s })
 
-  // 읽기전용 배너 (있으면 맨 위에)
-  if (_ordersReadOnly) {
-    const bannerEl = document.createElement('div')
-    bannerEl.innerHTML = readOnlyBanner()
-    content.insertBefore(bannerEl.firstChild, content.firstChild)
-  }
+      // ★ 목표 식단가 = target_meal_price (사용자 직접 입력값) 우선 — 가중값 사용 금지
+      const catRows = cats.map(cat => {
+        const color = getCategoryColorHex(cat.category_key)
+        const s = catSetMap[cat.id] || {}
+        // ★★★ KPI 고정 기준: ref_meal_price (관리자 직접 입력값) 우선, target_meal_price (예산역산값) fallback
+        const targetPrice = s.ref_meal_price || s.target_meal_price || 0
+        // 월 발주금액: window._catDietPricesData (대시보드에서 로드한 catDietPrices)
+        const dcEntry = (window._catDietPricesData||[]).find(d => d.id === cat.id)
+        const initMonthAmt = dcEntry?.monthAmt || 0
+        // 월 식수: formula 기반 (백엔드 monthMeals 우선, 없으면 폴백)
+        const initMonthMeals = dcEntry?.monthMeals !== undefined
+          ? (dcEntry.monthMeals || 0)
+          : ((dashData?.mealCustomTotals||{})[`cat_${cat.category_key}`] || 0)
+        // 월 식단가: formula 기반 (백엔드 monthDietPrice 우선)
+        const initMonthPrice = dcEntry?.monthDietPrice !== undefined
+          ? (dcEntry.monthDietPrice || 0)
+          : (initMonthAmt > 0 && initMonthMeals > 0 ? Math.round(initMonthAmt / initMonthMeals) : 0)
 
-  // 업체 뱃지 업데이트
-  const headerBadge = document.getElementById('ordersHeaderBadge')
-  if (headerBadge) headerBadge.textContent = `업체 ${vendors.length}개`
+        // ★ 직원식/보호자식 포함 여부 판단
+        const breakdown = dcEntry?.mealsBreakdown || {}
+        const hasMixedMeals = breakdown.hasStaff || breakdown.hasGuardian ||
+          (dcEntry?.mealsKeys||[]).some(k => k.startsWith('st_key_') || k === 'staff' || k.startsWith('nc_key_') || k === 'guardian')
+        const patientOnlyDietPrice = dcEntry?.patientOnlyDietPrice || 0
 
-  // 스켈레톤 숨기고 실제 테이블 표시
-  const skelEl = document.getElementById('ordersTableSkeleton')
-  const realEl = document.getElementById('ordersTableReal')
-  if (skelEl) skelEl.style.display = 'none'
-  if (realEl) realEl.style.display = 'block'
+        // ★ 비교 기준: hasMixedMeals + patientOnlyDietPrice → 환자만 식단가로 목표 비교
+        const cmpPriceSP = (hasMixedMeals && patientOnlyDietPrice > 0) ? patientOnlyDietPrice : initMonthPrice
 
-  // thead 빌드 (헤더 컬럼)
-  const ordersTheadEl = document.getElementById('ordersThead')
-  if (ordersTheadEl) {
-    const thMinW = patientCatsMain.length <= 1 ? 72 : 82
-    const catCols = patientCatsMain.map((cat, ci) => {
-      const catColor = getCategoryColorHex(cat.category_key)
-      const bl = ci === 0 ? 'border-left:3px solid #334155;' : 'border-left:2px solid #475569;'
-      return `<th style="${bl}min-width:${thMinW}px;background:${catColor}cc;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.25);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.12);padding:1px 5px;border-radius:8px">합계</span></th>`
+        // 초기 목표 대비 계산 (cmpPriceSP 기준)
+        const initIsOver = targetPrice > 0 && cmpPriceSP > targetPrice
+        const initIsWarn = targetPrice > 0 && cmpPriceSP >= targetPrice * 0.9 && !initIsOver
+        const initPriceColor = initIsOver ? '#dc2626' : initIsWarn ? '#d97706' : color
+        const initDiffHtml = cmpPriceSP > 0 && targetPrice > 0
+          ? (initIsOver
+              ? `<span style="color:#dc2626;font-size:10px">▲ +${fmt(cmpPriceSP-targetPrice)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>`
+              : `<span style="color:#16a34a;font-size:10px">▼ ${fmt(targetPrice-cmpPriceSP)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>`)
+          : (targetPrice > 0 ? `<div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice)}원</div>` : '<span style="font-size:9px;color:#d1d5db">미설정</span>')
+
+        // 식수 구성 상세 (직원/보호자 포함형)
+        const mealsDetailHtml2 = hasMixedMeals && initMonthMeals > 0 ? (() => {
+          const pM = breakdown.patientMeals || 0
+          const sM = breakdown.staffMeals || 0
+          const gM = breakdown.guardianMeals || 0
+          const parts = []
+          if (pM > 0) parts.push(`환자 ${fmt(pM)}`)
+          if (sM > 0) parts.push(`직원 ${fmt(sM)}`)
+          if (gM > 0) parts.push(`보호자 ${fmt(gM)}`)
+          return parts.length > 0 ? `<div style="font-size:7px;color:#9ca3af;margin-top:1px">${parts.join('+')}식</div>` : ''
+        })() : ''
+
+        return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:${color}0d;border:1px solid ${color}30;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:4px;min-width:50px">
+            <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0"></span>
+            <span style="font-size:11px;font-weight:700;color:${color}">${cat.category_name}</span>
+          </div>
+          <div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;align-items:center">
+            <div style="text-align:center">
+              <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">월 발주</div>
+              <div id="cat-mp-amt-${cat.id}" style="font-size:12px;font-weight:700;color:${color}">${initMonthAmt>0?fmtMan(initMonthAmt):'-'}</div>
+            </div>
+            <div style="text-align:center">
+              ${hasMixedMeals && patientOnlyDietPrice > 0 ? `
+              <div style="font-size:8px;color:#3b82f6;font-weight:600;margin-bottom:1px">환자 기준 식단가</div>
+              <div id="cat-mp-price-${cat.id}" style="font-size:13px;font-weight:900;color:${initPriceColor}">${fmt(patientOnlyDietPrice)}</div>
+              <div style="font-size:8px;color:#6b7280">원/식</div>
+              <div style="font-size:7px;color:#9ca3af;margin-top:1px">전체: ${initMonthPrice>0?fmt(initMonthPrice)+' 원':'-'}</div>
+              ` : `
+              <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">월 식단가</div>
+              <div id="cat-mp-price-${cat.id}" style="font-size:13px;font-weight:900;color:${initMonthPrice>0?initPriceColor:color}">${initMonthPrice>0?fmt(initMonthPrice):'-'}</div>
+              <div style="font-size:8px;color:#6b7280">원/식</div>
+              `}
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:8px;color:#9ca3af;margin-bottom:1px">목표 대비</div>
+              <div id="cat-mp-diff-${cat.id}" style="font-size:10px;font-weight:700;color:#9ca3af">
+                ${hasMixedMeals && patientOnlyDietPrice > 0 && targetPrice > 0 ? `<div style="font-size:7px;color:#3b82f6;font-weight:600;margin-bottom:2px">환자식 기준 비교</div>` : hasMixedMeals && targetPrice > 0 ? `<div style="font-size:7px;color:#f59e0b;margin-bottom:2px">※ 환자식 기준</div>` : ''}
+                ${initDiffHtml}
+              </div>
+            </div>
+          </div>
+          <div style="text-align:right;min-width:36px">
+            <div style="font-size:8px;color:#9ca3af">식수</div>
+            <div id="cat-mp-meals-${cat.id}" style="font-size:10px;font-weight:600;color:#374151">${initMonthMeals > 0 ? fmt(initMonthMeals)+'식' : '-'}</div>
+            ${mealsDetailHtml2}
+          </div>
+        </div>`
+      }).join('')
+
+      return `<div style="border-top:1px solid #e5e7eb;margin-top:10px;padding-top:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:11px;font-weight:700;color:#374151"><i class="fas fa-layer-group" style="color:#8b5cf6;margin-right:4px"></i>환자군 식단가 <span style="font-size:9px;font-weight:400;color:#9ca3af">(해당 환자군 식수 기준)</span></span>
+        </div>
+        <div style="font-size:9px;color:#9ca3af;margin-bottom:6px;display:flex;align-items:center;gap:4px">
+          <i class="fas fa-info-circle"></i> 실제 발주금액 ÷ 실제 식수 · 목표 = 직접 설정 목표 식단가
+        </div>
+        ${catRows}
+      </div>`
+    })()}
+  </div>
+
+  <!-- ── 예산 진행률 실시간 패널 ── -->
+  ${(() => {
+    // ── 카드 생성 헬퍼 ──
+    function miniCard(id, label, pct, amt, budget, barId, amtId, pctId, isCurrent=false, isToday=false) {
+      const isOver = pct>=100, isWarn = pct>=80&&!isOver
+      // 데이터 없는 주차(amt=0, pct=0, 현재주차 아님)는 회색 처리
+      const isEmpty = !isToday && !isCurrent && amt === 0 && pct === 0
+      // 오늘 일별 카드는 파란 계열 강조
+      const borderColor = isEmpty?'#d1d5db':(isOver?'#ef4444':isWarn?'#f59e0b':(isToday?'#2563eb':'#16a34a'))
+      const borderW = (isCurrent||isToday) ? '3px' : '2px'
+      const bgColor = isEmpty?'#f3f4f6':(isOver?'#fff1f2':isWarn?'#fffbeb':(isToday?'#eff6ff':(isCurrent?'#f0fdf4':'#f8fafc')))
+      const pctColor = isEmpty?'#9ca3af':(isOver?'#dc2626':isWarn?'#d97706':(isToday?'#1d4ed8':'#16a34a'))
+      const pctSize = isToday ? (isOver||isWarn?'30px':'26px') : (isCurrent ? (isOver||isWarn?'26px':'20px') : (isOver||isWarn?'22px':'17px'))
+      const barFill = isOver?'#dc2626':isWarn?'#f59e0b':(isToday?'#3b82f6':'#16a34a')
+      const barBg = isOver?'#fee2e2':isWarn?'#fef3c7':(isToday?'#dbeafe':'#dcfce7')
+      const badge = isOver
+        ? `<span style="background:#dc2626;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">🚨초과</span>`
+        : isWarn
+        ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">⚠️주의</span>`
+        : ''
+      const shadow = (isCurrent||isToday) ? 'box-shadow:0 4px 14px rgba(0,0,0,0.13);' : ''
+      const curLabel = isCurrent && !isToday ? `<span style="font-size:8px;background:${isOver?'#dc2626':isWarn?'#f59e0b':'#16a34a'};color:white;padding:1px 5px;border-radius:8px;margin-left:4px;vertical-align:middle">이번주</span>` : ''
+      const todaySubLabel = isToday ? `<div style="font-size:9px;color:${isOver?'#dc2626':isWarn?'#d97706':'#3b82f6'};font-weight:700;margin-top:1px">일 발주 진행률</div>` : ''
+      const labelSize = isToday ? '13px' : (isCurrent?'12px':'11px')
+      return `<div id="${id}-card" style="border-radius:12px;padding:${(isCurrent||isToday)?'13px 14px':'10px 12px'};transition:all 0.3s;background:${bgColor};border:${borderW} solid ${borderColor};${shadow}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${isToday?'2px':'4px'}">
+          <div>
+            <span style="font-size:${labelSize};font-weight:700;color:#374151">${label}${curLabel}</span>
+            ${todaySubLabel}
+          </div>
+          ${badge}
+        </div>
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:6px">
+          <span id="${pctId}" style="font-size:${pctSize};font-weight:900;line-height:1;color:${pctColor}">${pct}%</span>
+          <div style="text-align:right">
+            <div style="font-size:9px;color:#9ca3af">발주액</div>
+            <div id="${amtId}" style="font-size:${(isCurrent||isToday)?'12px':'11px'};font-weight:700;color:#374151">${fmtWon(amt)}</div>
+          </div>
+        </div>
+        <div style="background:${barBg};border-radius:4px;height:${isToday?'8px':'6px'};overflow:hidden;margin-bottom:4px">
+          <div id="${barId}" style="height:100%;border-radius:4px;background:${barFill};width:${Math.min(pct,100)}%;transition:width 0.4s"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:${isToday?'10px':'9px'};color:${isToday?'#6b7280':'#9ca3af'};font-weight:${isToday?'600':'400'}">목표</span>
+          <span style="font-size:${(isCurrent||isToday)?'12px':'10px'};font-weight:800;color:${isToday?'#1e40af':'#1f2937'}">${fmtWon(budget)}</span>
+        </div>
+      </div>`
+    }
+
+    // ── 카테고리 비율 섹션 생성 헬퍼 (A안 + B안) ──
+    const hasCats2 = (patientCatsMain||[]).length > 0
+    // 주요 환자군 필터: budgetKeys 있거나 예산/기준가 설정된 카테고리만 표시
+    // 보조 카테고리(항암 보호자, 경관식 등 - monthly_budget=0, ref_meal_price=0, budgetKeys=[]) 제외
+    const catSettingsMapForFilter = {}
+    ;(catSettings2||[]).forEach(s => { catSettingsMapForFilter[s.patient_category_id] = s })
+    const _catDietPricesForFilter = window._catDietPricesData || []
+    function isMainCat(cat) {
+      const dcEntry = _catDietPricesForFilter.find(d => d.id === cat.id)
+      // catDietPrices에 있고 budgetKeys가 1개 이상 → 주요 환자군
+      if (dcEntry && (dcEntry.budgetKeys || []).length > 0) return true
+      // catDietPrices에 있고 budgetKeys=[] → 보조 카테고리 → 제외
+      if (dcEntry && (dcEntry.budgetKeys || []).length === 0) return false
+      // catSettings에서 예산 또는 기준가 설정 → 주요 환자군
+      const s = catSettingsMapForFilter[cat.id] || {}
+      if ((s.monthly_budget || 0) > 0 || (s.ref_meal_price || 0) > 0) return true
+      return false
+    }
+    function makeCatSection(catTotalsMap, catBudgetsMap, periodLabel) {
+      if (!hasCats2) return ''
+      // 보조 카테고리 필터링 적용
+      const cats = patientCatsMain || []  // filterMainPatientCats로 이미 필터링됨
+      if (cats.length === 0) return ''
+      const grandAmt = cats.reduce((s,c) => s+(catTotalsMap[c.id]||0), 0)
+      const grandBudget = cats.reduce((s,c) => s+(catBudgetsMap[c.id]||0), 0)
+      // 발주 데이터도 없고 예산도 없으면 숨김
+      if (grandAmt === 0 && grandBudget === 0) return ''
+      // 환자군 1개이면 점유(A안)는 항상 100%라 의미없으므로 숨김
+      const showProportion = cats.length > 1
+      const rows = cats.map(cat => {
+        const color = getCategoryColorHex(cat.category_key)
+        const amt = catTotalsMap[cat.id] || 0
+        const budget = catBudgetsMap[cat.id] || 0
+        // A안: 실적 비율 (전체 발주 중 이 카테고리 비중) - 2개 이상일 때만
+        const aPct = grandAmt > 0 ? Math.round(amt/grandAmt*100) : 0
+        // B안: 예산 달성률 (카테고리 목표 대비)
+        const bPct = CALC_ENGINE.calcBudgetPct(amt, budget) || null // ✅ CALC_ENGINE
+        const bColor = bPct===null?'#9ca3af':CALC_ENGINE.getBudgetColor(bPct)||color
+        return `<div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">
+          <span style="display:inline-block;background:${color};color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:28px;text-align:center;white-space:nowrap">${cat.category_name}</span>
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+            ${showProportion && grandAmt > 0 ? `<div style="display:flex;align-items:center;gap:3px">
+              <div style="flex:1;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden">
+                <div id="catABar-${periodLabel}-${cat.id}" style="height:100%;width:${aPct}%;background:${color};border-radius:3px;transition:width 0.4s"></div>
+              </div>
+              <span id="catAPct-${periodLabel}-${cat.id}" style="font-size:9px;color:${color};font-weight:700;min-width:26px;text-align:right">${aPct}%</span>
+              <span style="font-size:8px;color:#9ca3af">점유</span>
+            </div>` : ''}
+            ${bPct!==null?`<div style="display:flex;align-items:center;gap:3px">
+              <div style="flex:1;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+                <div id="catBBar-${periodLabel}-${cat.id}" style="height:100%;width:${Math.min(bPct,100)}%;background:${bColor};border-radius:2px;transition:width 0.4s"></div>
+              </div>
+              <span id="catBPct-${periodLabel}-${cat.id}" style="font-size:9px;color:${bColor};font-weight:700;min-width:26px;text-align:right">${bPct}%</span>
+              <span style="font-size:8px;color:#9ca3af">달성</span>
+            </div>`:
+            `<div style="font-size:8px;color:#d1d5db;padding-top:1px">예산 미설정</div>`}
+          </div>
+          <div style="text-align:right;min-width:46px">
+            <div id="catAmt-${periodLabel}-${cat.id}" style="font-size:9px;font-weight:700;color:${color}">${amt>0?fmtMan(amt):'-'}</div>
+            ${budget>0?`<div style="font-size:8px;color:#9ca3af">${fmtMan(budget)}</div>`:''}
+          </div>
+        </div>`
+      }).join('')
+      const sectionTitle = cats.length === 1
+        ? `<i class="fas fa-chart-bar" style="color:#8b5cf6;font-size:8px"></i> ${cats[0].category_name} 달성률`
+        : `<i class="fas fa-chart-bar" style="color:#8b5cf6;font-size:8px"></i> 환자군별 비중·달성률`
+      return `<div style="border-top:1px dashed #e5e7eb;margin-top:6px;padding-top:6px">
+        <div style="font-size:9px;font-weight:700;color:#6b7280;margin-bottom:5px;display:flex;align-items:center;gap:3px">
+          ${sectionTitle}
+        </div>
+        ${rows}
+      </div>`
+    }
+
+    // 카테고리별 예산 (일별/주별/월별)
+    const catMonthBudgets = {}
+    const catDailyBudgets = {}
+    // catWeekBudgets는 현재 주 실제 일수 기반 (고정 5일 아님)
+    const catWeekBudgets  = {}
+    const curWeekDays = curWeekData ? curWeekData.wDays : 5
+    ;(catSettings2||[]).forEach(s => {
+      const id = s.patient_category_id
+      catMonthBudgets[id] = s.monthly_budget || 0
+      catDailyBudgets[id] = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+      catWeekBudgets[id]  = catDailyBudgets[id] * curWeekDays
+    })
+
+    // 각 카드에 카테고리 섹션 삽입하기 위해 miniCardWithCats 헬퍼
+    function miniCardWithCats(id, label, pct, amt, budget, barId, amtId, pctId, isCurrent, isToday, catTotalsMap, catBudgetsMap, periodLbl) {
+      const base = miniCard(id, label, pct, amt, budget, barId, amtId, pctId, isCurrent, isToday)
+      const catSection = makeCatSection(catTotalsMap, catBudgetsMap, periodLbl)
+      // base의 닫는 </div> 직전에 삽입
+      return base.replace(/(<\/div>)\s*$/, catSection + '$1')
+    }
+
+    // 주차 카드들 - 각 주차별 catTotals 계산
+    const weekCards = weeklyData.map((w,i) => {
+      // 주차 라벨: 해당 월의 실제 일수 표시 (1일짜리 주차 등 구분)
+      const lbl = `${i+1}주 (${w.wk.slice(5).replace('-','/')}~${w.wkEnd.slice(5).replace('-','/')})`
+      // 각 주차별 카테고리 합계 계산
+      const wCatTotals = {}
+      ;(catDailyData).forEach(r => {
+        if (r.order_date >= w.wk && r.order_date <= w.wkEnd) {
+          wCatTotals[r.patient_category_id] = (wCatTotals[r.patient_category_id]||0) + (r.total||0)
+        }
+      })
+      // 각 주차별 카테고리 예산: 해당 주 실제 일수 × 일예산 (고정 5일 아님)
+      const wCatBudgets = {}
+      ;(catSettings2||[]).forEach(s => {
+        const id = s.patient_category_id
+        const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+        wCatBudgets[id] = daily * (w.wDays || 0)
+      })
+      // 각 주차별 목표: 해당 주 실제 일수 × 일예산 (고정 5일 아님)
+      const thisWeekBudget = w.wBudget || weekBudget
+      return miniCardWithCats(`week${i+1}`, lbl, w.wPct, w.wTotal, thisWeekBudget, `weekBar${i+1}`, `weekAmt${i+1}`, `weekPct${i+1}`, w.isCurWeek, false, wCatTotals, wCatBudgets, `w${i+1}`)
     }).join('')
-    const vendorCols = vendors.map(v => {
-      const isSupply = ['supply','card','event'].includes(v.category)
-      const bg = isSupply ? '#475569' : '#1e293b'
-      const subLabel = isSupply ? '<br><span style="font-size:9px;opacity:0.7">소모품</span>' : ''
-      return `<th style="min-width:80px;background:${bg};font-size:11px;font-weight:600;padding:5px 3px;color:#e2e8f0;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis" title="${v.name}">${v.name}${subLabel}</th>`
-    }).join('')
-    ordersTheadEl.innerHTML = `<tr style="background:#1e293b;color:white">
-      <th class="sticky left-0 z-30 bg-gray-800" style="width:30px;min-width:30px;padding:5px 3px;font-size:12px;font-weight:700">일</th>
-      <th class="sticky z-30 bg-gray-800" style="width:24px;min-width:24px;left:30px;padding:5px 3px;font-size:12px;font-weight:700">요</th>
-      <th class="sticky z-30 bg-gray-800" style="width:56px;min-width:56px;left:54px;font-size:10px;font-weight:600;padding:5px 3px">몇일분<br><span style="font-size:9px;opacity:0.85;font-weight:500">발주</span></th>
-      ${catCols}
-      ${vendorCols}
-      <th class="sticky z-10 bg-gray-800" style="min-width:80px;left:110px;font-size:11px;font-weight:700;padding:5px 3px">합계</th>
-      <th style="min-width:80px;font-size:11px;font-weight:600;padding:5px 3px">액션</th>
-    </tr>`
-  }
 
-  // 다수일 발주 패널 - 테이블 아래에 추가
-  const qmWrap = document.createElement('div')
-  qmWrap.id = 'quickMultiDayPanel'
-  qmWrap.className = 'hidden bg-white rounded-2xl shadow-sm border border-green-200 p-5 mt-4'
-  content.appendChild(qmWrap)
+    return `
+    <div id="budgetProgressPanel" style="background:white;border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e5e7eb;padding:16px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="font-weight:700;color:#374151;font-size:14px"><i class="fas fa-tachometer-alt" style="color:#16a34a;margin-right:4px"></i>예산 달성 현황 (실시간)</h3>
+        <span style="font-size:11px;color:#9ca3af">${App.currentYear}년 ${App.currentMonth}월 | 월 총예산 <strong style="color:#374151">${fmtWon(totalBudget)}</strong></span>
+      </div>
+
+      <!-- 일별 + 월별 카드 (2열) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        ${miniCardWithCats('today','📅 오늘 일별 발주',todayPct,todayTotal,dailyBudget,'todayBar','todayAmt','todayPct',false,true, catTodayTotals, catDailyBudgets, 'today')}
+        ${miniCardWithCats('month','🗓️ 월별 발주',monthPct,monthTotal,totalBudget,'monthBar','monthAmt','monthPct',false,false, catMonthTotals, catMonthBudgets, 'month')}
+      </div>
+
+      <!-- 주차별 카드 -->
+      <div style="border-top:1px solid #e5e7eb;padding-top:10px">
+        <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:8px">📆 주차별 발주 현황</div>
+        <div id="weeklyCardsGrid" style="display:grid;grid-template-columns:repeat(${weeklyData.length},1fr);gap:8px">
+          ${weekCards}
+        </div>
+      </div>
+    </div>`
+  })()}
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100" style="min-width:0;max-width:100%;box-sizing:border-box;contain:layout style">
+    <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+      <div>
+        <h2 class="font-bold text-gray-800 text-sm md:text-base">${App.currentYear}년 ${App.currentMonth}월 발주 입력</h2>
+        <p class="text-xs text-gray-400 mt-0.5 hidden md:block">입력 후 자동 저장됨 | 수동 저장은 저장 버튼 클릭</p>
+      </div>
+      <div class="flex gap-1.5 flex-wrap">
+        <button onclick="saveAllOrders()" class="btn btn-success btn-sm">
+          <i class="fas fa-save"></i> <span class="hidden sm:inline">전체 </span>저장
+        </button>
+        ${window._patientCats && window._patientCats.length > 0 ? '' : `
+        <button onclick="openCategorySetupGuide()" class="btn btn-sm" style="background:#f3e8ff;color:#7c3aed;border:1px solid #d8b4fe">
+          <i class="fas fa-layer-group"></i> <span class="hidden sm:inline">칸 생성</span>
+        </button>`}
+        <button onclick="showQuickMultiDay()" class="btn btn-primary btn-sm">
+          <i class="fas fa-calendar-plus"></i> <span class="hidden sm:inline">다수일 </span>발주
+        </button>
+        <button onclick="openInspectionModal()" class="btn btn-sm" style="background:#ecfdf5;color:#059669;border:1px solid #6ee7b7" title="발주 검수 관리">
+          <i class="fas fa-clipboard-check"></i> <span class="hidden sm:inline">검수</span>
+        </button>
+        <button onclick="showMonthAllOrdersModal()" class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa" title="월 전체 발주 펼쳐보기">
+          <i class="fas fa-table"></i> <span class="hidden sm:inline">전체보기</span>
+        </button>
+        <button onclick="downloadOrdersExcel()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0" title="발주 데이터 엑셀 다운로드">
+          <i class="fas fa-file-excel"></i> <span class="hidden sm:inline">엑셀</span>
+        </button>
+        <!-- #4 거래내역 엑셀 자동 입력 -->
+        <button onclick="openAutoImportDialog()" style="background:#7c3aed;color:white;border:none;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap" title="업체 거래내역 엑셀 업로드 → 발주 자동 입력">
+          <i class="fas fa-file-import"></i><span class="hidden sm:inline">자동입력</span>
+        </button>
+        <button onclick="refreshOrders()" class="btn btn-secondary btn-sm">
+          <i class="fas fa-sync"></i>
+        </button>
+      </div>
+    </div>
+    
+    <!-- 월별 업체 합계 요약 -->
+    <div class="px-3 py-2 border-b border-gray-100 bg-gray-50" style="-webkit-overflow-scrolling:touch">
+      <!-- 등록 업체 칩 목록 -->
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-size:10px;font-weight:700;color:#6b7280;white-space:nowrap"><i class="fas fa-store" style="color:#3b82f6;margin-right:3px"></i>등록 업체</span>
+        ${vendors.map(v => {
+          const isMixedTotal = v.tax_type==='mixed_total'
+          const taxLabel = isMixedTotal?'합산':v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          const taxBg = isMixedTotal?'#f3e8ff':v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
+          const taxColor = isMixedTotal?'#7c3aed':v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
+          const chipBorder = isMixedTotal?'1px solid #d8b4fe':'1px solid #e5e7eb'
+          return `<span style="display:inline-flex;align-items:center;gap:3px;background:white;border:${chipBorder};border-radius:20px;padding:2px 8px;font-size:10px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap" onclick="openTodayDetailForVendor(${v.id})" title="클릭하면 오늘 발주 입력 열기">
+            ${v.name}
+            <span style="background:${taxBg};color:${taxColor};font-size:8px;padding:0 3px;border-radius:4px;font-weight:700">${taxLabel}</span>
+          </span>`
+        }).join('')}
+      </div>
+      <!-- 업체별 카드 (진행률 바 포함) -->
+      <div class="overflow-x-auto" style="-webkit-overflow-scrolling:touch">
+      <div class="flex gap-2 min-w-max text-xs" id="vendorSummaryRow">
+        ${vendors.map(v => {
+          // 소모품/카드/이벤트 업체: 중복 방지를 위해 _supplyDailyMap 또는 _cardDailyMap 사용
+          // (patient_category_id 중복 행 합산 방지)
+          let vTotal
+          if (v.is_card_type) {
+            // 법인카드 업체: _cardDailyMap에서 월 합계 계산
+            vTotal = Object.values(window._cardDailyMap?.[v.id] || {}).reduce((s, a) => s + a, 0)
+          } else if (v.category === 'supply' || v.category === 'card' || v.category === 'event') {
+            // 소모품/카드/이벤트 업체: _supplyDailyMap에서 월 합계 계산
+            const supplyDMap = window._supplyDailyMap?.[v.id] || {}
+            vTotal = Object.values(supplyDMap).reduce((s, amt) => s + (amt || 0), 0)
+          } else {
+            // 일반 식재료 업체: orderList에서 계산
+            const vOrders = (orderList || []).filter(o => o.vendor_id === v.id)
+            vTotal = vOrders.reduce((s, o) => s + (o.total_amount || 0), 0)
+          }
+          const pctNum = CALC_ENGINE.calcBudgetPct(vTotal, v.monthly_budget) || null // ✅ CALC_ENGINE
+          const over = pctNum !== null && pctNum >= 100
+          const warn = pctNum !== null && pctNum >= 80 && !over
+          const remain = v.monthly_budget > 0 ? v.monthly_budget - vTotal : null
+          const barColor = over ? '#dc2626' : warn ? '#d97706' : '#16a34a'
+          const borderColor = over ? '#fca5a5' : warn ? '#fcd34d' : '#d1fae5'
+          const isMixedTotal2 = v.tax_type==='mixed_total'
+          const taxLabel = isMixedTotal2?'합산':v.tax_type==='mixed'?'과+면':v.tax_type==='taxable'?'과세':'면세'
+          const taxTagBg = isMixedTotal2?'#f3e8ff':v.tax_type==='mixed'?'#dbeafe':v.tax_type==='taxable'?'#dcfce7':'#fef9c3'
+          const taxTagColor = isMixedTotal2?'#7c3aed':v.tax_type==='mixed'?'#1d4ed8':v.tax_type==='taxable'?'#166534':'#92400e'
+          return `<div id="vsum-${v.id}" style="min-width:100px;background:white;border-radius:10px;border:1px solid ${borderColor};padding:8px 10px;cursor:pointer;transition:box-shadow 0.15s" onclick="openTodayDetailForVendor(${v.id})" title="클릭 → 오늘 발주 입력">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+              <span style="font-size:10px;font-weight:700;color:#1f2937;white-space:nowrap;max-width:72px;overflow:hidden;text-overflow:ellipsis">${v.name}</span>
+              <span style="font-size:8px;padding:0 3px;border-radius:4px;background:${taxTagBg};color:${taxTagColor};font-weight:700">${taxLabel}</span>
+            </div>
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">
+              <span class="vsum-amt" style="font-size:12px;font-weight:800;color:${barColor}">${fmtMan(vTotal)}</span>
+              ${pctNum !== null ? `<span class="vsum-pct" style="font-size:10px;font-weight:700;color:${barColor}">${pctNum}%${over?' 🚨':warn?' ⚠️':''}</span>` : '<span class="vsum-pct"></span>'}
+            </div>
+            ${v.monthly_budget > 0 ? `
+            <div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin-bottom:3px">
+              <div style="height:100%;width:${Math.min(pctNum||0,100)}%;background:${barColor};border-radius:3px;transition:width 0.4s"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
+              <span>목표 ${fmtMan(v.monthly_budget)}</span>
+              <span style="color:${remain<0?'#dc2626':'#6b7280'}">${remain<0?'초과 '+fmtMan(Math.abs(remain)):'잔여 '+fmtMan(remain)}</span>
+            </div>` : `<div style="font-size:9px;color:#d1d5db;text-align:center">목표 미설정</div>`}
+          </div>`
+        }).join('')}
+        <div style="min-width:90px;background:#f0fdf4;border-radius:10px;border:1px solid #d1fae5;padding:8px 10px">
+          <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:3px">월 합계</div>
+          <div class="font-bold text-green-700" id="monthTotalDisplay" style="font-size:13px;font-weight:800">${fmtMan(
+            // ★ daily_orders 전체 합산 (food + supply + card + event 모두 포함)
+            // orderList = daily_orders 전체 → 중복 없는 단일 소스
+            (orderList||[]).reduce((s,o) => s + (o.total_amount||0), 0)
+          )}</div>
+          ${totalBudget > 0 ? `<div style="font-size:10px;font-weight:700;color:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'}" id="monthPctDisplay">${monthPct}%</div>` : ''}
+          ${totalBudget > 0 ? `<div style="height:5px;background:#e5e7eb;border-radius:3px;margin-top:3px;overflow:hidden"><div style="height:100%;width:${Math.min(monthPct,100)}%;background:${monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'};border-radius:3px"></div></div>` : ''}
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <!-- ── 월간 발주 요약 배너: 총 발주금액 / 공급사 수 / 검수 현황 ── -->
+    ${(() => {
+      const orderVendorSet = new Set((orderList||[]).filter(o=>o.total_amount>0).map(o=>o.vendor_id))
+      const activeVendorCnt = orderVendorSet.size
+      const totalOrderAmt = (orderList||[]).reduce((s,o)=>s+(o.total_amount||0),0)
+      const inspData = window._inspectionSummaryCache || null
+      const pendingCnt = inspData?.pendingCount || 0
+      const completedCnt = inspData?.completedCount || 0
+      const totalInsp = pendingCnt + completedCnt
+      const inspPct = totalInsp > 0 ? Math.round(completedCnt/totalInsp*100) : null
+      const inspColor = pendingCnt > 0 ? '#dc2626' : '#16a34a'
+      const inspLabel = pendingCnt > 0 ? `⚠ ${pendingCnt}건 미완료` : (totalInsp > 0 ? '✅ 전체 완료' : '로딩 중...')
+      return `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+        <div style="background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;padding:10px 14px">
+          <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:4px"><i class="fas fa-shopping-cart" style="margin-right:3px"></i>월 총 발주금액</div>
+          <div style="font-size:18px;font-weight:900;color:#1e3a8a">${fmtMan(totalOrderAmt)}<span style="font-size:11px;font-weight:500;color:#6b7280;margin-left:2px">원</span></div>
+          ${totalBudget > 0 ? `<div style="font-size:10px;margin-top:3px;color:${totalOrderAmt>totalBudget?'#dc2626':'#16a34a'};font-weight:600">예산 ${fmtMan(totalBudget)}원 대비 ${Math.round(totalOrderAmt/totalBudget*100)}%</div>` : ''}
+        </div>
+        <div style="background:#f0fdf4;border-radius:10px;border:1px solid #bbf7d0;padding:10px 14px">
+          <div style="font-size:10px;font-weight:700;color:#16a34a;margin-bottom:4px"><i class="fas fa-store" style="margin-right:3px"></i>발주 공급사</div>
+          <div style="font-size:18px;font-weight:900;color:#14532d">${activeVendorCnt}<span style="font-size:11px;font-weight:500;color:#6b7280;margin-left:2px">개사</span></div>
+          <div style="font-size:10px;margin-top:3px;color:#6b7280">전체 ${(vendors||[]).length}개 중 발주 ${activeVendorCnt}개</div>
+        </div>
+        <div id="_inspSummaryBanner" style="background:${pendingCnt>0?'#fef2f2':'#f0fdf4'};border-radius:10px;border:1px solid ${pendingCnt>0?'#fca5a5':'#bbf7d0'};padding:10px 14px">
+          <div style="font-size:10px;font-weight:700;color:${inspColor};margin-bottom:4px"><i class="fas fa-clipboard-check" style="margin-right:3px"></i>검수 현황</div>
+          <div id="_inspLabelSpan" style="font-size:15px;font-weight:900;color:${inspColor}">${inspLabel}</div>
+          ${inspPct !== null ? `<div id="_inspDetailSpan" style="font-size:10px;margin-top:3px;color:#6b7280">완료 ${completedCnt}/${totalInsp}건 (${inspPct}%)</div>` : '<div id="_inspDetailSpan" style="font-size:10px;margin-top:3px;color:#9ca3af">데이터 로딩 중...</div>'}
+        </div>
+      </div>`
+    })()}
+
+    <!-- ── 인사이트 패널: 월 예산 예측 + 업체 비중 + 식단가 경고 ── -->
+    <div id="ordersInsightPanel" style="background:white;border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #e5e7eb;padding:12px 16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;cursor:pointer" onclick="toggleInsightPanel()">
+        <div style="display:flex;align-items:center;gap:6px">
+          <i class="fas fa-chart-pie" style="color:#8b5cf6;font-size:14px"></i>
+          <span style="font-size:13px;font-weight:700;color:#1f2937">발주 현황 인사이트</span>
+        </div>
+        <span id="insightPanelArrow" style="font-size:12px;color:#9ca3af">▼</span>
+      </div>
+      <div id="insightPanelBody">
+        <!-- 3열 그리드: 월 예산 예측 + 식단가 현황 + 업체별 발주 비중 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;align-items:start">
+          <!-- 월 예산 초과 예측 -->
+          <div id="budgetForecastCard" style="background:#fffbeb;border-radius:10px;border:1px solid #fde68a;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:6px;display:flex;align-items:center;gap:4px">
+              <i class="fas fa-calculator" style="color:#f59e0b"></i> 월 예산 예측
+            </div>
+            <div id="budgetForecastContent">
+              <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
+            </div>
+            <div id="budgetForecastWarn" style="display:none"></div>
+          </div>
+          <!-- 식단가 경고 -->
+          <div id="dietPriceAlertCard" style="background:#f0fdf4;border-radius:10px;border:1px solid #bbf7d0;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:#166534;margin-bottom:6px;display:flex;align-items:center;gap:4px">
+              <i class="fas fa-utensils" style="color:#10b981"></i> 식단가 현황
+            </div>
+            <div id="dietPriceAlertContent">
+              <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
+            </div>
+          </div>
+          <!-- 업체 발주 비중 (#7 개선: 도넛 + 상세 분석 패널) -->
+          <div id="vendorShareCard" style="background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:4px">
+              <span><i class="fas fa-chart-pie" style="color:#3b82f6"></i> 업체별 발주 분석</span>
+              <div style="display:flex;gap:4px;align-items:center">
+                <button onclick="toggleVendorShareView('chart')" id="vsBtn_chart" style="font-size:9px;padding:1px 5px;border-radius:3px;border:1px solid #bfdbfe;background:#1d4ed8;color:white;cursor:pointer">차트</button>
+                <button onclick="toggleVendorShareView('table')" id="vsBtn_table" style="font-size:9px;padding:1px 5px;border-radius:3px;border:1px solid #bfdbfe;background:white;color:#1d4ed8;cursor:pointer">목록</button>
+              </div>
+            </div>
+            <!-- 차트 뷰 -->
+            <div id="vendorShareChartView">
+              <div style="position:relative;height:110px;display:flex;align-items:center;justify-content:center">
+                <canvas id="vendorShareDonut" width="110" height="110"></canvas>
+              </div>
+              <div id="vendorShareLegend" style="margin-top:6px"></div>
+            </div>
+            <!-- 테이블 뷰 (숨김) -->
+            <div id="vendorShareTableView" style="display:none">
+              <div id="vendorShareContent">
+                <div style="font-size:10px;color:#9ca3af">데이터 계산 중...</div>
+              </div>
+            </div>
+            <div id="vendorBiasAlert" style="display:none"></div>
+            <!-- TOP3/5 집중도 요약 -->
+            <div id="vendorTop3Summary" style="display:none;margin-top:6px;padding:5px 8px;background:#dbeafe;border-radius:6px;font-size:9px;color:#1d4ed8"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="orders-scroll-wrap" id="ordersScrollWrap" style="position:relative;padding-bottom:0">
+      <!-- 모바일 스크롤 안내 -->
+      <div class="scroll-hint">
+        <i class="fas fa-arrows-left-right"></i>좌우로 스크롤하여 전체 발주 입력
+      </div>
+      <!-- 상단 가로 스크롤바 (데스크탑용 미러 - 테이블 위에 위치) -->
+      <div id="orders-hscroll-top" style="overflow-x:auto;overflow-y:hidden;height:14px;border-bottom:1px solid #d1fae5;background:#f0fdf4;border-radius:4px 4px 0 0">
+        <div id="orders-hscroll-top-inner" style="height:1px"></div>
+      </div>
+      <!-- 가로 스크롤 컨테이너 -->
+      <div id="ordersTableScroller" style="overflow-x:auto;overflow-y:auto;max-height:80vh;width:100%;max-width:100%;-webkit-overflow-scrolling:touch;scroll-behavior:smooth">
+      <table class="order-table" id="ordersTable" style="table-layout:auto;border-collapse:collapse;width:100%;min-width:max-content">
+        <thead style="position:sticky;top:0;z-index:20">
+          <tr>
+            <th class="sticky left-0 z-30 bg-gray-800" style="width:30px;min-width:30px;padding:5px 3px;font-size:12px;font-weight:700">일</th>
+            <th class="sticky z-30 bg-gray-800" style="width:24px;min-width:24px;left:30px;padding:5px 3px;font-size:12px;font-weight:700">요</th>
+            <th class="sticky z-30 bg-gray-800" style="width:56px;min-width:56px;left:54px;font-size:10px;font-weight:600;padding:5px 3px" title="몇 일분 발주인지 선택합니다. 예: 2일 선택 시 일 목표금액×2 기준으로 진행률 계산">몇일분<br><span style="font-size:9px;opacity:0.85;font-weight:500">발주</span></th>
+            ${patientCatsMain.map((cat, ci) => {
+              const catColor = getCategoryColorHex(cat.category_key)
+              const bl = ci === 0 ? 'border-left:3px solid #334155;' : 'border-left:2px solid #475569;'
+              const thMinW = patientCatsMain.length <= 1 ? 72 : 82
+              return `<th style="${bl}min-width:${thMinW}px;background:${catColor}cc;font-size:12px;font-weight:700;padding:6px 5px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.25);line-height:1.4">${cat.category_name}<br><span style="font-size:10px;opacity:0.9;font-weight:600;background:rgba(0,0,0,0.12);padding:1px 5px;border-radius:8px">합계</span></th>`
+            }).join('')}
+            ${patientCatsMain.length === 0 ? `<th style="min-width:80px;background:#166534;border-left:3px solid #334155;font-size:12px;font-weight:700">일합계</th>` : ''}
+            <th class="sticky z-30" style="min-width:84px;background:#1e3a5f;left:110px;padding:5px 4px;font-size:12px;font-weight:700;line-height:1.4">합계<br><span style="font-size:10px;opacity:0.85;font-weight:500">/ 진행률</span></th>
+            <th class="sticky-right-btn" style="min-width:68px;background:#374151;font-size:11px;font-weight:600;padding:5px 3px;box-shadow:-2px 0 6px rgba(0,0,0,0.18);line-height:1.5">업체별<br><span style="font-size:9px;opacity:0.8;font-weight:500">입력</span></th>
+          </tr>
+        </thead>
+        <tbody id="ordersTbody">
+          <tr><td colspan="99" class="text-center py-8 text-gray-400" style="font-size:13px"><div class="loading-spinner" style="display:inline-block;margin-right:8px"></div>발주 데이터 로딩 중...</td></tr>
+        </tbody>
+        <tfoot id="ordersTfoot"></tfoot>
+      </table>
+      </div>
+      <!-- 하단 가로 스크롤바 (데스크탑용 미러) -->
+      <div id="orders-hscroll-bar" style="overflow-x:auto;overflow-y:hidden;height:14px;border-top:1px solid #e5e7eb;background:#f9fafb;border-radius:0 0 4px 4px">
+        <div id="orders-hscroll-inner" style="height:1px"></div>
+      </div>
+    </div>
+  </div>
+  <!-- 다수일 발주 빠른 입력 패널 -->
+  <div id="quickMultiDayPanel" class="hidden bg-white rounded-2xl shadow-sm border border-green-200 p-5 mt-4">
+    QUICK_MULTIDAY_PLACEHOLDER
+  </div>`
 
   // quickMultiDay 패널 HTML을 별도로 삽입 (innerHTML 크기 줄이기)
   const qmPanel = document.getElementById('quickMultiDayPanel')
@@ -3122,6 +4878,10 @@ async function renderOrders() {
     </div>`
   }
 
+  // ── [PERF] Stage 1: 초기 HTML 렌더링 완료 타이밍 ──
+  const _t_html_done = performance.now()
+  console.log(`[Orders] 🖼️ 초기 HTML 렌더링(KPI+주차카드+테이블구조): ${Math.round(_t_html_done - _t_html_start)}ms`)
+
   // 전역 예산 데이터 저장 (실시간 업데이트용)
   const vendorDailyBudgets2 = {}
   ;(vendors||[]).forEach(v => {
@@ -3164,7 +4924,9 @@ async function renderOrders() {
     apiMealPriceNoStaff: dashData?.mealPriceNoStaff || 0,
     apiMealPriceNoSupply: dashData?.mealPriceNoSupply || 0,
     apiTotalUsed: dashData?.totalUsed || 0,
-    apiSupplyUsed: dashData?.supplyCardUsed || 0  // 소모품+카드 제외 금액 합계 (mp3 비율 보정용)
+    apiSupplyUsed: dashData?.supplyCardUsed || 0,  // 소모품+카드 제외 금액 합계 (mp3 비율 보정용)
+    // ★ 전체 식수 (서버 계산, meals_include_keys 필터 없음) — 대표/운영반영 식단가 분모
+    apiTotalMeals: dashData?.dietPrices?.totalMeals || 0
   }
 
   // ── 인사이트 패널 즉시 업데이트 (모든 전역 데이터가 준비된 직후) ──
@@ -3174,11 +4936,9 @@ async function renderOrders() {
   }, 0)
 
   // tbody/tfoot를 requestAnimationFrame 후 비동기 렌더링
-  // ── double-frame hop 제거: rAF 하나만 사용 (rAF→setTimeout(0) 패턴 대신 rAF→즉시) ──
   requestAnimationFrame(() => {
-    const _t_raf1 = performance.now()
-    console.log('[Orders] ③-b rAF 진입 (페인트 후):', Math.round(_t_raf1 - _t_click), 'ms')
-    try {
+    setTimeout(() => {
+      try {
       const _coveredDates = {}
       const _multiDayMap = {}
 
@@ -3233,7 +4993,8 @@ async function renderOrders() {
         .filter(r => r.patient_category_id == null || r.patient_category_id === undefined)
         .reduce((s, r) => s + (r.total || 0), 0)
 
-      const _t_build_start = performance.now()
+      // ── [PERF] Stage 1: tbody 빌드 타이밍 ──
+      const _t_tbody_start = performance.now()
       _buildOrdersTbody({
         days, orderData: orderList||[], vendors: vendors||[],
         patientCats: patientCatsMain||[], coveredDates: _coveredDates,
@@ -3242,47 +5003,77 @@ async function renderOrders() {
         dailyBudget, weekBudget, weekStart, weekEnd, todayStr,
         totalBudget, monthPct, orderMap
       })
-      const _t_tbody_done2 = performance.now()
-      console.log('[Orders] ④-a tbody HTML 빌드+삽입:', Math.round(_t_tbody_done2 - _t_build_start), 'ms')
-
+      console.log(`[Orders] 📋 _buildOrdersTbody 완료: ${Math.round(performance.now() - _t_tbody_start)}ms`)
+      const _t_tfoot_start = performance.now()
       _buildOrdersTfoot({
         vendors: vendors||[], patientCats: patientCatsMain||[], orderData: orderList||[],
         catOrderData, catSettingsMap: _catSettingsMap, monthPct, totalBudget
       })
-      const _t_tfoot_done = performance.now()
-      console.log('[Orders] ④-b tfoot 렌더:', Math.round(_t_tfoot_done - _t_tbody_done2), 'ms')
-
+      console.log(`[Orders] 📊 _buildOrdersTfoot 완료: ${Math.round(performance.now() - _t_tfoot_start)}ms`)
       // ── 테이블/tfoot 렌더링 완료 후 모든 실시간 패널 업데이트 ──
+      const _t_raf_start = performance.now()
       requestAnimationFrame(() => {
-        const _t_raf2 = performance.now()
         // 모든 날짜의 dayRatioCell과 summCatAmt를 updateDayTotal로 동기화
+        // (초기 렌더링의 displayTotal과 catTotals가 updateDayTotal 기준과 다를 수 있으므로
+        //  항상 updateDayTotal로 덮어써서 summCatAmt = dayRatioCell 일치 보장)
         if (typeof updateDayTotal === 'function') {
           const allDays = document.querySelectorAll('tr.order-summary-row[data-date]')
           allDays.forEach(row => {
             if (row.dataset.date) updateDayTotal(row.dataset.date)
           })
         }
+        const _t_bp0 = performance.now()
         if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
-        if (typeof updateInsightPanel === 'function') updateInsightPanel()
-        // [PERF] 전체 렌더 완료 타이밍
-        const _t_total_done = performance.now()
-        console.log('[Orders] ✅ 전체 렌더 완료 (First Click→입력가능):', Math.round(_t_total_done - _t_click), 'ms')
-        console.log('[Orders] ─── 성능 상세 요약 ──────────────────────────')
-        console.log('[Orders]  ① First Paint (틀 표시)  :', Math.round(_t_paint - _t_click), 'ms')
-        console.log('[Orders]  ② Init API 응답          :', Math.round((_t_render_start || _t_click) - _t_api_start), 'ms (DB:', initData?._dbMs||'?', 'ms, fallback:', initData?._fallbackMs||'0', 'ms)')
-        console.log('[Orders]  ③ 데이터 파싱+준비       :', Math.round(_t_raf1 - (_t_render_start||_t_click)), 'ms')
-        console.log('[Orders]  ④ rAF→tbody HTML 빌드   :', Math.round(_t_tbody_done2 - _t_build_start), 'ms')
-        console.log('[Orders]  ⑤ tfoot 렌더             :', Math.round(_t_tfoot_done - _t_tbody_done2), 'ms')
-        console.log('[Orders]  ⑥ rAF2+updateDayTotal   :', Math.round(_t_total_done - _t_raf2), 'ms')
-        console.log('[Orders]  전체 (Click→입력가능)    :', Math.round(_t_total_done - _t_click), 'ms')
-        console.log('[Orders] ─────────────────────────────────────────────')
+        const _t_bp1 = performance.now()
+        // ── [PERF] Stage 6: insightPanel 지연 실행 (500ms - updateBudgetProgressPanel 내 동기 호출 제거)
+        setTimeout(() => {
+          if (typeof updateInsightPanel === 'function') updateInsightPanel()
+        }, 500)
+        console.log(`[Orders] 🎯 updateBudgetProgressPanel(즉시): ${Math.round(_t_bp1-_t_bp0)}ms`)
+        console.log(`[Orders] 🎯 rAF 패널 업데이트 완료: ${Math.round(performance.now() - _t_raf_start)}ms`)
+        console.log(`[Orders] ✅ 전체 renderOrders 완료: ${Math.round(performance.now() - _t_orders_click)}ms (클릭 기준)`)
+        // ── 검수 데이터 백그라운드 로드 (발주 현황 배너 실시간 갱신) ──
+        if (!window._inspectionSummaryCache) {
+          setTimeout(async () => {
+            try {
+              const _insRes = await api('GET', `/api/orders/inspection/pending/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+              const _insData = _insRes?.summary || null
+              if (_insData) {
+                window._inspectionSummaryCache = _insData
+                const _bannerEl = document.getElementById('_inspSummaryBanner')
+                const _labelEl = document.getElementById('_inspLabelSpan')
+                const _detailEl = document.getElementById('_inspDetailSpan')
+                if (_bannerEl && _labelEl) {
+                  const _pc = _insData.pendingCount || 0
+                  const _cc = _insData.completedCount || 0
+                  const _ti = _pc + _cc
+                  const _ic = _pc > 0 ? '#dc2626' : '#16a34a'
+                  const _il = _pc > 0 ? `⚠ ${_pc}건 미완료` : (_ti > 0 ? '✅ 전체 완료' : '검수 없음')
+                  const _ip = _ti > 0 ? Math.round(_cc/_ti*100) : null
+                  _labelEl.textContent = _il
+                  _labelEl.style.color = _ic
+                  _bannerEl.style.background = _pc > 0 ? '#fef2f2' : '#f0fdf4'
+                  _bannerEl.style.borderColor = _pc > 0 ? '#fca5a5' : '#bbf7d0'
+                  if (_detailEl) {
+                    _detailEl.textContent = _ip !== null ? `완료 ${_cc}/${_ti}건 (${_ip}%)` : '검수 데이터 없음'
+                    _detailEl.style.color = _ip !== null ? '#6b7280' : '#9ca3af'
+                  }
+                }
+              }
+            } catch(e2) { console.warn('[Orders] 검수 백그라운드 로드 오류:', e2) }
+          }, 1500)
+        }
       })
-    } catch(e) {
-      console.error('[renderOrders rAF] 테이블 렌더링 오류:', e)
-      requestAnimationFrame(() => {
-        if (typeof updateInsightPanel === 'function') updateInsightPanel()
-      })
-    }
+      } catch(e) {
+        console.error('[renderOrders setTimeout] 테이블 렌더링 오류:', e)
+        // 오류가 있어도 인사이트 패널은 업데이트
+        requestAnimationFrame(() => {
+          if (typeof updateInsightPanel === 'function') {
+            try { updateInsightPanel() } catch(ie) { console.warn('[Orders] insightPanel 오류(무시):', ie) }
+          }
+        })
+      }
+    }, 0)
   })
 
   // ── _buildOrdersTbody: 아코디언 구조 (날짜 1행 요약 + 상세 펼침) ──
@@ -3307,9 +5098,6 @@ async function renderOrders() {
     let weekNumber = 0
     const hasCats = patientCats.length > 0
 
-    // ── vendors.find() → O(1) Map 룩업 (루프 내 linear search 제거) ──
-    const _vendorMap = new Map(vendors.map(v => [String(v.id), v]))
-
     for (let i = 0; i < days; i++) {
       const day = i + 1
       const dow = getDayOfWeek(App.currentYear, App.currentMonth, day)
@@ -3317,7 +5105,9 @@ async function renderOrders() {
       const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
       const isToday = dateStr === todayStr
       const isPast = dateStr < todayStr
-      const rowClass = dow === '일' ? 'holiday-row' : weekend ? 'weekend-row' : ''
+      const isHoliday = isPublicHoliday(dateStr)  // 법정 공휴일 여부
+      const isRedDay = dow === '일' || isHoliday   // 일요일 또는 공휴일 → 빨간색
+      const rowClass = isRedDay ? 'holiday-row' : weekend ? 'weekend-row' : ''
 
       const dateObjL = localDate(dateStr)
       const thisMon = new Date(dateObjL)
@@ -3354,13 +5144,15 @@ async function renderOrders() {
         const wPct = thisWeekBudget>0 ? Math.round(wTotal/thisWeekBudget*100) : null
         const wOver = wPct!==null&&wPct>=100; const wWarn = wPct!==null&&wPct>=80&&!wOver
         const isCurrentWeek = todayStr>=weekKey && todayStr<=weekEndKey
-        const wColor = wOver?'#dc2626':wWarn?'#d97706':'#166534'
-        const wBg = wOver?'#fee2e2':wWarn?'#fef3c7':(isCurrentWeek?'#e0f2fe':'#f0fdf4')
-        const wBorderColor = wOver?'#dc2626':wWarn?'#f59e0b':'#16a34a'
+        // 데이터 없는 주차: 현재 주차 아니고 발주액 0인 경우 회색 처리
+        const isEmptyWeek = !isCurrentWeek && wTotal === 0
+        const wColor = isEmptyWeek?'#9ca3af':(wOver?'#dc2626':wWarn?'#d97706':'#166534')
+        const wBg = isEmptyWeek?'#f3f4f6':(wOver?'#fee2e2':wWarn?'#fef3c7':(isCurrentWeek?'#e0f2fe':'#f0fdf4'))
+        const wBorderColor = isEmptyWeek?'#d1d5db':(wOver?'#dc2626':wWarn?'#f59e0b':'#16a34a')
         const wBW = isCurrentWeek ? '3px' : '2px'
         const wBS = isCurrentWeek ? 'double' : 'solid'
         const wLabel = `${weekKey.slice(5).replace('-','/')}~${weekEndKey.slice(5).replace('-','/')}`
-        const wBadgeBg = isCurrentWeek ? '#0284c7' : (wOver?'#dc2626':wWarn?'#d97706':'#166534')
+        const wBadgeBg = isCurrentWeek ? '#0284c7' : (isEmptyWeek?'#9ca3af':(wOver?'#dc2626':wWarn?'#d97706':'#166534'))
         const wPctBar = wPct!==null ? `<div style="height:4px;background:rgba(255,255,255,0.3);border-radius:2px;margin-top:3px"><div style="height:4px;width:${Math.min(wPct,100)}%;background:${wColor};border-radius:2px"></div></div>` : ''
 
         // 카테고리별 주간합계
@@ -3415,7 +5207,7 @@ async function renderOrders() {
         const vMapDay = catDailyMap[dateStr] || {}
         // 법인카드가 아닌 업체만 catDailyMap에서 합산 (법인카드는 _cardDailyMap에서 별도 처리)
         Object.entries(vMapDay).forEach(([vid, catMap]) => {
-          const vendorObj = _vendorMap.get(String(vid))
+          const vendorObj = vendors.find(v => String(v.id) === String(vid))
           if (vendorObj && vendorObj.is_card_type) return  // 법인카드 업체는 건너뜀
           Object.values(catMap).forEach(r => { dayTotal += r.total || 0 })
         })
@@ -3441,6 +5233,10 @@ async function renderOrders() {
       const cardTotalForDay = hasCats
         ? vendors.filter(v => v.is_card_type).reduce((s, v) => s + ((window._cardDailyMap?.[v.id]?.[dateStr]) || 0), 0)
         : 0
+      // 소모품/이벤트 업체 일별 합계 (_supplyDailyMap 기반, catDailyMap에 미포함)
+      const supplyEventTotalForDay = hasCats
+        ? vendors.filter(v => !v.is_card_type && (v.category === 'supply' || v.category === 'event')).reduce((s, v) => s + ((window._supplyDailyMap?.[v.id]?.[dateStr]) || 0), 0)
+        : 0
 
       // 카테고리별 일합계
       // 단일 카테고리인 경우: 법인카드 금액도 해당 카테고리에 포함 (항암=일발주 일치)
@@ -3448,7 +5244,7 @@ async function renderOrders() {
       const isSingleCat = hasCats && patientCats.length === 1
       const catTotals = hasCats ? patientCats.map((cat, ci) => {
         const catAmt = Object.entries(catDailyMap[dateStr] || {}).reduce((s, [vid, vMap]) => {
-          const vendorObj = _vendorMap.get(String(vid))
+          const vendorObj = vendors.find(vv => String(vv.id) === String(vid))
           if (vendorObj && vendorObj.is_card_type) return s  // 법인카드는 별도 처리
           const r = vMap[cat.id] || {}
           return s + (r.total || 0)
@@ -3458,8 +5254,8 @@ async function renderOrders() {
       }) : []
 
       // displayTotal: 카테고리 소계 합 (단일카테고리면 이미 법인카드 포함됨)
-      // 복수 카테고리면 법인카드 별도 추가
-      const displayTotal = hasCats ? catTotals.reduce((a,b)=>a+b,0) + (isSingleCat ? 0 : cardTotalForDay) : dayTotal
+      // 복수 카테고리면 법인카드 별도 추가 + 소모품/이벤트 항상 추가
+      const displayTotal = hasCats ? catTotals.reduce((a,b)=>a+b,0) + (isSingleCat ? 0 : cardTotalForDay) + supplyEventTotalForDay : dayTotal
 
       // ── 요약 행 (날짜 1행) ──
       const summaryRowBg = isToday ? '#eff6ff' : (isPast ? '#fafafa' : 'white')
@@ -3509,8 +5305,8 @@ async function renderOrders() {
       </button>` : ''
 
       rows.push(`<tr class="order-summary-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="background:${summaryRowBg};${summaryBorderTop}${isToday?'outline:2px solid #3b82f6;outline-offset:-1px;':''}${pastOpacity}">
-        <td class="date-col sticky left-0 z-10" style="width:30px;text-align:center;vertical-align:middle;${summaryBorderTop}border-right:2px solid #d1d5db;background:${isToday?'#dbeafe':summaryRowBg};font-weight:${isToday?'800':'normal'};font-size:${isToday?'14px':'13px'};color:${isToday?'#1d4ed8':dow==='일'?'#ef4444':dow==='토'?'#16a34a':'#374151'};padding:4px 2px">${day}${isToday?'<div style="font-size:7px;color:#2563eb;font-weight:700">오늘</div>':''}</td>
-        <td class="sticky z-10" style="width:24px;text-align:center;vertical-align:middle;${summaryBorderTop}background:${isToday?'#dbeafe':summaryRowBg};font-size:11px;font-weight:${weekend?'bold':'normal'};color:${dow==='토'?'#16a34a':dow==='일'?'#ef4444':'#6b7280'};left:30px;padding:4px 2px">${dow}</td>
+        <td class="date-col sticky left-0 z-10" style="width:30px;text-align:center;vertical-align:middle;${summaryBorderTop}border-right:2px solid #d1d5db;background:${isToday?'#dbeafe':summaryRowBg};font-weight:${isToday?'800':'normal'};font-size:${isToday?'14px':'13px'};color:${isToday?'#1d4ed8':isRedDay?'#ef4444':dow==='토'?'#16a34a':'#374151'};padding:4px 2px">${day}${isToday?'<div style="font-size:7px;color:#2563eb;font-weight:700">오늘</div>':''}${isHoliday&&dow!=='일'?'<div style="font-size:7px;color:#ef4444;font-weight:700">휴</div>':''}</td>
+        <td class="sticky z-10" style="width:24px;text-align:center;vertical-align:middle;${summaryBorderTop}background:${isToday?'#dbeafe':summaryRowBg};font-size:11px;font-weight:${(weekend||isHoliday)?'bold':'normal'};color:${dow==='토'&&!isHoliday?'#16a34a':isRedDay?'#ef4444':'#6b7280'};left:30px;padding:4px 2px">${dow}</td>
         <td class="sticky z-10" style="width:56px;text-align:center;vertical-align:middle;${summaryBorderTop}background:${isToday?'#dbeafe':summaryRowBg};left:54px;padding:3px 2px;border-right:2px solid #e5e7eb">${daySelectHtml}</td>
         ${summaryCatCells}
         ${summaryNoCatCell}
@@ -3571,10 +5367,10 @@ async function renderOrders() {
             }).join('')}
           </div>` : ''
 
-          // 업체를 식재료 업체와 소모품 업체로 분리
-          // 소모품(supply) 업체는 카테고리 식단가·진행률 계산에서 제외하고 별도 섹션으로 표시
-          const foodVendors = vendors.filter(v => v.category !== 'supply')
-          const supplyVendors = vendors.filter(v => v.category === 'supply')
+          // 업체를 식재료 업체, 소모품 업체, 이벤트 업체로 분리
+          // 소모품(supply) 업체와 이벤트(event, is_event_detail_type) 업체는 카테고리 식단가·진행률 계산에서 제외
+          const foodVendors = vendors.filter(v => v.category !== 'supply' && !v.is_event_detail_type)
+          const supplyVendors = vendors.filter(v => v.category === 'supply' && !v.is_event_detail_type)
 
           // 식재료 업체별 행 (월목표·누적·잔여·진행률·오늘입력)
           const vendorRows = foodVendors.map((v, vi) => {
@@ -3762,12 +5558,61 @@ async function renderOrders() {
             </div>`
           }).join('')
 
+          // ── 이벤트 업체 별도 섹션 ──
+          const eventVendorsList = vendors.filter(v => v.is_event_detail_type && v.category === 'event')
+          const eventVendorRows = eventVendorsList.length > 0 ? (() => {
+            const evMonthTotal = eventVendorsList.reduce((s, v) => {
+              const vMap = window._eventDailyMap || {}
+              // 해당 업체의 모든 날짜 합산
+              return s + Object.keys(vMap).filter(k => k.startsWith(v.id + '_')).reduce((s2, k) => s2 + (vMap[k] || 0), 0)
+            }, 0)
+            const evRows = eventVendorsList.map(v => {
+              const key = v.id + '_' + dateStr
+              const evToday = window._eventDailyMap?.[key] || 0
+              const evCount = window._eventDailyCountMap?.[key] || 0
+              const hasData = evToday > 0
+              return `<div id="ev-card-${v.id}-${dateStr}" style="background:white;border-radius:8px;border:1.5px solid ${hasData ? '#ea580c80' : '#e5e7eb'};padding:8px 10px;min-width:120px;flex:1">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                  <span style="font-size:11px;font-weight:700;color:#c2410c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90px">${v.name}</span>
+                  <span style="font-size:8px;padding:1px 4px;border-radius:4px;background:#fff7ed;color:#ea580c;font-weight:700">이벤트</span>
+                </div>
+                <button id="ev-btn-${v.id}-${dateStr}" onclick="openEventExpenseModal(${v.id},'${dateStr}')"
+                  style="width:100%;padding:4px;border-radius:6px;border:1.5px solid ${hasData ? '#ea580c' : '#fed7aa'};background:${hasData ? '#fff7ed' : '#fffbf5'};font-size:11px;cursor:pointer;text-align:center;color:${hasData ? '#c2410c' : '#f97316'};font-weight:${hasData ? '700' : '400'}">
+                  ${hasData ? `${evToday.toLocaleString()}원 (${evCount}건)` : '+ 상세입력'}
+                </button>
+              </div>`
+            }).join('')
+            return `<div style="margin-top:8px;padding-top:6px;border-top:2px dashed #ea580c40">
+              <div style="font-size:9px;font-weight:700;color:#c2410c;margin-bottom:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <span style="display:flex;align-items:center;gap:4px">
+                  <i class="fas fa-star" style="color:#ea580c;font-size:8px"></i>이벤트
+                  <span style="font-size:8px;font-weight:400;color:#9ca3af">(식단가 계산 제외)</span>
+                  <span style="font-size:8px;color:#6b7280">· ${eventVendorsList.length}개 업체</span>
+                </span>
+                ${evMonthTotal > 0 ? `<span style="font-size:8px;background:#fff7ed;color:#c2410c;padding:1px 5px;border-radius:4px;margin-left:auto">월 합계 <strong>${fmtMan(evMonthTotal)}원</strong></span>` : ''}
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">${evRows}</div>
+            </div>`
+          })() : ''
+
           // ── 소모품 업체 별도 섹션 (카테고리 식단가·진행률과 분리) ──
+          // 소모품 월 총액 집계
+          const supplyMonthTotal = supplyVendors.reduce((s, v) => s + (window._supplyVendorMonthlyMap?.[v.id] || 0), 0)
+          const supplyBudgetTotal = supplyVendors.reduce((s, v) => s + (v.monthly_budget || 0), 0)
+          const supplyBudgetPct = supplyBudgetTotal > 0 ? Math.round(supplyMonthTotal / supplyBudgetTotal * 100) : null
           const supplyVendorRows = supplyVendors.length > 0 ? `
             <div style="margin-top:8px;padding-top:6px;border-top:2px dashed #f59e0b40">
-              <div style="font-size:9px;font-weight:700;color:#92400e;margin-bottom:5px;display:flex;align-items:center;gap:4px">
-                <i class="fas fa-box" style="color:#f59e0b;font-size:8px"></i>소모품
-                <span style="font-size:8px;font-weight:400;color:#9ca3af">(식단가 계산 제외)</span>
+              <div style="font-size:9px;font-weight:700;color:#92400e;margin-bottom:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <span style="display:flex;align-items:center;gap:4px">
+                  <i class="fas fa-box" style="color:#f59e0b;font-size:8px"></i>소모품
+                  <span style="font-size:8px;font-weight:400;color:#9ca3af">(식단가 계산 제외)</span>
+                  <span style="font-size:8px;color:#6b7280">· ${supplyVendors.length}개 업체</span>
+                </span>
+                ${supplyMonthTotal > 0 ? `
+                <span style="font-size:8px;background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:4px;margin-left:auto">
+                  월 합계 <strong>${fmtMan(supplyMonthTotal)}원</strong>
+                  ${supplyBudgetPct !== null ? `<span style="color:${supplyBudgetPct>=100?'#dc2626':supplyBudgetPct>=80?'#d97706':'#059669'}"> (${supplyBudgetPct}%)</span>` : ''}
+                </span>` : ''}
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
               ${supplyVendors.map(v => {
@@ -3911,6 +5756,7 @@ async function renderOrders() {
                 ${vendorRows}
               </div>
               ${supplyVendorRows}
+              ${eventVendorRows}
               ${catSummary}
             </td>
             ${grandSummary}
@@ -3921,7 +5767,25 @@ async function renderOrders() {
       } else {
         // 카테고리 없는 경우: 상세 행에 업체 입력
         const vendorInputCells = vendors.map((v, vi) => getVendorInputCells(v, orderMap[dateStr]?.[v.id]||{}, dateStr, vi > 0)).join('')
-        rows.push(`<tr class="order-detail-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="${isToday?'':'display:none'}">
+        // 업체명 라벨 행 (hasCats=false 모드에서 어느 칸이 어느 업체인지 표시)
+        const vendorLabelCells = vendors.map((v, vi) => {
+          const borderStyle = vi > 0 ? 'border-left:3px solid #cbd5e1;' : ''
+          const catColor = v.is_card_type ? '#7c3aed' : v.category === 'supply' ? '#0369a1' : '#166534'
+          const colSpan = v.tax_type === 'mixed' ? 'colspan="3"' : 'colspan="1"'
+          const truncName = v.name.length > 8 ? v.name.slice(0, 8) + '…' : v.name
+          return `<td ${colSpan} style="${borderStyle}padding:1px 3px;background:#f8fafc;text-align:center;vertical-align:middle">
+            <span style="font-size:9px;font-weight:700;color:${catColor};white-space:nowrap" title="${v.name}">${truncName}</span>
+          </td>`
+        }).join('')
+        rows.push(`<tr class="order-detail-row order-vendor-label-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="${isToday?'':'display:none'}">
+          <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;border-right:1px solid #e2e8f0;padding:1px"></td>
+          <td class="sticky z-10" style="width:24px;background:#f1f5f9;left:30px;padding:1px"></td>
+          <td class="sticky z-10" style="width:56px;background:#f1f5f9;left:54px;padding:1px;border-right:1px solid #e2e8f0;text-align:center;font-size:8px;color:#94a3b8">업체명</td>
+          ${vendorLabelCells}
+          <td class="sticky z-10" style="left:110px;background:#f8fafc;min-width:80px;padding:1px;text-align:center;font-size:8px;color:#94a3b8">합계</td>
+          <td style="background:white;padding:1px 2px"></td>
+        </tr>
+        <tr class="order-detail-row ${rowClass}" data-date="${dateStr}" data-multidays="${multiDayCount}" data-covered="${isCovered?'1':'0'}" data-week-start="${weekKey}" data-week-end="${weekEndKey}" style="${isToday?'':'display:none'}">
           <td class="sticky left-0 z-10" style="width:30px;background:#f1f5f9;text-align:center;font-size:10px;color:#94a3b8;border-right:1px solid #e2e8f0;padding:3px">↳</td>
           <td class="sticky z-10" style="width:24px;background:#f1f5f9;left:30px;padding:2px"></td>
           <td class="sticky z-10" style="width:56px;background:#f1f5f9;left:54px;padding:2px;border-right:1px solid #e2e8f0"></td>
@@ -3931,15 +5795,12 @@ async function renderOrders() {
             <button onclick="toggleOrderDetail('${dateStr}')" style="border:none;background:#64748b;color:white;border-radius:5px;padding:3px 6px;font-size:10px;cursor:pointer;font-weight:600">▲ 닫기</button>
           </td>
         </tr>`)
-      }
-    }
+      } // else (hasCats=false) 끝
+    } // for 루프 끝
 
     tbody.innerHTML = rows.join('')
     bindOrderInputEvents()
     setupOrdersScrollSync()
-    // [PERF] 테이블 행 렌더 완료 타이밍
-    const _t_tbody_done = performance.now()
-    console.log('[Orders] ③ 테이블 행 렌더 완료:', Math.round(_t_tbody_done - (window._ordersRenderStart || _t_tbody_done)), 'ms (renderStart 기준)')
   }
 
   function _buildOrdersTfoot(p) {
@@ -4572,12 +6433,16 @@ window.showMonthAllOrdersModal = function() {
   // 일반 업체 (법인카드 제외) + 법인카드 업체 분리
   const vendors = allVendors.filter(v => !v.is_card_type)
   const cardVendors = allVendors.filter(v => v.is_card_type)
+  // ★ 소모품/이벤트 업체 ID 집합 (카테고리와 무관하게 _supplyDailyMap에서 조회)
+  const supplyVendorIds = new Set(allVendors.filter(v => v.category === 'supply' || v.category === 'event').map(v => v.id))
   const patientCats = window._patientCats || []
   // 실제 카테고리별 발주 데이터 (_catDailyOrders) 사용
   const catDailyOrders = window._catDailyOrders || []
   const orderData = window._ordersData || []
   // 법인카드 일별 데이터 (_cardDailyMap: vendorId → { dateStr: total })
   const cardDailyMap = window._cardDailyMap || {}
+  // ★ 소모품/이벤트 일별 데이터 (_supplyDailyMap: vendorId → { dateStr: total })
+  const supplyDailyMap = window._supplyDailyMap || {}
   const year = App.currentYear
   const month = App.currentMonth
   const daysInMonth = new Date(year, month, 0).getDate()
@@ -4595,8 +6460,15 @@ window.showMonthAllOrdersModal = function() {
   // 발주 맵 구성 (법인카드 업체 제외 - card_expenses로 별도 처리)
   const cardVendorIds = new Set(cardVendors.map(v => v.id))
   const normalOrderMap = {}
+  // ★ 법인카드 업체의 daily_orders 동기화값 별도 맵 (card_expenses 미입력 fallback용)
+  const cardOrderMap = {}
   ;(orderData || []).forEach(o => {
-    if (cardVendorIds.has(o.vendor_id)) return // 법인카드 업체는 normalOrderMap에서 제외
+    if (cardVendorIds.has(o.vendor_id)) {
+      // 법인카드: 별도 맵에 저장 (normalOrderMap에서 제외)
+      const k = `${o.order_date}__${o.vendor_id}`
+      cardOrderMap[k] = o
+      return
+    }
     const k = `${o.order_date}__${o.vendor_id}`
     normalOrderMap[k] = o
   })
@@ -4617,20 +6489,28 @@ window.showMonthAllOrdersModal = function() {
   const subtypeKorean = { food:'식재료', supplies:'소모품', online:'온라인', other:'기타' }
 
   if (hasCats) {
+    // ★ 소모품/이벤트 업체는 카테고리와 무관 → 먼저 catId=null로 한 번만 추가
+    const addedSupplyIds = new Set()
     patientCats.forEach(cat => {
       vendors.forEach(v => {
         const vName = v.name || '(이름없음)'
+        // ★ 소모품/이벤트는 catId=null로 단일 컬럼 추가 (카테고리별 중복 방지)
+        const isSupply = supplyVendorIds.has(v.id)
+        const effectiveCatName = isSupply ? null : cat.name
+        const effectiveCatId   = isSupply ? null : cat.id
+        if (isSupply && addedSupplyIds.has(v.id)) return // 이미 추가된 소모품 업체 스킵
+        if (isSupply) addedSupplyIds.add(v.id)
         if (v.tax_type === 'mixed_total') {
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'mixed_total' })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'mixed_total', isSupply })
         } else if (v.tax_type === 'taxable') {
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable' })
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat' })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable', isSupply })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat', isSupply })
         } else if (v.tax_type === 'exempt') {
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt' })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt', isSupply })
         } else { // mixed
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable' })
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt' })
-          columns.push({ catName: cat.name, catId: cat.id, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat' })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'taxable', isSupply })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'exempt', isSupply })
+          columns.push({ catName: effectiveCatName, catId: effectiveCatId, vendorId: v.id, vendorName: vName, taxType: v.tax_type, subType: 'vat', isSupply })
         }
       })
     })
@@ -4662,26 +6542,53 @@ window.showMonthAllOrdersModal = function() {
 
   // 셀값 추출 함수
   function getCellValue(col, dateStr) {
+    // ★ 소모품/이벤트 업체: _supplyDailyMap 우선 참조 (카테고리 무관, 날짜+업체 단위 합산값)
+    if (col.isSupply) {
+      const supMap = supplyDailyMap[col.vendorId] || {}
+      // _supplyDailyMap은 total만 있으므로 taxable/exempt는 normalOrderMap에서 보완
+      const nk = `${dateStr}__${col.vendorId}`
+      const o = normalOrderMap[nk]
+      const supTotal = supMap[dateStr] || 0
+      if (col.subType === 'mixed_total') return supTotal || (o?.total_amount || 0)
+      if (col.subType === 'taxable') return o?.taxable_amount || 0
+      if (col.subType === 'exempt') return o?.exempt_amount || (col.taxType === 'exempt' ? (o?.total_amount || supTotal) : 0)
+      if (col.subType === 'vat') return o?.vat_amount || 0
+      return supTotal || (o?.total_amount || 0)
+    }
     if (col.catId) {
       const k = `${dateStr}__${col.catId}__${col.vendorId}`
       const s = catOrderMap[k]
-      if (!s) return 0
-      // dailyByVendorCat API 응답: taxable, exempt, vat, total 필드 사용
-      const taxable = s.taxable || s.taxable_amount || 0
-      const exempt = s.exempt || s.exempt_amount || 0
-      const vat = s.vat != null ? s.vat : (s.vat_amount != null ? s.vat_amount : Math.round(taxable * 0.1))
-      const total = s.total || s.total_amount || (taxable + exempt + vat)
-      if (col.subType === 'taxable') return taxable
-      if (col.subType === 'exempt') return exempt
-      if (col.subType === 'vat') return vat
-      if (col.subType === 'mixed_total') return total
+      if (s) {
+        // dailyByVendorCat API 응답: taxable, exempt, vat, total 필드 사용
+        const taxable = s.taxable || s.taxable_amount || 0
+        const exempt = s.exempt || s.exempt_amount || 0
+        const vat = s.vat != null ? s.vat : (s.vat_amount != null ? s.vat_amount : Math.round(taxable * 0.1))
+        const total = s.total || s.total_amount || (taxable + exempt + vat)
+        if (col.subType === 'taxable') return taxable
+        // exempt 업체: exempt=0이고 total에만 값 있는 경우 total로 fallback
+        if (col.subType === 'exempt') return exempt || (col.taxType === 'exempt' ? total : 0)
+        if (col.subType === 'vat') return vat
+        if (col.subType === 'mixed_total') return total
+        return 0
+      }
+      // catOrderMap에 없으면 normalOrderMap으로 fallback
+      // (patient_category_id=NULL로 저장된 발주, 즉 카테고리 미분류 업체 발주)
+      const nk = `${dateStr}__${col.vendorId}`
+      const o = normalOrderMap[nk]
+      if (!o) return 0
+      if (col.subType === 'taxable') return o.taxable_amount || 0
+      // exempt 업체: exempt_amount=0이고 total_amount에만 값 있는 경우 total로 fallback
+      if (col.subType === 'exempt') return o.exempt_amount || (col.taxType === 'exempt' ? (o.total_amount || 0) : 0)
+      if (col.subType === 'vat') return o.vat_amount || 0
+      if (col.subType === 'mixed_total') return o.total_amount || 0
       return 0
     } else {
       const k = `${dateStr}__${col.vendorId}`
       const o = normalOrderMap[k]
       if (!o) return 0
       if (col.subType === 'taxable') return o.taxable_amount || 0
-      if (col.subType === 'exempt') return o.exempt_amount || 0
+      // exempt 업체: exempt_amount=0이고 total_amount에만 값 있는 경우 total로 fallback
+      if (col.subType === 'exempt') return o.exempt_amount || (col.taxType === 'exempt' ? (o.total_amount || 0) : 0)
       if (col.subType === 'vat') return o.vat_amount || 0
       if (col.subType === 'mixed_total') return o.total_amount || 0
       return 0
@@ -4689,8 +6596,13 @@ window.showMonthAllOrdersModal = function() {
   }
 
   // 법인카드 셀값 추출
+  // ★ _cardDailyMap 우선 → 없으면 cardOrderMap(daily_orders sync값) fallback
   function getCardCellValue(col, dateStr) {
-    return (cardDailyMap[col.vendorId] && cardDailyMap[col.vendorId][dateStr]) || 0
+    const fromCard = (cardDailyMap[col.vendorId] && cardDailyMap[col.vendorId][dateStr]) || 0
+    if (fromCard > 0) return fromCard
+    // fallback: daily_orders 동기화값 (card_expenses 미입력 or 직접 orders/save로 저장된 경우)
+    const nk = `${dateStr}__${col.vendorId}`
+    return cardOrderMap[nk]?.total_amount || 0
   }
 
   // 컬럼 합계
@@ -4712,14 +6624,34 @@ window.showMonthAllOrdersModal = function() {
 
   let groupHeaderHtml = ''
   if (hasCats) {
-    patientCats.forEach(cat => {
-      vendors.forEach(v => {
-        const span = vendorColSpan(v)
+    // ★ 소모품/이벤트 업체는 이미 catId=null로 단일 컬럼 생성됨 → 헤더도 columns 순서로 빌드
+    const addedHeaderIds = new Set()
+    columns.filter(col => !col.isCard).forEach(col => {
+      // 동일 vendor+cat 조합의 첫 번째 subType만 헤더 생성
+      const headerKey = `${col.vendorId}__${col.catId}`
+      if (addedHeaderIds.has(headerKey)) return
+      addedHeaderIds.add(headerKey)
+      // vendor 객체
+      const v = vendors.find(vv => vv.id === col.vendorId)
+      if (!v) return
+      const span = vendorColSpan(v)
+      if (col.catId) {
+        // 일반 식재료 업체: 카테고리명 + 업체명
         groupHeaderHtml += `<th colspan="${span}" style="text-align:center;padding:4px 4px;font-size:10px;border-left:2px solid #e5e7eb;background:#f8fafc;white-space:nowrap">
-          <div style="font-size:9px;color:#7c3aed;font-weight:600">${cat.name}</div>
+          <div style="font-size:9px;color:#7c3aed;font-weight:600">${col.catName || ''}</div>
           <div style="font-weight:700;color:#1f2937">${v.name}</div>
         </th>`
-      })
+      } else {
+        // 소모품/이벤트: 카테고리 없이 업체명만 (보라색 배지로 구분)
+        const isSupplyV = col.isSupply
+        const bg = isSupplyV ? '#fff7ed' : '#f8fafc'
+        const color = isSupplyV ? '#c2410c' : '#1f2937'
+        const badge = isSupplyV ? `<div style="font-size:8px;color:#d97706;font-weight:600">🗃소모품</div>` : ''
+        groupHeaderHtml += `<th colspan="${span}" style="text-align:center;padding:4px 4px;font-size:10px;border-left:2px solid #e5e7eb;background:${bg};white-space:nowrap">
+          ${badge}
+          <div style="font-weight:700;color:${color}">${v.name}</div>
+        </th>`
+      }
     })
   } else {
     vendors.forEach(v => {
@@ -4750,7 +6682,9 @@ window.showMonthAllOrdersModal = function() {
 
   // 행 생성
   let tbody = ''
-  let grandTotal = 0
+  // grandTotal: _ordersData(daily_orders 전체 합산)와 동일한 소스 사용
+  // 모달 내 catOrderMap/normalOrderMap 방식은 보조 카테고리 누락 가능성 있어 부정확
+  const grandTotal = (window._ordersData || []).reduce((s, o) => s + (o.total_amount || 0), 0)
 
   days.forEach(({ dateStr, d, dow, isWeekend }) => {
     let rowTotal = 0
@@ -4774,27 +6708,49 @@ window.showMonthAllOrdersModal = function() {
     rowTotal = 0
     if (hasCats) {
       vendors.forEach(v => {
+        // ★ 소모품/이벤트 업체는 _supplyDailyMap에서 직접 조회 (catOrderMap에 없음)
+        if (supplyVendorIds.has(v.id)) {
+          rowTotal += (supplyDailyMap[v.id]?.[dateStr]) || 0
+          return
+        }
+        let vendorCatTotal = 0
         patientCats.forEach(cat => {
           const k = `${dateStr}__${cat.id}__${v.id}`
           const s = catOrderMap[k]
           if (s) {
             // dailyByVendorCat API 응답: total, taxable, exempt, vat 필드
-            rowTotal += s.total || s.total_amount || 0
+            vendorCatTotal += s.total || s.total_amount || 0
           }
         })
+        if (vendorCatTotal > 0) {
+          rowTotal += vendorCatTotal
+        } else {
+          // catOrderMap에 데이터 없으면 normalOrderMap fallback
+          // (patient_category_id=NULL로 저장된 발주)
+          const nk = `${dateStr}__${v.id}`
+          const o = normalOrderMap[nk]
+          if (o) rowTotal += o.total_amount || 0
+        }
       })
     } else {
       vendors.forEach(v => {
+        // ★ 소모품/이벤트 업체는 _supplyDailyMap에서 직접 조회
+        if (supplyVendorIds.has(v.id)) {
+          rowTotal += (supplyDailyMap[v.id]?.[dateStr]) || 0
+          return
+        }
         const k = `${dateStr}__${v.id}`
         const o = normalOrderMap[k]
         if (o) rowTotal += o.total_amount || 0
       })
     }
-    // 법인카드 합산 (card_expenses 기준 - daily_orders와 동일 데이터이므로 중복 방지)
+    // 법인카드 합산 (card_expenses 우선, 없으면 daily_orders fallback)
     cardVendors.forEach(v => {
-      rowTotal += (cardDailyMap[v.id] && cardDailyMap[v.id][dateStr]) || 0
+      const fromCard = (cardDailyMap[v.id] && cardDailyMap[v.id][dateStr]) || 0
+      const fromOrder = cardOrderMap[`${dateStr}__${v.id}`]?.total_amount || 0
+      rowTotal += fromCard > 0 ? fromCard : fromOrder
     })
-    grandTotal += rowTotal
+    // grandTotal은 _ordersData 전체 합산으로 미리 계산됨 (위 const 선언 참조)
 
     const rowBg = isWeekend ? '#fafafa' : 'white'
     const dowColor = dow==='일'?'#dc2626':dow==='토'?'#2563eb':'#374151'
@@ -4817,9 +6773,15 @@ window.showMonthAllOrdersModal = function() {
     totalCells += `<td style="text-align:right;padding:5px 5px;font-size:11px;font-weight:700;color:${t>0?totalColor:'#9ca3af'};${borderLeft}">${t>0?t.toLocaleString():'-'}</td>`
   })
 
-  // 법인카드 합계 계산
+  // 법인카드 합계 계산 (card_expenses 우선, 없으면 daily_orders fallback)
   const cardGrandTotal = cardVendors.reduce((s, v) => {
-    return s + Object.values(cardDailyMap[v.id] || {}).reduce((a, b) => a + b, 0)
+    const fromCardMap = Object.values(cardDailyMap[v.id] || {}).reduce((a, b) => a + b, 0)
+    if (fromCardMap > 0) return s + fromCardMap
+    // fallback: cardOrderMap에서 해당 업체 전체 합산
+    const fromOrderMap = Object.entries(cardOrderMap)
+      .filter(([k]) => k.endsWith(`__${v.id}`))
+      .reduce((a, [, o]) => a + (o?.total_amount || 0), 0)
+    return s + fromOrderMap
   }, 0)
   const allCardCount = cardVendors.length
 
@@ -4890,12 +6852,9 @@ window.showMonthAllOrdersModal = function() {
 // ── #2 발주 엑셀 다운로드 ────────────────────────────────────────
 window.downloadOrdersExcel = async function() {
   if (typeof XLSX === 'undefined') {
-    const script = document.createElement('script')
-    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    script.onload = () => { showToast('라이브러리 로드 완료. 다시 클릭해주세요.', 'info') }
-    document.head.appendChild(script)
-    showToast('엑셀 라이브러리 로딩 중...', 'warning')
-    return
+    showToast('엑셀 라이브러리 로딩 중...', 'info')
+    const ok = await _loadXlsx()
+    if (!ok || typeof XLSX === 'undefined') { showToast('라이브러리 로드 실패. 잠시 후 다시 시도해주세요.', 'error'); return }
   }
 
   const allVendors = window._vendorsCache || []
@@ -5461,6 +7420,26 @@ function getVendorInputCells(v, order, dateStr, addBorder = false) {
   const multiDay = order.is_multi_day ? `title="${order.multi_day_start}~${order.multi_day_end} 다일치"` : ''
   const borderStyle = addBorder ? 'border-left:3px solid #cbd5e1;' : ''
   const fmtV = (v) => v > 0 ? v.toLocaleString() : ''
+  // ── 이벤트형 업체 (is_event_detail_type): 클릭 시 이벤트 상세입력 모달 열기 ──
+  if (v.is_event_detail_type) {
+    const key = v.id + '_' + dateStr
+    const eventTotal = window._eventDailyMap?.[key] || total
+    const eventCount = window._eventDailyCountMap?.[key] || 0
+    const hasData = eventTotal > 0
+    return `<td style="${borderStyle}min-width:80px;padding:2px 2px">
+      <button class="event-expense-btn w-full text-left px-1.5 py-1 rounded-lg border transition-all"
+        data-vendor="${v.id}" data-date="${dateStr}"
+        style="min-width:76px;font-size:11px;${hasData
+          ? 'background:#fff7ed;border-color:#ea580c;color:#c2410c;'
+          : 'background:#fff7ed;border-color:#fed7aa;color:#f97316;'}"
+        onclick="openEventExpenseModal(${v.id},'${dateStr}')">
+        <div style="font-size:9px;color:#ea580c;font-weight:600;">이벤트</div>
+        ${hasData
+          ? `<div style="font-weight:700">${eventTotal.toLocaleString()}</div><div style="font-size:9px;color:#c2410c;">${eventCount}건</div>`
+          : `<div style="color:#fdba74">+ 상세입력</div>`}
+      </button>
+    </td>`
+  }
   // ── 법인카드형 업체: 클릭 시 상세입력 모달 열기 ──
   if (v.is_card_type) {
     const cardTotal = window._cardDailyMap?.[v.id]?.[dateStr] || total
@@ -5564,37 +7543,77 @@ function bindOrderInputEvents() {
   // ── 이벤트 위임: tbody에 하나만 등록 (개별 input마다 붙이지 않음) ──
   const _saveTimers = {}
   const _catSaveTimers = {}
+  // ── [PERF] Stage 3+4: 중복 저장 방지 플래그 & 디바운스 상태 ──
+  const _savingFlags = {}   // 저장 진행 중 여부 { key: bool }
+  const _pendingAfterSave = {} // 저장 완료 후 재저장 필요 여부 { key: bool }
+  // ── [PERF] Stage 4: updateBudgetProgressPanel 디바운스 ──
+  let _budgetPanelTimer = null
+  const _debouncedBudgetPanel = () => {
+    if (_budgetPanelTimer) clearTimeout(_budgetPanelTimer)
+    _budgetPanelTimer = setTimeout(() => {
+      if (typeof updateBudgetProgressPanel === 'function') updateBudgetProgressPanel()
+    }, 80)
+  }
 
   const doOrderSave = async (vendorId, date) => {
-    const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
-    const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
-    const totalEl   = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="total"][data-date="${date}"]`)
-
-    let taxable = 0, exempt = 0, vat = 0, total = 0
-    if (totalEl) {
-      // mixed_total: 합산 총액 1칸 입력 (과세+면세 영수증 총액)
-      total = parseOrderVal(totalEl.value)
-      totalEl.value = total > 0 ? total.toLocaleString() : ''
-      taxable = 0; exempt = 0; vat = 0
-    } else {
-      taxable = parseOrderVal(taxableEl?.value)
-      exempt  = parseOrderVal(exemptEl?.value)
-      if (taxableEl) taxableEl.value = taxable > 0 ? taxable.toLocaleString() : ''
-      if (exemptEl)  exemptEl.value  = exempt  > 0 ? exempt.toLocaleString()  : ''
-      vat = Math.round(taxable * 0.1)
-      total = taxable + exempt + vat
+    const key = `${vendorId}-${date}`
+    // 이미 저장 진행 중이면 완료 후 재시도 플래그만 설정
+    if (_savingFlags[key]) {
+      _pendingAfterSave[key] = true
+      return
     }
-    const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
-    if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
-    updateDayTotal(date)
-    showAutoSaveIndicator('saving')
-    const res = await api('POST', '/api/orders/save', {
-      vendorId: parseInt(vendorId), orderDate: date,
-      taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat,
-      totalAmount: total
-    })
-    showAutoSaveIndicator(res?.success ? 'saved' : 'error')
-    updateBudgetProgressPanel()
+    _savingFlags[key] = true
+    try {
+      const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
+      const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
+      const totalEl   = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="total"][data-date="${date}"]`)
+
+      let taxable = 0, exempt = 0, vat = 0, total = 0
+      if (totalEl) {
+        // mixed_total: 합산 총액 1칸 입력 (과세+면세 영수증 총액)
+        total = parseOrderVal(totalEl.value)
+        totalEl.value = total > 0 ? total.toLocaleString() : ''
+        taxable = 0; exempt = 0; vat = 0
+      } else {
+        taxable = parseOrderVal(taxableEl?.value)
+        exempt  = parseOrderVal(exemptEl?.value)
+        if (taxableEl) taxableEl.value = taxable > 0 ? taxable.toLocaleString() : ''
+        if (exemptEl)  exemptEl.value  = exempt  > 0 ? exempt.toLocaleString()  : ''
+        vat = Math.round(taxable * 0.1)
+        total = taxable + exempt + vat
+      }
+      const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
+      if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
+      updateDayTotal(date)
+      showAutoSaveIndicator('saving')
+      const res = await api('POST', '/api/orders/save', {
+        vendorId: parseInt(vendorId), orderDate: date,
+        taxableAmount: taxable, exemptAmount: exempt, vatAmount: vat,
+        totalAmount: total
+      })
+      showAutoSaveIndicator(res?.success ? 'saved' : 'error')
+      // _ordersData 캐시 업데이트 (전체 재렌더 없이 글로벌 상태 동기화)
+      if (res?.success && window._ordersData) {
+        const idx = window._ordersData.findIndex(o => o.vendor_id === parseInt(vendorId) && o.order_date === date)
+        if (idx >= 0) {
+          window._ordersData[idx].taxable_amount = taxable
+          window._ordersData[idx].exempt_amount  = exempt
+          window._ordersData[idx].vat_amount     = vat
+          window._ordersData[idx].total_amount   = total
+        } else if (total > 0) {
+          window._ordersData.push({ vendor_id: parseInt(vendorId), order_date: date,
+            taxable_amount: taxable, exempt_amount: exempt, vat_amount: vat, total_amount: total })
+        }
+      }
+      _debouncedBudgetPanel()
+    } finally {
+      _savingFlags[key] = false
+      // 저장 중 다시 입력된 경우 재저장
+      if (_pendingAfterSave[key]) {
+        _pendingAfterSave[key] = false
+        _saveTimers[key] = setTimeout(() => doOrderSave(vendorId, date), 50)
+      }
+    }
   }
 
   tbody.addEventListener('input', function(e) {
@@ -5607,7 +7626,7 @@ function bindOrderInputEvents() {
       if (totalDirectEl) {
         // mixed_total: 합산 총액 1칸 - 소계셀 없음, 그냥 dayTotal만 업데이트
         updateDayTotal(date)
-        updateBudgetProgressPanel()
+        _debouncedBudgetPanel()
       } else {
         const taxableEl = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="taxable"][data-date="${date}"]`)
         const exemptEl  = tbody.querySelector(`input.order-input[data-vendor="${vendorId}"][data-type="exempt"][data-date="${date}"]`)
@@ -5618,7 +7637,7 @@ function bindOrderInputEvents() {
         const subtotalEl = document.getElementById(`vt-${vendorId}-${date}`)
         if (subtotalEl) subtotalEl.textContent = total > 0 ? fmt(total) : ''
         updateDayTotal(date)
-        updateBudgetProgressPanel()
+        _debouncedBudgetPanel()
       }
     } else if (input.classList.contains('cat-order-input')) {
       input.value = input.value.replace(/[^0-9]/g, '')
@@ -5630,7 +7649,7 @@ function bindOrderInputEvents() {
       }
       updateDayTotal(input.dataset.date)
       window._activeEditPair = null
-      updateBudgetProgressPanel()
+      _debouncedBudgetPanel()
     }
   })
 
@@ -5648,6 +7667,7 @@ function bindOrderInputEvents() {
     if (input.classList.contains('order-input')) {
       const key = `${input.dataset.vendor}-${input.dataset.date}`
       if (_saveTimers[key]) clearTimeout(_saveTimers[key])
+      // ── [PERF] Stage 3: change 이벤트 저장 딜레이 0ms → 즉시 (blur에서 1200ms 디바운스) ──
       _saveTimers[key] = setTimeout(() => doOrderSave(input.dataset.vendor, input.dataset.date), 0)
     }
   })
@@ -5657,14 +7677,16 @@ function bindOrderInputEvents() {
     if (input.classList.contains('order-input')) {
       const key = `${input.dataset.vendor}-${input.dataset.date}`
       if (_saveTimers[key]) clearTimeout(_saveTimers[key])
-      _saveTimers[key] = setTimeout(() => doOrderSave(input.dataset.vendor, input.dataset.date), 100)
+      // ── [PERF] Stage 3: blur 저장 딜레이 100ms → 1200ms (연속 입력 중 중복 저장 방지) ──
+      _saveTimers[key] = setTimeout(() => doOrderSave(input.dataset.vendor, input.dataset.date), 1200)
     } else if (input.classList.contains('cat-order-input')) {
       const val = parseOrderVal(input.value)
       if (val > 0) input.value = val.toLocaleString()
       else input.value = ''
       const ckey = `${input.dataset.vendor}-${input.dataset.category}-${input.dataset.date}`
       if (_catSaveTimers[ckey]) clearTimeout(_catSaveTimers[ckey])
-      _catSaveTimers[ckey] = setTimeout(async () => { await saveCatOrderInput(input) }, 200)
+      // ── [PERF] Stage 3: cat-order-input blur 저장 딜레이 200ms → 1000ms ──
+      _catSaveTimers[ckey] = setTimeout(async () => { await saveCatOrderInput(input) }, 1000)
     }
   }, true)
 
@@ -5787,6 +7809,25 @@ async function saveCatOrderInput(input) {
       if (!window._supplyDailyMap[parseInt(vendorId)]) window._supplyDailyMap[parseInt(vendorId)] = {}
       window._supplyDailyMap[parseInt(vendorId)][date] = savedTotal
     }
+    // ★ _ordersData도 즉시 동기화 (allOrdersMonthTotal 실시간 정확성 보장)
+    // hasCats=true 모드에서 allOrdersMonthTotal = _ordersData 전체 합계를 ratio 계산에 사용하므로
+    // _catDailyMap 업데이트와 동시에 _ordersData도 갱신해야 mp1/mp2/mp3가 정확하게 유지됨
+    if (window._ordersData) {
+      const vid = parseInt(vendorId)
+      // 이 vendor+date의 합산 total 계산 (_catDailyMap에서 모든 카테고리 합산)
+      const vendorDateTotal = Object.values(
+        (window._catDailyMap[date] && window._catDailyMap[date][vid]) || {}
+      ).reduce((s, r) => s + (r.total || 0), 0)
+      // _ordersData에서 해당 vendor+date 레코드 찾기
+      const existing = window._ordersData.find(o => o.vendor_id === vid && o.order_date === date)
+      if (existing) {
+        existing.total_amount = vendorDateTotal
+      } else if (vendorDateTotal > 0) {
+        window._ordersData.push({ vendor_id: vid, order_date: date,
+          taxable_amount: 0, exempt_amount: 0, vat_amount: 0,
+          total_amount: vendorDateTotal, patient_category_id: parseInt(categoryId) })
+      }
+    }
   }
 
   updateCatSubrowTotal(categoryId, vendorId, date, taxable, exempt, vat, totalOverride)
@@ -5884,279 +7925,294 @@ function updateCatMonthTotal(categoryId) {
   })
 }
 
-function updateBudgetProgressPanel() {
-  // 전체 입력값 합계 재계산
+// ── [OPT] updateBudgetProgressPanel debounce 타이머 ──
+// 연속 입력 시 중복 계산 방지: KPI/주차카드는 150ms, insightPanel은 별도 setTimeout
+let _bpDebounceTimer = null
+let _bpInsightTimer = null
+
+
+// ═══════════════════════════════════════════════════════════════
+// [PERF] updateBudgetProgressPanel 분리 최적화 (Stage 6)
+// 구조: _calcBPTotals → _ensureBPCards → 단계별 업데이트
+// rAF 이후 병목(~900ms) 해소: 집계 1회 + 단계별 지연 업데이트
+// ═══════════════════════════════════════════════════════════════
+
+// ── 공유 집계 캐시 ──
+// _calcBPTotals() 결과를 저장, 각 하위 함수가 재계산 없이 참조
+window._bpCache = null
+
+// ── debounce 타이머 ──
+let _bpKpiTimer = null    // KPI 카드 debounce
+let _bpWeekTimer = null   // 주차 카드 debounce
+let _bpVendorTimer = null // 업체 카드 debounce (가장 무거움, 가장 늦게)
+
+// ────────────────────────────────────────────────────────────────
+// 1) _calcBPTotals: 집계 전용 함수
+//    - catDailyMap 1회 순회로 month/today/week + 주차별 totals 산출
+//    - 결과를 window._bpCache에 저장
+// ────────────────────────────────────────────────────────────────
+function _calcBPTotals() {
   const budget = window._ordersBudget
-  if (!budget) return
-  const { totalBudget, dailyBudget, weekBudget, todayStr, weekStart, weekEnd, weekInMonthStart, weekInMonthEnd, weeklyData } = budget
+  if (!budget) return null
+
+  const { totalBudget = 0, dailyBudget = 0, weekBudget = 0,
+    todayStr = '', weekInMonthStart, weekInMonthEnd,
+    weekStart, weekEnd, weeklyData = [] } = budget
 
   const patientCats = window._patientCats || []
   const hasCats = patientCats.length > 0
 
-  // ── _ordersVendors.find() → O(1) Map 룩업 캐시 ──
+  // O(1) Vendor Map (이미 있으면 재사용)
   const _ovArr = window._ordersVendors || []
   if (!window._ordersVendorMap || window._ordersVendorMap.size !== _ovArr.length) {
     window._ordersVendorMap = new Map(_ovArr.map(v => [v.id, v]))
   }
   const _ovMap = window._ordersVendorMap
 
-  // ── 카드 DOM 초기화: budgetProgressContent가 스켈레톤 상태면 실제 카드 HTML 생성 ──
-  const _bpContent = document.getElementById('budgetProgressContent')
-  if (_bpContent && !document.getElementById('today-card')) {
-    const _wData = weeklyData || []
-    const weekCardsCols = _wData.length > 0 ? _wData.length : 4
-    const _weekCardsHtml = _wData.map((w, i) => {
-      return `<div id="${w.isCurWeek?'week-cur':'week'+(i+1)}" style="background:#f8fafc;border:2px solid #e5e7eb;border-radius:10px;padding:8px 6px;text-align:center">
-        <div style="font-size:9px;font-weight:600;color:#6b7280;margin-bottom:2px">${w.label||('W'+(i+1))}</div>
-        <div style="font-size:16px;font-weight:700;color:#374151" id="weekPct${i+1}">-</div>
-        <div style="background:#e5e7eb;border-radius:4px;height:5px;overflow:hidden;margin:3px 0"><div id="weekBar${i+1}" style="height:100%;width:0%;background:#16a34a;border-radius:4px;transition:width 0.4s"></div></div>
-        <div style="font-size:9px;color:#6b7280" id="weekAmt${i+1}">-</div>
-      </div>`
-    }).join('')
-    _bpContent.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-        <div id="today-card" style="background:#eff6ff;border:2px solid #3b82f6;border-radius:10px;padding:10px;text-align:center">
-          <div style="font-size:10px;font-weight:600;color:#2563eb;margin-bottom:2px">📅 오늘</div>
-          <div style="font-size:20px;font-weight:700;color:#1d4ed8" id="todayPct">-</div>
-          <div style="background:#dbeafe;border-radius:4px;height:5px;overflow:hidden;margin:3px 0"><div id="todayBar" style="height:100%;width:0%;background:#3b82f6;border-radius:4px;transition:width 0.4s"></div></div>
-          <div style="font-size:10px;color:#3b82f6" id="todayAmt">-</div>
-        </div>
-        <div id="month-card" style="background:#f0fdf4;border:2px solid #16a34a;border-radius:10px;padding:10px;text-align:center">
-          <div style="font-size:10px;font-weight:600;color:#15803d;margin-bottom:2px">🗓️ 월별</div>
-          <div style="font-size:20px;font-weight:700;color:#15803d" id="monthPct">-</div>
-          <div style="background:#dcfce7;border-radius:4px;height:5px;overflow:hidden;margin:3px 0"><div id="monthBar" style="height:100%;width:0%;background:#16a34a;border-radius:4px;transition:width 0.4s"></div></div>
-          <div style="font-size:10px;color:#15803d" id="monthAmt">-</div>
-        </div>
-      </div>
-      <div style="border-top:1px solid #e5e7eb;padding-top:8px">
-        <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:6px">📆 주차별</div>
-        <div id="weeklyCardsGrid" style="display:grid;grid-template-columns:repeat(${weekCardsCols},1fr);gap:6px">${_weekCardsHtml}</div>
-      </div>`
-    const badge = document.getElementById('budgetProgressBadge')
-    if (badge) badge.textContent = `${App.currentYear}년 ${App.currentMonth}월 | 총예산 ${fmtWon(totalBudget)}`
-  }
+  const weekStartStr = weekInMonthStart || (weekStart instanceof Date
+    ? `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}`
+    : weekStart) || ''
+  const weekEndStr = weekInMonthEnd || (weekEnd instanceof Date
+    ? `${weekEnd.getFullYear()}-${String(weekEnd.getMonth()+1).padStart(2,'0')}-${String(weekEnd.getDate()).padStart(2,'0')}`
+    : weekEnd) || ''
 
   let monthTotal = 0, todayTotal = 0, weekTotal = 0
+  const catMonthAcc = {}, catTodayAcc = {}, catWeekAcc = {}
+  // 주차별 합계: weeklyData[i].wk → 누계
+  const weeklyTotals = {}
 
   if (hasCats) {
-    // 카테고리 모드: cat-order-input 집계
-    // weekInMonthStart/weekInMonthEnd: 이번 주 + 조회 월의 교집합 (월 경계 데이터 오류 방지)
-    const weekStartStr2 = weekInMonthStart || (weekStart instanceof Date ? `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}` : weekStart)
-    const weekEndStr2   = weekInMonthEnd   || (weekEnd   instanceof Date ? `${weekEnd.getFullYear()}-${String(weekEnd.getMonth()+1).padStart(2,'0')}-${String(weekEnd.getDate()).padStart(2,'0')}`   : weekEnd)
-
-    // 카테고리별 합계도 실시간 계산
-    const catMonthAcc = {}; const catTodayAcc = {}; const catWeekAcc = {}
     patientCats.forEach(c => { catMonthAcc[c.id]=0; catTodayAcc[c.id]=0; catWeekAcc[c.id]=0 })
+    const dailyMap = window._catDailyMap || {}
 
-    // ── 버그 수정: DOM cat-order-input 대신 _catDailyMap 기반으로 집계 ──
-    // DOM의 숨겨진(display:none) input까지 합산하는 이중집계 문제 방지.
-    // 저장된 _catDailyMap을 기준으로 월/주/오늘 합계를 계산하고,
-    // 현재 화면에 보이는(편집 중인) input만 해당 날짜를 덮어씀.
-    const dailyMapForPanel = window._catDailyMap || {}
+    // ── 단일 순회로 month/today/week + 주차별 모두 계산 ──
+    for (const dk in dailyMap) {
+      const vMap = dailyMap[dk]
+      // 이 날짜가 속하는 주차 찾기 (미리 인덱싱)
+      const wEntry = weeklyData.find(w => dk >= w.wk && dk <= w.wkEnd)
+      const isToday = dk === todayStr
+      const isThisWeek = weekStartStr && weekEndStr && dk >= weekStartStr && dk <= weekEndStr
 
-    // _catDailyMap 기반 집계 (카테고리 지정 발주)
-    Object.entries(dailyMapForPanel).forEach(([dk, vMap]) => {
-      Object.entries(vMap).forEach(([vid, cMap]) => {
-        const vInt = parseInt(vid)
-        const vendorObj = _ovMap.get(vInt)
-        if (!vendorObj || vendorObj.is_card_type) return
-        // supply/card/event 업체는 식단가 계산용 monthTotal에서 제외 (소모품은 별도 집계)
-        if (vendorObj.category === 'supply' || vendorObj.category === 'card' || vendorObj.category === 'event') return
-        Object.entries(cMap).forEach(([cid, r]) => {
-          const catId = String(cid)
-          const amt = r.total || 0
-          if (amt === 0) return
-          if (catMonthAcc[catId] !== undefined) catMonthAcc[catId] += amt
+      for (const vidStr in vMap) {
+        const vid = parseInt(vidStr)
+        const vendorObj = _ovMap.get(vid)
+        if (!vendorObj || vendorObj.is_card_type) continue
+        if (vendorObj.category === 'supply' || vendorObj.category === 'card' || vendorObj.category === 'event') continue
+        const cMap = vMap[vidStr]
+        for (const cidStr in cMap) {
+          const amt = cMap[cidStr].total || 0
+          if (amt === 0) continue
           monthTotal += amt
-          if (dk === todayStr) {
-            if (catTodayAcc[catId] !== undefined) catTodayAcc[catId] += amt
+          if (catMonthAcc[cidStr] !== undefined) catMonthAcc[cidStr] += amt
+          if (isToday) {
             todayTotal += amt
+            if (catTodayAcc[cidStr] !== undefined) catTodayAcc[cidStr] += amt
           }
-          if (dk >= weekStartStr2 && dk <= weekEndStr2) {
-            if (catWeekAcc[catId] !== undefined) catWeekAcc[catId] += amt
+          if (isThisWeek) {
             weekTotal += amt
+            if (catWeekAcc[cidStr] !== undefined) catWeekAcc[cidStr] += amt
           }
-        })
-      })
-    })
+          if (wEntry) {
+            if (!weeklyTotals[wEntry.wk]) weeklyTotals[wEntry.wk] = 0
+            weeklyTotals[wEntry.wk] += amt
+          }
+        }
+      }
+    }
 
-    // 이슈2&5 수정: NULL 카테고리 발주(카테고리 미지정) 누락 방지
-    // _catDailyMap은 patient_category_id IS NOT NULL 발주만 포함
-    // _ordersData(전체 발주)와 비교해 누락된 NULL 카테고리 발주를 monthTotal에 추가
+    // NULL 카테고리 누락 보정 (기존 로직 유지)
     const allOrdersData = window._ordersData || []
-    const catDailyTotal = Object.values(dailyMapForPanel).reduce((s, vMap) =>
-      s + Object.values(vMap).reduce((s2, cMap) =>
-        s2 + Object.values(cMap).reduce((s3, r) => s3 + (r.total||0), 0), 0), 0)
+    const catDailyTotalCheck = Object.values(window._catDailyMap || {}).reduce((s, vMap2) =>
+      s + Object.values(vMap2).reduce((s2, cMap2) =>
+        s2 + Object.values(cMap2).reduce((s3, r) => s3 + (r.total||0), 0), 0), 0)
     const allOrdersTotal = allOrdersData.reduce((s, o) => s + (o.total_amount||0), 0)
-    const nullCatTotal = allOrdersTotal - catDailyTotal
+    const nullCatTotal = allOrdersTotal - catDailyTotalCheck
     if (nullCatTotal > 0) {
       monthTotal += nullCatTotal
-      // NULL 카테고리 오늘/주간 발주도 반영
       allOrdersData.forEach(o => {
-        if (o.patient_category_id != null) return  // 카테고리 지정 발주는 이미 반영
+        if (o.patient_category_id != null) return
         const amt = o.total_amount || 0
         if (amt === 0) return
         if (o.order_date === todayStr) todayTotal += amt
-        if (o.order_date >= weekStartStr2 && o.order_date <= weekEndStr2) weekTotal += amt
+        if (weekStartStr && weekEndStr && o.order_date >= weekStartStr && o.order_date <= weekEndStr) weekTotal += amt
+        const wEntry = weeklyData.find(w => o.order_date >= w.wk && o.order_date <= w.wkEnd)
+        if (wEntry) weeklyTotals[wEntry.wk] = (weeklyTotals[wEntry.wk] || 0) + amt
       })
     }
 
-    // ── 현재 input 이벤트로 편집 중인 쌍만 DOM 값으로 교체 (_activeEditPair) ──
-    const aepPanel = window._activeEditPair
-    if (aepPanel) {
-      const dk = aepPanel.date
-      const savedAmt = ((dailyMapForPanel[dk]||{})[aepPanel.vendorId]||{})[aepPanel.catId]?.total || 0
-      const tbody3 = document.getElementById('ordersTbody')
-      const selBase3 = `.cat-order-input[data-vendor="${aepPanel.vendorId}"][data-category="${aepPanel.catId}"][data-date="${dk}"]`
-      const txEl3 = tbody3?.querySelector(`${selBase3}[data-field="taxable"]`)
-      const exEl3 = tbody3?.querySelector(`${selBase3}[data-field="exempt"]`)
-      const totEl3 = tbody3?.querySelector(`${selBase3}[data-field="total"]`)
-      const tx3 = parseOrderVal(txEl3?.value)
-      const ex3 = parseOrderVal(exEl3?.value)
-      const tot3 = parseOrderVal(totEl3?.value)
-      const domAmt3 = tx3 > 0 || ex3 > 0 ? tx3 + Math.round(tx3*0.1) + ex3 : tot3
-      const diff3 = domAmt3 - savedAmt
-      if (diff3 !== 0) {
-        const catIdStr = String(aepPanel.catId)
-        if (catMonthAcc[catIdStr] !== undefined) catMonthAcc[catIdStr] += diff3
-        monthTotal += diff3
-        if (dk === todayStr) {
-          if (catTodayAcc[catIdStr] !== undefined) catTodayAcc[catIdStr] += diff3
-          todayTotal += diff3
+    // _activeEditPair: 편집 중인 셀만 DOM 값으로 보정
+    const aep = window._activeEditPair
+    if (aep) {
+      const dk = aep.date
+      const savedAmt = ((window._catDailyMap?.[dk]||{})[aep.vendorId]||{})[aep.catId]?.total || 0
+      const tbody = document.getElementById('ordersTbody')
+      const selBase = `.cat-order-input[data-vendor="${aep.vendorId}"][data-category="${aep.catId}"][data-date="${dk}"]`
+      const tx = parseOrderVal(tbody?.querySelector(`${selBase}[data-field="taxable"]`)?.value)
+      const ex = parseOrderVal(tbody?.querySelector(`${selBase}[data-field="exempt"]`)?.value)
+      const tot = parseOrderVal(tbody?.querySelector(`${selBase}[data-field="total"]`)?.value)
+      const domAmt = tx > 0 || ex > 0 ? tx + Math.round(tx*0.1) + ex : tot
+      const diff = domAmt - savedAmt
+      if (diff !== 0) {
+        const cidStr = String(aep.catId)
+        monthTotal += diff
+        if (catMonthAcc[cidStr] !== undefined) catMonthAcc[cidStr] += diff
+        if (dk === todayStr) { todayTotal += diff; if (catTodayAcc[cidStr] !== undefined) catTodayAcc[cidStr] += diff }
+        if (weekStartStr && weekEndStr && dk >= weekStartStr && dk <= weekEndStr) {
+          weekTotal += diff
+          if (catWeekAcc[cidStr] !== undefined) catWeekAcc[cidStr] += diff
         }
-        if (dk >= weekStartStr2 && dk <= weekEndStr2) {
-          if (catWeekAcc[catIdStr] !== undefined) catWeekAcc[catIdStr] += diff3
-          weekTotal += diff3
-        }
+        const wEntry = weeklyData.find(w => dk >= w.wk && dk <= w.wkEnd)
+        if (wEntry) weeklyTotals[wEntry.wk] = (weeklyTotals[wEntry.wk] || 0) + diff
       }
     }
 
-    // 카테고리 바 실시간 업데이트 (A안+B안)
-    const catSettingsMap = window._catSettingsMap || {}
-    // 보조 카테고리(항암 보호자, 경관식 등) 필터링: budgetKeys=[]이고 예산/기준가 미설정인 것 제외
-    const _catDietPricesForBar = window._catDietPricesData || []
-    const _catSettingsForBar = window._catOrderSettings || []
-    function isMainCatForBar(cat) {
-      const dc = _catDietPricesForBar.find(d => d.id === cat.id)
-      if (dc && (dc.budgetKeys || []).length > 0) return true
-      if (dc && (dc.budgetKeys || []).length === 0) return false
-      const s = _catSettingsForBar.find(s => s.patient_category_id === cat.id) || {}
-      return (s.monthly_budget || 0) > 0 || (s.ref_meal_price || 0) > 0
-    }
-    const mainPatientCats = patientCats.filter(isMainCatForBar)
-    const _showProportion2 = mainPatientCats.length > 1  // 환자군 2개 이상일때만 점유 표시
-    const updateCatBars = (totalsMap, budgetsMap, periodLbl) => {
-      mainPatientCats.forEach(cat => {
-        const color = getCategoryColorHex(cat.category_key)
-        const grand = mainPatientCats.reduce((s,c)=>s+(totalsMap[c.id]||0),0)
-        const amt = totalsMap[cat.id] || 0
-        const budg = budgetsMap[cat.id] || 0
-
-        const aBar = document.getElementById(`catABar-${periodLbl}-${cat.id}`)
-        const aPctEl = document.getElementById(`catAPct-${periodLbl}-${cat.id}`)
-        const bBar = document.getElementById(`catBBar-${periodLbl}-${cat.id}`)
-        const bPctEl = document.getElementById(`catBPct-${periodLbl}-${cat.id}`)
-        const amtEl = document.getElementById(`catAmt-${periodLbl}-${cat.id}`)
-
-        const aPct = grand > 0 ? Math.round(amt/grand*100) : 0
-        const bPct = budg > 0 ? Math.round(amt/budg*100) : null
-        const bColor = bPct===null?'#9ca3af':bPct>=100?'#dc2626':bPct>=80?'#d97706':color
-
-        // 환자군 2개 이상일때만 점유 바 업데이트
-        if (_showProportion2) {
-          if (aBar)   aBar.style.width = aPct + '%'
-          if (aPctEl) aPctEl.textContent = aPct + '%'
-        }
-        if (bBar)   { bBar.style.width = Math.min(bPct||0,100) + '%'; bBar.style.background = bColor }
-        if (bPctEl) { bPctEl.textContent = (bPct!==null ? bPct+'%' : ''); bPctEl.style.color = bColor }
-        if (amtEl)  amtEl.textContent = fmtMan(amt)
-      })
-    }
-
-    const catDailyBudgets2 = {}; const catMonthBudgets2 = {}; const catWeekBudgets2 = {}
-    const _curWeekDays2 = window._ordersBudget?.weeklyData?.find(w=>w.isCurWeek)?.wDays || 5
-    ;(window._catOrderSettings||[]).forEach(s => {
-      const id = s.patient_category_id
-      catMonthBudgets2[id] = s.monthly_budget || 0
-      catDailyBudgets2[id] = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
-      catWeekBudgets2[id]  = catDailyBudgets2[id] * _curWeekDays2
-    })
-
-    updateCatBars(catTodayAcc,  catDailyBudgets2, 'today')
-    updateCatBars(catMonthAcc,  catMonthBudgets2, 'month')
-    // 주차 바 업데이트: 각 주차별 실제 _catDailyMap 집계 사용 (catWeekAcc는 이번 주 데이터만이라 오류)
-    const savedWeeklyData2 = window._ordersBudget?.weeklyData || []
-    const catDailyMapForWeek = window._catDailyMap || {}
-    const patientCatsForWeek = window._patientCats || []
-    savedWeeklyData2.forEach((w, i) => {
-      const num = i + 1
-      // 이 주차에 속하는 _catDailyMap 집계
-      const weekCatAcc = {}
-      patientCatsForWeek.forEach(c => { weekCatAcc[c.id] = 0 })
-      Object.entries(catDailyMapForWeek).forEach(([dk, vMap]) => {
-        if (dk < w.wk || dk > w.wkEnd) return
-        Object.entries(vMap).forEach(([vid, cMap]) => {
-          const vendorObj = _ovMap.get(parseInt(vid))
-          if (vendorObj && vendorObj.is_card_type) return
-          Object.entries(cMap).forEach(([cid, r]) => {
-            if (weekCatAcc[cid] !== undefined) weekCatAcc[cid] += r.total || 0
-          })
-        })
-      })
-      // 이 주차 일수 기반 카테고리 예산
-      const wCatBudgets2 = {}
-      ;(window._catOrderSettings||[]).forEach(s => {
-        const id = s.patient_category_id
-        const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
-        wCatBudgets2[id] = daily * (w.wDays || 0)
-      })
-      updateCatBars(weekCatAcc, wCatBudgets2, `w${num}`)
-    })
-
   } else {
-    // 기존 모드 (카테고리 없을 때): order-input 집계
-    // weekInMonthStart/weekInMonthEnd: 이번 주 + 조회 월의 교집합 (월 경계 데이터 오류 방지)
-    const weekStartStr2 = weekInMonthStart || (weekStart instanceof Date ? `${weekStart.getFullYear()}-${String(weekStart.getMonth()+1).padStart(2,'0')}-${String(weekStart.getDate()).padStart(2,'0')}` : weekStart)
-    const weekEndStr2   = weekInMonthEnd   || (weekEnd   instanceof Date ? `${weekEnd.getFullYear()}-${String(weekEnd.getMonth()+1).padStart(2,'0')}-${String(weekEnd.getDate()).padStart(2,'0')}`   : weekEnd)
-    const allInputs = document.querySelectorAll('.order-input')
+    // 카테고리 없는 모드: order-input DOM 집계
     const processed = {}
-    allInputs.forEach(inp => {
-      const date = inp.dataset.date
-      const vendor = inp.dataset.vendor
+    document.querySelectorAll('.order-input').forEach(inp => {
+      const date = inp.dataset.date, vendor = inp.dataset.vendor
       const key = `${date}-${vendor}`
       if (processed[key]) return
       processed[key] = true
-      // mixed_total: data-type="total" 직접 합산 총액
-      const totalDirectEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="total"][data-date="${date}"]`)
+      const totDirEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="total"][data-date="${date}"]`)
       let total = 0
-      if (totalDirectEl) {
-        total = parseOrderVal(totalDirectEl.value)
+      if (totDirEl) {
+        total = parseOrderVal(totDirEl.value)
       } else {
-        const taxableEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
-        const exemptEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
-        const t = parseOrderVal(taxableEl?.value)
-        const e = parseOrderVal(exemptEl?.value)
-        total = t + Math.round(t*0.1) + e
+        const tx = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)?.value)
+        const ex = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)?.value)
+        total = tx + Math.round(tx*0.1) + ex
       }
+      if (total === 0) return
       monthTotal += total
       if (date === todayStr) todayTotal += total
-      if (date >= weekStartStr2 && date <= weekEndStr2) weekTotal += total
+      if (weekStartStr && weekEndStr && date >= weekStartStr && date <= weekEndStr) weekTotal += total
+      const wEntry = weeklyData.find(w => date >= w.wk && date <= w.wkEnd)
+      if (wEntry) weeklyTotals[wEntry.wk] = (weeklyTotals[wEntry.wk] || 0) + total
     })
   }
 
-  const monthPct = CALC_ENGINE.calcBudgetPct(monthTotal, totalBudget) // ✅ CALC_ENGINE
+  // ★ 전체 발주 합계 = daily_orders 전체 (food + supply + card + event + utility)
+  // orderList = daily_orders 전체 쿼리 결과 → 단일 소스, 중복 없음
+  // _supplyDailyMap과 _cardDailyMap을 추가하면 daily_orders와 중복 집계됨 → 제외
+  const allOrdersMonthTotal = (window._ordersData || []).reduce((s, o) => s + (o.total_amount||0), 0)
+
+  const monthPct = CALC_ENGINE.calcBudgetPct(allOrdersMonthTotal, totalBudget)
   const todayPct = dailyBudget > 0 ? Math.round(todayTotal / dailyBudget * 100) : 0
   const weekPct  = weekBudget  > 0 ? Math.round(weekTotal  / weekBudget  * 100) : 0
 
+  return window._bpCache = {
+    budget, totalBudget, dailyBudget, weekBudget, todayStr, weeklyData,
+    weekStartStr, weekEndStr,
+    monthTotal, todayTotal, weekTotal, weeklyTotals, allOrdersMonthTotal,
+    monthPct, todayPct, weekPct,
+    catMonthAcc, catTodayAcc, catWeekAcc,
+    hasCats, patientCats, _ovMap
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+// 2) _ensureBPCards: DOM 카드 초기화 (최초 1회만 실행)
+// ────────────────────────────────────────────────────────────────
+function _ensureBPCards(weeklyData, totalBudget) {
+  const _bpContent = document.getElementById('budgetProgressContent')
+  if (!_bpContent || document.getElementById('today-card')) return // 이미 초기화됨
+
+  const _wData = weeklyData || []
+  const weekCardsCols = _wData.length > 0 ? _wData.length : 4
+  const _weekCardsHtml = _wData.map((w, i) => {
+    const num = i + 1
+    const isCW = w.isCurWeek
+    const cardBg = isCW ? '#f0fdf4' : '#f8fafc'
+    const cardBorder = isCW ? '3px solid #16a34a' : '2px solid #e5e7eb'
+    const cardShadow = isCW ? 'box-shadow:0 3px 10px rgba(0,0,0,0.1);' : ''
+    const curBadge = isCW ? `<span style="background:#16a34a;color:white;font-size:8px;font-weight:700;padding:1px 4px;border-radius:8px;margin-left:3px">이번주</span>` : ''
+    return `<div id="week${num}-card" style="background:${cardBg};border:${cardBorder};border-radius:10px;padding:8px 6px;text-align:center;${cardShadow}">
+      <div style="font-size:9px;font-weight:600;color:${isCW?'#15803d':'#6b7280'};margin-bottom:2px">${w.label||('W'+num)}${curBadge}</div>
+      <div style="font-size:16px;font-weight:700;color:${isCW?'#15803d':'#374151'}" id="weekPct${num}">-</div>
+      <div style="background:${isCW?'#dcfce7':'#e5e7eb'};border-radius:4px;height:5px;overflow:hidden;margin:3px 0"><div id="weekBar${num}" style="height:100%;width:0%;background:${isCW?'#16a34a':'#6b7280'};border-radius:4px;transition:width 0.4s"></div></div>
+      <div style="font-size:9px;color:${isCW?'#16a34a':'#6b7280'}" id="weekAmt${num}">-</div>
+    </div>`
+  }).join('')
+  _bpContent.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div id="today-card" style="background:#eff6ff;border:2px solid #3b82f6;border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:10px;font-weight:600;color:#2563eb;margin-bottom:2px">📅 오늘</div>
+        <div style="font-size:20px;font-weight:700;color:#1d4ed8" id="todayPct">-</div>
+        <div style="background:#dbeafe;border-radius:4px;height:5px;overflow:hidden;margin:3px 0"><div id="todayBar" style="height:100%;width:0%;background:#3b82f6;border-radius:4px;transition:width 0.4s"></div></div>
+        <div style="font-size:10px;color:#3b82f6" id="todayAmt">-</div>
+      </div>
+      <div id="month-card" style="background:#f0fdf4;border:2px solid #16a34a;border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:10px;font-weight:600;color:#15803d;margin-bottom:2px">🗓️ 월별</div>
+        <div style="font-size:20px;font-weight:700;color:#15803d" id="monthPct">-</div>
+        <div style="background:#dcfce7;border-radius:4px;height:5px;overflow:hidden;margin:3px 0"><div id="monthBar" style="height:100%;width:0%;background:#16a34a;border-radius:4px;transition:width 0.4s"></div></div>
+        <div style="font-size:10px;color:#15803d" id="monthAmt">-</div>
+      </div>
+    </div>
+    <div style="border-top:1px solid #e5e7eb;padding-top:8px">
+      <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:6px">📆 주차별</div>
+      <div id="weeklyCardsGrid" style="display:grid;grid-template-columns:repeat(${weekCardsCols},1fr);gap:6px">${_weekCardsHtml}</div>
+    </div>`
+  const badge = document.getElementById('budgetProgressBadge')
+  if (badge) badge.textContent = `${App.currentYear}년 ${App.currentMonth}월 | 총예산 ${fmtWon(totalBudget)}`
+
+  // ★ 비용 구조 분리 섹션 추가 (식재료비 vs 운영비) - dashData.costBreakdown 기반
+  const costSection = document.createElement('div')
+  costSection.id = 'bp-cost-breakdown'
+  costSection.style.cssText = 'border-top:1px solid #e5e7eb;padding-top:8px;margin-top:4px'
+  costSection.innerHTML = `<div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:6px">💰 비용 구조</div>
+    <div id="bp-cost-food" style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:8px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:10px;font-weight:700;color:#065f46">🟢 식재료비</span>
+        <span style="font-size:9px;color:#6b7280;background:#f0fdf4;padding:1px 5px;border-radius:10px">food</span>
+      </div>
+      <div style="font-size:16px;font-weight:700;color:#047857" id="bp-food-used">-</div>
+      <div style="font-size:9px;color:#6b7280;margin-top:1px" id="bp-food-budget">예산 로딩중...</div>
+      <div style="background:#d1fae5;border-radius:4px;height:4px;overflow:hidden;margin-top:4px"><div id="bp-food-bar" style="height:100%;width:0%;background:#10b981;border-radius:4px;transition:width 0.5s"></div></div>
+    </div>
+    <div id="bp-cost-operating" style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:10px;font-weight:700;color:#78350f">🟡 운영비</span>
+        <span style="font-size:9px;color:#6b7280;background:#fef3c7;padding:1px 5px;border-radius:10px">supply·event·card</span>
+      </div>
+      <div style="font-size:16px;font-weight:700;color:#b45309" id="bp-oper-used">-</div>
+      <div style="font-size:9px;color:#6b7280;margin-top:1px" id="bp-oper-budget">예산 로딩중...</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-top:5px">
+        <div style="background:#f3e8ff;border-radius:5px;padding:4px;text-align:center">
+          <div style="font-size:8px;color:#7c3aed;font-weight:600">소모품</div>
+          <div style="font-size:11px;font-weight:700;color:#6d28d9" id="bp-supply-used">-</div>
+        </div>
+        <div style="background:#fff7ed;border-radius:5px;padding:4px;text-align:center">
+          <div style="font-size:8px;color:#c2410c;font-weight:600">이벤트</div>
+          <div style="font-size:11px;font-weight:700;color:#ea580c" id="bp-event-used">-</div>
+        </div>
+        <div style="background:#eff6ff;border-radius:5px;padding:4px;text-align:center">
+          <div style="font-size:8px;color:#1d4ed8;font-weight:600">법인카드</div>
+          <div style="font-size:11px;font-weight:700;color:#2563eb" id="bp-card-used">-</div>
+        </div>
+      </div>
+    </div>`
+  _bpContent.appendChild(costSection)
+}
+
+// ────────────────────────────────────────────────────────────────
+// 3) _updateBPKpi: 오늘/이번주/월 카드 업데이트 (빠른 경로)
+//    - 캐시에서 읽어 DOM만 갱신
+// ────────────────────────────────────────────────────────────────
+function _updateBPKpi(cache) {
+  if (!cache) return
+  const { todayPct, todayTotal, monthPct, monthTotal, allOrdersMonthTotal: _allOrdersMonthTotal, weekPct, weekTotal,
+    dailyBudget, weekBudget, totalBudget } = cache
+  // allOrdersMonthTotal: food + supply/card/event daily_orders 합계 (card_expenses 제외)
+  const allOrdersMonthTotal = _allOrdersMonthTotal ?? monthTotal
+
   // 범용 카드 업데이트 헬퍼
-  function updateBudgetCard(cardId, pctId, amtId, barId, pct, amt, isCurrent=false, isToday=false) {
+  function _upCard(cardId, pctId, amtId, barId, pct, amt, isCurrent, isToday) {
     const card = document.getElementById(cardId)
     if (!card) return
     const isOver = pct>=100, isWarn = pct>=80&&!isOver
-    const borderColor = isOver?'#ef4444':isWarn?'#f59e0b':(isToday?'#2563eb':'#16a34a')
-    const borderW = (isCurrent||isToday)?'3px':'2px'
     card.style.background = isOver?'#fff1f2':isWarn?'#fffbeb':(isToday?'#eff6ff':(isCurrent?'#f0fdf4':'#f8fafc'))
-    card.style.border = `${borderW} solid ${borderColor}`
+    card.style.border = `${(isCurrent||isToday)?'3px':'2px'} solid ${isOver?'#ef4444':isWarn?'#f59e0b':(isToday?'#2563eb':'#16a34a')}`
     card.style.boxShadow = (isCurrent||isToday)?'0 4px 14px rgba(0,0,0,0.13)':''
     const pctEl = document.getElementById(pctId)
     if (pctEl) {
@@ -6172,179 +8228,266 @@ function updateBudgetProgressPanel() {
       barEl.style.background = isOver?'#dc2626':isWarn?'#f59e0b':(isToday?'#3b82f6':'#16a34a')
       if (barEl.parentElement) barEl.parentElement.style.background = isOver?'#fee2e2':isWarn?'#fef3c7':(isToday?'#dbeafe':'#dcfce7')
     }
-    // 뱃지 업데이트 (첫번째 div의 마지막 요소)
-    const badgeEl = card.querySelector('[style*="border-radius:10px"]')
+    // 뱃지 업데이트
+    const existingBadge = card.querySelector('[style*="border-radius:10px"]')
     const badge = isOver
       ? `<span style="background:#dc2626;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">🚨초과</span>`
       : isWarn
       ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:3px">⚠️주의</span>`
       : ''
-    if (badgeEl) { badgeEl.outerHTML = badge || '' }
-    else if (badge) {
-      const firstDiv = card.querySelector('div')
-      if (firstDiv) firstDiv.insertAdjacentHTML('beforeend', badge)
-    }
+    if (existingBadge) { existingBadge.outerHTML = badge || '' }
+    else if (badge) { const firstDiv = card.querySelector('div'); if (firstDiv) firstDiv.insertAdjacentHTML('beforeend', badge) }
   }
 
-  updateBudgetCard('today-card','todayPct','todayAmt','todayBar', todayPct, todayTotal, false, true)
-  updateBudgetCard('month-card','monthPct','monthAmt','monthBar', monthPct, monthTotal, false, false)
+  _upCard('today-card','todayPct','todayAmt','todayBar', todayPct, todayTotal, false, true)
+  // month-card: 전체 발주 합계(food + supply/card/event daily_orders) 기준
+  _upCard('month-card','monthPct','monthAmt','monthBar', monthPct, allOrdersMonthTotal, false, false)
 
-  // 주차별 카드 업데이트
-  const wBudget = budget.weekBudget
-  // 저장된 weeklyData(주차 시작일/종료일 목록)로 주차별 집계
-  const savedWeeklyData = budget.weeklyData || []
-  // weekStart 기준으로 weeklyTotals 계산
-  const weeklyTotals = {}
-  if (hasCats) {
-    // ── 버그 수정: DOM cat-order-input 대신 _catDailyMap 기반으로 주차별 합산 ──
-    const dailyMapForWeek = window._catDailyMap || {}
-    Object.entries(dailyMapForWeek).forEach(([dk, vMap]) => {
-      Object.entries(vMap).forEach(([vid, cMap]) => {
-        const vendorObj = _ovMap.get(parseInt(vid))
-        if (!vendorObj || vendorObj.is_card_type) return
-        Object.values(cMap).forEach(r => {
-          const amt = r.total || 0
-          if (amt === 0) return
-          const wEntry = savedWeeklyData.find(w => dk >= w.wk && dk <= w.wkEnd)
-          if (!wEntry) return
-          if (!weeklyTotals[wEntry.wk]) weeklyTotals[wEntry.wk] = 0
-          weeklyTotals[wEntry.wk] += amt
-        })
-      })
-    })
-    // ── _activeEditPair: 현재 input 이벤트로 편집 중인 쌍만 DOM 값으로 교체 ──
-    const aepWeek = window._activeEditPair
-    if (aepWeek) {
-      const dk = aepWeek.date
-      const savedAmt = ((dailyMapForWeek[dk]||{})[aepWeek.vendorId]||{})[aepWeek.catId]?.total || 0
-      const tbody4 = document.getElementById('ordersTbody')
-      const selBase4 = `.cat-order-input[data-vendor="${aepWeek.vendorId}"][data-category="${aepWeek.catId}"][data-date="${dk}"]`
-      const txEl4 = tbody4?.querySelector(`${selBase4}[data-field="taxable"]`)
-      const exEl4 = tbody4?.querySelector(`${selBase4}[data-field="exempt"]`)
-      const totEl4 = tbody4?.querySelector(`${selBase4}[data-field="total"]`)
-      const tx4 = parseOrderVal(txEl4?.value)
-      const ex4 = parseOrderVal(exEl4?.value)
-      const tot4 = parseOrderVal(totEl4?.value)
-      const domAmt4 = tx4 > 0 || ex4 > 0 ? tx4 + Math.round(tx4*0.1) + ex4 : tot4
-      const diff4 = domAmt4 - savedAmt
-      if (diff4 !== 0) {
-        const wEntry = savedWeeklyData.find(w => dk >= w.wk && dk <= w.wkEnd)
-        if (wEntry) weeklyTotals[wEntry.wk] = (weeklyTotals[wEntry.wk] || 0) + diff4
-      }
-    }
-  } else {
-    // 일반 모드: order-input 에서 날짜 기준으로 주차별 합산
-    const procWk = {}
-    document.querySelectorAll('.order-input').forEach(inp => {
-      const date   = inp.dataset.date
-      const vendor = inp.dataset.vendor
-      const wKey   = `${date}-${vendor}`
-      if (procWk[wKey]) return
-      procWk[wKey] = true
-      // mixed_total: data-type="total" 직접 합산 총액
-      const totDirEl = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="total"][data-date="${date}"]`)
-      let tot2 = 0
-      if (totDirEl) {
-        tot2 = parseOrderVal(totDirEl.value)
-      } else {
-        const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
-        const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
-        const t2 = parseOrderVal(tx?.value)
-        const e2 = parseOrderVal(ex?.value)
-        tot2 = t2 + Math.round(t2 * 0.1) + e2
-      }
-      if (tot2 === 0) return
-      const wEntry = savedWeeklyData.find(w => date >= w.wk && date <= w.wkEnd)
-      const wkStart = wEntry ? wEntry.wk : null
-      if (!wkStart) return
-      if (!weeklyTotals[wkStart]) weeklyTotals[wkStart] = 0
-      weeklyTotals[wkStart] += tot2
-    })
-  }
-  // 주차 카드별 업데이트 (savedWeeklyData 순서 기준으로 안정적으로 매핑)
-  savedWeeklyData.forEach((w, i) => {
-    const num  = i + 1
-    const wkAmt = weeklyTotals[w.wk] || 0
-    // 이슈4 수정: 각 주차의 실제 예산(w.wBudget)을 사용 (wBudget=현재주예산(고정)을 모든 주에 적용하면 400% 초과 발생)
-    const thisWkBudget = w.wBudget > 0 ? w.wBudget : wBudget
-    const wkPct = thisWkBudget > 0 ? Math.round(wkAmt / thisWkBudget * 100) : 0
-    const isCW  = (todayStr >= w.wk && todayStr <= w.wkEnd)
-    updateBudgetCard(`week${num}-card`, `weekPct${num}`, `weekAmt${num}`, `weekBar${num}`, wkPct, wkAmt, isCW)
-  })
-
-  // 월 합계 표시 업데이트 (식재료 + 소모품/카드 전체 합산)
+  // 월 합계 표시 (tfoot 위 요약)
+  // allOrdersMonthTotal = food daily_orders + supply/card/event daily_orders
+  // card_expenses(_cardDailyMap)는 별도 영수증 시스템이므로 발주 합계에서 제외
   const mTotalEl = document.getElementById('monthTotalDisplay')
-  const mPctEl = document.getElementById('monthPctDisplay')
+  const mPctEl   = document.getElementById('monthPctDisplay')
   if (mTotalEl) {
-    // 소모품/카드 월 합계 산출
-    const supplyMonthTotal = Object.values(window._supplyDailyMap || {}).reduce((s, dMap) =>
-      s + Object.values(dMap).reduce((s2, amt) => s2 + (amt || 0), 0), 0)
-    const cardMonthTotal = Object.values(window._cardDailyMap || {}).reduce((s, dMap) =>
-      s + Object.values(dMap).reduce((s2, amt) => s2 + (amt || 0), 0), 0)
-    const grandMonthTotal = monthTotal + supplyMonthTotal + cardMonthTotal
-    mTotalEl.textContent = fmtMan(grandMonthTotal)
+    mTotalEl.textContent = fmtMan(allOrdersMonthTotal)
   }
   if (mPctEl) mPctEl.textContent = `${monthPct}%`
 
-  // ── 업체별 월 합계 카드 실시간 업데이트 ──
+  // tfoot 월 합계 셀
+  const footMonthEl = document.getElementById('vfoot-month-total')
+  if (footMonthEl) { footMonthEl.textContent = allOrdersMonthTotal > 0 ? fmt(allOrdersMonthTotal) : ''; footMonthEl.style.color = monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#166534' }
+  const footMonthPctEl = document.getElementById('vfoot-month-pct')
+  if (footMonthPctEl) {
+    footMonthPctEl.innerHTML = `${monthPct}%<div style="font-size:9px;color:#6b7280;font-weight:400">${fmtMan(allOrdersMonthTotal)} / ${fmtMan(totalBudget)}</div>`
+    footMonthPctEl.style.color = monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'
+  }
+
+  // ★ 비용 구조 분리 카드 업데이트 (발주 화면 - dashData.costBreakdown 기반)
+  // renderOrders에서 window._bpCostBreakdown에 저장된 costBreakdown 사용
+  const cbp = window._bpCostBreakdown
+  if (cbp) {
+    const _fmtBp = (v) => {
+      const av = Math.abs(v||0)
+      return av >= 10000 ? Math.round((v||0)/10000).toLocaleString('ko-KR')+'만원' : (v||0).toLocaleString('ko-KR')+'원'
+    }
+    // 식재료비
+    const fEl = document.getElementById('bp-food-used')
+    if (fEl) fEl.textContent = _fmtBp(cbp.food?.used)
+    const fbEl = document.getElementById('bp-food-budget')
+    if (fbEl) {
+      const fb = cbp.food?.budget || 0, fu = cbp.food?.used || 0
+      fbEl.textContent = fb > 0 ? `목표 ${_fmtBp(fb)} · ${cbp.food?.ratio||0}% 사용` : '예산 미설정'
+    }
+    const fBarEl = document.getElementById('bp-food-bar')
+    if (fBarEl) {
+      const pct = Math.min(cbp.food?.ratio || 0, 100)
+      fBarEl.style.width = pct + '%'
+      fBarEl.style.background = pct >= 100 ? '#ef4444' : pct >= 85 ? '#f59e0b' : '#10b981'
+    }
+    // 운영비 합계
+    const oEl = document.getElementById('bp-oper-used')
+    if (oEl) oEl.textContent = _fmtBp(cbp.operating?.used)
+    const obEl = document.getElementById('bp-oper-budget')
+    if (obEl) {
+      const ob = cbp.operating?.budget || 0
+      obEl.textContent = ob > 0 ? `목표 ${_fmtBp(ob)} · ${cbp.operating?.ratio||0}%` : '예산 미설정'
+    }
+    // 운영비 세부
+    const sEl = document.getElementById('bp-supply-used')
+    if (sEl) sEl.textContent = _fmtBp(cbp.items?.supply?.used)
+    const eEl = document.getElementById('bp-event-used')
+    if (eEl) eEl.textContent = _fmtBp(cbp.items?.event?.used)
+    const cEl = document.getElementById('bp-card-used')
+    if (cEl) cEl.textContent = _fmtBp(cbp.items?.card?.used)
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+// 4) _updateBPWeekCards: 주차 카드 업데이트
+// ────────────────────────────────────────────────────────────────
+function _updateBPWeekCards(cache) {
+  if (!cache) return
+  const { weeklyTotals, weeklyData, todayStr, budget } = cache
+  const wBudget = budget.weekBudget
+
+  weeklyData.forEach((w, i) => {
+    const num = i + 1
+    const wkAmt = weeklyTotals[w.wk] || 0
+    const thisWkBudget = w.wBudget > 0 ? w.wBudget : wBudget
+    const wkPct = thisWkBudget > 0 ? Math.round(wkAmt / thisWkBudget * 100) : 0
+    const isCW = (todayStr >= w.wk && todayStr <= w.wkEnd)
+
+    const card = document.getElementById(`week${num}-card`)
+    if (!card) return
+    const isOver = wkPct>=100, isWarn = wkPct>=80&&!isOver
+    card.style.background = isOver?'#fff1f2':isWarn?'#fffbeb':(isCW?'#f0fdf4':'#f8fafc')
+    card.style.border = `${isCW?'3px':'2px'} solid ${isOver?'#ef4444':isWarn?'#f59e0b':(isCW?'#16a34a':'#e5e7eb')}`
+    card.style.boxShadow = isCW?'0 3px 10px rgba(0,0,0,0.1)':''
+
+    const pctEl = document.getElementById(`weekPct${num}`)
+    if (pctEl) {
+      pctEl.textContent = `${wkPct}%`
+      pctEl.style.color = isOver?'#dc2626':isWarn?'#d97706':(isCW?'#15803d':'#374151')
+      pctEl.style.fontSize = isCW?(isOver||isWarn?'22px':'18px'):(isOver||isWarn?'18px':'15px')
+    }
+    const amtEl = document.getElementById(`weekAmt${num}`)
+    if (amtEl) amtEl.textContent = fmtWon(wkAmt)
+    const barEl = document.getElementById(`weekBar${num}`)
+    if (barEl) {
+      barEl.style.width = `${Math.min(wkPct,100)}%`
+      barEl.style.background = isOver?'#dc2626':isWarn?'#f59e0b':(isCW?'#16a34a':'#6b7280')
+      if (barEl.parentElement) barEl.parentElement.style.background = isOver?'#fee2e2':isWarn?'#fef3c7':(isCW?'#dcfce7':'#e5e7eb')
+    }
+  })
+}
+
+// ────────────────────────────────────────────────────────────────
+// 5) _updateBPCatBars: 환자군 바 업데이트
+// ────────────────────────────────────────────────────────────────
+function _updateBPCatBars(cache) {
+  if (!cache) return
+  const { catMonthAcc, catTodayAcc, catWeekAcc, hasCats, patientCats, weeklyData, _ovMap } = cache
+  if (!hasCats) return
+
+  const catSettingsMap = window._catSettingsMap || {}
+  const _catDietPricesForBar = window._catDietPricesData || []
+  const _catSettingsForBar = window._catOrderSettings || []
+  function isMainCatForBar(cat) {
+    const dc = _catDietPricesForBar.find(d => d.id === cat.id)
+    if (dc && (dc.budgetKeys || []).length > 0) return true
+    if (dc && (dc.budgetKeys || []).length === 0) return false
+    const s = _catSettingsForBar.find(s2 => s2.patient_category_id === cat.id) || {}
+    return (s.monthly_budget || 0) > 0 || (s.ref_meal_price || 0) > 0
+  }
+  const mainCats = patientCats.filter(isMainCatForBar)
+  const showProp = mainCats.length > 1
+
+  function doUpdateCatBars(totalsMap, budgetsMap, periodLbl) {
+    mainCats.forEach(cat => {
+      const color = getCategoryColorHex(cat.category_key)
+      const grand = mainCats.reduce((s,c)=>s+(totalsMap[c.id]||0),0)
+      const amt = totalsMap[cat.id] || 0
+      const budg = budgetsMap[cat.id] || 0
+      const aPct = grand > 0 ? Math.round(amt/grand*100) : 0
+      const bPct = budg > 0 ? Math.round(amt/budg*100) : null
+      const bColor = bPct===null?'#9ca3af':bPct>=100?'#dc2626':bPct>=80?'#d97706':color
+      if (showProp) {
+        const aBar = document.getElementById(`catABar-${periodLbl}-${cat.id}`)
+        const aPctEl = document.getElementById(`catAPct-${periodLbl}-${cat.id}`)
+        if (aBar) aBar.style.width = aPct + '%'
+        if (aPctEl) aPctEl.textContent = aPct + '%'
+      }
+      const bBar = document.getElementById(`catBBar-${periodLbl}-${cat.id}`)
+      const bPctEl = document.getElementById(`catBPct-${periodLbl}-${cat.id}`)
+      const amtEl = document.getElementById(`catAmt-${periodLbl}-${cat.id}`)
+      if (bBar) { bBar.style.width = Math.min(bPct||0,100) + '%'; bBar.style.background = bColor }
+      if (bPctEl) { bPctEl.textContent = (bPct!==null ? bPct+'%' : ''); bPctEl.style.color = bColor }
+      if (amtEl) amtEl.textContent = fmtMan(amt)
+    })
+  }
+
+  const _curWeekDays = window._ordersBudget?.weeklyData?.find(w=>w.isCurWeek)?.wDays || 5
+  const catDailyBudgets = {}, catMonthBudgets = {}, catWeekBudgets = {};
+  (window._catOrderSettings||[]).forEach(s => {
+    const id = s.patient_category_id
+    catMonthBudgets[id] = s.monthly_budget || 0
+    catDailyBudgets[id] = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+    catWeekBudgets[id]  = catDailyBudgets[id] * _curWeekDays
+  })
+
+  doUpdateCatBars(catTodayAcc, catDailyBudgets, 'today')
+  doUpdateCatBars(catMonthAcc, catMonthBudgets, 'month')
+
+  // 주차별 바 업데이트: 단일 순회로 모든 주차 처리
+  const dailyMapForWeek = window._catDailyMap || {}
+  // 주차별 집계 한 번에 계산
+  const weekCatAccs = weeklyData.map(() => {
+    const acc = {}
+    patientCats.forEach(c => { acc[c.id] = 0 })
+    return acc
+  })
+  for (const dk in dailyMapForWeek) {
+    const vMap = dailyMapForWeek[dk]
+    const wIdx = weeklyData.findIndex(w => dk >= w.wk && dk <= w.wkEnd)
+    if (wIdx < 0) continue
+    for (const vidStr in vMap) {
+      const vendorObj = _ovMap.get(parseInt(vidStr))
+      if (vendorObj && vendorObj.is_card_type) continue
+      const cMap = vMap[vidStr]
+      for (const cidStr in cMap) {
+        if (weekCatAccs[wIdx][cidStr] !== undefined) weekCatAccs[wIdx][cidStr] += cMap[cidStr].total || 0
+      }
+    }
+  }
+  weeklyData.forEach((w, i) => {
+    const wCatBudgets = {}
+    ;(window._catOrderSettings||[]).forEach(s => {
+      const id = s.patient_category_id
+      const daily = s.working_days > 0 ? Math.round((s.monthly_budget||0)/s.working_days) : 0
+      wCatBudgets[id] = daily * (w.wDays || 0)
+    })
+    doUpdateCatBars(weekCatAccs[i], wCatBudgets, `w${i+1}`)
+  })
+}
+
+// ────────────────────────────────────────────────────────────────
+// 6) _updateBPVendors: 업체별 카드 + tfoot 업데이트 (가장 무거움)
+//    setTimeout으로 지연 실행하여 초기 렌더 블로킹 방지
+// ────────────────────────────────────────────────────────────────
+function _updateBPVendors(cache) {
+  if (!cache) return
+  const { monthTotal, hasCats, _ovMap } = cache
   const vendors = window._ordersVendors || []
-  const hasCatsForVsum = (window._patientCats || []).length > 0
+  const hasCatsForVsum = hasCats
+
   vendors.forEach(v => {
-    // 법인카드 업체: _cardDailyMap에서 월 합계 계산 (DOM 입력값 없음)
     let vMonthTotal = 0
     if (v.is_card_type) {
       if (window._cardDailyMap?.[v.id]) {
         Object.values(window._cardDailyMap[v.id]).forEach(amt => { vMonthTotal += amt })
       }
     } else if (v.category === 'supply' || v.category === 'event') {
-      // 소모품/이벤트 업체: _supplyDailyMap에서 월 합계 계산
-      const supplyDMapVsum = window._supplyDailyMap?.[v.id] || {}
-      Object.values(supplyDMapVsum).forEach(amt => { vMonthTotal += (amt || 0) })
+      const supplyDMap = window._supplyDailyMap?.[v.id] || {}
+      Object.values(supplyDMap).forEach(amt => { vMonthTotal += (amt || 0) })
     } else if (hasCatsForVsum) {
-      // ── 근본 수정: _catDailyMap 기반 업체별 월합계 + _activeEditPair만 DOM 반영 ──
-      const dailyMapForVsum = window._catDailyMap || {}
-      Object.entries(dailyMapForVsum).forEach(([dk, vMap]) => {
-        const cMap = vMap[v.id] || {}
-        Object.values(cMap).forEach(r => { vMonthTotal += r.total || 0 })
-      })
-      // 현재 input 이벤트로 편집 중인 쌍이 이 업체라면 DOM 값으로 차이 반영
-      const aepVsum = window._activeEditPair
-      if (aepVsum && aepVsum.vendorId === v.id) {
-        const dk = aepVsum.date
-        const savedAmt = ((dailyMapForVsum[dk]||{})[v.id]||{})[aepVsum.catId]?.total || 0
-        const tbody5 = document.getElementById('ordersTbody')
-        const selBase5 = `.cat-order-input[data-vendor="${v.id}"][data-category="${aepVsum.catId}"][data-date="${dk}"]`
-        const txEl5 = tbody5?.querySelector(`${selBase5}[data-field="taxable"]`)
-        const exEl5 = tbody5?.querySelector(`${selBase5}[data-field="exempt"]`)
-        const totEl5 = tbody5?.querySelector(`${selBase5}[data-field="total"]`)
-        const tx5 = parseOrderVal(txEl5?.value)
-        const ex5 = parseOrderVal(exEl5?.value)
-        const tot5 = parseOrderVal(totEl5?.value)
-        const domAmt5 = tx5 > 0 || ex5 > 0 ? tx5 + Math.round(tx5*0.1) + ex5 : tot5
-        vMonthTotal += domAmt5 - savedAmt
+      const dailyMap = window._catDailyMap || {}
+      for (const dk in dailyMap) {
+        const cMap = (dailyMap[dk])[v.id] || {}
+        for (const cidStr in cMap) { vMonthTotal += cMap[cidStr].total || 0 }
+      }
+      // _activeEditPair 보정
+      const aep = window._activeEditPair
+      if (aep && aep.vendorId === v.id) {
+        const dk = aep.date
+        const savedAmt = ((dailyMap[dk]||{})[v.id]||{})[aep.catId]?.total || 0
+        const tbody = document.getElementById('ordersTbody')
+        const sel = `.cat-order-input[data-vendor="${v.id}"][data-category="${aep.catId}"][data-date="${dk}"]`
+        const tx = parseOrderVal(tbody?.querySelector(`${sel}[data-field="taxable"]`)?.value)
+        const ex = parseOrderVal(tbody?.querySelector(`${sel}[data-field="exempt"]`)?.value)
+        const tot = parseOrderVal(tbody?.querySelector(`${sel}[data-field="total"]`)?.value)
+        const domAmt = tx > 0 || ex > 0 ? tx + Math.round(tx*0.1) + ex : tot
+        vMonthTotal += domAmt - savedAmt
       }
     } else {
       const seenDates = new Set()
       document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`).forEach(inp => {
         const d = inp.dataset.date
         if (seenDates.has(d)) return; seenDates.add(d)
-        // mixed_total: data-type="total" 직접 합산 총액
         const totDirEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="total"][data-date="${d}"]`)
         if (totDirEl) {
           vMonthTotal += parseOrderVal(totDirEl.value)
         } else {
-          const tx = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)
-          const ex = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)
-          const t = parseOrderVal(tx?.value)
-          const e = parseOrderVal(ex?.value)
-          vMonthTotal += t + Math.round(t*0.1) + e
+          const tx = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${d}"]`)?.value)
+          const ex = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${d}"]`)?.value)
+          vMonthTotal += tx + Math.round(tx*0.1) + ex
         }
       })
     }
-    const vPct = CALC_ENGINE.calcBudgetPct(vMonthTotal, v.monthly_budget) || null // ✅ CALC_ENGINE
+
+    const vPct = CALC_ENGINE.calcBudgetPct(vMonthTotal, v.monthly_budget) || null
     const vOver = vPct !== null && vPct >= 100
     const vWarn = vPct !== null && vPct >= 80 && !vOver
-    // 상단 요약 카드 업데이트
+
     const sumCard = document.getElementById(`vsum-${v.id}`)
     if (sumCard) {
       const amtEl = sumCard.querySelector('.vsum-amt')
@@ -6354,346 +8497,390 @@ function updateBudgetProgressPanel() {
       sumCard.style.borderColor = vOver?'#fca5a5':vWarn?'#fde68a':'#e5e7eb'
       sumCard.style.background = vOver?'#fff1f2':vWarn?'#fffbeb':'white'
     }
-    // 테이블 하단 합계 행의 업체별 셀 업데이트
     const footAmtEl = document.getElementById(`vfoot-amt-${v.id}`)
     const footPctEl = document.getElementById(`vfoot-pct-${v.id}`)
     if (footAmtEl) { footAmtEl.textContent = vMonthTotal > 0 ? fmt(vMonthTotal) : ''; footAmtEl.style.color = vOver?'#dc2626':'#1d4ed8' }
     if (footPctEl) {
-      footPctEl.textContent = vPct !== null ? vPct + '%' + (vOver ? ' 🚨' : vWarn ? ' ⚠️' : '') : '-'
+      footPctEl.textContent = vPct !== null ? vPct + '%' + (vOver?' 🚨':vWarn?' ⚠️':'') : '-'
       footPctEl.style.color = vOver?'#dc2626':vWarn?'#d97706':'#166534'
       footPctEl.style.background = vOver?'#fee2e2':vWarn?'#fef3c7':'#f0fdf4'
     }
   })
-
-  // ── 테이블 하단 월 합계 셀 업데이트 ──
-  const footMonthEl = document.getElementById('vfoot-month-total')
-  if (footMonthEl) { footMonthEl.textContent = monthTotal > 0 ? fmt(monthTotal) : ''; footMonthEl.style.color = monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#166534' }
-  const footMonthPctEl = document.getElementById('vfoot-month-pct')
-  if (footMonthPctEl) {
-    footMonthPctEl.innerHTML = `${monthPct}%<div style="font-size:9px;color:#6b7280;font-weight:400">${fmtMan(monthTotal)} / ${fmtMan(totalBudget)}</div>`
-    footMonthPctEl.style.color = monthPct>=100?'#dc2626':monthPct>=80?'#d97706':'#16a34a'
-  }
-
-  // 실시간 식단가 업데이트
-  const ms = window._ordersMealStats
-  if (ms) {
-    // 소모품/카드 카테고리 업체들의 합계
-    const supplyTotal = (ms.vendors || [])
-      .filter(v => v.category === 'supply' || v.category === 'card')
-      .reduce((s, v) => {
-        const vInputs = document.querySelectorAll(`.order-input[data-vendor="${v.id}"]`)
-        let vTotal = 0
-        const seen = new Set()
-        vInputs.forEach(inp => {
-          const date = inp.dataset.date
-          if (seen.has(date)) return; seen.add(date)
-          const taxEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="taxable"][data-date="${date}"]`)
-          const exEl = document.querySelector(`input.order-input[data-vendor="${v.id}"][data-type="exempt"][data-date="${date}"]`)
-          const t = parseOrderVal(taxEl?.value)
-          const e = parseOrderVal(exEl?.value)
-          vTotal += t + Math.round(t*0.1) + e
-        })
-        return s + vTotal
-      }, 0)
-
-    // 식단가 계산용 식수: 비급여 제외, ea 단위 커스텀 필드 제외, 환자(patient) 제외(환자군으로 대체)
-    const customFields4price = (ms.mealCustomFields || []).filter(f => (f.unit_type||'meal') !== 'ea')
-    const customMealSum = customFields4price.reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
-    // 직원식 커스텀 키: st_key_ 또는 diet_preset_staff_ 로 시작하는 필드
-    const staffCustomMealSum = customFields4price
-      .filter(f => f.field_key.startsWith('st_key_') || f.field_key.startsWith('diet_preset_staff_'))
-      .reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
-    // 전체 식수: 커스텀 합계(직원+보호자+환자군 모두 포함) + legacy total_staff/guardian (중복 방지: 커스텀에 없을 때만)
-    // customMealSum 안에 직원식/보호자식이 이미 포함되어 있으므로 ms.totalStaff/totalGuardian은 중복 방지 위해 0 처리
-    const totalMealsForPrice = customMealSum  // 커스텀 필드에 모든 식종 포함
-    // ② 직원식 제외 분모: 커스텀 합계에서 직원식 커스텀만 제거
-    const mealsNoStaff = customMealSum - staffCustomMealSum
-
-    // API에서 받은 정확한 식단가 값 우선 사용 (발주 금액 변경 시 비율로 조정)
-    const apiBase = ms.apiTotalUsed || 0
-    const apiMp1 = ms.apiMealPriceTotal || 0
-    const apiMp2 = ms.apiMealPriceNoStaff || 0
-    const apiMp3 = ms.apiMealPriceNoSupply || 0
-    const apiSupplyUsed = ms.apiSupplyUsed || 0  // API 계산 시 소모품+카드 금액
-
-    let mp1, mp2, mp3
-    if (apiBase > 0 && apiMp1 > 0 && monthTotal > 0) {
-      // 발주 금액 변동 비율로 API 값 조정
-      const ratio = monthTotal / apiBase
-      mp1 = Math.round(apiMp1 * ratio)
-      mp2 = Math.round(apiMp2 * ratio)
-      // mp3(소모품 제외 식단가)는 소모품 제외 금액 비율로 별도 보정
-      // 분자: (현재 전체발주 - 현재 소모품) / (API 전체발주 - API 소모품) 비율 적용
-      const apiNoSupplyBase = apiBase - apiSupplyUsed
-      const curNoSupply = monthTotal - supplyTotal
-      if (apiNoSupplyBase > 0) {
-        mp3 = Math.round(apiMp3 * curNoSupply / apiNoSupplyBase)
-      } else {
-        mp3 = Math.round(apiMp3 * ratio)
-      }
-    } else if (totalMealsForPrice > 0) {
-      // API 값 없을 때 식수 기반 계산
-      mp1 = Math.round(monthTotal / totalMealsForPrice)
-      mp2 = mealsNoStaff > 0 ? Math.round(monthTotal / mealsNoStaff) : 0
-      mp3 = Math.round((monthTotal - supplyTotal) / totalMealsForPrice)
-    } else {
-      mp1 = 0; mp2 = 0; mp3 = 0
-    }
-    // 전체 식단가 카드에는 목표 표시 안 함 (가중평균 목표는 사용자 설정값 아님)
-    const mp1El = document.getElementById('mpVal-total')
-    const mp2El = document.getElementById('mpVal-nostaff')
-    const mp3El = document.getElementById('mpVal-nosupply')
-    const mpDiffEl = document.getElementById('mpDiff-total')
-    const mpCardEl = document.getElementById('mpCard-total')
-    const mealCountEl = document.getElementById('realMealCount')
-
-    if (mealCountEl) mealCountEl.textContent = fmt(totalMeals)
-
-    if (totalMealsForPrice > 0) {
-      if (mp1El) mp1El.innerHTML = `${fmt(mp1)}<span class="text-xs font-normal ml-0.5">원/식</span>`
-      if (mp2El) mp2El.innerHTML = `${fmt(mp2)}<span class="text-xs font-normal ml-0.5">원/식</span>`
-      if (mp3El) mp3El.innerHTML = `${fmt(mp3)}<span class="text-xs font-normal ml-0.5">원/식</span>`
-      // 전체 목표 표시 제거: 가중평균 목표는 사용자 설정값이 아니므로 diff 표시 안 함
-      if (mpDiffEl) mpDiffEl.innerHTML = ''
-      if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-blue-50'
-    } else {
-      // 식수 없을 때 금액 기반으로 표시
-      if (mp1El) mp1El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
-      if (mp2El) mp2El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
-      if (mp3El) mp3El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
-    }
-
-    // ── 카테고리별 실시간 식단가 업데이트 ──
-    // budget_include_keys=NULL인 보조 카테고리(항암 보호자, 경관식 등) 제외
-    const catsListAll = window._patientCats || []
-    const catsList = catsListAll.filter(cat => {
-      const dcEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
-      if (dcEntry && (dcEntry.budgetKeys || []).length > 0) return true
-      const tmpS = (window._catOrderSettings || []).find(s => s.patient_category_id === cat.id) || {}
-      if ((tmpS.ref_meal_price || 0) > 0 || (tmpS.monthly_budget || 0) > 0) {
-        if (dcEntry) return false // catDietPrices에 있지만 budgetKeys=[] → 보조 카테고리
-        return true
-      }
-      return false
-    })
-    if (catsList.length > 0) {
-      const todayMealsData = window._catTodayMeals || { patient_total: 0 }
-      const totalPatientToday = todayMealsData.patient_total || 0
-      const catSettings3 = window._catOrderSettings || []
-      const catSetMap3 = {}
-      catSettings3.forEach(s => { catSetMap3[s.patient_category_id] = s })
-
-      // 오늘 카테고리별 발주 합계 계산
-      const todayStr3 = budget?.todayStr || ''
-      const catTodayAmts = {}
-      catsList.forEach(c => { catTodayAmts[c.id] = 0 })
-      document.querySelectorAll(`.cat-order-input[data-date="${todayStr3}"]`).forEach(inp => {
-        const catId = parseInt(inp.dataset.category)
-        const field = inp.dataset.field
-        const val = parseOrderVal(inp.value)
-        if (!catTodayAmts[catId] === undefined) catTodayAmts[catId] = 0
-        if (field === 'taxable') catTodayAmts[catId] = (catTodayAmts[catId]||0) + val + Math.round(val*0.1)
-        else catTodayAmts[catId] = (catTodayAmts[catId]||0) + val
-      })
-
-      // 카테고리별 월 식단가 업데이트 (formula 기반: 선택 예산항목 ÷ 선택 식수항목)
-      catsList.forEach(cat => {
-        const s3 = catSetMap3[cat.id] || {}
-        // KPI 메인 비교 기준 = 직접 설정 목표 식단가(ref_meal_price) 우선
-        // ref_meal_price = 관리자 직접 설정값 (항암 6,500 / 요양 1,800 등) → KPI 기준
-        // target_meal_price = 가중배분 참고값 → 예산배분 보조지표
-        const targetPrice3 = s3.ref_meal_price || s3.target_meal_price || 0
-
-        // formula 설정 (백엔드에서 받은 catDietPricesData 활용)
-        const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
-        const budgetKeys3 = catDietEntry?.budgetKeys || []
-        const mealsKeys3 = catDietEntry?.mealsKeys || []
-        const hasFormula3 = budgetKeys3.length > 0 || mealsKeys3.length > 0
-
-        // 카테고리 key → id 맵 (catsList에서 빌드)
-        const catKeyIdMap3 = {}
-        catsList.forEach(c2 => { catKeyIdMap3[c2.category_key] = c2.id })
-
-        // 월 발주금액: _catDailyMap 기반으로 집계 (DOM 직접 읽기 대신 저장된 데이터 사용)
-        // DOM 직접 읽기 문제: 숨겨진 input까지 합산하여 이중계산 발생
-        // 수정: _catDailyMap 사용 + 현재 편집 중인 쌍(_activeEditPair)만 DOM 값으로 교체
-        let catMonthAmtLive = 0
-        const dailyMapForCat = window._catDailyMap || {}
-        const targetCatIds3 = new Set()
-        if (hasFormula3 && budgetKeys3.length > 0) {
-          budgetKeys3.forEach(bKey => {
-            const bCatId = catKeyIdMap3[bKey]
-            if (bCatId !== undefined) targetCatIds3.add(String(bCatId))
-          })
-        } else {
-          targetCatIds3.add(String(cat.id))
-        }
-        Object.entries(dailyMapForCat).forEach(([dk3, vMap3]) => {
-          Object.entries(vMap3).forEach(([vid3, cMap3]) => {
-            const vendorObj3 = (window._ordersVendors||[]).find(v=>v.id===parseInt(vid3))
-            // supply/card/event 업체는 식단가 계산에서 제외 (소모품, 법인카드 등)
-            if (!vendorObj3 || vendorObj3.is_card_type) return
-            if (vendorObj3.category === 'supply' || vendorObj3.category === 'card' || vendorObj3.category === 'event') return
-            Object.entries(cMap3).forEach(([cid3, r3]) => {
-              if (targetCatIds3.has(String(cid3))) {
-                catMonthAmtLive += r3.total || 0
-              }
-            })
-          })
-        })
-        // NULL 카테고리(patient_category_id=null) 발주금액도 포함
-        // (budgetKeys가 있는 카테고리에만 귀속 → category-monthly monthly에서 NULL 합산값 사용)
-        if (hasFormula3 && budgetKeys3.length > 0) {
-          catMonthAmtLive += (window._nullCatMonthlyAmt || 0)
-        }
-        // 현재 편집 중인 쌍만 DOM 값으로 교체
-        const aep3 = window._activeEditPair
-        if (aep3 && targetCatIds3.has(String(aep3.catId))) {
-          const savedAmt3 = ((dailyMapForCat[aep3.date]||{})[aep3.vendorId]||{})[aep3.catId]?.total || 0
-          const tbody5 = document.getElementById('ordersTbody')
-          const sel5 = `.cat-order-input[data-vendor="${aep3.vendorId}"][data-category="${aep3.catId}"][data-date="${aep3.date}"]`
-          const tx5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="taxable"]`)?.value)
-          const ex5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="exempt"]`)?.value)
-          const tot5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="total"]`)?.value)
-          const domAmt5 = tx5 > 0 || ex5 > 0 ? tx5 + Math.round(tx5*0.1) + ex5 : tot5
-          catMonthAmtLive += domAmt5 - savedAmt3
-        }
-
-        // 월 실입력 식수: mealsKeys 기반으로 포함된 식수 항목 합산
-        const orderMealStats = window._ordersMealStats?.mealCustomTotals || {}
-        const staffMeals3 = window._ordersMealStats?.totalStaff || 0
-        const guardianMeals3 = window._ordersMealStats?.totalGuardian || 0
-        let catMonthMeals = 0
-        if (hasFormula3 && mealsKeys3.length > 0) {
-          mealsKeys3.forEach(k => {
-            if (k === 'staff') {
-              // 구버전 'staff' 단일키: mealStats.total_staff 사용
-              catMonthMeals += staffMeals3
-            } else if (k.startsWith('st_key_')) {
-              // 신버전 st_key_{diet_key}: mealCustomTotals['diet_{diet_key}'] 우선, 없으면 totalStaff
-              // 예: st_key_preset_staff_general_2 → diet_preset_staff_general_2: 3906
-              const dietKey = k.replace('st_key_', '')
-              const v = orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || 0
-              catMonthMeals += v > 0 ? v : staffMeals3
-            } else if (k === 'guardian') {
-              catMonthMeals += guardianMeals3
-            } else if (k.startsWith('cat_')) {
-              catMonthMeals += (orderMealStats[k] || 0)
-            } else if (k.startsWith('nc_key_')) {
-              // 비급여식: nc_key_{diet_key} → diet_{diet_key} 또는 cat_{diet_key}(legacy_)
-              const dietKey = k.replace('nc_key_', '')
-              const legacyKey2 = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
-              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || (legacyKey2 ? orderMealStats[legacyKey2] : 0) || 0)
-            } else if (k.startsWith('th_key_')) {
-              // 치료식: th_key_{diet_key} → diet_{diet_key} 또는 cat_{diet_key}(legacy_)
-              const dietKey = k.replace('th_key_', '')
-              const legacyKey2 = dietKey.startsWith('legacy_') ? 'cat_' + dietKey.replace('legacy_', '') : null
-              catMonthMeals += (orderMealStats['diet_' + dietKey] || orderMealStats[dietKey] || (legacyKey2 ? orderMealStats[legacyKey2] : 0) || 0)
-            }
-          })
-        } else {
-          catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0)
-        }
-
-        const catMealPrice = catMonthAmtLive > 0 && catMonthMeals > 0 ? Math.round(catMonthAmtLive / catMonthMeals) : 0
-
-        const color = getCategoryColorHex(cat.category_key)
-        const amtEl = document.getElementById(`cat-mp-amt-${cat.id}`)
-        const priceEl = document.getElementById(`cat-mp-price-${cat.id}`)
-        const diffEl = document.getElementById(`cat-mp-diff-${cat.id}`)
-        const mealsEl = document.getElementById(`cat-mp-meals-${cat.id}`)
-
-        if (amtEl) amtEl.textContent = catMonthAmtLive > 0 ? fmtMan(catMonthAmtLive) : (catDietEntry?.monthAmt > 0 ? fmtMan(catDietEntry.monthAmt) : '-')
-        if (mealsEl) mealsEl.textContent = catMonthMeals > 0 ? fmt(catMonthMeals)+'식' : '-'
-
-        if (priceEl) {
-          if (catMealPrice > 0) {
-            const isOver3 = targetPrice3 > 0 && catMealPrice > targetPrice3
-            const isWarn3 = targetPrice3 > 0 && catMealPrice >= targetPrice3*0.9 && !isOver3
-            priceEl.textContent = fmt(catMealPrice)
-            priceEl.style.color = isOver3 ? '#dc2626' : isWarn3 ? '#d97706' : color
-          } else {
-            priceEl.innerHTML = `<span style="font-size:10px;color:#d1d5db">식수 미입력</span>`
-          }
-        }
-
-        if (diffEl) {
-          if (catMealPrice > 0 && targetPrice3 > 0) {
-            const diff3 = catMealPrice - targetPrice3
-            diffEl.innerHTML = diff3 > 0
-              ? `<span style="color:#dc2626;font-size:10px">▲ +${fmt(diff3)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice3)}원</div>`
-              : `<span style="color:#16a34a;font-size:10px">▼ ${fmt(Math.abs(diff3))}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice3)}원</div>`
-          } else if (targetPrice3 > 0) {
-            diffEl.innerHTML = `<div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice3)}원</div>`
-          } else {
-            diffEl.innerHTML = `<span style="font-size:9px;color:#d1d5db">미설정</span>`
-          }
-        }
-      })
-    }
-  }
-  // 인사이트 패널도 함께 업데이트
-  updateInsightPanel()
-
-  // ── 업체별 버튼 색상 실시간 갱신 ──
-  // 날짜별 입력값 합산 후 저장 여부와 무관하게 실제 입력된 값으로 파란/회색 결정
-  ;(() => {
-    const hasCatsBtn = (window._patientCats || []).length > 0
-    // 날짜별 입력합계 집계
-    const dateTotalsLive = {}
-    if (hasCatsBtn) {
-      const seen = new Set()
-      document.querySelectorAll('.cat-order-input').forEach(inp => {
-        const date = inp.dataset.date
-        const vendor = inp.dataset.vendor
-        const field = inp.dataset.field
-        const key = `${date}-${vendor}-${field}`
-        if (seen.has(key)) return; seen.add(key)
-        const val = parseOrderVal(inp.value)
-        if (val === 0) return
-        const amt = field === 'taxable' ? val + Math.round(val * 0.1) : val
-        dateTotalsLive[date] = (dateTotalsLive[date] || 0) + amt
-      })
-    } else {
-      const seen = new Set()
-      document.querySelectorAll('.order-input').forEach(inp => {
-        const date = inp.dataset.date
-        const vendor = inp.dataset.vendor
-        const key = `${date}-${vendor}`
-        if (seen.has(key)) return; seen.add(key)
-        const tx = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)
-        const ex = document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)
-        const t = parseOrderVal(tx?.value)
-        const e = parseOrderVal(ex?.value)
-        const tot = t + Math.round(t * 0.1) + e
-        if (tot === 0) return
-        dateTotalsLive[date] = (dateTotalsLive[date] || 0) + tot
-      })
-    }
-    // 버튼 DOM 갱신
-    document.querySelectorAll('.detail-toggle-btn[data-date]').forEach(btn => {
-      const date = btn.dataset.date
-      const hasAmt = (dateTotalsLive[date] || 0) > 0
-      const isOpenNow = btn.textContent.trim().startsWith('▲') || btn.querySelector('.detail-arrow')?.textContent === '▲'
-      btn.dataset.hasamt = hasAmt ? '1' : '0'
-      if (!isOpenNow) {
-        // 닫힌 상태에서만 색상 반영 (열린 상태는 #64748b 유지)
-        const todayStr2 = window._ordersBudget?.todayStr || ''
-        const isToday2 = date === todayStr2
-        if (hasAmt) {
-          btn.style.background = '#2563eb'
-          btn.style.color = 'white'
-        } else if (isToday2) {
-          btn.style.background = '#16a34a'
-          btn.style.color = 'white'
-        } else {
-          btn.style.background = '#e5e7eb'
-          btn.style.color = '#6b7280'
-        }
-      }
-    })
-  })()
 }
+
+// ────────────────────────────────────────────────────────────────
+// 7) _updateBPMealPrice: 실시간 식단가 업데이트
+// ────────────────────────────────────────────────────────────────
+function _updateBPMealPrice(cache) {
+  if (!cache) return
+  const { monthTotal, allOrdersMonthTotal } = cache
+  const ms = window._ordersMealStats
+  if (!ms) return
+
+  // ★ 전체 발주 합계 (food + supply + card + event 모두 포함)
+  // hasCats 모드에서 monthTotal은 supply/card/event를 제외한 식재료비만이므로
+  // mp1(운영비 포함) 계산에는 allOrdersMonthTotal 사용 필요
+  const totalAllOrders = allOrdersMonthTotal || monthTotal
+
+  // 소모품/카드 업체 합계 (map 캐시 활용)
+  const supplyTotal = (ms.vendors || [])
+    .filter(v2 => v2.category === 'supply' || v2.category === 'card')
+    .reduce((s, v2) => {
+      const vInputs = document.querySelectorAll(`.order-input[data-vendor="${v2.id}"]`)
+      let vTotal = 0
+      const seen = new Set()
+      vInputs.forEach(inp => {
+        const date = inp.dataset.date
+        if (seen.has(date)) return; seen.add(date)
+        const tx = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${v2.id}"][data-type="taxable"][data-date="${date}"]`)?.value)
+        const ex = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${v2.id}"][data-type="exempt"][data-date="${date}"]`)?.value)
+        vTotal += tx + Math.round(tx*0.1) + ex
+      })
+      return s + vTotal
+    }, 0)
+
+  const customFields4price = (ms.mealCustomFields || []).filter(f => (f.unit_type||'meal') !== 'ea')
+  // ★ customMealSum: mealCustomFields에 있는 모든 식수 합산 (meals_include_keys 필터 무시)
+  // → 서버에서 mealCustomFields는 전체 커스텀 필드 목록이므로 합산하면 전체 식수가 됨
+  const customMealSum = customFields4price.reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
+  const staffCustomMealSum = customFields4price
+    .filter(f => f.field_key.startsWith('st_key_') || f.field_key.startsWith('diet_preset_staff_'))
+    .reduce((s, f) => s + (Number((ms.mealCustomTotals||{})[f.field_key]) || 0), 0)
+  // ★ totalMealsForPrice: 전체 식수 (직원+보호자+모든 환자군 커스텀) — 대표/운영반영 식단가 분모
+  // dietPrices.totalMeals(서버)와 동일하게 meals_include_keys 필터 없이 전체 합산
+  const totalMealsForPrice = customMealSum
+  const mealsNoStaff = customMealSum - staffCustomMealSum
+
+  // ★ API에서 받은 전체 식수 (서버 계산값 — 가장 정확, 있으면 우선 사용)
+  const apiTotalMeals = ms.apiTotalMeals || 0
+  // 최종 분모: API 서버값 우선, 없으면 프론트 계산값
+  const basisMeals = apiTotalMeals > 0 ? apiTotalMeals : totalMealsForPrice
+
+  const apiBase = ms.apiTotalUsed || 0
+  const apiMp1 = ms.apiMealPriceTotal || 0
+  const apiMp2 = ms.apiMealPriceNoStaff || 0
+  const apiMp3 = ms.apiMealPriceNoSupply || 0
+  const apiSupplyUsed = ms.apiSupplyUsed || 0
+  let mp1, mp2, mp3
+  if (apiBase > 0 && apiMp1 > 0 && totalAllOrders > 0) {
+    // ★ mp1(운영비 포함): 전체 발주 합계(allOrdersMonthTotal) 기준으로 비율 계산
+    // mp2(직원식 제외): 전체 발주 기준 동일 ratio 적용
+    // mp3(소모품 제외): 소모품 차감 후 금액 기준으로 별도 계산
+    const ratioAll = totalAllOrders / apiBase  // 전체 발주 기준 ratio (mp1, mp2용)
+    mp1 = Math.round(apiMp1 * ratioAll)
+    mp2 = Math.round(apiMp2 * ratioAll)
+    const apiNoSupplyBase = apiBase - apiSupplyUsed
+    const curNoSupply = totalAllOrders - supplyTotal
+    mp3 = apiNoSupplyBase > 0 ? Math.round(apiMp3 * curNoSupply / apiNoSupplyBase) : Math.round(apiMp3 * ratioAll)
+  } else if (basisMeals > 0) {
+    // ★ fallback: basisMeals(전체 식수) 기준으로 계산
+    mp1 = Math.round(totalAllOrders / basisMeals)
+    mp2 = mealsNoStaff > 0 ? Math.round(totalAllOrders / mealsNoStaff) : 0
+    mp3 = Math.round((totalAllOrders - supplyTotal) / basisMeals)
+  } else { mp1 = 0; mp2 = 0; mp3 = 0 }
+
+  // ★ 대표 식단가 (식재료비 기준)
+  // 기준 통일: 1순위 서버 계산값(cb.foodDietPrice), 2순위 프론트 실시간 fallback
+  // → 동일 병원/동일 월에서 월별 대시보드와 발주 화면의 대표 식단가가 100% 일치
+  const _cbLive = window._bpCostBreakdown
+  const _serverFoodDP = _cbLive?.foodDietPrice || 0   // ① 서버 계산값 (항상 우선)
+
+  // ② 프론트 실시간 fallback: 입력 중 변경분 반영 (서버값 없을 때만 또는 월 총액이 달라진 경우)
+  // 서버 food.used 대비 현재 입력 총액의 비율로 스케일링
+  const _serverFoodUsed = _cbLive?.food?.used || 0
+  const _serverTotalMeals = _cbLive ? (totalMealsForPrice || 0) : 0
+  const foodVendorTotal = (ms.vendors || [])
+    .filter(v2 => {
+      const vCostType = v2.cost_type_default || v2.cost_type || (window._bpCostBreakdown?.foodVendorIds?.includes(v2.id) ? 'food' : null)
+      if (vCostType) return vCostType === 'food'
+      // cost_type 미확정 업체: supply/card/event가 아닌 경우 food로 간주
+      return v2.category !== 'supply' && v2.category !== 'card' && v2.category !== 'event'
+    })
+    .reduce((s, v2) => {
+      const vInputs = document.querySelectorAll(`.order-input[data-vendor="${v2.id}"]`)
+      let vTotal = 0
+      const seen = new Set()
+      vInputs.forEach(inp => {
+        const date = inp.dataset.date
+        if (seen.has(date)) return; seen.add(date)
+        const totDirEl = document.querySelector(`input.order-input[data-vendor="${v2.id}"][data-type="total"][data-date="${date}"]`)
+        if (totDirEl) {
+          vTotal += parseOrderVal(totDirEl.value)
+        } else {
+          const tx = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${v2.id}"][data-type="taxable"][data-date="${date}"]`)?.value)
+          const ex = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${v2.id}"][data-type="exempt"][data-date="${date}"]`)?.value)
+          vTotal += tx + Math.round(tx*0.1) + ex
+        }
+      })
+      return s + vTotal
+    }, 0)
+  // 프론트 실시간 계산값 (순수 fallback) — basisMeals(전체 식수) 기준
+  const _frontFoodDP = basisMeals > 0 ? Math.round(foodVendorTotal / basisMeals) : 0
+  // 최종: 1순위 서버값, 서버값 없으면 프론트 계산값
+  const foodDPLive = _serverFoodDP > 0 ? _serverFoodDP : _frontFoodDP
+  // ★ 목표 식단가: ref_meal_price(관리자 직접 입력) 우선, 없으면 apiSettings.meal_price 폴백
+  const tgtPLive = window._catDietPricesData?.[0]?.refMealPrice || window._ordersMealStats?.apiSettings?.meal_price || 0
+
+  // 대표 식단가 카드 실시간 업데이트
+  const repDPEl = document.getElementById('repDietPrice-val')
+  const repDPState = document.getElementById('repDietPrice-state')
+  const repDPDiff = document.getElementById('repDietPrice-diff')
+  if (repDPEl && (foodDPLive > 0 || tgtPLive > 0)) {
+    repDPEl.innerHTML = `${foodDPLive > 0 ? fmt(foodDPLive) : '-'}<span class="text-sm font-normal text-gray-400 ml-1">원/식</span>`
+    const sc = foodDPLive > 0 && tgtPLive > 0
+      ? (foodDPLive > tgtPLive * 1.1 ? '#b91c1c' : foodDPLive > tgtPLive ? '#dc2626' : foodDPLive > tgtPLive * 0.95 ? '#d97706' : '#16a34a')
+      : '#374151'
+    repDPEl.style.color = sc
+    if (repDPState) {
+      const sl = foodDPLive > 0 && tgtPLive > 0
+        ? (foodDPLive > tgtPLive * 1.1 ? '🚨 110% 초과' : foodDPLive > tgtPLive ? '🔴 목표 초과' : foodDPLive > tgtPLive * 0.95 ? '🟡 주의' : '🟢 목표 내')
+        : (tgtPLive > 0 ? '집계중' : '목표 미설정')
+      repDPState.textContent = sl
+      repDPState.style.background = sc + '18'; repDPState.style.color = sc
+    }
+    if (repDPDiff && tgtPLive > 0 && foodDPLive > 0) {
+      const diff = foodDPLive - tgtPLive
+      repDPDiff.innerHTML = diff > 0 ? `▲ +${fmt(diff)}원 초과` : `▼ ${fmt(Math.abs(diff))}원 절감`
+      repDPDiff.style.color = sc
+    } else if (repDPDiff) { repDPDiff.innerHTML = '' }
+  }
+
+  const mp1El = document.getElementById('mpVal-total')
+  const mp2El = document.getElementById('mpVal-nostaff')
+  const mp3El = document.getElementById('mpVal-nosupply')
+  const mpDiffEl = document.getElementById('mpDiff-total')
+  const mpCardEl = document.getElementById('mpCard-total')
+  const mealCountEl = document.getElementById('realMealCount')
+  const totalMeals = ms.totalMeals || (ms.totalPatient||0) + (ms.totalStaff||0) + (ms.totalGuardian||0)
+  if (mealCountEl) mealCountEl.textContent = fmt(totalMeals)
+
+  // ★ 기준 식수 표시 업데이트 (전체 식수 기준 명확히 표시)
+  const basisMealsEl = document.getElementById('repDietPrice-basisMeals')
+  if (basisMealsEl && basisMeals > 0) {
+    basisMealsEl.textContent = `기준 식수: 전체 ${fmt(basisMeals)}식`
+    basisMealsEl.style.display = ''
+  }
+
+  if (basisMeals > 0) {
+    if (mp1El) mp1El.innerHTML = `${fmt(mp1)}<span class="text-xs font-normal ml-0.5">원/식</span>`
+    if (mp2El) mp2El.innerHTML = `${fmt(mp2)}<span class="text-xs font-normal ml-0.5">원/식</span>`
+    if (mp3El) mp3El.innerHTML = `${fmt(mp3)}<span class="text-xs font-normal ml-0.5">원/식</span>`
+    if (mpDiffEl) mpDiffEl.innerHTML = ''
+    if (mpCardEl) mpCardEl.className = 'rounded-xl p-3 bg-blue-50'
+  } else {
+    if (mp1El) mp1El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
+    if (mp2El) mp2El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
+    if (mp3El) mp3El.innerHTML = `<span class="text-gray-400 text-sm">식수 미입력</span>`
+  }
+
+  // 카테고리별 식단가
+  const catsListAll = window._patientCats || []
+  const catsList = catsListAll.filter(cat => {
+    const dcEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
+    if (dcEntry && (dcEntry.budgetKeys || []).length > 0) return true
+    const tmpS = (window._catOrderSettings || []).find(s => s.patient_category_id === cat.id) || {}
+    if ((tmpS.ref_meal_price || 0) > 0 || (tmpS.monthly_budget || 0) > 0) {
+      if (dcEntry) return false
+      return true
+    }
+    return false
+  })
+  if (catsList.length > 0) {
+    const budget2 = window._ordersBudget || {}
+    const todayStr3 = budget2?.todayStr || ''
+    const catSetMap3 = {}
+    ;(window._catOrderSettings || []).forEach(s => { catSetMap3[s.patient_category_id] = s })
+    const catKeyIdMap3 = {}
+    catsList.forEach(c2 => { catKeyIdMap3[c2.category_key] = c2.id })
+
+    catsList.forEach(cat => {
+      const s3 = catSetMap3[cat.id] || {}
+      const targetPrice3 = s3.ref_meal_price || s3.target_meal_price || 0
+      const catDietEntry = (window._catDietPricesData || []).find(d => d.id === cat.id)
+      const budgetKeys3 = catDietEntry?.budgetKeys || []
+      const mealsKeys3 = catDietEntry?.mealsKeys || []
+      const hasFormula3 = budgetKeys3.length > 0 || mealsKeys3.length > 0
+      const targetCatIds3 = new Set()
+      if (hasFormula3 && budgetKeys3.length > 0) {
+        budgetKeys3.forEach(bKey => { const bCatId = catKeyIdMap3[bKey]; if (bCatId !== undefined) targetCatIds3.add(String(bCatId)) })
+      } else { targetCatIds3.add(String(cat.id)) }
+
+      let catMonthAmtLive = 0
+      const dailyMapForCat = window._catDailyMap || {}
+      for (const dk3 in dailyMapForCat) {
+        const vMap3 = dailyMapForCat[dk3]
+        for (const vid3 in vMap3) {
+          const vendorObj3 = window._ordersVendorMap?.get(parseInt(vid3)) || (window._ordersVendors||[]).find(v=>v.id===parseInt(vid3))
+          if (!vendorObj3 || vendorObj3.is_card_type) continue
+          if (vendorObj3.category === 'supply' || vendorObj3.category === 'card' || vendorObj3.category === 'event') continue
+          const cMap3 = vMap3[vid3]
+          for (const cid3 in cMap3) {
+            if (targetCatIds3.has(String(cid3))) catMonthAmtLive += cMap3[cid3].total || 0
+          }
+        }
+      }
+      if (hasFormula3 && budgetKeys3.length > 0) catMonthAmtLive += (window._nullCatMonthlyAmt || 0)
+      const aep3 = window._activeEditPair
+      if (aep3 && targetCatIds3.has(String(aep3.catId))) {
+        const savedAmt3 = ((dailyMapForCat[aep3.date]||{})[aep3.vendorId]||{})[aep3.catId]?.total || 0
+        const tbody5 = document.getElementById('ordersTbody')
+        const sel5 = `.cat-order-input[data-vendor="${aep3.vendorId}"][data-category="${aep3.catId}"][data-date="${aep3.date}"]`
+        const tx5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="taxable"]`)?.value)
+        const ex5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="exempt"]`)?.value)
+        const tot5 = parseOrderVal(tbody5?.querySelector(`${sel5}[data-field="total"]`)?.value)
+        catMonthAmtLive += (tx5 > 0 || ex5 > 0 ? tx5 + Math.round(tx5*0.1) + ex5 : tot5) - savedAmt3
+      }
+
+      const orderMealStats = window._ordersMealStats?.mealCustomTotals || {}
+      const staffMeals3 = window._ordersMealStats?.totalStaff || 0
+      const guardianMeals3 = window._ordersMealStats?.totalGuardian || 0
+      let catMonthMeals = 0
+      if (hasFormula3 && mealsKeys3.length > 0) {
+        mealsKeys3.forEach(k => {
+          if (k === 'staff') { catMonthMeals += staffMeals3 }
+          else if (k.startsWith('st_key_')) { const dk2=k.replace('st_key_',''); const v2=orderMealStats['diet_'+dk2]||orderMealStats[dk2]||0; catMonthMeals += v2>0?v2:staffMeals3 }
+          else if (k === 'guardian') { catMonthMeals += guardianMeals3 }
+          else if (k.startsWith('cat_')) { catMonthMeals += (orderMealStats[k] || 0) }
+          else if (k.startsWith('nc_key_')) { const dk2=k.replace('nc_key_',''); const lk2=dk2.startsWith('legacy_')?'cat_'+dk2.replace('legacy_',''):null; catMonthMeals += (orderMealStats['diet_'+dk2]||orderMealStats[dk2]||(lk2?orderMealStats[lk2]:0)||0) }
+          else if (k.startsWith('th_key_')) { const dk2=k.replace('th_key_',''); const lk2=dk2.startsWith('legacy_')?'cat_'+dk2.replace('legacy_',''):null; catMonthMeals += (orderMealStats['diet_'+dk2]||orderMealStats[dk2]||(lk2?orderMealStats[lk2]:0)||0) }
+        })
+      } else { catMonthMeals = (orderMealStats[`cat_${cat.category_key}`] || 0) }
+
+      const catMealPrice = catMonthAmtLive > 0 && catMonthMeals > 0 ? Math.round(catMonthAmtLive / catMonthMeals) : 0
+      const color = getCategoryColorHex(cat.category_key)
+      const amtEl = document.getElementById(`cat-mp-amt-${cat.id}`)
+      const priceEl = document.getElementById(`cat-mp-price-${cat.id}`)
+      const diffEl = document.getElementById(`cat-mp-diff-${cat.id}`)
+      const mealsEl = document.getElementById(`cat-mp-meals-${cat.id}`)
+      if (amtEl) amtEl.textContent = catMonthAmtLive > 0 ? fmtMan(catMonthAmtLive) : (catDietEntry?.monthAmt > 0 ? fmtMan(catDietEntry.monthAmt) : '-')
+      if (mealsEl) mealsEl.textContent = catMonthMeals > 0 ? fmt(catMonthMeals)+'식' : '-'
+      if (priceEl) {
+        if (catMealPrice > 0) {
+          const isOver3 = targetPrice3 > 0 && catMealPrice > targetPrice3
+          const isWarn3 = targetPrice3 > 0 && catMealPrice >= targetPrice3*0.9 && !isOver3
+          priceEl.textContent = fmt(catMealPrice)
+          priceEl.style.color = isOver3 ? '#dc2626' : isWarn3 ? '#d97706' : color
+        } else { priceEl.innerHTML = `<span style="font-size:10px;color:#d1d5db">식수 미입력</span>` }
+      }
+      if (diffEl) {
+        if (catMealPrice > 0 && targetPrice3 > 0) {
+          const diff3 = catMealPrice - targetPrice3
+          diffEl.innerHTML = diff3 > 0
+            ? `<span style="color:#dc2626;font-size:10px">▲ +${fmt(diff3)}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice3)}원</div>`
+            : `<span style="color:#16a34a;font-size:10px">▼ ${fmt(Math.abs(diff3))}원</span><div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice3)}원</div>`
+        } else if (targetPrice3 > 0) {
+          diffEl.innerHTML = `<div style="font-size:8px;color:#9ca3af">목표: ${fmt(targetPrice3)}원</div>`
+        } else { diffEl.innerHTML = `<span style="font-size:9px;color:#d1d5db">미설정</span>` }
+      }
+    })
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+// 8) _updateBPDateButtons: 날짜 버튼 색상 업데이트
+// ────────────────────────────────────────────────────────────────
+function _updateBPDateButtons(cache) {
+  if (!cache) return
+  const { hasCats, todayStr } = cache
+  const dateTotalsLive = {}
+  if (hasCats) {
+    const seen = new Set()
+    document.querySelectorAll('.cat-order-input').forEach(inp => {
+      const date = inp.dataset.date, vendor = inp.dataset.vendor, field = inp.dataset.field
+      const key = `${date}-${vendor}-${field}`
+      if (seen.has(key)) return; seen.add(key)
+      const val = parseOrderVal(inp.value)
+      if (val === 0) return
+      const amt = field === 'taxable' ? val + Math.round(val * 0.1) : val
+      dateTotalsLive[date] = (dateTotalsLive[date] || 0) + amt
+    })
+  } else {
+    const seen = new Set()
+    document.querySelectorAll('.order-input').forEach(inp => {
+      const date = inp.dataset.date, vendor = inp.dataset.vendor
+      const key = `${date}-${vendor}`
+      if (seen.has(key)) return; seen.add(key)
+      const tx = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="taxable"][data-date="${date}"]`)?.value)
+      const ex = parseOrderVal(document.querySelector(`input.order-input[data-vendor="${vendor}"][data-type="exempt"][data-date="${date}"]`)?.value)
+      const tot = tx + Math.round(tx * 0.1) + ex
+      if (tot === 0) return
+      dateTotalsLive[date] = (dateTotalsLive[date] || 0) + tot
+    })
+  }
+  document.querySelectorAll('.detail-toggle-btn[data-date]').forEach(btn => {
+    const date = btn.dataset.date
+    const hasAmt = (dateTotalsLive[date] || 0) > 0
+    const isOpenNow = btn.textContent.trim().startsWith('▲') || btn.querySelector('.detail-arrow')?.textContent === '▲'
+    btn.dataset.hasamt = hasAmt ? '1' : '0'
+    if (!isOpenNow) {
+      const isToday2 = date === todayStr
+      if (hasAmt) { btn.style.background = '#2563eb'; btn.style.color = 'white' }
+      else if (isToday2) { btn.style.background = '#16a34a'; btn.style.color = 'white' }
+      else { btn.style.background = '#e5e7eb'; btn.style.color = '#6b7280' }
+    }
+  })
+}
+
+// ────────────────────────────────────────────────────────────────
+// 9) updateBudgetProgressPanel: 조율자 (메인 진입점)
+//    단계: 집계 → DOM초기화 → KPI(즉시) → 주차카드(즉시) → 나머지(지연)
+// ────────────────────────────────────────────────────────────────
+function updateBudgetProgressPanel() {
+  try {
+    const _t0 = performance.now()
+    const budget = window._ordersBudget
+    if (!budget) return
+
+    // DOM 카드 초기화 (최초 1회)
+    _ensureBPCards(budget.weeklyData, budget.totalBudget || 0)
+
+    // ① 집계 (단일 순회)
+    const cache = _calcBPTotals()
+    if (!cache) return
+    const _t1 = performance.now()
+
+    // ② KPI 카드 즉시 업데이트 (가장 빠른 경로)
+    _updateBPKpi(cache)
+
+    // ③ 주차 카드 즉시 업데이트
+    _updateBPWeekCards(cache)
+
+    const _t2 = performance.now()
+
+    // ④ 환자군 바 (debounce, 150ms)
+    clearTimeout(_bpKpiTimer)
+    _bpKpiTimer = setTimeout(() => {
+      try { _updateBPCatBars(cache) } catch(e) { console.warn('[BP] catBars 오류:', e) }
+    }, 150)
+
+    // ⑤ 식단가 업데이트 (debounce, 200ms)
+    clearTimeout(_bpWeekTimer)
+    _bpWeekTimer = setTimeout(() => {
+      try { _updateBPMealPrice(cache) } catch(e) { console.warn('[BP] mealPrice 오류:', e) }
+    }, 200)
+
+    // ⑥ 업체 카드 + tfoot (가장 무거움, 300ms 지연)
+    clearTimeout(_bpVendorTimer)
+    _bpVendorTimer = setTimeout(() => {
+      try {
+        _updateBPVendors(cache)
+        _updateBPDateButtons(cache)
+      } catch(e) { console.warn('[BP] vendors 오류:', e) }
+    }, 300)
+
+    // ⑦ insightPanel은 독립적으로 지연 실행
+    // (updateBudgetProgressPanel 내에서 동기 호출 제거 → 별도 debounce)
+
+    const _t3 = performance.now()
+    if (window._ordersPerf) {
+      console.log(`[BP] 집계:${(_t1-_t0).toFixed(1)}ms KPI+주차:${(_t2-_t1).toFixed(1)}ms 예약:${(_t3-_t2).toFixed(1)}ms`)
+    }
+  } catch(e) {
+    console.warn('[updateBudgetProgressPanel] 오류 발생(무시):', e)
+  }
+}
+
+
 
 // ── 인사이트 패널: 월 예산 예측 + 업체 비중 + 식단가 경고 ──────
 window.toggleInsightPanel = function() {
@@ -7098,11 +9285,24 @@ function updateInsightPanel() {
 
     // ── 테이블 뷰 (상세) ──
     if (vendorShareEl) {
+      // 업체 집중도 한줄 요약
+      const top1pct = sortedVendors.length > 0 && grandV > 0
+        ? Math.round(sortedVendors[0].amt / grandV * 100) : 0
+      const top3sum = sortedVendors.slice(0,3).reduce((s,v)=>s+v.amt,0)
+      const top3pctV = grandV > 0 ? Math.round(top3sum/grandV*100) : 0
+      const concSummary = grandV > 0 ? `<div style="font-size:9px;padding:4px 6px;border-radius:6px;margin-bottom:5px;background:${top3pctV>=70?'#fef3c7':'#f0fdf4'};color:${top3pctV>=70?'#b45309':'#166534'}">
+        <i class="fas fa-info-circle" style="margin-right:3px"></i>
+        상위 3개 업체 집중도 <strong>${top3pctV}%</strong>${top3pctV>=70?' — 발주 분산 검토 권장':''}
+        ${top1pct>=50?`· <strong>${sortedVendors[0]?.name}</strong> 단독 ${top1pct}% 집중`:''}
+      </div>` : ''
+
       vendorShareEl.innerHTML = grandV > 0 ? `
+        ${concSummary}
         <table style="width:100%;font-size:9px;border-collapse:collapse">
           <thead><tr style="background:#dbeafe;color:#1d4ed8">
             <th style="padding:3px 4px;text-align:left">순위</th>
             <th style="padding:3px 4px;text-align:left">업체</th>
+            <th style="padding:3px 4px;text-align:left">구분</th>
             <th style="padding:3px 4px;text-align:right">발주금액</th>
             <th style="padding:3px 4px;text-align:right">비중</th>
             <th style="padding:3px 4px;text-align:right">목표대비</th>
@@ -7113,9 +9313,23 @@ function updateInsightPanel() {
               const budgetPct = CALC_ENGINE.calcBudgetPct(v.amt, v.monthly_budget) || null // ✅ CALC_ENGINE
               const budColor = budgetPct === null ? '#9ca3af' : CALC_ENGINE.getBudgetColor(budgetPct)
               const rankEmoji = rank===0?'🥇':rank===1?'🥈':rank===2?'🥉':`${rank+1}`
+              const catLabel = getCategoryLabel(v.category)
+              const isOperating = ['supply','event','card','utility'].includes(v.category)
+              const costBadge = isOperating
+                ? `<span style="font-size:8px;background:#fef3c7;color:#92400e;padding:1px 3px;border-radius:3px">운영비</span>`
+                : `<span style="font-size:8px;background:#dcfce7;color:#14532d;padding:1px 3px;border-radius:3px">식재료</span>`
+              const budStatus = budgetPct !== null
+                ? `<span style="color:${budColor};font-weight:700">${budgetPct}%</span>`
+                : `<span style="color:#9ca3af">-</span>`
               return `<tr style="border-bottom:1px solid #eff6ff">
                 <td style="padding:3px 4px;text-align:center;font-weight:700">${rankEmoji}</td>
-                <td style="padding:3px 4px;font-weight:700;color:${v.color};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60px" title="${v.name}">${v.name}</td>
+                <td style="padding:3px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70px">
+                  <div style="font-weight:700;color:${v.color}" title="${v.name}">${v.name}</div>
+                </td>
+                <td style="padding:3px 4px;white-space:nowrap">
+                  <div style="font-size:8px;color:#6b7280">${catLabel}</div>
+                  ${costBadge}
+                </td>
                 <td style="padding:3px 4px;text-align:right;color:#1f2937;font-weight:600">${fmtMan(v.amt)}</td>
                 <td style="padding:3px 4px;text-align:right">
                   <div style="display:flex;align-items:center;gap:2px;justify-content:flex-end">
@@ -7125,7 +9339,7 @@ function updateInsightPanel() {
                     <span style="color:${v.color};font-weight:700">${pct}%</span>
                   </div>
                 </td>
-                <td style="padding:3px 4px;text-align:right;color:${budColor};font-weight:700">${budgetPct !== null ? `${budgetPct}%` : '-'}</td>
+                <td style="padding:3px 4px;text-align:right">${budStatus}</td>
               </tr>`
             }).join('')}
           </tbody>
@@ -7329,13 +9543,18 @@ function updateDayTotal(date) {
     ;(window._ordersVendors || []).filter(v => v.is_card_type).forEach(v => {
       cardTotalForDay += (window._cardDailyMap?.[v.id]?.[date]) || 0
     })
+    // 소모품/이벤트 업체 금액 (_supplyDailyMap에서 별도 합산, catTotals에 미포함)
+    let supplyEventTotalForDay = 0
+    ;(window._ordersVendors || []).filter(v => !v.is_card_type && (v.category === 'supply' || v.category === 'event')).forEach(v => {
+      supplyEventTotalForDay += (window._supplyDailyMap?.[v.id]?.[date]) || 0
+    })
     // 단일 카테고리: 법인카드 금액을 해당 카테고리(catTotals)에 포함 → grandTotal에 중복 추가 안 함
     // 복수 카테고리: 법인카드 카테고리 귀속 불명확 → 별도 합산
     const isSingleCatU = patientCats.length === 1
     if (isSingleCatU && patientCats[0]) {
       catTotals[patientCats[0].id] = (catTotals[patientCats[0].id] || 0) + cardTotalForDay
     }
-    const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0) + (isSingleCatU ? 0 : cardTotalForDay)
+    const grandTotal = Object.values(catTotals).reduce((a,b)=>a+b,0) + (isSingleCatU ? 0 : cardTotalForDay) + supplyEventTotalForDay
 
     const budget = window._ordersBudget
     const row = document.querySelector(`tr.order-summary-row[data-date="${date}"]`) || document.querySelector(`tr[data-date="${date}"]`)
@@ -7791,11 +10010,13 @@ async function renderMeals() {
     </div>
   </div>`
 
-  // 식수 데이터 + 카테고리 발주 합계 병렬 로드
+  // 식수 데이터 + 카테고리 발주 합계 + 공휴일 병렬 로드
   const [resp, catOrderData] = await Promise.all([
     api('GET', `/api/meals/${App.currentYear}/${App.currentMonth}`),
     api('GET', `/api/orders/category-monthly/${App.currentYear}/${App.currentMonth}`)
   ])
+  // 공휴일 데이터 로드 (날짜 빨간색 표시용, 캐시 활용)
+  await loadPublicHolidays(App.currentYear, App.currentMonth)
   if (!resp) return
 
   // 구버전(배열) 호환
@@ -7875,14 +10096,39 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   // staff:      st_key_{diet_key}
   const getMealsKey = (dc) => {
     const dk = dc.diet_key
+    const lk = dc.legacy_field_key  // ex) 'diet_preset_nc_guardian_1', 'cat_cancer', 'diet_preset_therapy_other_1'
     if (dc.parent_type === 'patient') {
-      // legacy_field_key가 cat_xxx 형태이면 그대로 사용 (예: legacy_cancer → cat_cancer)
-      if (dc.legacy_field_key) return dc.legacy_field_key
+      // legacy_field_key가 cat_xxx 형태이면 그대로 사용 (예: cat_cancer)
+      if (lk) return lk
       return `cat_${dk}`
     }
-    if (dc.parent_type === 'therapy')    return `th_key_${dk}`
-    if (dc.parent_type === 'noncovered') return `nc_key_${dk}`
-    if (dc.parent_type === 'staff')      return `st_key_${dk}`
+    if (dc.parent_type === 'therapy') {
+      // legacy_field_key가 있으면 th_key_{legacy_field_key}로 매핑
+      // ex) legacy='diet_preset_therapy_other_1' → th_key_diet_preset_therapy_other_1
+      // meals_include_keys에는 'th_key_preset_therapy_other_1' 같은 패턴도 있으므로
+      // legacy_field_key의 'diet_' prefix 제거 후 th_key_ prefix 붙이기
+      if (lk) {
+        const lkNoPrefix = lk.startsWith('diet_') ? lk.slice(5) : lk
+        return `th_key_${lkNoPrefix}`
+      }
+      return `th_key_${dk}`
+    }
+    if (dc.parent_type === 'noncovered') {
+      // ex) legacy='diet_preset_nc_guardian_1' → nc_key_preset_nc_guardian_1
+      if (lk) {
+        const lkNoPrefix = lk.startsWith('diet_') ? lk.slice(5) : lk
+        return `nc_key_${lkNoPrefix}`
+      }
+      return `nc_key_${dk}`
+    }
+    if (dc.parent_type === 'staff') {
+      // ex) legacy='diet_preset_staff_regular_1' → st_key_preset_staff_regular_1
+      if (lk) {
+        const lkNoPrefix = lk.startsWith('diet_') ? lk.slice(5) : lk
+        return `st_key_${lkNoPrefix}`
+      }
+      return `st_key_${dk}`
+    }
     return `cat_${dk}`
   }
 
@@ -7966,7 +10212,7 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
 
   // 총 식수: ea 제외 + 관리자 meals_include_keys 설정(inMealsFormula) 기준
   const customTotalForMeals = effectiveCustomFields
-    .filter(f => f.unit_type !== 'ea' && f.inMealsFormula)
+    .filter(f => f.unit_type !== 'ea' && (f.inMealsFormula || f.parent_type === 'therapy'))
     .reduce((s, f) => s + (monthTotal.custom[f.field_key] || 0), 0)
   const grandTotal = customTotalForMeals
 
@@ -8013,9 +10259,30 @@ function renderMealsContent(content, mealData, customFields, patientCats, dietCa
   content.innerHTML = `
   ${_mealsReadOnly ? readOnlyBanner() : ''}
   <!-- 월 합계 요약 카드 -->
-  <div class="flex flex-wrap gap-2 mb-4" id="mealSummaryCards">
+  <div class="flex flex-wrap gap-2 mb-2" id="mealSummaryCards">
     ${buildMealSummaryCards(monthTotal, effectiveCustomFields, grandTotal, patientGroupStructure, unlinkedTherapies, noncoveredDefs, staffDefs)}
   </div>
+
+  <!-- 식수 증감 비용 영향 한줄 노트 -->
+  ${(() => {
+    const prevData = window._dashboardData?.prevMonth
+    const prevMeals = prevData?.totalMeals || 0
+    const curMeals  = grandTotal || 0
+    if (!prevData || prevMeals <= 0 || curMeals <= 0) return ''
+    const diff = curMeals - prevMeals
+    const pct  = prevMeals > 0 ? ((diff / prevMeals) * 100).toFixed(1) : 0
+    const repPrice = DIET_CALC.extractDietPrices(window._dashboardData).representative || 0
+    const costImpact = repPrice > 0 ? Math.round(diff * repPrice) : 0
+    if (Math.abs(diff) < 10) return ''
+    const sign = diff > 0 ? '+' : ''
+    const impactText = costImpact !== 0
+      ? ` → 대표 식단가(${repPrice.toLocaleString()}원) 기준 비용 ${costImpact>0?'증가':'감소'} <strong>${Math.abs(costImpact).toLocaleString()}원</strong>`
+      : ''
+    return `<div class="mb-3 px-3 py-2 rounded-xl border text-xs" style="background:${diff>0?'#fef3c7':'#f0fdf4'};border-color:${diff>0?'#fde68a':'#bbf7d0'};color:${diff>0?'#92400e':'#166534'}">
+      <i class="fas fa-users mr-1"></i>
+      전월 대비 식수 <strong>${sign}${diff.toLocaleString()}식 (${sign}${pct}%)</strong>${impactText}
+    </div>`
+  })()}
 
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
@@ -8288,8 +10555,8 @@ function buildMealPricePanel(patientCats, customFields, mealData) {
     const mealPrice = totalMealsForPrice > 0 ? Math.round(monthBudget / totalMealsForPrice) : 0
     // 환자군만 기준 식단가 (환자군 식수만으로)
     const mealPriceCatOnly = catMeals > 0 ? Math.round(monthBudget / catMeals) : 0
-    // ★★★ KPI 고정 기준: target_meal_price (사용자 직접 입력값) 우선
-    const catTargetMealPrice = s.target_meal_price || s.ref_meal_price || 0
+    // ★★★ KPI 고정 기준: ref_meal_price (관리자 직접 입력값) 우선, target_meal_price (예산역산값) fallback
+    const catTargetMealPrice = s.ref_meal_price || s.target_meal_price || 0
     const priceDiff = catTargetMealPrice > 0 ? mealPrice - catTargetMealPrice : null
     const priceDiffPct = catTargetMealPrice > 0 && priceDiff !== null ? parseFloat((priceDiff / catTargetMealPrice * 100).toFixed(1)) : null
     const isDanger = catTargetMealPrice > 0 && mealPrice >= catTargetMealPrice * 1.1
@@ -8364,7 +10631,9 @@ function buildMealRow(day, mealMap, customFields, colCount) {
   const dateStr = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`
   const m = mealMap[dateStr] || {}
   const cd = m._custom || {}
-  const rowClass = dow==='일'?'holiday-row':weekend?'weekend-row':''
+  const isHoliday = isPublicHoliday(dateStr)  // 법정 공휴일 여부
+  const isRedDay = dow==='일' || isHoliday     // 일요일 또는 공휴일 → 빨간색
+  const rowClass = isRedDay?'holiday-row':weekend?'weekend-row':''
 
   const bp=m.breakfast_patient||0, bs=m.breakfast_staff||0, bn=m.breakfast_noncovered||0, bg2=m.breakfast_guardian||0
   const lp=m.lunch_patient||0, ls=m.lunch_staff||0, ln=m.lunch_noncovered||0, lg=m.lunch_guardian||0
@@ -8381,8 +10650,9 @@ function buildMealRow(day, mealMap, customFields, colCount) {
     inMealsFormula: f.inMealsFormula !== undefined ? f.inMealsFormula : true,
   }))
 
-  // 소계/합계: 관리자 meals_include_keys(inMealsFormula) 기준으로 통일
-  const cValsForGrand = cVals.filter(c => c.inMealsFormula)
+  // 소계/합계: 관리자 meals_include_keys(inMealsFormula) 기준 + 치료식은 항상 포함
+  // 치료식(therapy)은 inMealsFormula 설정 여부와 관계없이 소계/합계에 반드시 포함
+  const cValsForGrand = cVals.filter(c => c.inMealsFormula || c.parent_type === 'therapy')
   const bfSum = cValsForGrand.reduce((s,c)=>s+c.bf,0)
   const lSum  = cValsForGrand.reduce((s,c)=>s+c.l,0)
   const dSum  = cValsForGrand.reduce((s,c)=>s+c.d,0)
@@ -8423,10 +10693,12 @@ function buildMealRow(day, mealMap, customFields, colCount) {
   })
   cells += `<td class="font-bold text-center bg-blue-100 text-blue-900" id="t-total-${dateStr}" style="border:2px solid #93c5fd;border-left:3px solid #6b7280">${tGrand||''}</td>`
 
-  const dayBg = dow==='일' ? '#fee2e2' : dow==='토' ? '#fef9c3' : 'white'
+  const dayBg = isRedDay ? '#fee2e2' : dow==='토' ? '#fef9c3' : 'white'
+  const dayNumColor = isRedDay ? '#ef4444' : dow==='토' ? '#2563eb' : '#374151'
+  const dowColor = isRedDay ? 'text-red-600 font-bold' : dow==='토' ? 'text-blue-600 font-bold' : ''
   return `<tr class="${rowClass}" data-date="${dateStr}">
-    <td class="font-semibold text-center meal-sticky-left" style="position:sticky;left:0;z-index:5;background:${dayBg};border:1px solid #d1d5db;width:26px;min-width:26px;max-width:26px;font-size:11px;padding:3px 1px">${day}</td>
-    <td class="text-center meal-sticky-dow ${dow==='토'?'text-blue-600 font-bold':dow==='일'?'text-red-600 font-bold':''}" style="position:sticky;left:26px;z-index:5;background:${dayBg};border:1px solid #d1d5db;width:20px;min-width:20px;max-width:20px;font-size:11px;padding:3px 1px">${dow}</td>
+    <td class="font-semibold text-center meal-sticky-left" style="position:sticky;left:0;z-index:5;background:${dayBg};border:1px solid #d1d5db;width:26px;min-width:26px;max-width:26px;font-size:11px;padding:3px 1px;color:${dayNumColor}">${day}${isHoliday&&dow!=='일'?'<div style="font-size:7px;color:#ef4444;font-weight:700">휴</div>':''}</td>
+    <td class="text-center meal-sticky-dow ${dowColor}" style="position:sticky;left:26px;z-index:5;background:${dayBg};border:1px solid #d1d5db;width:20px;min-width:20px;max-width:20px;font-size:11px;padding:3px 1px">${dow}</td>
     ${cells}
   </tr>`
 }
@@ -8443,8 +10715,9 @@ function buildMealFooter(mealData, customFields, monthTotal, grandTotal, colCoun
       cD[f.field_key]  += cd[f.field_key]?.d||0
     })
   })
-  // 소계: 관리자 meals_include_keys(inMealsFormula) 기준으로 통일
-  const cfFiltered = customFields.filter(f => f.inMealsFormula !== false)
+  // 소계: 관리자 meals_include_keys(inMealsFormula) 기준 + 치료식은 항상 포함
+  // 치료식(therapy)은 inMealsFormula 설정 여부와 관계없이 소계/합계에 반드시 포함
+  const cfFiltered = customFields.filter(f => f.inMealsFormula !== false || f.parent_type === 'therapy')
   const bfTotal = cfFiltered.reduce((s,f)=>s+cBf[f.field_key],0)
   const lTotal  = cfFiltered.reduce((s,f)=>s+cL[f.field_key],0)
   const dTotal  = cfFiltered.reduce((s,f)=>s+cD[f.field_key],0)
@@ -9009,8 +11282,9 @@ function updateMealRowTotals(date) {
     const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
     customTotals[f.field_key] = bfv+lv+dv
   })
-  // 소계/합계: 관리자 meals_include_keys(inMealsFormula) 기준으로 통일
-  const cfFiltered = cf.filter(f => f.inMealsFormula !== false)
+  // 소계/합계: 관리자 meals_include_keys(inMealsFormula) 기준 + 치료식은 항상 포함
+  // 치료식(therapy)은 inMealsFormula 설정 여부와 관계없이 소계/합계에 반드시 포함
+  const cfFiltered = cf.filter(f => f.inMealsFormula !== false || f.parent_type === 'therapy')
   cfFiltered.forEach(f => {
     const bfv=g(`bf_c_${f.field_key}`), lv=g(`l_c_${f.field_key}`), dv=g(`d_c_${f.field_key}`)
     bfC+=bfv; lC+=lv; dC+=dv
@@ -9054,9 +11328,9 @@ function updateMealSummaryCards() {
       bfC[f.field_key]+=bfv; lC[f.field_key]+=lv; dC[f.field_key]+=dv
     })
   })
-  // 총식수: 관리자 meals_include_keys(inMealsFormula) 기준
+  // 총식수: 관리자 meals_include_keys(inMealsFormula) 기준 + 치료식 항상 포함
   const grand = cf
-    .filter(f => f.inMealsFormula !== false)
+    .filter(f => f.inMealsFormula !== false || f.parent_type === 'therapy')
     .reduce((s, f) => s + (customSums[f.field_key] || 0), 0)
 
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=fmt(v) }
@@ -9078,8 +11352,9 @@ function updateMealSummaryCards() {
     })
   }
 
-  // 하단 footer 행 실시간 업데이트: 소계/합계 모두 관리자 meals_include_keys(inMealsFormula) 기준
-  const cfFiltered = cf.filter(f => f.inMealsFormula !== false)
+  // 하단 footer 행 실시간 업데이트: 소계/합계 기준 + 치료식은 항상 포함
+  // 치료식(therapy)은 inMealsFormula 설정 여부와 관계없이 소계/합계에 반드시 포함
+  const cfFiltered = cf.filter(f => f.inMealsFormula !== false || f.parent_type === 'therapy')
   const bfTotal = cfFiltered.reduce((s,f)=>s+bfC[f.field_key],0)
   const lTotal  = cfFiltered.reduce((s,f)=>s+lC[f.field_key],0)
   const dTotal  = cfFiltered.reduce((s,f)=>s+dC[f.field_key],0)
@@ -10075,33 +12350,52 @@ async function renderAnalysis(selectedHospitalId = null, activeTab = 'annual') {
     type:'line', data:{
       labels:months,
       datasets:[
-        { label:'전체식단가', data:mpTotalByMonth, borderColor:'#2563eb', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
-        // 카테고리 2개 이상: 카테고리별 식단가 추이 추가
+        // ① 대표 식단가 (식재료 기준 = 소모품·운영비 제외) — 굵은 실선
+        { label:'대표 식단가(식재료)', data:mpNoSupplyByMonth, borderColor:'#1d4ed8', borderWidth:2.5, pointRadius:4, fill:false, tension:0.3, yAxisID:'y' },
+        // ② 운영반영 식단가 (전체 발주 기준) — 파선
+        { label:'운영반영 식단가', data:mpTotalByMonth, borderColor:'#7c3aed', borderWidth:1.5, pointRadius:3, fill:false, tension:0.3, borderDash:[4,3], yAxisID:'y' },
+        // 카테고리 2개 이상: 카테고리별 식단가 추이 / 카테고리 1개: 직원제외 라인
         ...(() => {
           if (annualCatPrices.length < 2) return [
-            { label:'직원제외',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
-            { label:'소모품제외', data:mpNoSupplyByMonth, borderColor:'#f59e0b', borderWidth:2, pointRadius:4, fill:false, tension:0.3 },
+            { label:'직원제외',   data:mpNoStaffByMonth, borderColor:'#9333ea', borderWidth:1.5, pointRadius:3, fill:false, tension:0.3, borderDash:[6,3], yAxisID:'y' },
           ]
-          const catColors = ['#059669','#7c3aed','#db2777','#b45309','#0891b2']
+          const catColors = ['#059669','#db2777','#b45309','#0891b2']
           return [
-            ...annualCatPrices.filter(c=>(c.budgetKeys||[]).length>0 || c.catIncludeSupply || c.catIncludeCard).slice(0,3).map((cat,ci) => ({
+            ...annualCatPrices.filter(c=>(c.budgetKeys||[]).length>0 || c.catIncludeSupply || c.catIncludeCard).slice(0,2).map((cat,ci) => ({
               label: cat.category_name + (cat.catIncludeSupply?'(소모품)':'') + (cat.catIncludeCard?'(카드)':''),
               data: Array(12).fill(0).map((_,i) => {
                 const md = (cat.monthlyDietPrices||[]).find(d=>d.month===i+1)||{}
                 return md.dietPrice || 0
               }),
               borderColor: catColors[ci % catColors.length],
-              borderWidth: 2, pointRadius: 3, fill: false, tension: 0.3, borderDash: [4,2]
+              borderWidth: 2, pointRadius: 3, fill: false, tension: 0.3, borderDash: [4,2], yAxisID:'y'
             })),
-            { label:'총운영원가', data:mpOperatingByMonth, borderColor:'#0f766e', borderWidth:1.5, pointRadius:3, fill:false, tension:0.3, borderDash:[6,3] }
+            { label:'총운영원가', data:mpOperatingByMonth, borderColor:'#0f766e', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[6,3], yAxisID:'y' }
           ]
         })(),
-        { label:`${parseInt(App.currentYear)-1}년 식단가`, data:prevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[5,3] },
-        { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4] }
+        { label:`${parseInt(App.currentYear)-1}년 식단가`, data:prevYearMp, borderColor:'#94a3b8', borderWidth:1.5, pointRadius:2, fill:false, tension:0.3, borderDash:[5,3], yAxisID:'y' },
+        { label:'목표식단가', data:targetMpByMonth, borderColor:'#ef4444', borderWidth:1.5, pointRadius:0, fill:false, borderDash:[8,4], yAxisID:'y' },
+        // ③ 총 식수 추이 (보조 Y축) — 막대 그래프로 배경 표시
+        { label:'총 식수(식)', data:mealsByMonth, type:'bar', backgroundColor:'rgba(14,165,233,0.12)', borderColor:'rgba(14,165,233,0.35)', borderWidth:1, borderRadius:4, yAxisID:'y2' },
       ]
     },
-    options:{ responsive:true, plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
-      scales:{ y:{ ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`} } } },
+    options:{
+      responsive:true,
+      plugins:{ legend:{ labels:{boxWidth:12,font:{size:10}} } },
+      scales:{
+        y:{
+          type:'linear', position:'left',
+          ticks:{callback:v=>`${(v/1000).toFixed(1)}천원`, font:{size:10}},
+          title:{display:true,text:'식단가(원/식)',font:{size:9},color:'#6b7280'}
+        },
+        y2:{
+          type:'linear', position:'right',
+          grid:{drawOnChartArea:false},
+          ticks:{callback:v=>`${v.toLocaleString()}식`, font:{size:9}, color:'#0ea5e9'},
+          title:{display:true,text:'식수(식)',font:{size:9},color:'#0ea5e9'}
+        }
+      }
+    },
     plugins: [pointLabelPlugin]
   })
 
@@ -11117,14 +13411,11 @@ window.autoAnalyzeIngredientFromExcel = async function(input, year, month) {
   if (!file) return
   input.value = ''
 
-  // XLSX 로드 확인
+  // XLSX 로드 확인 (통합 로더 사용)
   if (typeof XLSX === 'undefined') {
-    const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    s.onload = () => window.autoAnalyzeIngredientFromExcel({ files: [file] }, year, month)
-    document.head.appendChild(s)
-    showToast('라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
-    return
+    showToast('엑셀 라이브러리 로딩 중...', 'info')
+    const ok = await _loadXlsx()
+    if (!ok || typeof XLSX === 'undefined') { showToast('라이브러리 로드 실패. 잠시 후 다시 시도해주세요.', 'error'); return }
   }
 
   showToast('엑셀 분석 중...', 'info')
@@ -11351,14 +13642,11 @@ window.autoImportOrderFromExcel = async function(input, forcedVendorId, importYe
   const file = input.files ? input.files[0] : input
   if (!file) return
 
-  // XLSX 라이브러리 로드
+  // XLSX 라이브러리 로드 (통합 로더 사용)
   if (typeof XLSX === 'undefined') {
-    showToast('XLSX 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
-    const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    s.onload = () => showToast('라이브러리 로드 완료. 다시 시도해주세요.', 'info')
-    document.head.appendChild(s)
-    return
+    showToast('엑셀 라이브러리 로딩 중...', 'info')
+    const ok = await _loadXlsx()
+    if (!ok || typeof XLSX === 'undefined') { showToast('라이브러리 로드 실패. 잠시 후 다시 시도해주세요.', 'error'); return }
   }
 
   showToast('거래내역 분석 중...', 'info')
@@ -12077,6 +14365,8 @@ async function deleteVendor(id) {
 //  관리자 대시보드
 // ══════════════════════════════════════════════════════════════
 async function renderAdminDashboard() {
+  const _tClick = performance.now()
+  console.log(`[Admin] ① 클릭→renderAdminDashboard 진입: ${Math.round(_tClick)}ms`)
   const content = document.getElementById('pageContent')
   // 스켈레톤 UI: 즉시 레이아웃 표시 → 로딩 스피너 대신 실제 구조 미리 보여줌
   content.innerHTML = `
@@ -12088,16 +14378,24 @@ async function renderAdminDashboard() {
     ${Array(3).fill(0).map(() => `<div class="bg-white rounded-2xl p-4 border border-gray-100"><div class="flex gap-3"><div class="skeleton h-4 w-32 rounded"></div><div class="skeleton h-4 w-20 rounded ml-auto"></div></div><div class="skeleton h-2 w-full rounded mt-3"></div><div class="grid grid-cols-3 gap-2 mt-3">${Array(3).fill(0).map(() => `<div class="skeleton h-10 rounded-lg"></div>`).join('')}</div></div>`).join('')}
   </div>`
 
+  const _tApiStart = performance.now()
   let data, adminStaffLabor
   try {
-    ;[data, adminStaffLabor] = await Promise.all([
-      api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`),
-      api('GET', `/api/admin/staff-labor/${App.currentYear}/${App.currentMonth}`).catch(() => null)
-    ])
+    // dashboard API와 staff-labor API를 병렬 호출하되 각각 완료 시점 측정
+    const _tDashStart = performance.now()
+    const _tStaffStart = performance.now()
+    const _adminNow = new Date(), _adminY = String(_adminNow.getFullYear()), _adminM = String(_adminNow.getMonth()+1)
+    const dashPromise = api('GET', `/api/admin/dashboard/${_adminY}/${_adminM}`)
+      .then(r => { console.log(`[Admin] ② admin-dashboard API 완료: ${Math.round(performance.now()-_tDashStart)}ms`); return r })
+    const staffPromise = api('GET', `/api/admin/staff-labor/${_adminY}/${_adminM}`)
+      .then(r => { console.log(`[Admin] ③ admin-staff-labor API 완료: ${Math.round(performance.now()-_tStaffStart)}ms`); return r })
+      .catch(() => { console.log(`[Admin] ③ admin-staff-labor API 실패 (무시)`); return null })
+    ;[data, adminStaffLabor] = await Promise.all([dashPromise, staffPromise])
   } catch(e) {
     content.innerHTML = `<div class="text-center text-red-400 py-16"><i class="fas fa-exclamation-triangle text-2xl mb-2 block"></i>데이터 로드 실패: ${e.message}</div>`
     return
   }
+  console.log(`[Admin] ▸ API 전체응답완료: dashboard+staff-labor=${Math.round(performance.now()-_tApiStart)}ms (클릭기준 ${Math.round(performance.now()-_tClick)}ms)`)
   if (!data) {
     content.innerHTML = `<div class="text-center text-gray-400 py-16"><i class="fas fa-exclamation-circle text-2xl mb-2 block"></i>데이터를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.<br><button onclick="renderAdminDashboard()" class="mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm">다시 시도</button></div>`
     return
@@ -12108,9 +14406,77 @@ async function renderAdminDashboard() {
   const issueCount = hospitals.reduce((s,h) => s + h.issues.filter(i=>i.level==='danger').length, 0)
   const overCount = hospitals.filter(h => h.totalBudget > 0 && h.totalUsed > h.totalBudget).length
 
+  // detail API는 백그라운드 선로딩 (이슈 탭 클릭 대비)
+  // 캐시 무효화 방지를 위해 별도 변수에 저장
+  let _adminDetailData = null
+  const _loadAdminDetail = () => {
+    if (_adminDetailData) return Promise.resolve(_adminDetailData)
+    return api('GET', `/api/admin/dashboard-detail/${App.currentYear}/${App.currentMonth}`)
+      .then(d => { _adminDetailData = d; return d })
+      .catch(() => null)
+  }
+
+  const _tHtmlStart = performance.now()
   let renderedHtml
   try {
     renderedHtml = `
+  <!-- 관리자 식단가 흐름 요약 배너 -->
+  ${(() => {
+    // 전체 병원 집계: 대표 식단가 평균, 예산 사용률 평균
+    const validH = hospitals.filter(h => (h.mealPriceNoSupply||h.mealPriceTotal||0) > 0)
+    if (validH.length === 0) return ''
+    const avgRep  = Math.round(validH.reduce((s,h)=>s+(h.mealPriceNoSupply||h.mealPriceRepresentative||h.mealPriceTotal||0),0)/validH.length)
+    const avgOper = Math.round(validH.reduce((s,h)=>s+(h.mealPriceTotal||0),0)/validH.length)
+    const avgTarget = Math.round(validH.filter(h=>h.targetMealPrice>0).reduce((s,h)=>s+(h.targetMealPrice||0),0)/(validH.filter(h=>h.targetMealPrice>0).length||1))
+    const avgBudgetPct = parseFloat((validH.reduce((s,h)=>s+(h.totalBudget>0?(h.totalUsed/h.totalBudget*100):0),0)/validH.length).toFixed(1))
+    const totalMealsAll = hospitals.reduce((s,h)=>s+(h.totalMeals||0),0)
+    const opDiffAll = (avgRep>0 && avgOper>0) ? avgOper - avgRep : 0
+    const repOverTarget = avgTarget>0 && avgRep>0 ? avgRep - avgTarget : 0
+    const repIsOverAll = repOverTarget > 0
+    const repIsWarnAll = !repIsOverAll && avgRep >= avgTarget*0.9 && avgTarget > 0
+
+    return `<div style="background:linear-gradient(135deg,#eff6ff,#f0fdf4);border:1.5px solid #bfdbfe;border-radius:14px;padding:12px 16px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <span style="background:#1d4ed8;color:white;font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px">전체 식단가 현황</span>
+        <span style="font-size:12px;font-weight:700;color:#1e3a5f">${App.currentYear}년 ${App.currentMonth}월 · 병원 ${hospitals.length}개소 집계</span>
+        ${repIsOverAll ? `<span style="font-size:10px;font-weight:700;color:white;background:#dc2626;padding:2px 8px;border-radius:5px">⚠ 대표 식단가 목표 초과</span>` : repIsWarnAll ? `<span style="font-size:10px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fde68a;padding:2px 8px;border-radius:5px">⚠ 목표 근접</span>` : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">
+        <div style="background:white;border:2px solid ${repIsOverAll?'#fca5a5':repIsWarnAll?'#fde68a':'#93c5fd'};border-radius:10px;padding:8px 10px">
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">
+            <span style="background:${repIsOverAll?'#dc2626':repIsWarnAll?'#d97706':'#1d4ed8'};color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px">★ 기준</span>
+            <span style="font-size:9px;color:#374151;font-weight:600">대표 식단가</span>
+          </div>
+          <div style="font-size:17px;font-weight:900;color:${repIsOverAll?'#dc2626':repIsWarnAll?'#d97706':'#1d4ed8'}">${avgRep>0?avgRep.toLocaleString():'—'}<span style="font-size:9px;font-weight:400;color:#6b7280">원</span></div>
+          ${avgTarget>0?`<div style="font-size:9px;color:${repIsOverAll?'#dc2626':'#059669'};font-weight:600;margin-top:2px">${repIsOverAll?`▲ +${repOverTarget.toLocaleString()}원 초과`:repIsWarnAll?`⚠ 근접`:`✓ ${Math.abs(repOverTarget).toLocaleString()}원 절감`}</div>`:''}
+        </div>
+        ${avgOper>0&&opDiffAll!==0?`<div style="background:white;border:1px solid #ddd6fe;border-radius:10px;padding:8px 10px;opacity:.85">
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">
+            <span style="background:#7c3aed20;color:#7c3aed;border:1px solid #c4b5fd;font-size:8px;padding:1px 4px;border-radius:3px">참고</span>
+            <span style="font-size:9px;color:#7c3aed;font-weight:600">운영반영</span>
+          </div>
+          <div style="font-size:15px;font-weight:700;color:#7c3aed">${avgOper.toLocaleString()}<span style="font-size:9px;font-weight:400;color:#9ca3af">원</span></div>
+          <div style="font-size:9px;color:#7c3aed;margin-top:2px">${opDiffAll>0?'+':''}${Math.round(opDiffAll).toLocaleString()}원 차이</div>
+        </div>`:''}
+        <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px">
+          <div style="font-size:9px;color:#64748b;font-weight:600;margin-bottom:3px"><i class="fas fa-chart-pie" style="margin-right:3px;color:#f59e0b"></i>예산 사용률</div>
+          <div style="font-size:17px;font-weight:900;color:${avgBudgetPct>=100?'#dc2626':avgBudgetPct>=80?'#d97706':'#059669'}">${avgBudgetPct.toFixed(1)}<span style="font-size:10px;font-weight:400">%</span></div>
+          <div style="font-size:9px;color:#6b7280;margin-top:2px">초과 ${overCount}개 병원</div>
+        </div>
+        <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px">
+          <div style="font-size:9px;color:#64748b;font-weight:600;margin-bottom:3px"><i class="fas fa-users" style="margin-right:3px;color:#3b82f6"></i>총 식수</div>
+          <div style="font-size:15px;font-weight:700;color:#374151">${totalMealsAll>0?totalMealsAll.toLocaleString():'—'}<span style="font-size:9px;font-weight:400;color:#9ca3af">식</span></div>
+          <div style="font-size:9px;color:#6b7280;margin-top:2px">전체 병원 합계</div>
+        </div>
+      </div>
+      ${repIsOverAll || overCount > 0 ? `<div style="margin-top:8px;background:#fef2f2;border-left:3px solid #dc2626;border-radius:0 6px 6px 0;padding:5px 9px;font-size:9px;color:#991b1b;line-height:1.5">
+        <strong>⚠ 판단:</strong> ${repIsOverAll?`대표 식단가(${avgRep.toLocaleString()}원)가 목표(${avgTarget.toLocaleString()}원) 대비 +${repOverTarget.toLocaleString()}원 초과 중입니다. `:''}${overCount>0?`예산 초과 병원이 ${overCount}개소 있습니다. 병원별 원인 확인이 필요합니다.`:''}
+      </div>` : `<div style="margin-top:8px;background:#f0fdf4;border-left:3px solid #22c55e;border-radius:0 6px 6px 0;padding:5px 9px;font-size:9px;color:#166534;line-height:1.5">
+        <strong>✓ 판단:</strong> 전체 병원 대표 식단가가 목표 범위 내에 있습니다. 지속적인 모니터링을 유지하세요.
+      </div>`}
+    </div>`
+  })()}
+
   <!-- 상단 요약 카드 4개 -->
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
     <div class="stat-card border-l-4 border-green-500">
@@ -12152,7 +14518,7 @@ async function renderAdminDashboard() {
   </div>
 
   <!-- 병원별 카드 탭 -->
-  <div id="adminContent-cards">
+  <div id="adminContent-cards" data-admin-tab="cards">
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       ${hospitals.map(h => {
         const pct = parseFloat(h.progress)
@@ -12293,30 +14659,30 @@ async function renderAdminDashboard() {
             </div>
           </div>
 
-          <!-- ② 식단가 3종 (핵심!) -->
+          <!-- ② 식단가 흐름 구조 (관리자 병원 카드) -->
           <div class="mb-3 p-2.5 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-semibold text-blue-700"><i class="fas fa-utensils mr-1"></i>식단가 현황</span>
+              <div style="display:flex;align-items:center;gap:5px">
+                <span style="background:#1d4ed8;color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px">★ 기준</span>
+                <span class="text-xs font-semibold text-blue-700">대표 식단가 흐름</span>
+              </div>
               ${h.targetMealPrice>0?`<span class="text-xs text-blue-500">목표 ${h.targetMealPrice.toLocaleString()}원</span>`:''}
             </div>
-            <div class="grid grid-cols-3 gap-1.5 text-center">
-              <div class="p-1.5 bg-white rounded-lg border ${mpOver?'border-red-300':mpWarn?'border-amber-300':'border-blue-100'} relative">
-                ${mpOver?`<div class="absolute -top-1.5 left-1/2 -translate-x-1/2 text-xs">🚨</div>`:''}
-                <div class="text-xs text-blue-500 mt-1">전체</div>
-                <div class="text-xs font-bold ${mpColor}">${h.mealPriceTotal>0?h.mealPriceTotal.toLocaleString()+' 원':'-'}</div>
-                ${mpOver?`<div class="text-xs text-red-500">▲초과</div>`:mpWarn?`<div class="text-xs text-amber-500">▲주의</div>`:`<div class="text-xs text-gray-300">-</div>`}
-              </div>
-              <div class="p-1.5 bg-white rounded-lg border border-purple-100">
-                <div class="text-xs text-purple-500">직원제외</div>
-                <div class="text-xs font-bold text-purple-700">${h.mealPriceNoStaff>0?h.mealPriceNoStaff.toLocaleString()+' 원':'-'}</div>
-                <div class="text-xs text-gray-300">-</div>
-              </div>
-              <div class="p-1.5 bg-white rounded-lg border border-orange-100">
-                <div class="text-xs text-orange-500">소모품제외</div>
-                <div class="text-xs font-bold text-orange-700">${h.mealPriceNoSupply>0?h.mealPriceNoSupply.toLocaleString()+' 원':'-'}</div>
-                <div class="text-xs text-gray-300">-</div>
-              </div>
-            </div>
+            ${(() => {
+              const dpH = DIET_CALC.extractDietPrices(h)
+              // admin dashboard h 구조에서 representative 보완
+              if (!dpH.representative && h.mealPriceNoSupply) dpH.representative = h.mealPriceNoSupply
+              if (!dpH.operating && h.mealPriceTotal) dpH.operating = h.mealPriceTotal
+              const cbH = h.costBreakdown || null
+              const mealsH = h.totalMeals || 0
+              return DIET_CALC.dietPriceFlowHtml(dpH, cbH, {
+                targetPrice: h.targetMealPrice || 0,
+                totalMeals: mealsH,
+                compact: true,
+                showPatient: false,
+                context: 'admin'
+              })
+            })()}
             <!-- 전월 대비 식단가 비교 -->
             ${h.prevMonth && h.prevMonth.mealPriceTotal > 0 ? (() => {
               const pm = h.prevMonth
@@ -12605,117 +14971,17 @@ async function renderAdminDashboard() {
     </div>
   </div>
 
-  <!-- 데일리 이슈 탭 -->
-  <div id="adminContent-issues" class="hidden">
-    ${hospitals.every(h=>h.issues.length===0) ? `
-    <div class="text-center py-12 text-gray-400">
-      <i class="fas fa-check-circle text-green-400 text-4xl mb-3"></i>
-      <div class="font-semibold">현재 이슈 없음</div>
-      <div class="text-sm mt-1">모든 병원이 정상 범위 내에서 운영 중입니다</div>
-    </div>` : `
-    <!-- 이슈 요약 카드 -->
-    <div class="grid grid-cols-2 gap-2 mb-4">
-      <div class="bg-red-50 rounded-xl p-2.5 border border-red-200">
-        <div class="text-xs text-red-500 mb-0.5">예산 초과</div>
-        <div class="text-xl font-bold text-red-600">${hospitals.filter(h=>h.issues.some(i=>i.type==='budget_over')).length}개</div>
-      </div>
-      <div class="bg-amber-50 rounded-xl p-2.5 border border-amber-200">
-        <div class="text-xs text-amber-500 mb-0.5">업체 초과</div>
-        <div class="text-xl font-bold text-amber-600">${hospitals.reduce((s,h)=>s+h.issues.filter(i=>i.type==='vendor_over').length,0)}건</div>
-      </div>
-      <div class="bg-orange-50 rounded-xl p-2.5 border border-orange-200">
-        <div class="text-xs text-orange-500 mb-0.5">일 발주 초과</div>
-        <div class="text-xl font-bold text-orange-600">${hospitals.reduce((s,h)=>s+h.issues.filter(i=>i.type==='daily_over').length,0)}건</div>
-      </div>
-      <div class="bg-purple-50 rounded-xl p-2.5 border border-purple-200">
-        <div class="text-xs text-purple-500 mb-0.5">식단가 초과</div>
-        <div class="text-xl font-bold text-purple-600">${hospitals.filter(h=>h.issues.some(i=>i.type==='meal_price_over')).length}개</div>
+  <!-- 이슈 탭: 클릭 시 detail API로 채워짐 (플레이스홀더) -->
+  <div id="adminContent-issues" class="hidden" data-admin-tab="issues">
+    <div id="adminIssuesInner">
+      <div class="text-center py-10 text-gray-400 text-sm">
+        <i class="fas fa-spinner fa-spin mr-2"></i>이슈 데이터 로딩 중...
       </div>
     </div>
-    <!-- 병원별 상세 이슈 -->
-    <div class="space-y-4">
-      ${hospitals.filter(h=>h.issues.length>0).map(h => {
-        const dangerIssues = h.issues.filter(i=>i.level==='danger')
-        const warnIssues = h.issues.filter(i=>i.level==='warning')
-        // 일별 초과 발주 목록
-        const dailyOverList = h.dailyOrders.filter(d => h.dailyBudget > 0 && d.daily_total > h.dailyBudget * 1.0)
-          .sort((a,b) => b.daily_total - a.daily_total)
-        // 초과 업체 목록
-        const overVendors = h.vendors.filter(v => v.monthly_budget > 0 && v.used > v.monthly_budget)
-        return `
-        <div class="bg-white rounded-xl shadow-sm border-l-4 ${dangerIssues.length>0?'border-red-400':'border-amber-400'} p-4">
-          <div class="flex items-center justify-between mb-3">
-            <div class="flex items-center gap-2">
-              ${h.online?`<span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>`:`<span class="w-2 h-2 bg-gray-300 rounded-full"></span>`}
-              <span class="font-bold text-gray-800">${h.hospital.name}</span>
-              ${h.online?`<span class="text-xs text-green-600 bg-green-50 px-1.5 py-0.5 rounded">${h.online.username}${h.online.last_action?` · ✏️${h.online.last_action}`:h.online.last_page?` · ${h.online.last_page}`:''}</span>`:''}
-            </div>
-            <div class="flex items-center gap-2">
-              ${dangerIssues.length>0?`<span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-semibold">위험 ${dangerIssues.length}건</span>`:''}
-              ${warnIssues.length>0?`<span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">경고 ${warnIssues.length}건</span>`:''}
-            </div>
-          </div>
-          
-          <!-- 이슈 배지 목록 -->
-          <div class="flex flex-wrap gap-1.5 mb-3">
-            ${h.issues.map(i=>`
-            <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg font-medium ${i.level==='danger'?'bg-red-100 text-red-700':'bg-amber-100 text-amber-700'}">
-              <i class="fas ${i.level==='danger'?'fa-exclamation-circle':'fa-exclamation-triangle'}"></i>
-              ${i.msg}
-            </span>`).join('')}
-          </div>
-
-          <!-- 일별 발주 초과 상세 테이블 -->
-          ${dailyOverList.length > 0 ? `
-          <div class="mb-3">
-            <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-calendar-day mr-1 text-orange-400"></i>일별 발주 현황 (일목표: ${fmtWon(h.dailyBudget)})</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs">
-                <thead><tr class="bg-gray-50">
-                  <th class="text-left px-2 py-1">날짜</th>
-                  <th class="text-right px-2 py-1">발주액</th>
-                  <th class="text-right px-2 py-1">목표대비</th>
-                  <th class="text-left px-2 py-1 w-24">진행</th>
-                </tr></thead>
-                <tbody>
-                  ${dailyOverList.slice(0,7).map(d => {
-                    const pct = h.dailyBudget > 0 ? Math.round(d.daily_total/h.dailyBudget*100) : 0
-                    const over = pct >= 100
-                    return `<tr class="${over?'bg-red-50':'bg-amber-50'}">
-                      <td class="px-2 py-1 font-mono">${d.order_date}</td>
-                      <td class="text-right px-2 py-1 font-semibold ${over?'text-red-600':'text-amber-700'}">${fmt(d.daily_total)}원</td>
-                      <td class="text-right px-2 py-1 font-bold ${over?'text-red-600':'text-amber-600'}">${pct}%</td>
-                      <td class="px-2 py-1"><div class="h-1.5 bg-gray-200 rounded-full"><div class="h-full rounded-full ${over?'bg-red-400':'bg-amber-400'}" style="width:${Math.min(pct,100)}%"></div></div></td>
-                    </tr>`
-                  }).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>` : ''}
-
-          <!-- 초과 업체 상세 -->
-          ${overVendors.length > 0 ? `
-          <div>
-            <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-store mr-1 text-red-400"></i>예산 초과 업체</div>
-            <div class="flex flex-wrap gap-1.5">
-              ${overVendors.map(v => {
-                const pct = CALC_ENGINE.calcBudgetPct(v.used, v.monthly_budget) // ✅ CALC_ENGINE
-                const over = v.used - v.monthly_budget
-                return `<div class="bg-red-50 border border-red-200 rounded-lg px-2 py-1.5 text-xs">
-                  <div class="font-semibold text-red-700">${v.name}</div>
-                  <div class="text-red-500">${fmt(v.used)}원 / ${fmt(v.monthly_budget)}원</div>
-                  <div class="text-red-600 font-bold">+${fmt(over)}원 (${pct}%)</div>
-                </div>`
-              }).join('')}
-            </div>
-          </div>` : ''}
-        </div>`
-      }).join('')}
-    </div>`}
   </div>
 
   <!-- 식수 카테고리별 집계 탭 -->
-  <div id="adminContent-mealcat" class="hidden">
+  <div id="adminContent-mealcat" class="hidden" data-admin-tab="mealcat">
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
         <div>
@@ -12733,7 +14999,7 @@ async function renderAdminDashboard() {
   </div>
 
   <!-- 발주 비교 탭 -->
-  <div id="adminContent-chart" class="hidden">
+  <div id="adminContent-chart" class="hidden" data-admin-tab="chart">
     <!-- 병원별 비교 차트 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
       <h3 class="font-bold text-gray-700 mb-1"><i class="fas fa-chart-bar text-green-600 mr-2"></i>${App.currentYear}년 ${App.currentMonth}월 병원별 예산 대비 사용현황</h3>
@@ -12822,8 +15088,11 @@ async function renderAdminDashboard() {
     </div>
   </div>
 
-  <!-- 전체 병원 인력 & 인력비 현황 -->
-  ${renderAdminStaffLabor(adminStaffLabor)}
+  <!-- 전체 병원 인력 & 인력비 현황 (2차 렌더로 채워짐) -->
+  <div id="adminStaffLaborSection" class="animate-pulse bg-white rounded-2xl border border-gray-100 p-4 mt-4">
+    <div class="skeleton h-4 w-40 rounded mb-3"></div>
+    <div class="skeleton h-20 w-full rounded-xl"></div>
+  </div>
   `
   } catch(renderErr) {
     console.error('관리자 대시보드 렌더링 오류:', renderErr)
@@ -12835,11 +15104,52 @@ async function renderAdminDashboard() {
     </div>`
     return
   }
-  content.innerHTML = renderedHtml
+  console.log(`[Admin] ④ renderedHtml 생성완료: ${Math.round(performance.now()-_tHtmlStart)}ms (클릭기준 ${Math.round(performance.now()-_tClick)}ms)`)
 
-  // 차트 렌더링
-  try { renderAdminCompareChart(hospitals) } catch(e) { console.error('차트 렌더링 오류:', e) }
+  // ★ Phase 2: 1차 렌더 - 요약 배너 + KPI 카드 + 병원별 카드 탭 즉시 표시
+  const _tInnerHTML = performance.now()
+  content.innerHTML = renderedHtml
   switchAdminTab('cards')
+  console.log(`[Admin] ⑤ innerHTML 반영완료: ${Math.round(performance.now()-_tInnerHTML)}ms (클릭기준 ${Math.round(performance.now()-_tClick)}ms)`)
+
+  // detail API 선로딩 시작 (이슈 탭 클릭 대비 – 화면 표시 직후 백그라운드 실행)
+  window._adminDashHospitals = hospitals  // 이슈 탭 렌더에서 참조
+  window._adminDetailLoader = _loadAdminDetail()  // Promise 저장 (재사용)
+  setTimeout(() => window._adminDetailLoader.catch(() => null), 100)
+
+  // ★ Phase 2: 2차 렌더 - 비교 차트와 인력비 섹션을 유휴 시간에 처리
+  const _render2ndPass = () => {
+    // 2a. 비교 차트 렌더 (adminContent-chart 탭 내 canvas)
+    const _tChart = performance.now()
+    try { renderAdminCompareChart(hospitals) } catch(e) { console.error('차트 렌더링 오류:', e) }
+    console.log(`[Admin] ⑥ 차트 렌더완료: ${Math.round(performance.now()-_tChart)}ms (클릭기준 ${Math.round(performance.now()-_tClick)}ms)`)
+    // 2b. 인력비 플레이스홀더를 실제 콘텐츠로 교체
+    const _tLabor = performance.now()
+    const _staffPlaceholder = document.getElementById('adminStaffLaborSection')
+    if (_staffPlaceholder) {
+      try {
+        const _staffHtml = renderAdminStaffLabor(adminStaffLabor)
+        if (_staffHtml) {
+          // 임시 div 생성 후 DOM에 삽입하여 교체
+          const _tmp = document.createElement('div')
+          _tmp.innerHTML = _staffHtml
+          const _staffNode = _tmp.firstElementChild
+          if (_staffNode) _staffPlaceholder.replaceWith(_staffNode)
+          else _staffPlaceholder.style.display = 'none'
+        } else {
+          _staffPlaceholder.style.display = 'none'
+        }
+      } catch(e) { console.error('인력비 렌더 오류:', e) }
+    }
+    console.log(`[Admin] ⑦ 인력비 렌더완료: ${Math.round(performance.now()-_tLabor)}ms (클릭기준 ${Math.round(performance.now()-_tClick)}ms)`)
+    console.log(`[Admin] ⑧ ✅ 전체완료: ${Math.round(performance.now()-_tClick)}ms`)
+  }
+  // requestIdleCallback 지원 시 사용, 미지원 시 setTimeout(0)으로 fallback
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(_render2ndPass, { timeout: 2000 })
+  } else {
+    setTimeout(_render2ndPass, 0)
+  }
 }
 
 window.switchAdminTab = (tab) => {
@@ -12861,6 +15171,140 @@ window.switchAdminTab = (tab) => {
   if (tab === 'mealcat') {
     loadAdminMealCatStats()
   }
+  if (tab === 'issues') {
+    _renderAdminIssuesTab()
+  }
+}
+
+// 이슈 탭 렌더 (detail API 호출 후 채움)
+window._renderAdminIssuesTab = async () => {
+  const issuesInner = document.getElementById('adminIssuesInner')
+  if (!issuesInner) return
+  // 이미 렌더된 경우 스킵
+  if (issuesInner.dataset.rendered === '1') return
+  issuesInner.dataset.rendered = '1'
+
+  // 현재 렌더링에서 캡처된 hospitals 참조 (window에서 읽기)
+  const hospitals = window._adminDashHospitals
+  if (!hospitals) return
+
+  // detail API 호출 (백그라운드 선로딩으로 이미 fetch 중일 수 있음)
+  let detailData = null
+  try {
+    detailData = await (window._adminDetailLoader || Promise.resolve(null))
+  } catch(e) {}
+
+  // dailyOrders 맵 구성 (hospitalId → {dailyOrders, dailyBudget})
+  const detailMap = {}
+  ;(detailData?.hospitals || []).forEach(d => { detailMap[d.hospitalId] = d })
+
+  const fmt = n => Math.round(n||0).toLocaleString()
+  const fmtWon = n => fmt(n) + '원'
+  const hasAnyIssue = hospitals.some(h => h.issues.length > 0 || (detailMap[h.hospital?.id]?.dailyIssues||[]).length > 0)
+
+  if (!hasAnyIssue) {
+    issuesInner.innerHTML = `<div class="text-center py-12 text-gray-400">
+      <i class="fas fa-check-circle text-green-400 text-4xl mb-3"></i>
+      <div class="font-semibold">현재 이슈 없음</div>
+      <div class="text-sm mt-1">모든 병원이 정상 범위 내에서 운영 중입니다</div>
+    </div>`
+    return
+  }
+
+  // 전체 이슈 + daily 이슈 합산 (카운트용)
+  const allDailyIssueCount = (detailData?.hospitals||[]).reduce((s,d)=>s+(d.dailyIssues||[]).length,0)
+  const summaryHtml = `
+  <div class="grid grid-cols-2 gap-2 mb-4">
+    <div class="bg-red-50 rounded-xl p-2.5 border border-red-200">
+      <div class="text-xs text-red-500 mb-0.5">예산 초과</div>
+      <div class="text-xl font-bold text-red-600">${hospitals.filter(h=>h.issues.some(i=>i.type==='budget_over')).length}개</div>
+    </div>
+    <div class="bg-amber-50 rounded-xl p-2.5 border border-amber-200">
+      <div class="text-xs text-amber-500 mb-0.5">업체 초과</div>
+      <div class="text-xl font-bold text-amber-600">${hospitals.reduce((s,h)=>s+h.issues.filter(i=>i.type==='vendor_over').length,0)}건</div>
+    </div>
+    <div class="bg-orange-50 rounded-xl p-2.5 border border-orange-200">
+      <div class="text-xs text-orange-500 mb-0.5">일 발주 초과</div>
+      <div class="text-xl font-bold text-orange-600">${allDailyIssueCount}건</div>
+    </div>
+    <div class="bg-purple-50 rounded-xl p-2.5 border border-purple-200">
+      <div class="text-xs text-purple-500 mb-0.5">식단가 초과</div>
+      <div class="text-xl font-bold text-purple-600">${hospitals.filter(h=>h.issues.some(i=>i.type==='meal_price_over')).length}개</div>
+    </div>
+  </div>`
+
+  const detailHtml = hospitals.filter(h => {
+    const d = detailMap[h.hospital?.id] || {}
+    return h.issues.length > 0 || (d.dailyIssues||[]).length > 0
+  }).map(h => {
+    const d = detailMap[h.hospital?.id] || {}
+    const allIssues = [...h.issues, ...(d.dailyIssues||[])]
+    const dangerIssues = allIssues.filter(i=>i.level==='danger')
+    const warnIssues = allIssues.filter(i=>i.level==='warning')
+    const dailyOverList = (d.dailyOrders||[]).filter(o => d.dailyBudget > 0 && o.daily_total > d.dailyBudget)
+      .sort((a,b) => b.daily_total - a.daily_total)
+    const overVendors = (h.vendors||[]).filter(v => v.monthly_budget > 0 && v.used > v.monthly_budget)
+    return `
+    <div class="bg-white rounded-xl shadow-sm border-l-4 ${dangerIssues.length>0?'border-red-400':'border-amber-400'} p-4">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          ${h.online?`<span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>`:`<span class="w-2 h-2 bg-gray-300 rounded-full"></span>`}
+          <span class="font-bold text-gray-800">${h.hospital.name}</span>
+          ${h.online?`<span class="text-xs text-green-600 bg-green-50 px-1.5 py-0.5 rounded">${h.online.username}${h.online.last_action?` · ✏️${h.online.last_action}`:h.online.last_page?` · ${h.online.last_page}`:''}</span>`:''}
+        </div>
+        <div class="flex items-center gap-2">
+          ${dangerIssues.length>0?`<span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-semibold">위험 ${dangerIssues.length}건</span>`:''}
+          ${warnIssues.length>0?`<span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">경고 ${warnIssues.length}건</span>`:''}
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-1.5 mb-3">
+        ${allIssues.map(i=>`
+        <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg font-medium ${i.level==='danger'?'bg-red-100 text-red-700':'bg-amber-100 text-amber-700'}">
+          <i class="fas ${i.level==='danger'?'fa-exclamation-circle':'fa-exclamation-triangle'}"></i>
+          ${i.msg}
+        </span>`).join('')}
+      </div>
+      ${dailyOverList.length > 0 ? `
+      <div class="mb-3">
+        <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-calendar-day mr-1 text-orange-400"></i>일별 발주 현황 (일목표: ${fmtWon(d.dailyBudget)})</div>
+        <div class="overflow-x-auto"><table class="w-full text-xs">
+          <thead><tr class="bg-gray-50">
+            <th class="text-left px-2 py-1">날짜</th><th class="text-right px-2 py-1">발주액</th>
+            <th class="text-right px-2 py-1">목표대비</th><th class="text-left px-2 py-1 w-24">진행</th>
+          </tr></thead>
+          <tbody>
+            ${dailyOverList.slice(0,7).map(o => {
+              const pct = d.dailyBudget > 0 ? Math.round(o.daily_total/d.dailyBudget*100) : 0
+              const over = pct >= 100
+              return `<tr class="${over?'bg-red-50':'bg-amber-50'}">
+                <td class="px-2 py-1 font-mono">${o.order_date}</td>
+                <td class="text-right px-2 py-1 font-semibold ${over?'text-red-600':'text-amber-700'}">${fmt(o.daily_total)}원</td>
+                <td class="text-right px-2 py-1 font-bold ${over?'text-red-600':'text-amber-600'}">${pct}%</td>
+                <td class="px-2 py-1"><div class="h-1.5 bg-gray-200 rounded-full"><div class="h-full rounded-full ${over?'bg-red-400':'bg-amber-400'}" style="width:${Math.min(pct,100)}%"></div></div></td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table></div>
+      </div>` : ''}
+      ${overVendors.length > 0 ? `
+      <div>
+        <div class="text-xs font-semibold text-gray-500 mb-1.5"><i class="fas fa-store mr-1 text-red-400"></i>예산 초과 업체</div>
+        <div class="flex flex-wrap gap-1.5">
+          ${overVendors.map(v => {
+            const over = v.used - v.monthly_budget
+            const pct = v.monthly_budget > 0 ? ((v.used/v.monthly_budget)*100).toFixed(1) : 0
+            return `<div class="bg-red-50 border border-red-200 rounded-lg px-2 py-1.5 text-xs">
+              <div class="font-semibold text-red-700">${v.name}</div>
+              <div class="text-red-500">${fmt(v.used)}원 / ${fmt(v.monthly_budget)}원</div>
+              <div class="text-red-600 font-bold">+${fmt(over)}원 (${pct}%)</div>
+            </div>`
+          }).join('')}
+        </div>
+      </div>` : ''}
+    </div>`
+  }).join('')
+
+  issuesInner.innerHTML = summaryHtml + `<div class="space-y-4">${detailHtml}</div>`
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -12873,7 +15317,8 @@ window.loadAdminMealCatStats = async () => {
 
   try {
     // 모든 병원의 식수 카테고리 통계를 병렬로 조회
-    const data = await api('GET', `/api/admin/dashboard/${App.currentYear}/${App.currentMonth}`)
+    const _catNow = new Date(), _catY = String(_catNow.getFullYear()), _catM = String(_catNow.getMonth()+1)
+    const data = await api('GET', `/api/admin/dashboard/${_catY}/${_catM}`)
     const hospitals = data?.hospitals || []
 
     // 병원별 식수 카테고리 통계 병렬 조회
@@ -13499,6 +15944,7 @@ async function renderSchedule() {
   renderScheduleTab(content)
 
   // ── 2차 로드: 부가 데이터 백그라운드 로드 후 조용히 갱신 ──
+  // api()는 GET 요청 시 _apiCacheGet 자동 확인 → 캐시 히트 시 네트워크 요청 없음
   Promise.all([
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
     api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
@@ -13506,13 +15952,27 @@ async function renderSchedule() {
     api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
     api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
-  ]).then(([leaveAlerts, offGrants, analysisData, mealStats, holidayPolicySummaryData, monthlyLeaveSummary]) => {
+    api('GET', `/api/schedule/leave-balance/all?year=${App.currentYear}${hq}`).catch(() => []),
+  ]).then(([leaveAlerts, offGrants, analysisData, mealStats, holidayPolicySummaryData, monthlyLeaveSummary, leaveBalanceData]) => {
     scheduleLeaveAlerts = leaveAlerts || []
     scheduleOffGrants = offGrants || null
     scheduleAnalysisData = analysisData || null
     scheduleMealStats = mealStats || null
     scheduleHolidayPolicySummary = holidayPolicySummaryData || null
     window._monthlyLeavesData = monthlyLeaveSummary || []
+    window._leaveBalanceData = Array.isArray(leaveBalanceData) ? leaveBalanceData : []
+
+    // ── leave_unit_type 전역 초기화 (App bootstrap) ──────────────
+    // leave-balance/all 응답의 첫 항목에서 추출 (병원 단위로 동일한 값)
+    // 이로써 근무조 탭·스케줄 탭을 먼저 열어도 올바른 unitType 사용 가능
+    if (Array.isArray(leaveBalanceData) && leaveBalanceData.length > 0) {
+      const bootstrapUnitType = leaveBalanceData[0]?.leave_unit_type || 'halfday'
+      if (!window._currentLeaveUnitType || window._currentLeaveUnitType === 'halfday') {
+        // 이미 연차관리 탭에서 설정된 값이 있으면 덮어쓰지 않음
+        window._currentLeaveUnitType = bootstrapUnitType
+        window._hospitalLeaveUnitType = bootstrapUnitType
+      }
+    }
 
     // 현재 스케줄 탭이 열려 있으면 부여휴무·알림·공휴일 패널만 조용히 갱신
     const offPanel = document.getElementById('offGrantsPanel')
@@ -13577,6 +16037,7 @@ async function reloadScheduleMonth() {
   }
 
   // ── 2차 로드: 부가 데이터 백그라운드 로드 ──
+  // 캐시 히트 시(동일 월 재진입·5분 이내) API 재호출 생략 — api()가 자동 처리
   Promise.all([
     api('GET', `/api/schedule/off-grants?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
     api('GET', `/api/schedule/alerts/leave?year=${App.currentYear}${hq}`).catch(() => []),
@@ -13584,13 +16045,25 @@ async function reloadScheduleMonth() {
     api('GET', `/api/schedule/meal-stats/${App.currentYear}/${App.currentMonth}${hqs}`).catch(() => null),
     api('GET', `/api/schedule/holiday-policy-summary?year=${App.currentYear}&month=${App.currentMonth}${hq}`).catch(() => null),
     api('GET', `/api/schedule/monthly-leave/summary?year=${App.currentYear}${hq}`).catch(() => []),
-  ]).then(([offGrants, leaveAlerts, analysisData, mealStats, holidayPolicySum, monthlyLeaveSummary]) => {
+    // leave-balance: 캐시(10분 TTL)에 있으면 재호출 안 함 — 탭 진입 시 자동갱신과 충돌 없음
+    _apiCacheGet(`/api/schedule/leave-balance/all?year=${App.currentYear}${hq}`)
+      ? Promise.resolve(_apiCacheGet(`/api/schedule/leave-balance/all?year=${App.currentYear}${hq}`))
+      : api('GET', `/api/schedule/leave-balance/all?year=${App.currentYear}${hq}`).catch(() => []),
+  ]).then(([offGrants, leaveAlerts, analysisData, mealStats, holidayPolicySum, monthlyLeaveSummary, leaveBalance]) => {
     scheduleOffGrants = offGrants || null
     scheduleLeaveAlerts = leaveAlerts || []
     scheduleAnalysisData = analysisData || null
     scheduleMealStats = mealStats || null
     scheduleHolidayPolicySummary = holidayPolicySum || null
     window._monthlyLeavesData = monthlyLeaveSummary || []
+    // leaves 탭이 활성 상태이면 덮어쓰지 않음 — switchScheduleTab이 이미 fresh 데이터를 fetch함
+    if (leaveBalance && scheduleTab !== 'leaves') window._leaveBalanceData = Array.isArray(leaveBalance) ? leaveBalance : (window._leaveBalanceData || [])
+    // leave_unit_type 전역 초기화 (reloadScheduleMonth 시에도 유지)
+    if (Array.isArray(leaveBalance) && leaveBalance.length > 0) {
+      const reloadUnitType = leaveBalance[0]?.leave_unit_type || 'halfday'
+      window._currentLeaveUnitType  = reloadUnitType
+      window._hospitalLeaveUnitType = reloadUnitType
+    }
     // 부여휴무 패널 조용히 갱신
     const offPanel = document.getElementById('offGrantsPanel')
     if (offPanel && scheduleTab === 'schedule') {
@@ -13725,7 +16198,7 @@ function renderScheduleTab(content) {
             <span class="text-[10px] text-gray-400 font-semibold mr-1 whitespace-nowrap">⚙️ 설정</span>
             <button onclick="switchScheduleTab('shifts')"
               class="px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${tab === 'shifts' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}">
-              <i class="fas fa-clock mr-1"></i>근무조${isAdm ? '' : ' <span style="font-size:9px;opacity:.6">(조회)</span>'}
+              <i class="fas fa-clock mr-1"></i>근무조
             </button>
             ${isAdm ? `
             <button onclick="openLaborCostSettings()"
@@ -13790,6 +16263,14 @@ function renderScheduleTab(content) {
           title="직원별 QR코드 / 개인 근무표 링크">
           <i class="fas fa-qrcode mr-1"></i>QR 공유
         </button>
+        <span class="w-px h-4 bg-gray-300"></span>
+        <!-- 스케줄 확정 버튼 -->
+        <button id="schedPublishBtn" onclick="publishSchedule()"
+          class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1"
+          style="background:#7c3aed;color:white"
+          title="${App.currentYear}년 ${App.currentMonth}월 스케줄을 확정하여 직원에게 공개">
+          <i class="fas fa-check-double"></i><span> 스케줄 확정</span>
+        </button>
       </div>` : ''}
     </div>
 
@@ -13808,6 +16289,8 @@ function renderScheduleTab(content) {
   ${renderEmployeeModal()}
   ${renderShiftModal()}
   ${renderLeaveEditModal()}
+  ${renderLeaveUnitTypeModal()}
+  ${renderPartialLeaveModal()}
   ${renderMonthlyLeaveEditModal()}
   ${renderEmpStatsModal()}
   ${renderLaborCostSettingsModal()}
@@ -13824,13 +16307,18 @@ function renderScheduleTab(content) {
   setTimeout(() => { if (_schedViewMode === 'admin') { try { updateSchedStickyBar() } catch(e){} try { updateSchedRightPanel() } catch(e){} } }, 350)
   // 관리자 전용: 병원 선택 드롭다운 초기화
   if (App.role === 'admin') setTimeout(initSchedHospitalSelector, 0)
+  // 월별 확정 상태 로드 (schedule 탭일 때만)
+  if (scheduleTab === 'schedule') setTimeout(() => loadPublishStatus(App.currentYear, App.currentMonth), 0)
 }
 
 // ─── 인사카드 탭 ─────────────────────────────────────────────
 function renderEmployeeTab() {
   const isAdm = App.role === 'admin'
-  // 인사카드는 활성 직원만 (퇴사자 제외)
-  const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
+  // 인사카드: is_active=1인 직원 + 미래 퇴사 예정자 포함 (이미 퇴사한 직원만 제외)
+  const _today = new Date().toISOString().slice(0, 10)
+  const emps = (scheduleEmployees || []).filter(e =>
+    e.is_active !== 0 && (!e.resign_date || e.resign_date >= _today)
+  )
 
   // 팀별 그룹핑
   const cookEmps = emps.filter(e => e.team === 'cook' || !e.team)
@@ -13910,7 +16398,7 @@ function renderEmployeeTab() {
                     return `<span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${scolors[st]||'bg-gray-100 text-gray-600'}">${slabels[st]||st}</span>
                     ${emp.ot_enabled ? '<span class="ml-1 text-xs text-green-600" title="OT수당">OT</span>' : ''}
                     ${emp.night_allowance_enabled ? '<span class="ml-0.5 text-xs text-purple-600" title="야간수당">야</span>' : ''}
-                    ${emp.holiday_policy_override ? `<span class="ml-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700" title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'}"><i class="fas fa-user-cog" style="font-size:8px"></i>${emp.holiday_policy_override==='off'?'공휴휴무':emp.holiday_policy_override==='work_pay'?'공휴수당':'공휴대체'}</span>` : ''}`
+                    ${emp.holiday_policy_override ? `<span class="ml-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 border border-amber-200 text-amber-700" title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':emp.holiday_policy_override==='work_substitute'?'근무+대체':'근무(수당없음)'}"><i class="fas fa-user-cog" style="font-size:8px"></i>${emp.holiday_policy_override==='off'?'공휴휴무':emp.holiday_policy_override==='work_pay'?'공휴수당':emp.holiday_policy_override==='work_substitute'?'공휴대체':'공휴근무'}</span>` : ''}`
                   })()}
                 </td>
                 <td class="px-4 py-3 text-gray-600 text-sm">${emp.hire_date || '-'}</td>
@@ -14215,7 +16703,8 @@ function buildExtShiftLegendHtml(opts) {
 // ─── 근무조 설정 탭 ──────────────────────────────────────────
 function renderShiftsTab() {
   const shifts = scheduleShifts
-  const isAdm = App.role === 'admin'
+  // 관리자(admin)와 영양사(hospital) 모두 근무조 편집 가능
+  const isAdm = App.role === 'admin' || App.role === 'hospital'
   // 외부인력 근무유형 커스텀 설정 로드
   const extCfgRaw = localStorage.getItem('extShiftConfig')
   let extCfg = null
@@ -14228,12 +16717,40 @@ function renderShiftsTab() {
   ]
   const extItems = extCfg || EXT_DEFAULTS
 
+  // 현재 병원의 leave_unit_type 확인 (전역 캐시 or 기본값)
+  const shiftTabUnitType = window._currentLeaveUnitType || window._hospitalLeaveUnitType || 'halfday'
+  const shiftTabIsHourly = shiftTabUnitType === 'hourly'
+
   return `
+  <!-- 근무조 설정 화면 상단: 현재 휴가 차감 방식 표시 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 px-5 py-3 mb-4 flex items-center justify-between flex-wrap gap-2">
+    <div class="flex items-center gap-3">
+      <span class="text-sm font-medium text-gray-600">
+        <i class="fas fa-sliders-h mr-1 text-gray-400"></i>현재 휴가 차감 방식
+      </span>
+      <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-semibold
+        ${shiftTabIsHourly
+          ? 'bg-violet-100 text-violet-700 border-violet-300'
+          : 'bg-gray-100 text-gray-600 border-gray-300'}">
+        <i class="fas ${shiftTabIsHourly ? 'fa-clock' : 'fa-divide'}"></i>
+        ${shiftTabIsHourly ? '시간 단위 (Hourly)' : '반차 단위 (Halfday)'}
+      </span>
+      ${shiftTabIsHourly
+        ? '<span class="text-xs text-violet-600"><i class="fas fa-info-circle mr-1"></i>standard_hours 컬럼이 부분연차 차감 기준으로 사용됩니다</span>'
+        : '<span class="text-xs text-gray-400">연차관리 탭에서 변경 가능합니다</span>'}
+    </div>
+    ${isAdm ? `
+    <button onclick="switchScheduleTab('leaves')"
+      class="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+      <i class="fas fa-arrow-right"></i>차감 방식 설정 →
+    </button>` : ''}
+  </div>
+
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-4">
     <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
       <div>
         <h3 class="font-bold text-gray-800">근무조 설정</h3>
-        <p class="text-xs text-gray-400 mt-0.5">스케줄 표에서 사용할 근무조를 정의합니다</p>
+        <p class="text-xs text-gray-400 mt-0.5">스케줄 표에서 사용할 근무조를 정의합니다${shiftTabIsHourly ? ' · 기준 근무시간(standard_hours)이 부분연차 차감에 사용됩니다' : ''}</p>
       </div>
       ${isAdm ? `<button onclick="openShiftModal()" class="btn btn-primary btn-sm">
         <i class="fas fa-plus mr-1"></i>근무조 추가
@@ -14252,8 +16769,10 @@ function renderShiftsTab() {
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">코드</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">이름</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">시간</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">반차구분</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">대상팀</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">색상</th>
+            ${shiftTabIsHourly ? `<th class="px-4 py-3 text-center text-xs font-semibold text-violet-600">기준시간<div class="text-[10px] font-normal text-gray-400">부분연차용</div></th>` : ''}
             ${isAdm ? `<th class="px-4 py-3 text-center text-xs font-semibold text-gray-500">관리</th>` : ''}
           </tr>
         </thead>
@@ -14268,11 +16787,24 @@ function renderShiftsTab() {
             </td>
             <td class="px-4 py-3 font-medium text-gray-800">${s.shift_name}</td>
             <td class="px-4 py-3 text-gray-600">${s.start_time} ~ ${s.end_time}</td>
+            <td class="px-4 py-3">
+              ${s.half_type === 'half_am'
+                ? '<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:#7c3aed;background:#ede9fe;border:1px solid #c4b5fd;border-radius:5px;padding:2px 7px"><i class="fas fa-circle-half-stroke" style="font-size:9px"></i>오전반차</span>'
+                : s.half_type === 'half_pm'
+                  ? '<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:#1d4ed8;background:#dbeafe;border:1px solid #93c5fd;border-radius:5px;padding:2px 7px"><i class="fas fa-circle-half-stroke" style="font-size:9px;transform:scaleX(-1)"></i>오후반차</span>'
+                  : '<span style="font-size:11px;color:#9ca3af">-</span>'}
+            </td>
             <td class="px-4 py-3 text-gray-500">${s.team ? (TEAM_LABELS[s.team]?.label || s.team) : '전체'}</td>
             <td class="px-4 py-3">
               <span class="inline-block w-5 h-5 rounded" style="background-color:${s.color}"></span>
               <span class="text-xs text-gray-400 ml-1">${s.color}</span>
             </td>
+            ${shiftTabIsHourly ? `<td class="px-4 py-3 text-center">
+              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 text-xs font-semibold border border-violet-200">
+                <i class="fas fa-clock" style="font-size:10px"></i>
+                ${s.standard_hours ?? 8}h
+              </span>
+            </td>` : ''}
             ${isAdm ? `<td class="px-4 py-3">
               <div class="flex items-center justify-center gap-1">
                 <button onclick="openShiftModal(${s.id})"
@@ -14296,76 +16828,76 @@ function renderShiftsTab() {
     <div class="px-5 py-4 border-b border-orange-100 flex items-center justify-between">
       <div>
         <h3 class="font-bold text-orange-800"><i class="fas fa-user-clock mr-2"></i>파출/알바 근무유형 설정</h3>
-        <p class="text-xs text-orange-400 mt-0.5">파출·알바 스케줄 표에서 사용할 근무유형을 커스터마이즈합니다</p>
+        <p class="text-xs text-orange-400 mt-0.5">파출·알바 스케줄 표에서 사용할 근무유형을 정의합니다</p>
       </div>
-      <button onclick="saveExtShiftConfig()"
-        class="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-500 hover:bg-orange-600 text-white transition-colors">
-        <i class="fas fa-save mr-1"></i>저장
-      </button>
-    </div>
-    <div class="p-5">
-      <p class="text-xs text-gray-500 mb-4">
-        <i class="fas fa-info-circle mr-1 text-orange-400"></i>
-        활성화된 항목만 셀 클릭 시 순환됩니다. 이름·시간대·표시 레이블을 변경할 수 있습니다.
-      </p>
-      <div class="space-y-3" id="extShiftConfigRows">
-        ${extItems.map((item, idx) => `
-        <div class="flex items-center gap-3 p-3 rounded-xl border ${item.enabled ? 'border-orange-200 bg-orange-50' : 'border-gray-200 bg-gray-50'}" id="extShiftRow_${idx}">
-          <label class="flex items-center gap-1.5 cursor-pointer shrink-0">
-            <input type="checkbox" ${item.enabled ? 'checked' : ''}
-              onchange="toggleExtShiftRow(${idx}, this.checked)"
-              class="rounded border-orange-300 text-orange-500">
-            <span class="text-xs font-semibold ${item.enabled ? 'text-orange-700' : 'text-gray-400'}">사용</span>
-          </label>
-          <div class="w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0"
-            style="background:${item.bg||'#fff7ed'};color:${item.color||'#ea580c'}">
-            ${item.label}
-          </div>
-          <div class="grid grid-cols-2 gap-2 flex-1 min-w-0">
-            <div>
-              <label class="text-xs text-gray-500 block mb-0.5">표시 이름</label>
-              <input type="text" value="${item.label}" id="extLabel_${idx}"
-                class="w-full border border-gray-200 rounded px-2 py-1 text-xs"
-                placeholder="오전/오후/9H/12H">
-            </div>
-            <div>
-              <label class="text-xs text-gray-500 block mb-0.5">근무시간 (h)</label>
-              <input type="number" value="${item.hours||'8'}" id="extHours_${idx}" min="1" max="24"
-                class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-            </div>
-            <div>
-              <label class="text-xs text-gray-500 block mb-0.5">시작 시간</label>
-              <input type="time" value="${item.startTime||'07:00'}" id="extStart_${idx}"
-                class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-            </div>
-            <div>
-              <label class="text-xs text-gray-500 block mb-0.5">종료 시간</label>
-              <input type="time" value="${item.endTime||'19:00'}" id="extEnd_${idx}"
-                class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-            </div>
-          </div>
-          <div class="shrink-0 text-xs text-gray-400 text-center" style="min-width:52px">
-            <div class="font-mono text-[10px] text-gray-400">${item.key}</div>
-            <button onclick="deleteExtShiftRow(${idx})" title="이 근무유형 삭제"
-              class="mt-1 w-full px-1 py-0.5 rounded text-[10px] bg-red-50 hover:bg-red-100 text-red-400 hover:text-red-600 border border-red-200 transition-colors">
-              <i class="fas fa-trash"></i> 삭제
-            </button>
-          </div>
-        </div>`).join('')}
-      </div>
-      <div class="mt-3 flex gap-2">
-        <button onclick="addExtShiftRow()"
-          class="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-100 hover:bg-orange-200 text-orange-700 border border-orange-200 transition-colors">
+      <div class="flex gap-2">
+        <button onclick="openExtShiftModal()"
+          class="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-500 hover:bg-orange-600 text-white transition-colors">
           <i class="fas fa-plus mr-1"></i>근무유형 추가
         </button>
         <button onclick="resetExtShiftConfig()"
           class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-600 border border-gray-200 transition-colors">
-          <i class="fas fa-undo mr-1"></i>기본값 초기화
+          <i class="fas fa-undo mr-1"></i>기본값
         </button>
       </div>
-      <div class="mt-4 p-3 bg-orange-50 rounded-xl text-xs text-orange-700">
-        <strong>입력 단축키:</strong> 오전(오/ㅇ/A), 오후(B), 9H(9), 12H(1/F) — 셀 선택 후 해당 키를 누르면 즉시 적용
-      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-orange-50 border-b border-orange-100">
+            <th class="px-4 py-3 text-left text-xs font-semibold text-orange-700">코드</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-orange-700">이름</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-orange-700">시간</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-orange-700">색상</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-orange-700">사용</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-orange-700">관리</th>
+          </tr>
+        </thead>
+        <tbody id="extShiftConfigRows">
+          ${extItems.map((item, idx) => `
+          <tr class="border-b border-orange-50 hover:bg-orange-50/50" id="extShiftRow_${idx}" data-key="${item.key}">
+            <td class="px-4 py-3">
+              <span class="inline-flex items-center justify-center w-9 h-9 rounded-lg text-sm font-bold"
+                style="background:${item.bg||'#fff7ed'};color:${item.color||'#ea580c'}">
+                ${item.label}
+              </span>
+            </td>
+            <td class="px-4 py-3 font-medium text-gray-800">${item.label}</td>
+            <td class="px-4 py-3 text-gray-600">${item.startTime||'07:00'} ~ ${item.endTime||'19:00'} (${item.hours||'8'}h)</td>
+            <td class="px-4 py-3">
+              <span class="inline-block w-5 h-5 rounded" style="background:${item.color||'#ea580c'}"></span>
+              <span class="text-xs text-gray-400 ml-1">${item.color||'#ea580c'}</span>
+            </td>
+            <td class="px-4 py-3 text-center">
+              <label class="inline-flex items-center cursor-pointer">
+                <input type="checkbox" ${item.enabled !== false ? 'checked' : ''}
+                  onchange="toggleExtShiftEnabled('${item.key}', this.checked)"
+                  class="rounded border-orange-300 text-orange-500 mr-1">
+                <span class="text-xs ${item.enabled !== false ? 'text-orange-600 font-semibold' : 'text-gray-400'}">
+                  ${item.enabled !== false ? '사용' : '미사용'}
+                </span>
+              </label>
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-center gap-1">
+                <button onclick="openExtShiftModal('${item.key}')"
+                  class="p-1.5 rounded hover:bg-orange-100 hover:text-orange-600 text-gray-400 transition-colors">
+                  <i class="fas fa-pen text-xs"></i>
+                </button>
+                <button onclick="deleteExtShiftItem('${item.key}','${item.label}')"
+                  class="p-1.5 rounded hover:bg-red-100 hover:text-red-600 text-gray-400 transition-colors">
+                  <i class="fas fa-trash text-xs"></i>
+                </button>
+              </div>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div class="px-5 py-3 bg-orange-50 border-t border-orange-100">
+      <p class="text-xs text-orange-700">
+        <strong>입력 단축키:</strong> 셀 선택 후 바로 타이핑하면 직접 입력 (코드 그대로 입력) · Enter/Tab=확정 · Ctrl+C/V=복사붙여넣기 · Ctrl+Z=실행취소 · Del=삭제
+      </p>
     </div>
   </div>`
 }
@@ -14630,9 +17162,9 @@ function renderOffGrantsPanel() {
       <!-- Phase D: 직원별 공휴일 정책 현황 (관리자 전용) -->
       ${isAdm && scheduleHolidayPolicySummary ? (()=>{
         const hps = scheduleHolidayPolicySummary
-        const pLabel = { off:'공휴=휴무', work_pay:'공휴=수당', work_substitute:'공휴=대체' }
-        const pColor = { off:'text-gray-600', work_pay:'text-yellow-700', work_substitute:'text-green-700' }
-        const pBg    = { off:'bg-gray-50 border-gray-200', work_pay:'bg-yellow-50 border-yellow-200', work_substitute:'bg-green-50 border-green-200' }
+        const pLabel = { off:'공휴=휴무', work_pay:'공휴=수당', work_substitute:'공휴=대체', work_normal:'공휴=근무(무수당)' }
+        const pColor = { off:'text-gray-600', work_pay:'text-yellow-700', work_substitute:'text-green-700', work_normal:'text-slate-600' }
+        const pBg    = { off:'bg-gray-50 border-gray-200', work_pay:'bg-yellow-50 border-yellow-200', work_substitute:'bg-green-50 border-green-200', work_normal:'bg-slate-50 border-slate-200' }
         const overrides = (hps.employees||[]).filter(e=>e.override)
         return `
       <div class="mt-3 pt-3 border-t border-gray-100">
@@ -15639,12 +18171,11 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
           const isSun2 = dow2==='일', isSat2 = dow2==='토'
           dateHdr += '<th style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;border-left:1px solid rgba(255,255,255,.15);' + ((isSun2||isSat2)?'background:rgba(0,0,0,.15);':'') + 'font-size:8px;color:' + (isSun2?'#fca5a5':isSat2?'#93c5fd':'rgba(255,255,255,.9)') + ';font-weight:' + ((isSun2||isSat2)?'700':'500') + '">' + d2 + '<br><span style="font-size:7px;opacity:.8">' + dow2 + '</span></th>'
         }
-        dateHdr += '<th style="padding:2px;text-align:center;width:28px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:white;background:rgba(0,0,0,.2)">근</th>'
-        dateHdr += '<th style="padding:2px;width:26px;border-left:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2)"></th></tr>'
+        dateHdr += '<th style="padding:2px;text-align:center;width:36px;min-width:36px;border-left:2px solid rgba(255,255,255,.3);font-size:9px;color:white;background:rgba(0,0,0,.2)">근무일</th></tr>'
         groupRows += dateHdr
 
         if (eg.workers.length === 0) {
-          groupRows += '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="' + (grpContentStyle === 'none' ? 'display:none' : '') + '"><td colspan="' + (days+3) + '" style="padding:8px;text-align:center;background:' + eg.bg + ';color:' + eg.color + ';font-size:10px;font-style:italic">등록된 ' + eg.label + '이 없습니다</td></tr>'
+          groupRows += '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="' + (grpContentStyle === 'none' ? 'display:none' : '') + '"><td colspan="' + (days+2) + '" style="padding:8px;text-align:center;background:' + eg.bg + ';color:' + eg.color + ';font-size:10px;font-style:italic">등록된 ' + eg.label + '이 없습니다</td></tr>'
           return
         }
 
@@ -15674,7 +18205,12 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
               ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:7px;font-weight:700;background:' + badgeBg + ';color:' + badgeFg + ';border:1px solid ' + badgeBorder + ';overflow:hidden;white-space:nowrap" title="' + extCode + '">' + extDisplayLabel + '</span>'
               : '<span style="color:#d1d5db;font-size:9px">·</span>'
             wCells += '<td class="ext-cell" style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;overflow:hidden;' + cellBg2 + 'border-left:1px solid ' + borderCol2 + ';cursor:pointer;position:relative;user-select:none"' +
-              ' data-shift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' + sp2 + '</td>'
+              ' onclick="extCellClick(event,' + w.id + ',\'' + ds2 + '\',this)"' +
+              ' ondblclick="extCellDbl(event,' + w.id + ',\'' + ds2 + '\',this)"' +
+              ' onmousedown="extCellMd(event,' + w.id + ',\'' + ds2 + '\',this)"' +
+              ' onmousemove="extCellMm(event,' + w.id + ',\'' + ds2 + '\',this)"' +
+              ' onmouseup="extCellMu(event,' + w.id + ',\'' + ds2 + '\',this)"' +
+              ' data-shift="' + extCode + '" data-extshift="' + extCode + '" data-extid="' + w.id + '" data-date="' + ds2 + '" data-wtype="' + eg.type + '" data-wname="' + (w.name||'').replace(/"/g,'') + '">' + sp2 + '</td>'
           }
           groupRows +=
             '<tr class="design-ext-content design-ext-grp-' + eg.type + '" style="border-bottom:1px solid ' + eg.border + ';' + (grpContentStyle === 'none' ? 'display:none' : '') + '"' +
@@ -15684,8 +18220,7 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
             '<div style="font-size:10px;font-weight:700;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (w.name||'이름없음') + '">' + (w.name||'이름없음') + '</div>' +
             '<span style="display:inline-flex;align-items:center;font-size:8px;padding:0 4px;border-radius:3px;background:' + eg.color + '22;color:' + eg.color + ';font-weight:700">' + eg.label + '</span>' +
             '</td>' + wCells +
-            '<td style="padding:1px 2px;text-align:center;background:#fff7ed;border-left:2px solid #fed7aa;font-size:10px;font-weight:700;color:' + eg.color + '">' + wWorkDays + '</td>' +
-            '<td style="padding:1px;background:' + rowBg2 + ';border-left:1px solid ' + eg.border + '"></td></tr>'
+            '<td style="padding:1px 2px;text-align:center;background:#fff7ed;border-left:2px solid #fed7aa;font-size:10px;font-weight:700;color:' + eg.color + ';min-width:36px;width:36px">' + wWorkDays + '일</td></tr>'
         })
 
         // 합계 행
@@ -15708,8 +18243,7 @@ if(ic)ic.textContent=open?\'▲\':\'▼\';\
           '<td style="padding:2px 5px;position:sticky;left:0;background:' + eg.bg + ';z-index:2;border-right:2px solid ' + eg.color + '44">' +
           '<span style="font-size:9px;font-weight:800;color:' + eg.color + '">' + eg.label + ' 합계</span></td>' +
           extTotalCells +
-          '<td style="padding:1px 2px;text-align:center;background:' + eg.bg + ';border-left:2px solid ' + eg.color + '44;font-size:10px;font-weight:800;color:' + eg.color + '">' + wTotalAll + '</td>' +
-          '<td style="padding:1px;background:' + eg.bg + '"></td></tr>'
+          '<td style="padding:1px 2px;text-align:center;background:' + eg.bg + ';border-left:2px solid ' + eg.color + '44;font-size:10px;font-weight:800;color:' + eg.color + ';min-width:36px;width:36px">' + wTotalAll + '일</td></tr>'
       })
 
       if (!groupRows) return ''
@@ -16112,16 +18646,20 @@ function renderSchedStaffView({ days, emps, shifts, schedMap, leaveMap, allOffSe
   </div>
   <style>
   @media print {
-    .bottom-bar, nav, .month-nav, button { display:none!important }
-    #pageContent > *:not(:has(.staff-emp-row)) { display:none!important }
-    body { background:white!important }
-    div[style*="linear-gradient"] { -webkit-print-color-adjust:exact;print-color-adjust:exact }
-    div[style*="overflow-x:auto"] { overflow:visible!important;max-height:none!important }
-    table { font-size:8px!important;page-break-inside:auto }
-    tr { page-break-inside:avoid }
+    .bottom-bar, nav, .month-nav, button, .no-print, #toastContainer { display:none!important }
+    body { background:white!important; margin:0!important }
+    * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important }
+    div[style*="linear-gradient"] { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important }
+    div[style*="overflow-x:auto"], div[style*="overflow-y:auto"] { overflow:visible!important; max-height:none!important }
+    div[style*="overflow:hidden"] { overflow:visible!important }
+    table { font-size:8px!important; page-break-inside:auto!important; width:100%!important }
+    tr { page-break-inside:avoid!important }
     th, td { padding:2px 1px!important }
-    thead { display:table-header-group }
-    @page { margin:8mm; size:A4 landscape; }
+    thead { display:table-header-group!important }
+    /* 텍스트 잘림 방지 */
+    td, th { white-space:normal!important; word-break:keep-all!important }
+    /* 긴 업체명 줄바꿈 허용 */
+    [style*="white-space:nowrap"] { white-space:normal!important }
   }
   .staff-emp-row:hover td { filter:brightness(.97) }
   </style>`
@@ -16294,7 +18832,7 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
   }
   if(empStats.some(e=>e.holidayWorkDays>2)) {
     const hospitalPolicy = scheduleHolidayPolicySummary?.hospital_policy || scheduleWorkSettings?.holiday_policy || 'off'
-    const policyCtx = hospitalPolicy==='work_pay' ? ' (병원정책: 공휴수당 지급)' : hospitalPolicy==='work_substitute' ? ' (병원정책: 대체휴무 생성)' : ''
+    const policyCtx = hospitalPolicy==='work_pay' ? ' (병원정책: 공휴수당 지급)' : hospitalPolicy==='work_substitute' ? ' (병원정책: 대체휴무 생성)' : hospitalPolicy==='work_normal' ? ' (병원정책: 일반근무 처리 — 수당 없음)' : ''
     evalItems.push({ type:'warn', text:`공휴일 3일 이상 근무자 ${empStats.filter(e=>e.holidayWorkDays>2).map(e=>e.name).join(', ')} — 휴일수당 발생 여부를 확인하세요.${policyCtx}` })
   }
 
@@ -16552,10 +19090,15 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
   </div>
   <style>
   @media print {
-    nav, button, .bottom-bar { display:none!important }
-    body { background:white!important }
-    div[style*="linear-gradient"] { -webkit-print-color-adjust:exact;print-color-adjust:exact }
+    nav, button, .bottom-bar, .month-nav, .no-print, #toastContainer { display:none!important }
+    body { background:white!important; margin:0!important }
+    * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important }
+    div[style*="linear-gradient"] { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important }
+    div[style*="overflow-x:auto"], div[style*="overflow-y:auto"], div[style*="max-height"] { overflow:visible!important; max-height:none!important }
+    div[style*="overflow:hidden"] { overflow:visible!important }
     .bg-white { box-shadow:none!important }
+    /* 카드 잘림 방지 */
+    div[style*="border-radius"] { page-break-inside:avoid!important; break-inside:avoid!important }
   }
   </style>`
   } catch(e) {
@@ -16568,7 +19111,10 @@ function renderSchedExecutiveView({ days, emps, shifts, schedMap, leaveMap, allO
 function renderMonthlyScheduleTab() {
   const days = getDaysInMonth(App.currentYear, App.currentMonth)
   // 퇴사자 및 비활성 직원 제외
-  const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
+  const _today2 = new Date().toISOString().slice(0, 10)
+  const emps = (scheduleEmployees || []).filter(e =>
+    e.is_active !== 0 && (!e.resign_date || e.resign_date >= _today2)
+  )
   const shifts = scheduleShifts
 
   // 근무조 색상 맵
@@ -16576,7 +19122,9 @@ function renderMonthlyScheduleTab() {
   shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
 
   // 기본 근무 코드 + 등록된 근무조 코드
-  const defaultCodes = ['연','휴','오전','오후','경조','OT','-']
+  // 시스템 고정 코드: 연, 휴, 경조, OT (법적/운영상 고정 의미)
+  // 오전/오후는 병원별 설정(schedule_shifts)에서 관리 — 여기서 제거
+  const defaultCodes = ['연','휴','경조','OT','-']
   const shiftCodes = shifts.map(s => s.shift_code)
   const ALL_CODES = [...shiftCodes, ...defaultCodes]
   window._schedAllCodes = ALL_CODES  // 전역 참조 (onclick 이스케이프 문제 방지)
@@ -16594,12 +19142,15 @@ function renderMonthlyScheduleTab() {
       return `background:${hex}22;color:${hex};font-weight:700`
     }
     const defMap = {
-      '연': 'background:#fef9c3;color:#92400e',
-      '휴': 'background:#fee2e2;color:#b91c1c',
+      '연':   'background:#fef9c3;color:#92400e',
+      '휴':   'background:#fee2e2;color:#b91c1c',
+      '경조': 'background:#fce7f3;color:#9d174d',
+      'OT':   'background:#ecfdf5;color:#065f46',
+      // 반차 — schedule_shifts half_type 기반 (호환용 색상 유지)
       '오전': 'background:#ede9fe;color:#6d28d9',
       '오후': 'background:#dbeafe;color:#1d4ed8',
-      '경조': 'background:#fce7f3;color:#9d174d',
-      'OT': 'background:#ecfdf5;color:#065f46'
+      '전반': 'background:#ede9fe;color:#7c3aed',
+      '후반': 'background:#dbeafe;color:#1d4ed8'
     }
     return defMap[code] || 'background:#f3f4f6;color:#374151'
   }
@@ -16693,7 +19244,7 @@ function renderMonthlyScheduleTab() {
             `).join('')}
             ${defaultCodes.filter(c=>c!=='-').map(c => {
               const st = getShiftStyle(c)
-              const colMap = {'연':'#92400e','휴':'#b91c1c','오전':'#6d28d9','오후':'#1d4ed8','경조':'#9d174d','OT':'#065f46'}
+              const colMap = {'연':'#92400e','휴':'#b91c1c','경조':'#9d174d','OT':'#065f46'}
               const col = colMap[c] || '#374151'
               return `<button onclick="applyCodeInstant('${c}')"
                 class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
@@ -16701,21 +19252,38 @@ function renderMonthlyScheduleTab() {
                 title="${c} — 클릭하면 선택 셀에 적용">${c}</button>`
             }).join('')}
             ${(() => {
-              // 파출/알바 근무조 버튼 (구분선 후 추가)
+              // ── 반차 버튼 섹션: [반차] 단일 버튼으로 통합 ──
+              // 전반/후반 개별 버튼 완전 제거 → 반차 모달로 진입
+              const EXT_CODES = new Set(['오전','오후'])
+              const halfShifts = shifts.filter(s =>
+                (s.half_type === 'half_am' || s.half_type === 'half_pm') &&
+                !EXT_CODES.has(s.shift_code)
+              )
+              // [반차] 버튼은 항상 표시 (halfday / hourly / half_type 근무조 유무 관계없이)
+              const showHalfBtn = true
+              const halfBtnsHtml = showHalfBtn
+                ? '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle" title="반차 구분선"></span>' +
+                  `<button onclick="openHalfLeaveModalFromSchedule()"
+                    class="inline-flex items-center justify-center px-3 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                    style="background:#7c3aed22;color:#7c3aed;border:1.5px solid #7c3aed55"
+                    title="반차 입력 — 클릭하면 반차 입력 모달이 열립니다">반차</button>`
+                : ''
+
+              // ── 파출/알바 근무조 버튼 (extShiftConfig 기반) ──
+              // 기본값: 오전, 오후, 9H, 12H 모두 표시
               try {
                 const extCfgRaw = localStorage.getItem('extShiftConfig')
                 const extCfg = extCfgRaw ? JSON.parse(extCfgRaw) : []
                 const active = extCfg.filter(c => c.enabled !== false)
                 if (active.length === 0) {
-                  // 기본 4가지
-
+                  // 기본값: 오전/오후/9H/12H 모두 표시 (파출/알바 전용)
                   const defaults = [
                     {key:'morning',  label:'오전', bg:'#fff7ed', color:'#c2410c'},
                     {key:'afternoon',label:'오후', bg:'#fef3c7', color:'#b45309'},
                     {key:'full_9h',  label:'9H',  bg:'#ffedd5', color:'#ea580c'},
                     {key:'full_12h', label:'12H', bg:'#fee2e2', color:'#dc2626'},
                   ]
-                  return '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle"></span>' +
+                  const extBtnsHtml = '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle" title="파출/알바 구분선"></span>' +
                     defaults.map(d =>
                       `<button onclick="extApplyCodeInstant('${d.key}')"
                         data-extkey="${d.key}"
@@ -16723,8 +19291,9 @@ function renderMonthlyScheduleTab() {
                         style="background:${d.bg};color:${d.color};border:1.5px solid ${d.color}55"
                         title="${d.label} (파출/알바) — 클릭하면 파출/알바 셀에 적용">${d.label}</button>`
                     ).join('')
+                  return halfBtnsHtml + extBtnsHtml
                 }
-                return '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle"></span>' +
+                const extBtnsHtml = '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle" title="파출/알바 구분선"></span>' +
                   active.map(d => {
                     const colorMap = {morning:'#c2410c',afternoon:'#b45309',full_9h:'#ea580c',full_12h:'#dc2626'}
                     const bgMap    = {morning:'#fff7ed',afternoon:'#fef3c7',full_9h:'#ffedd5',full_12h:'#fee2e2'}
@@ -16736,7 +19305,8 @@ function renderMonthlyScheduleTab() {
                       style="background:${bg};color:${col};border:1.5px solid ${col}55"
                       title="${d.label||d.key} (파출/알바) — 클릭하면 파출/알바 셀에 적용">${d.label||d.key}</button>`
                   }).join('')
-              } catch(e) { return '' }
+                return halfBtnsHtml + extBtnsHtml
+              } catch(e) { return halfBtnsHtml }
             })()}
           </div>
           <!-- QR 공유 관리 버튼 -->
@@ -16909,6 +19479,25 @@ function renderMonthlyScheduleTab() {
               const weeklyMaxHours2 = parseFloat(ws2.weekly_max_hours || '52')
               const legalWarnEnabled2 = (ws2.legal_warning_enabled ?? '1') === '1'
               let maxConsecFound2 = 0, curConsec2 = 0
+              // ── 이전 달 말미 연속 근무 이월: 이전 달 마지막 날부터 역순으로 확인 ──
+              ;(() => {
+                const sm2 = schedMap
+                const yr2 = App.currentYear, mo2 = App.currentMonth
+                const prevMo2 = mo2 === 1 ? 12 : mo2 - 1
+                const prevYr2 = mo2 === 1 ? yr2 - 1 : yr2
+                const prevDays2 = new Date(prevYr2, prevMo2, 0).getDate()
+                for (let pd = prevDays2; pd >= 1; pd--) {
+                  const pdStr = `${prevYr2}-${String(prevMo2).padStart(2,'0')}-${String(pd).padStart(2,'0')}`
+                  const ps2   = sm2[`${emp.id}_${pdStr}`]
+                  const pc2   = ps2?.shift_code || ''
+                  const plt2  = ps2?.leave_type || ''
+                  if (pc2 && pc2 !== '-' && !REST_CODES2.has(pc2) && !plt2) {
+                    curConsec2++
+                  } else {
+                    break
+                  }
+                }
+              })()
               function calcShiftHoursInner(code2) {
                 if (!code2 || code2 === '-') return 0
                 if (REST_CODES2.has(code2)) return 0
@@ -16995,6 +19584,8 @@ function renderMonthlyScheduleTab() {
                   <div style="display:inline-flex;flex-direction:column;align-items:center">
                     <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:11px;font-weight:600;${spanStyle2}">${spanText2}</span>
                     ${extraIcon2}
+                    ${sched?.partial_am ? `<div class="pl-badge pl-badge-am" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#ede9fe;color:#7c3aed;border:1px solid #c4b5fd">${window._currentLeaveUnitType === 'hourly' ? `전반 ${sched.partial_am.hours}h` : '오전반차'}</div>` : ''}
+                    ${sched?.partial_pm ? `<div class="pl-badge pl-badge-pm" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd">${window._currentLeaveUnitType === 'hourly' ? `후반 ${sched.partial_pm.hours}h` : '오후반차'}</div>` : ''}
                   </div>
                 </td>`
               }).join('')
@@ -17053,7 +19644,7 @@ function renderMonthlyScheduleTab() {
                     <i class="fas fa-chart-line" style="font-size:9px;color:#94a3b8;margin-left:2px"></i>
                     ${consecWarn2?`<span title="연속${maxConsecFound2}일 근무 초과" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ef4444;color:white;font-size:8px;font-weight:800;margin-left:2px">!</span>`:''}
                     ${weekWarn2?`<span title="주 최대 ${Math.round(maxWeeklyHoursFound)}h 초과" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f97316;color:white;font-size:8px;font-weight:800;margin-left:2px">W</span>`:''}
-                    ${emp.holiday_policy_override?`<span title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'}" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f59e0b;color:white;font-size:8px;font-weight:800;margin-left:2px">H</span>`:''}
+                    ${emp.holiday_policy_override?`<span title="공휴일 정책 개별설정: ${emp.holiday_policy_override==='off'?'휴무':emp.holiday_policy_override==='work_pay'?'근무+수당':emp.holiday_policy_override==='work_substitute'?'근무+대체':'근무(수당없음)'}" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#f59e0b;color:white;font-size:8px;font-weight:800;margin-left:2px">H</span>`:''}
                   </div>
                   <div id="namecell-pos-${emp.id}" style="font-size:10px;color:#94a3b8">${emp.position_name||emp.position||''}</div>
                   ${(()=>{
@@ -17207,8 +19798,10 @@ function renderMonthlyScheduleTab() {
                 const color = sType === 'dispatch' ? '#ea580c' : '#db2777'
                 const bg    = sType === 'dispatch' ? '#fff7ed' : '#fdf2f8'
                 const icon  = sType === 'dispatch' ? 'fa-people-carry' : 'fa-user-clock'
+                const hdrBg = sType === 'dispatch' ? '#ea580c' : '#db2777'
                 const colspan = days + 3
 
+                // ── 섹션 헤더 행 (타입 표시 + 추가 버튼)
                 let out = '<tr>'
                 out += '<td colspan="' + colspan + '" style="background:' + bg + ';padding:4px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid ' + color + '33">'
                 out += '<span style="font-size:11px;font-weight:700;color:' + color + '">'
@@ -17219,6 +19812,25 @@ function renderMonthlyScheduleTab() {
                   out += '<i class="fas fa-plus" style="margin-right:2px"></i>' + lbl + ' 추가</button>'
                 }
                 out += '</td></tr>'
+
+                // ── 날짜 헤더 행 (직원 스케줄과 동일한 구조)
+                let dateHdrRow = '<tr style="background:' + hdrBg + '">'
+                dateHdrRow += '<th style="padding:5px 10px;text-align:left;min-width:120px;position:sticky;left:0;background:' + hdrBg + ';z-index:15;color:white;font-size:11px;font-weight:700;border-right:2px solid rgba(255,255,255,.3)">이름</th>'
+                for (let di = 0; di < days; di++) {
+                  const dday = di + 1
+                  const ddow = getDayOfWeek(App.currentYear, App.currentMonth, dday)
+                  const isDSun = ddow === '일', isDSat = ddow === '토'
+                  const dBorder = isDSun ? '#fca5a5' : isDSat ? '#93c5fd' : 'rgba(255,255,255,0.2)'
+                  const dColor  = isDSun ? '#fca5a5' : isDSat ? '#93c5fd' : 'white'
+                  const dBg     = (isDSun || isDSat) ? hdrBg + 'cc' : hdrBg
+                  dateHdrRow += '<th style="padding:3px 1px;text-align:center;min-width:32px;color:' + dColor + ';border-left:1px solid ' + dBorder + ';background:' + dBg + '">'
+                  dateHdrRow += '<div style="font-size:11px">' + dday + '</div>'
+                  dateHdrRow += '<div style="font-size:9px;opacity:0.8">' + ddow + '</div>'
+                  dateHdrRow += '</th>'
+                }
+                dateHdrRow += '<th style="padding:3px 4px;min-width:36px;text-align:center;border-left:2px solid rgba(255,255,255,.3);background:rgba(0,0,0,.2);font-size:9px;color:white">근무일</th>'
+                dateHdrRow += '</tr>'
+                out += dateHdrRow
 
                 workers.forEach(function(worker, widx) {
                   const rowBg = widx % 2 === 0 ? '#fffaf5' : '#fff5ee'
@@ -17232,20 +19844,29 @@ function renderMonthlyScheduleTab() {
                     const isWknd = isWeekend(App.currentYear, App.currentMonth, day)
                     const dow2   = getDayOfWeek(App.currentYear, App.currentMonth, day)
                     const isSun2 = dow2 === '일'
+                    const isSat2 = dow2 === '토'
                     const sched  = extMap[worker.id + '_' + dateStr]
                     const shiftType = (sched && sched.shift_type) ? sched.shift_type : ''
 
-                    const cellBgVal   = isSun2 ? '#fff1f2' : (isWknd ? '#fffbeb' : rowBg)
-                    const borderColor = isSun2 ? '#fecaca' : (isWknd ? '#fde68a' : '#e5e7eb')
+                    const cellBgVal   = isSun2 ? '#fff1f2' : (isSat2 ? '#eff6ff' : rowBg)
+                    const borderColor = isSun2 ? '#fecaca' : (isSat2 ? '#bfdbfe' : '#e5e7eb')
                     const spanStyle   = EXT_SHIFT_COLORS[shiftType] || 'background:#f9fafb;color:#d1d5db'
                     const spanText    = EXT_SHIFT_LABELS[shiftType] || '·'
 
                     cells += '<td class="ext-cell"'
                     cells += ' data-extshift="' + shiftType + '"'
+                    cells += ' data-shift="' + shiftType + '"'
                     cells += ' data-extid="' + worker.id + '"'
                     cells += ' data-date="' + dateStr + '"'
                     cells += ' data-wtype="' + worker.worker_type + '"'
-                    cells += ' style="padding:2px;text-align:center;background:' + cellBgVal + ';border-left:1px solid ' + borderColor + ';' + (canEdit ? 'cursor:pointer;' : '') + 'position:relative;">'
+                    if (canEdit) {
+                      cells += ' onclick="extCellClick(event,' + worker.id + ',\'' + dateStr + '\',this)"'
+                      cells += ' ondblclick="extCellDbl(event,' + worker.id + ',\'' + dateStr + '\',this)"'
+                      cells += ' onmousedown="extCellMd(event,' + worker.id + ',\'' + dateStr + '\',this)"'
+                      cells += ' onmousemove="extCellMm(event,' + worker.id + ',\'' + dateStr + '\',this)"'
+                      cells += ' onmouseup="extCellMu(event,' + worker.id + ',\'' + dateStr + '\',this)"'
+                    }
+                    cells += ' style="padding:2px;text-align:center;min-width:32px;background:' + cellBgVal + ';border-left:1px solid ' + borderColor + ';' + (canEdit ? 'cursor:pointer;' : '') + 'position:relative;user-select:none;">'
                     cells += '<div style="display:inline-flex;flex-direction:column;align-items:center">'
                     cells += '<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;' + spanStyle + '">' + spanText + '</span>'
                     cells += '</div></td>'
@@ -17261,14 +19882,20 @@ function renderMonthlyScheduleTab() {
                   const typeLbl   = worker.worker_type === 'dispatch' ? '파출' : '알바'
 
                   out += '<tr style="border-bottom:1px solid #e2e8f0">'
-                  out += '<td style="padding:5px 10px;position:sticky;left:0;background:' + rowBg + ';z-index:2;min-width:110px;border-right:1px solid #e2e8f0">'
+                  out += '<td style="padding:4px 8px;position:sticky;left:0;background:' + rowBg + ';z-index:2;min-width:120px;border-right:2px solid ' + color + '44">'
+                  out += '<div style="display:flex;align-items:center;gap:4px;justify-content:space-between">'
                   out += '<div style="display:flex;align-items:center;gap:4px">'
                   out += '<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:' + typeColor + '22;color:' + typeColor + ';font-weight:700">' + typeLbl + '</span>'
                   out += '<span style="font-size:11px;font-weight:600;color:#374151">' + worker.name + '</span>'
+                  out += '</div>'
+                  if (canEdit) {
+                    out += '<button class="ext-del-btn" data-wid="' + worker.id + '" data-wname="' + worker.name + '"'
+                    out += ' style="padding:1px 5px;border-radius:3px;background:#fee2e2;color:#dc2626;font-size:10px;border:1px solid #fca5a5;cursor:pointer;line-height:1.4" title="' + worker.name + ' 삭제">'
+                    out += '<i class="fas fa-times"></i></button>'
+                  }
                   out += '</div></td>'
-                  out += '<td style="text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px">' + wdCount + '일</td>'
-                  out += '<td style="text-align:center;font-size:10px;color:#6b7280;padding:2px"></td>'
                   out += cells
+                  out += '<td style="text-align:center;font-size:10px;font-weight:700;color:' + color + ';padding:2px;min-width:36px;background:#fff7ed;border-left:2px solid ' + color + '44">' + wdCount + '\uc77c</td>'
                   out += '</tr>'
                 })
 
@@ -17277,7 +19904,7 @@ function renderMonthlyScheduleTab() {
 
               function buildEmptyRow() {
                 if (!canEdit) return ''
-                const colspan = days + 3
+                const colspan = days + 2 // 이름 + 날짜셀들 + 근무일
                 let html = '<tr>'
                 html += '<td colspan="' + colspan + '" style="background:#f9fafb;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:2px solid #e5e7eb22;text-align:center">'
                 html += '<span style="font-size:11px;color:#9ca3af">외부인력(파출/알바) 없음 &nbsp;</span>'
@@ -17294,7 +19921,7 @@ function renderMonthlyScheduleTab() {
               }
 
               // ── 파출/알바 근무조 시간대 범례 행 (파출 섹션 바로 위) ──
-              const EXT_LEGEND_COLSPAN = days + 3
+              const EXT_LEGEND_COLSPAN = days + 2
               let extLegendRow = '<tr>'
               extLegendRow += '<td colspan="' + EXT_LEGEND_COLSPAN + '" style="background:#fff3e8;padding:5px 14px;border-top:3px solid #ea580c;border-bottom:1px solid #fed7aa">'
               extLegendRow += '<span style="font-size:10px;font-weight:700;color:#9a3412;margin-right:6px"><i class="fas fa-clock" style="margin-right:3px;color:#ea580c"></i>파출/알바 근무조 안내</span>'
@@ -17548,10 +20175,36 @@ function renderEmployeeModal() {
             </select>
           </div>
           <div>
-            <label class="text-sm font-medium text-gray-700">연차 총일수</label>
+            <label class="text-sm font-medium text-gray-700">연차 총일수 <span class="text-xs text-gray-400">(입사1년 이상)</span></label>
             <input type="number" id="ei_annualLeave" class="form-input mt-1" min="0" max="30" step="0.5"
               value="${isEdit ? (emp?.annual_leave_total||15) : 15}">
           </div>
+
+          <!-- 기존 연차/월차 초기 보정 섹션 -->
+          ${isEdit ? `
+          <div class="col-span-2 mt-1">
+            <h4 class="text-sm font-bold text-gray-500 uppercase tracking-wide mb-1 border-b pb-1">
+              <i class="fas fa-history mr-1 text-orange-500"></i>기존 사용 연차/월차 입력 <span class="text-xs font-normal text-gray-400">(시스템 도입 전 보정용)</span>
+            </h4>
+            <p class="text-xs text-gray-400 mb-3">이 시스템 도입 전에 이미 사용한 휴가 일수를 입력하면 잔여 계산에 자동 차감됩니다.</p>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-orange-700 flex items-center gap-1">
+              <i class="fas fa-umbrella-beach text-blue-500"></i> 기존 사용 연차 (일)
+            </label>
+            <input type="number" id="ei_priorAnnualUsed" class="form-input mt-1 border-orange-200" min="0" max="30" step="0.5"
+              value="${(()=>{ const b=(window._leaveBalanceData||[]).find(b=>b.employee_id===emp?.id); return b?.annual?.prior_used||0 })()}">
+            <p class="text-xs text-gray-400 mt-0.5">연차 잔여 = 발생 - 기존사용 - 이번연도사용</p>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-orange-700 flex items-center gap-1">
+              <i class="fas fa-calendar-plus text-teal-500"></i> 기존 사용 월차 (일)
+            </label>
+            <input type="number" id="ei_priorMonthlyUsed" class="form-input mt-1 border-orange-200" min="0" max="11" step="0.5"
+              value="${(()=>{ const b=(window._leaveBalanceData||[]).find(b=>b.employee_id===emp?.id); return b?.monthly?.prior_used||0 })()}">
+            <p class="text-xs text-gray-400 mt-0.5">월차 잔여 = 발생 - 기존사용 - 이번연도사용</p>
+          </div>
+          ` : ''}
 
           <!-- 근무 파트 -->
           <div class="col-span-2 mt-1">
@@ -17630,6 +20283,7 @@ function renderEmployeeModal() {
                 <option value="off" ${(isEdit&&emp?.holiday_policy_override==='off')?'selected':''}>공휴일 = 휴무</option>
                 <option value="work_pay" ${(isEdit&&emp?.holiday_policy_override==='work_pay')?'selected':''}>공휴일 = 근무 + 공휴수당</option>
                 <option value="work_substitute" ${(isEdit&&emp?.holiday_policy_override==='work_substitute')?'selected':''}>공휴일 = 근무 + 대체휴무</option>
+                <option value="work_normal" ${(isEdit&&emp?.holiday_policy_override==='work_normal')?'selected':''}>공휴일 = 근무 (추가 수당 없음)</option>
               </select>
               <span class="text-xs text-gray-400">※ 병원 기본값 사용 시 근무설정의 공휴일 정책을 따릅니다</span>
             </div>
@@ -17637,7 +20291,8 @@ function renderEmployeeModal() {
             <div class="mt-1.5 inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs bg-amber-50 border border-amber-200 text-amber-700">
               <i class="fas fa-user-cog"></i> 개별 오버라이드 적용 중: <strong>${
                 emp.holiday_policy_override==='off'?'휴무':
-                emp.holiday_policy_override==='work_pay'?'근무+수당':'근무+대체'
+                emp.holiday_policy_override==='work_pay'?'근무+수당':
+                emp.holiday_policy_override==='work_substitute'?'근무+대체':'근무(수당없음)'
               }</strong>
             </div>` : ''}
           </div>
@@ -17803,13 +20458,37 @@ function renderShiftModal() {
             <input type="time" id="sm_end" class="form-input mt-1" value="18:00">
           </div>
         </div>
-        <div>
-          <label class="text-sm font-medium text-gray-700">대상팀</label>
-          <select id="sm_team" class="form-input mt-1">
-            <option value="">전체</option>
-            <option value="cook">조리팀</option>
-            <option value="nutrition">영양팀</option>
-          </select>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">대상팀</label>
+            <select id="sm_team" class="form-input mt-1">
+              <option value="">전체</option>
+              <option value="cook">조리팀</option>
+              <option value="nutrition">영양팀</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">반차구분 <span class="text-xs text-gray-400">(선택)</span></label>
+            <select id="sm_half_type" class="form-input mt-1">
+              <option value="">없음 (일반 근무)</option>
+              <option value="half_am">오전반차 (전반)</option>
+              <option value="half_pm">오후반차 (후반)</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">
+              기준 근무시간
+              <span class="text-xs text-gray-400 ml-1">(시간 단위 연차용)</span>
+            </label>
+            <div class="flex items-center gap-2 mt-1">
+              <input type="number" id="sm_standard_hours" class="form-input w-20" value="8" min="1" max="24" step="1">
+              <span class="text-sm text-gray-500">시간</span>
+            </div>
+            <p class="text-xs text-gray-400 mt-0.5">부분연차 차감 기준 (8 또는 12)</p>
+          </div>
+          <div></div>
         </div>
         <div>
           <label class="text-sm font-medium text-gray-700">색상</label>
@@ -17830,6 +20509,62 @@ function renderShiftModal() {
         <button onclick="document.getElementById('shiftModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
       </div>
     </div>
+  </div>
+
+  <!-- ══ 파출/알바 근무유형 추가/수정 모달 ══ -->
+  <div id="extShiftModal" class="hidden modal-overlay" style="z-index:1001">
+    <div class="modal-box max-w-md p-6">
+      <h3 class="font-bold text-lg mb-4 text-orange-700"><i class="fas fa-user-clock mr-2"></i>파출/알바 근무유형 <span id="extShiftModalTitle">추가</span></h3>
+      <input type="hidden" id="esm_key">
+      <div class="space-y-4">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">근무코드 <span class="text-red-500">*</span></label>
+            <input type="text" id="esm_code" class="form-input mt-1" placeholder="오전" maxlength="6"
+              oninput="(function(el){var box=document.getElementById('esm_preview');if(box)box.textContent=el.value||'?';})(this)">
+            <p class="text-xs text-gray-400 mt-0.5">스케줄 셀에 표시되는 코드</p>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">근무명 <span class="text-red-500">*</span></label>
+            <input type="text" id="esm_name" class="form-input mt-1" placeholder="오전 근무">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">시작시간</label>
+            <input type="time" id="esm_start" class="form-input mt-1" value="07:00">
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">종료시간</label>
+            <input type="time" id="esm_end" class="form-input mt-1" value="19:00">
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">색상</label>
+          <div class="flex items-center gap-3 mt-1">
+            <div id="esm_preview" class="w-12 h-10 rounded-lg flex items-center justify-center text-sm font-bold border border-gray-200"
+              style="background:#fff7ed;color:#ea580c">?</div>
+            <input type="color" id="esm_color" value="#ea580c" class="w-12 h-10 rounded cursor-pointer border border-gray-200"
+              oninput="(function(el){var p=document.getElementById('esm_preview');if(p){p.style.color=el.value;p.style.background=el.value+'22';}})(this)">
+            <div class="flex gap-1 flex-wrap">
+              ${['#ea580c','#c2410c','#b45309','#dc2626','#db2777','#7c3aed','#0891b2','#059669'].map(c =>
+                `<button onclick="(function(col){document.getElementById('esm_color').value=col;var p=document.getElementById('esm_preview');if(p){p.style.color=col;p.style.background=col+'22';}})(\'${c}\')"
+                  class="w-6 h-6 rounded-full border-2 border-white shadow hover:scale-110 transition-transform"
+                  style="background:${c}"></button>`
+              ).join('')}
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="esm_enabled" checked class="rounded border-orange-300 text-orange-500">
+          <label for="esm_enabled" class="text-sm text-gray-700 cursor-pointer">활성화 (스케줄에서 사용)</label>
+        </div>
+      </div>
+      <div class="flex gap-3 mt-6">
+        <button onclick="saveExtShiftModal()" class="btn btn-primary flex-1" style="background:#ea580c;border-color:#ea580c">저장</button>
+        <button onclick="document.getElementById('extShiftModal').classList.add('hidden')" class="btn btn-secondary">취소</button>
+      </div>
+    </div>
   </div>`
 }
 
@@ -17838,412 +20573,411 @@ function renderShiftModal() {
 // ════════════════════════════════════════════════════════════════
 function renderLeavesTab() {
   const isAdm = App.role === 'admin' || App.role === 'hospital'
-  const year = App.currentYear
-  const emps = Array.isArray(scheduleEmployees) ? scheduleEmployees : []
+  const year  = App.currentYear
+  const now   = new Date()
+  const msPerYear = 365.25 * 24 * 3600 * 1000
+
+  // ── 병원 휴가 차감 방식: leave_unit_type ────────────────────
+  // API 응답의 leave_unit_type 필드에서 추출 (첫 번째 직원 기준 — 병원 단위로 동일)
+  const emps    = Array.isArray(scheduleEmployees) ? scheduleEmployees : []
+  const balData = Array.isArray(window._leaveBalanceData) ? window._leaveBalanceData : []
+  const balByEmp = {}
+  for (const b of balData) balByEmp[b.employee_id] = b
+  window._leaveBalanceByEmp = balByEmp  // ★ 전역 캐시 — openLeaveDetailModal에서 참조
+  // leave_unit_type은 balData 첫 항목에서 가져옴 (없으면 halfday 기본값)
+  const leaveUnitType = (balData[0]?.leave_unit_type) || window._hospitalLeaveUnitType || 'halfday'
+  window._currentLeaveUnitType = leaveUnitType  // 전역 캐시 (모달에서 참조)
+
   const leaves = Array.isArray(scheduleLeavesData) ? scheduleLeavesData : []
-  const histSummary = scheduleLeaveHistorySummary || {}
-
-  // 초기 셋업 배너 제거 — '전체 월차 자동발생' 버튼으로 통합
-  const setupBanner = ''
-
-  // leave map by empId — annual 타입만 저장 (monthly로 덮어쓰기 방지)
   const leaveByEmp = {}
-  for (const l of leaves) {
-    if (l.leave_type === 'annual') leaveByEmp[l.employee_id] = l
-  }
-
-  // 직원별 법정 연차 계산
-  function calcLegal(emp) {
-    if (!emp.hire_date) return 0
-    const hired = new Date(emp.hire_date)
-    const now   = new Date(year + '-12-31')
-    const diffMs = now - hired
-    const years = diffMs / (1000*60*60*24*365)
-    if (years < 0) return 0
-    if (years < 1) {
-      const months = Math.floor(diffMs / (1000*60*60*24*30))
-      return Math.min(months, 11)
-    }
-    const base = 15
-    const extra = Math.floor((years - 1) / 2)
-    return Math.min(base + extra, 25)
-  }
-
-  // 비활성/삭제 직원 제외, hire_date 없는 직원도 연차탭에서 제외
-  const activeEmps = emps.filter(e => e.is_active !== 0)
-  const cookEmps  = activeEmps.filter(e => e.team === 'cook' || !e.team)
-  const nutriEmps = activeEmps.filter(e => e.team === 'nutrition')
-
-  // ── 월차 데이터 (renderRows 이전에 정의 — scope 오류 방지) ──
-  const mlEnabled = scheduleWorkSettings?.monthly_leave_enabled !== '0'
-  const monthlyLeavesData = Array.isArray(window._monthlyLeavesData) ? window._monthlyLeavesData : []
+  for (const l of leaves) leaveByEmp[l.employee_id + '_' + l.leave_type] = l
+  const mlData = Array.isArray(window._monthlyLeavesData) ? window._monthlyLeavesData : []
   const mlByEmp = {}
-  for (const ml of monthlyLeavesData) mlByEmp[ml.employee_id] = ml
+  for (const m of mlData) mlByEmp[m.employee_id] = m
 
-  function renderRows(teamEmps, teamKey) {
-    if (!teamEmps.length) return ''
-    const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
-    let html = `<tr class="bg-gray-50">
-      <td colspan="13" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase border-b">
-        <i class="fas ${tl.icon} mr-1"></i>${tl.label} (${teamEmps.length}명)
-      </td></tr>`
-    for (const emp of teamEmps) {
-      const legal = calcLegal(emp)
-      const lv    = leaveByEmp[emp.id]
-      // ✅ CALC_ENGINE: calcAnnualRemain (이월연차 포함 — 이전: total_days/carried_over 직접 계산)
-      const { total, effective: effectiveTotal, used, remain, carried: carriedOver } = CALC_ENGINE.calcAnnualRemain(lv)
-      const pct   = effectiveTotal ? Math.round(used / effectiveTotal * 100) : 0
-      const pctColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
-      // 이 직원의 월차 잔여 확인 (1년 미만이면 mlByEmp에서 읽음)
-      const mlEmpData = mlByEmp[emp.id]
-      // 1년 미만 여부 판단 (현재 시점 기준)
-      const _isUnder1Y = (() => {
-        if (!emp.hire_date) return false
-        const hd = new Date(emp.hire_date)
-        return (Date.now() - hd.getTime()) < 365.25 * 24 * 3600 * 1000
-      })()
-      const mlRemainForAnnual = (() => {
-        if (!mlEmpData) return null
-        // under1Year 플래그가 있으면 우선, 없으면 프론트에서 계산한 값 사용
-        const isUnder = mlEmpData.under1Year ?? _isUnder1Y
-        if (!isUnder) return null // 이미 연차 전환됨
-        const mt = mlEmpData.monthly_total ?? mlEmpData.auto_calc_days ?? 0
-        const mu = mlEmpData.monthly_used ?? 0
-        return mt - mu
-      })()
-      // 1년 미만 직원의 월차 사용일수 (annual used와 별도 표시)
-      const mlUsedForDisplay = _isUnder1Y ? (mlEmpData?.monthly_used ?? 0) : null
-      const mlTotalForDisplay = _isUnder1Y ? (mlEmpData?.monthly_total ?? mlEmpData?.auto_calc_days ?? null) : null
-      // 연차수당 지급 여부
-      const allowancePaid = lv?.allowance_paid ? true : false
-      const allowancePaidAt = lv?.allowance_paid_at || ''
-      // 연차 이력 (반차/경조사)
-      const hist = histSummary[emp.id] || {}
-      const halfAM = hist['half_am'] || 0
-      const halfPM = hist['half_pm'] || 0
-      const eventCnt = hist['event'] || 0
-      // D-day: 올해 12월 31일 기준
-      let dday = ''
-      if (emp.hire_date) {
-        const today = new Date()
-        const expiry = new Date(year, 11, 31)
-        const diffDays = Math.ceil((expiry - today) / (1000*60*60*24))
-        if (diffDays >= 0) dday = `D-${diffDays}`
-        else dday = `D+${Math.abs(diffDays)}`
+  const activeEmps = emps.filter(e => e.is_active !== 0 && e.hire_date)
+  const cookEmps   = activeEmps.filter(e => e.team === 'cook' || !e.team)
+  const nutriEmps  = activeEmps.filter(e => e.team === 'nutrition')
+  const maxDays    = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
+
+  // ── 직원별 계산 ─────────────────────────────────────────────
+  function calcEmpLeave(emp) {
+    const diffMs  = now.getTime() - new Date(emp.hire_date).getTime()
+    const under1Y = diffMs < msPerYear
+    const months  = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24 * 30.44)))
+    const yrs     = Math.floor(months / 12)
+    const remMo   = months % 12
+    const tenureStr = yrs > 0
+      ? (remMo > 0 ? yrs + '년 ' + remMo + '개월' : yrs + '년')
+      : months + '개월'
+
+    const bal = balByEmp[emp.id]
+    const lv  = leaveByEmp[emp.id + '_annual']
+    const lvM = leaveByEmp[emp.id + '_monthly']
+    const ml  = mlByEmp[emp.id]
+
+    // 월차
+    let mTotal = 0, mUsed = 0, mPrior = 0
+    if (bal?.monthly) {
+      mTotal = bal.monthly.total_days > 0 ? bal.monthly.total_days : (bal.monthly.auto_calc_days || 0)
+      // ★ used_days는 API에서 반차 포함값으로 내려옴 (monthlyUsedFinal)
+      mUsed  = bal.monthly.used_days  || 0
+      mPrior = bal.monthly.prior_used || 0
+    } else if (lvM) {
+      mTotal = lvM.total_days || 0
+      mUsed  = lvM.used_days  || 0
+      mPrior = lvM.initial_used_days || 0
+    } else if (ml) {
+      mTotal = ml.monthly_total ?? ml.auto_calc_days ?? 0
+      mUsed  = ml.monthly_used || 0
+    } else if (under1Y) {
+      let cy = new Date(emp.hire_date).getFullYear()
+      let cm = new Date(emp.hire_date).getMonth() + 2
+      if (cm > 12) { cm = 1; cy++ }
+      let cnt = 0
+      const ly = now.getFullYear(), lm = now.getMonth() + 1
+      while ((cy < ly || (cy === ly && cm <= lm)) && cnt < maxDays) {
+        cnt++; cm++; if (cm > 12) { cm = 1; cy++ }
       }
-      html += `<tr class="border-b hover:bg-blue-50 transition-colors">
-        <td class="px-4 py-3 cursor-pointer" onclick="openEmpStatsModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}')">
-          <div class="font-medium text-gray-800">${emp.name} <i class="fas fa-chart-line text-xs text-gray-400"></i></div>
-          <div class="text-xs text-gray-400">${emp.position_name||emp.position||''}</div>
-        </td>
-        <td class="px-3 py-3 text-sm text-center text-gray-600">${emp.hire_date ? emp.hire_date.substring(0,7) : '-'}</td>
-        <td class="px-3 py-3 text-center">
-          <span class="inline-block px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700 font-bold">${legal}일</span>
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${carriedOver > 0
-            ? `<div class="flex flex-col items-center gap-0.5">
-                <span class="text-xs font-bold text-amber-600">+${carriedOver}일</span>
-                <span class="text-xs text-gray-400">이월</span>
-               </div>`
-            : allowancePaid
-              ? `<div class="flex flex-col items-center gap-0.5">
-                  <span class="text-xs text-gray-400">-</span>
-                  <span class="inline-block px-1 py-0.5 rounded text-xs bg-green-100 text-green-700 font-bold">수당지급</span>
-                 </div>`
-              : `<span class="text-xs text-gray-300">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${total !== null
-            ? `<div class="flex flex-col items-center">
-                <span class="text-sm font-bold text-gray-800">${total}일</span>
-                ${carriedOver > 0 ? `<span class="text-xs text-amber-600 font-bold">합계 ${effectiveTotal}일</span>` : ''}
-               </div>`
-            : _isUnder1Y
-              ? `<div class="flex flex-col items-center gap-0.5">
-                  <span class="inline-block px-1.5 py-0.5 rounded text-xs bg-teal-100 text-teal-700 font-bold">1년미만</span>
-                  ${mlTotalForDisplay !== null
-                    ? `<span class="text-xs text-teal-600 font-bold">월차 ${mlTotalForDisplay}일</span>`
-                    : `<span class="text-xs text-gray-400">미부여</span>`}
-                 </div>`
-              : `<div class="flex flex-col items-center gap-0.5">
-                  <span class="text-xs text-orange-600 font-bold">미부여</span>
-                 </div>`}
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${_isUnder1Y && mlTotalForDisplay !== null
-            ? `<div class="flex flex-col items-center">
-                <span class="text-sm font-bold ${mlUsedForDisplay > 0 ? 'text-teal-700' : 'text-gray-400'}">${mlUsedForDisplay}일</span>
-                <span class="text-xs text-gray-400">월차</span>
-               </div>`
-            : `<span class="text-sm font-bold ${used > 0 ? 'text-blue-700' : 'text-gray-400'}">${used}일</span>`}
-        </td>
-        <td class="px-3 py-3 text-center text-xs">
-          ${halfAM > 0 || halfPM > 0
-            ? `<span class="text-purple-600 font-bold">${halfAM+halfPM}회</span><br><span class="text-gray-400">(오전${halfAM}/오후${halfPM})</span>`
-            : `<span class="text-gray-300">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center text-xs">
-          ${eventCnt > 0
-            ? `<span class="text-pink-600 font-bold">${eventCnt}회</span>`
-            : `<span class="text-gray-300">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${_isUnder1Y && mlRemainForAnnual !== null
-            ? `<span class="text-sm font-bold ${mlRemainForAnnual <= 1 ? 'text-red-600' : mlRemainForAnnual <= 3 ? 'text-yellow-600' : 'text-teal-700'}">${mlRemainForAnnual}일</span>`
-            : remain !== null
-              ? `<span class="text-sm font-bold ${remain <= 3 ? 'text-red-600' : remain <= 7 ? 'text-yellow-600' : 'text-green-700'}">${remain}일</span>`
-              : `<span class="text-xs text-gray-400">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center text-xs">
-          ${dday ? `<span class="px-1.5 py-0.5 rounded-full text-xs font-bold ${dday.startsWith('D-') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${dday}</span>` : '-'}
-        </td>
-        <td class="px-3 py-3">
-          ${(() => {
-            if (_isUnder1Y && mlTotalForDisplay !== null && mlTotalForDisplay > 0) {
-              const mp = Math.round((mlUsedForDisplay||0) / mlTotalForDisplay * 100)
-              const mc = mp >= 80 ? 'bg-red-500' : mp >= 50 ? 'bg-yellow-500' : 'bg-teal-500'
-              return `<div class="flex items-center gap-2">
-                <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:50px">
-                  <div class="${mc} h-2 rounded-full transition-all" style="width:${Math.min(mp,100)}%"></div>
-                </div>
-                <span class="text-xs text-gray-500">${mp}%</span>
-              </div>`
-            }
-            if (effectiveTotal !== null) {
-              return `<div class="flex items-center gap-2">
-                <div class="flex-1 bg-gray-200 rounded-full h-2" style="min-width:50px">
-                  <div class="${pctColor} h-2 rounded-full transition-all" style="width:${Math.min(pct,100)}%"></div>
-                </div>
-                <span class="text-xs text-gray-500">${pct}%</span>
-              </div>`
-            }
-            return ''
-          })()}
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${allowancePaid && allowancePaidAt
-            ? `<span class="text-xs text-green-700 font-bold"><i class="fas fa-check-circle mr-1"></i>지급완료<br><span class="text-gray-400 font-normal">${allowancePaidAt}</span></span>`
-            : `<span class="text-xs text-gray-300">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${isAdm ? `<button onclick="openLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}',${total??legal},${used},${carriedOver},${allowancePaid?1:0},'${allowancePaidAt}')"
-            class="px-2 py-1 rounded text-xs bg-blue-600 text-white hover:bg-blue-700">수정</button>` : '-'}
-        </td>
-      </tr>`
+      mTotal = cnt
     }
-    return html
+    // ★ mRemain: API의 remain_days 우선 사용 (반차 포함 서버 계산값)
+    // API remain_days = total - used(반차포함) - prior
+    const mRemain = (bal?.monthly?.remain_days !== undefined && bal?.monthly?.remain_days !== null)
+      ? bal.monthly.remain_days
+      : Math.max(0, mTotal - mUsed - mPrior)
+
+    // 연차
+    let aGranted = 0, aManual = 0, aCarried = 0, aUsed = 0, aPrior = 0
+    let aAllowancePaid = false, aAllowancePaidAt = ''
+    if (bal?.annual) {
+      aGranted = bal.annual.granted_days  || 0
+      aManual  = bal.annual.manual_adjust || 0
+      aCarried = bal.annual.carried_over  || 0
+      aUsed    = bal.annual.used_days     || 0
+      aPrior   = bal.annual.prior_used    || 0
+      aAllowancePaid   = bal.annual.allowance_paid ? true : false
+      aAllowancePaidAt = bal.annual.allowance_paid_at || ''
+    } else if (lv) {
+      aGranted = lv.total_days || 0
+      aCarried = lv.allowance_paid ? 0 : (lv.carried_over_days || 0)
+      aUsed    = lv.used_days  || 0
+      aPrior   = lv.initial_used_days || 0
+      aAllowancePaid   = lv.allowance_paid   ? true : false
+      aAllowancePaidAt = lv.allowance_paid_at || ''
+    }
+    const aTotal  = aGranted + aManual + aCarried
+    const aRemain = Math.max(0, aTotal - aUsed - aPrior)
+
+    // ★ 반차 정보: under1Y이면 monthly에서, 아니면 annual에서 가져옴
+    // API가 monthly/annual 양쪽에 hist_half_am/pm을 모두 포함시켜서 내려줌
+    const halfAmCnt  = (under1Y ? (bal?.monthly?.hist_half_am || 0) : (bal?.annual?.hist_half_am || 0))
+                     || bal?.annual?.hist_half_am || 0
+    const halfPmCnt  = (under1Y ? (bal?.monthly?.hist_half_pm || 0) : (bal?.annual?.hist_half_pm || 0))
+                     || bal?.annual?.hist_half_pm || 0
+    const halfUsed   = (halfAmCnt + halfPmCnt) * 0.5  // 사용된 반차 일수 합계
+
+    // ★ 총계 — 단일 기준으로 통합
+    // under1Y: 월차 사용 + 반차 (mUsed에 이미 반차 포함되어 있으므로 그대로 사용)
+    // 1년 이상: 연차 사용 (aUsed에 이미 반차 포함)
+    const totalUsed   = under1Y ? (mUsed + mPrior) : (aUsed + aPrior)
+    const totalRemain = under1Y ? mRemain : aRemain
+
+    // D-day
+    let ddayNum = null, ddayLabel = ''
+    if (under1Y) {
+      const hired   = new Date(emp.hire_date)
+      const oneYear = new Date(hired.getTime() + msPerYear)
+      ddayNum   = Math.ceil((oneYear.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+      ddayLabel = '연차 발생까지'
+    } else {
+      const yearEnd = new Date(year, 11, 31)
+      ddayNum   = Math.ceil((yearEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+      ddayLabel = '연도 만료까지'
+    }
+
+    return {
+      under1Y, tenureStr, months,
+      mTotal, mUsed, mPrior, mRemain,
+      aGranted, aManual, aCarried, aUsed, aPrior, aTotal, aRemain,
+      aAllowancePaid, aAllowancePaidAt,
+      halfAmCnt, halfPmCnt, halfUsed,
+      totalUsed, totalRemain, ddayNum, ddayLabel
+    }
   }
 
-  // 전체 통계 (annual 타입만 집계)
-  const annualLeaves   = leaves.filter(l => l.leave_type === 'annual')
-  const statAssigned   = annualLeaves.filter(l => l.total_days > 0).length
-  const statUnassigned = emps.filter(e => e.hire_date).length - statAssigned
-  const statTotalDays  = annualLeaves.reduce((a,l) => a + (l.total_days||0), 0)
-  const statUsedDays   = annualLeaves.reduce((a,l) => a + (l.used_days||0), 0)
+  // ── 통계 카드 ───────────────────────────────────────────────
+  let statTotal = activeEmps.length
+  let statUsed = 0, statRemain = 0, statExpireSoon = 0
+  const thisMonth = now.toISOString().slice(0, 7)
+  for (const emp of activeEmps) {
+    const c = calcEmpLeave(emp)
+    statUsed   += c.totalUsed
+    statRemain += c.totalRemain
+    if (c.under1Y) {
+      const expiry = new Date(new Date(emp.hire_date).getTime() + msPerYear).toISOString().slice(0, 7)
+      if (expiry === thisMonth) statExpireSoon++
+    }
+  }
 
-  // 월차 통계 — DB 저장값 기준 (미저장은 auto_calc_days로 표시)
-  const mlEmps      = monthlyLeavesData.filter(m => m.under1Year)
-  const mlTotalDays = monthlyLeavesData.reduce((a, l) => a + (l.monthly_total ?? l.auto_calc_days ?? 0), 0)
-  const mlUsedDays  = monthlyLeavesData.reduce((a, l) => a + (l.monthly_used||0), 0)
+  // ── 행 렌더 ─────────────────────────────────────────────────
+  function renderRow(emp) {
+    const c       = calcEmpLeave(emp)
+    const nameEsc = emp.name.replace(/'/g, "\\'")
 
-  function renderMonthlyLeaveRows(teamEmps, teamKey) {
+    // ① 생성 월차: under1Y → 월차 총 생성일수, 1년이상 → '소진'
+    const genMonthlyCell = c.under1Y
+      ? (c.mTotal > 0
+          ? `<span class="font-bold text-teal-600">${c.mTotal}일</span>`
+          : `<span class="text-gray-400 text-sm">0일</span>`)
+      : `<span class="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">소진</span>`
+
+    // ② 총 연차: under1Y → '-', 1년이상 → 연차 총 부여일수
+    const totalAnnualCell = c.under1Y
+      ? `<span class="text-gray-300 text-sm">-</span>`
+      : (c.aTotal > 0
+          ? `<span class="font-bold text-blue-600">${c.aTotal}일</span>`
+          : `<span class="text-orange-400 text-xs font-medium">미부여</span>`)
+
+    // ③ 총 사용
+    const usedCell = c.totalUsed > 0
+      ? `<span class="font-bold text-red-500">${c.totalUsed}일</span>`
+      : `<span class="text-gray-300 text-sm">0일</span>`
+
+    // ④ 반차/부분연차 사용 (halfday: 0.5일×건수 / hourly: leave_ratio합산)
+    // API 응답 partial_* 필드는 두 모드 공통 (서버에서 leaveUnitType에 따라 이미 계산됨)
+    const halfTotal = c.halfAmCnt + c.halfPmCnt
+    const bal = balByEmp[emp.id]
+    // partial_* 필드 우선, fallback hourly_* (구버전 호환)
+    const ptAmCnt   = bal?.annual?.partial_am_cnt   ?? bal?.monthly?.partial_am_cnt   ?? bal?.annual?.hourly_am_cnt   ?? bal?.monthly?.hourly_am_cnt   ?? 0
+    const ptPmCnt   = bal?.annual?.partial_pm_cnt   ?? bal?.monthly?.partial_pm_cnt   ?? bal?.annual?.hourly_pm_cnt   ?? bal?.monthly?.hourly_pm_cnt   ?? 0
+    const ptAmHours = bal?.annual?.partial_am_hours ?? bal?.monthly?.partial_am_hours ?? bal?.annual?.hourly_am_hours ?? bal?.monthly?.hourly_am_hours ?? 0
+    const ptPmHours = bal?.annual?.partial_pm_hours ?? bal?.monthly?.partial_pm_hours ?? bal?.annual?.hourly_pm_hours ?? bal?.monthly?.hourly_pm_hours ?? 0
+    const ptTotal   = bal?.annual?.partial_total    ?? bal?.monthly?.partial_total    ?? bal?.annual?.hourly_total_ratio ?? bal?.monthly?.hourly_total_ratio ?? 0
+    const hasPartial = ptAmCnt > 0 || ptPmCnt > 0
+
+    let halfCell
+    if (leaveUnitType === 'hourly') {
+      // hourly: 시간 단위 표시 — "오전 Xh / 오후 Xh"
+      if (hasPartial || halfTotal > 0) {
+        const dispDays = ptTotal > 0 ? ptTotal : c.halfUsed
+        halfCell = `<div class="leading-snug text-center">
+          <span class="font-bold text-purple-600">${Math.round(dispDays * 1000) / 1000}일</span>
+          <div class="text-[10px] text-gray-400 mt-0.5 space-x-0.5">
+            ${ptAmCnt > 0 ? `<span class="bg-purple-50 text-purple-500 px-1 rounded">오전 ${ptAmHours}h</span>` : (c.halfAmCnt > 0 ? `<span class="bg-purple-50 text-purple-500 px-1 rounded">오전 ${c.halfAmCnt}회</span>` : '')}
+            ${ptPmCnt > 0 ? `<span class="bg-indigo-50 text-indigo-500 px-1 rounded">오후 ${ptPmHours}h</span>` : (c.halfPmCnt > 0 ? `<span class="bg-indigo-50 text-indigo-500 px-1 rounded">오후 ${c.halfPmCnt}회</span>` : '')}
+          </div>
+        </div>`
+      } else {
+        halfCell = `<span class="text-gray-300 text-sm">-</span>`
+      }
+    } else {
+      // halfday: 건수×0.5일 표시 — "오전 X회 / 오후 X회"
+      // partial 이력(ptAmCnt/ptPmCnt) 우선, 없으면 구형 half_am/pm 카운트 사용
+      const amCnt = ptAmCnt > 0 ? ptAmCnt : c.halfAmCnt
+      const pmCnt = ptPmCnt > 0 ? ptPmCnt : c.halfPmCnt
+      const totalCnt = amCnt + pmCnt
+      const dispDays = ptTotal > 0 ? ptTotal : totalCnt * 0.5
+      if (totalCnt > 0 || dispDays > 0) {
+        halfCell = `<div class="leading-snug text-center">
+            <span class="font-bold text-purple-600">${Math.round(dispDays * 1000) / 1000}일</span>
+            <div class="text-[10px] text-gray-400 mt-0.5 space-x-0.5">
+              ${amCnt > 0 ? `<span class="bg-purple-50 text-purple-500 px-1 rounded">오전 ${amCnt}회</span>` : ''}
+              ${pmCnt > 0 ? `<span class="bg-indigo-50 text-indigo-500 px-1 rounded">오후 ${pmCnt}회</span>` : ''}
+            </div>
+          </div>`
+      } else {
+        halfCell = `<span class="text-gray-300 text-sm">-</span>`
+      }
+    }
+
+    // ⑤ 남은 연차 (= 총잔여, 최강조)
+    const remColor = c.totalRemain <= 0
+      ? 'text-red-600'
+      : c.totalRemain <= 3
+        ? 'text-orange-500'
+        : 'text-green-600'
+    const remCell = `<span class="text-lg font-extrabold ${remColor}">${c.totalRemain}일</span>`
+
+    // D-day
+    const ddayCell = c.ddayNum !== null
+      ? `<div class="text-center leading-snug">
+          <div class="text-xs font-medium text-gray-400">D-${c.ddayNum}</div>
+          <div class="text-xs text-gray-300">${c.ddayLabel}</div>
+        </div>`
+      : `<span class="text-gray-300">-</span>`
+
+    return `<tr class="border-b hover:bg-blue-50/30 transition-colors cursor-pointer" onclick="openLeaveDetailModal(${emp.id},'${nameEsc}')" title="클릭 → 상세 이력 / 수정">
+      <td class="px-4 py-3">
+        <div class="font-semibold text-gray-800 text-sm">${emp.name}</div>
+        <div class="text-xs text-gray-400">${emp.position_name || emp.position || ''}</div>
+      </td>
+      <td class="px-3 py-3 text-center text-xs text-gray-500">${emp.hire_date ? emp.hire_date.substring(0, 7) : '-'}</td>
+      <td class="px-3 py-3 text-center">
+        <span class="text-xs font-medium text-gray-600">${c.tenureStr}</span>
+      </td>
+      <td class="px-3 py-3 text-center">${genMonthlyCell}</td>
+      <td class="px-3 py-3 text-center">${totalAnnualCell}</td>
+      <td class="px-3 py-3 text-center">${usedCell}</td>
+      <td class="px-3 py-3 text-center">${halfCell}</td>
+      <td class="px-3 py-3 text-center">${remCell}</td>
+      <td class="px-3 py-3 text-center">${ddayCell}</td>
+      <td class="px-3 py-3 text-center" onclick="event.stopPropagation()">
+        ${isAdm
+          ? `<div class="flex items-center justify-center gap-1.5">
+               <button onclick="openLeaveDetailModal(${emp.id},'${nameEsc}')"
+                 class="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors">
+                 <i class="fas fa-edit mr-1"></i>수정
+               </button>
+               ${leaveUnitType === 'hourly'
+                 ? `<button onclick="openPartialLeaveModal(${emp.id},'${nameEsc}')"
+                      class="px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-100 text-violet-700 hover:bg-violet-200 transition-colors whitespace-nowrap">
+                      <i class="fas fa-clock mr-1"></i>부분연차
+                    </button>`
+                 : ''
+               }
+             </div>`
+          : ''}
+      </td>
+    </tr>`
+  }
+
+  function renderTeamRows(teamEmps, teamKey) {
     if (!teamEmps.length) return ''
     const tl = TEAM_LABELS[teamKey] || TEAM_LABELS.cook
-    let html = `<tr class="bg-gray-50">
-      <td colspan="8" class="px-4 py-2 text-xs font-bold text-gray-500 uppercase border-b">
-        <i class="fas ${tl.icon} mr-1"></i>${tl.label} (${teamEmps.length}명)
-      </td></tr>`
-    for (const emp of teamEmps) {
-      if (!emp.hire_date) continue
-      const hired = new Date(emp.hire_date)
-      const now   = new Date()
-      const diffMs = now.getTime() - hired.getTime()
-      const under1Year = diffMs < 365.25 * 24 * 3600 * 1000
-      const tenureMonths = Math.floor(diffMs / (1000*60*60*24*30))
-      const ml = mlByEmp[emp.id]
-      const maxDays  = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
-
-      // DB에 저장된 값 (null = 아직 "전체 월차 자동발생" 미실행)
-      const mlTotal  = ml?.monthly_total ?? null
-      const mlUsed   = ml?.monthly_used  ?? 0
-      const mlRemain = mlTotal !== null ? mlTotal - mlUsed : null
-
-      // 자동계산 발생일수 (API에서 계산해서 내려줌, 없으면 프론트에서 계산)
-      const autoCalcDays = ml?.auto_calc_days ?? (() => {
-        if (!under1Year) return 0
-        const h = new Date(emp.hire_date)
-        let cy = h.getFullYear(), cm = h.getMonth() + 2
-        if (cm > 12) { cm = 1; cy++ }
-        const ly = now.getFullYear(), lm = now.getMonth() + 1
-        let cnt = 0
-        while ((cy < ly || (cy === ly && cm <= lm)) && cnt < maxDays) { cnt++; cm++; if (cm > 12) { cm = 1; cy++ } }
-        return cnt
-      })()
-
-      const mlPct    = mlTotal ? Math.round(mlUsed / mlTotal * 100) : 0
-      const mlPctColor = mlPct >= 80 ? 'bg-red-500' : mlPct >= 50 ? 'bg-yellow-500' : 'bg-green-500'
-      const statusBadge = under1Year
-        ? `<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-teal-100 text-teal-700 font-bold">1년미만</span>`
-        : `<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-500">연차전환</span>`
-      html += `<tr class="border-b hover:bg-teal-50 transition-colors">
-        <td class="px-4 py-3">
-          <div class="font-medium text-gray-800">${emp.name}</div>
-          <div class="text-xs text-gray-400">${emp.position_name||emp.position||''}</div>
-        </td>
-        <td class="px-3 py-3 text-center text-xs">${emp.hire_date ? emp.hire_date.substring(0,7) : '-'}</td>
-        <td class="px-3 py-3 text-center">${statusBadge}</td>
-        <td class="px-3 py-3 text-center">
-          <span class="inline-block px-2 py-0.5 rounded-full text-xs bg-teal-100 text-teal-700 font-bold">${tenureMonths}개월</span>
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${mlTotal !== null
-            ? `<span class="text-sm font-bold text-gray-800">${mlTotal}일</span><span class="text-xs text-gray-400 ml-1">/ ${maxDays}일</span>`
-            : under1Year && autoCalcDays > 0
-              ? `<div class="flex flex-col items-center gap-0.5">
-                  <span class="text-sm font-bold text-teal-600">${autoCalcDays}일</span>
-                  <span class="text-xs text-gray-400">자동발생 예정 · 수정가능</span>
-                </div>`
-              : under1Year
-                ? `<span class="text-xs text-gray-400">-</span>`
-                : `<span class="text-xs text-gray-300">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center">
-          <span class="text-sm font-bold ${mlUsed > 0 ? 'text-blue-700' : 'text-gray-400'}">${mlUsed}일</span>
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${mlRemain !== null
-            ? `<span class="text-sm font-bold ${mlRemain <= 1 ? 'text-red-600' : mlRemain <= 3 ? 'text-yellow-600' : 'text-teal-700'}">${mlRemain}일</span>`
-            : `<span class="text-xs text-gray-400">-</span>`}
-        </td>
-        <td class="px-3 py-3 text-center">
-          ${isAdm ? `<button onclick="openMonthlyLeaveEditModal(${emp.id},'${emp.name.replace(/'/g,'\x27')}')"
-            class="px-2 py-1 rounded text-xs bg-teal-600 text-white hover:bg-teal-700">수정</button>` : '-'}
-        </td>
-      </tr>`
-    }
-    return html
+    return `<tr class="bg-gray-50/60">
+      <td colspan="10" class="px-4 py-2 text-xs font-bold text-gray-500 border-b">
+        <i class="fas ${tl.icon} mr-1 text-gray-400"></i>${tl.label} (${teamEmps.length}명)
+      </td>
+    </tr>` + teamEmps.map(renderRow).join('')
   }
-
-  const cookEmpsML  = emps.filter(e => e.team === 'cook'  || !e.team)
-  const nutriEmpsML = emps.filter(e => e.team === 'nutrition')
 
   return `
   <div class="space-y-4">
-    ${setupBanner}
-    <!-- 통계 카드 -->
+
+    <!-- 상단 통계 카드 (4개) -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-        <div class="text-xs text-gray-500 mb-1">연차 부여 직원</div>
-        <div class="text-2xl font-bold text-blue-700">${statAssigned}명</div>
+        <div class="text-xs text-gray-400 mb-1 flex items-center gap-1">
+          <i class="fas fa-users"></i> 전체 직원
+        </div>
+        <div class="text-2xl font-bold text-gray-700">${statTotal}명</div>
       </div>
-      <div class="bg-white rounded-xl p-4 border border-orange-200 shadow-sm">
-        <div class="text-xs text-orange-600 mb-1">미부여 직원</div>
-        <div class="text-2xl font-bold text-orange-700">${statUnassigned}명</div>
+      <div class="bg-white rounded-xl p-4 border border-red-100 shadow-sm">
+        <div class="text-xs text-red-400 mb-1 flex items-center gap-1">
+          <i class="fas fa-minus-circle"></i> 총 사용
+        </div>
+        <div class="text-2xl font-bold text-red-500">${statUsed}일</div>
       </div>
-      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-        <div class="text-xs text-gray-500 mb-1">총 부여 연차</div>
-        <div class="text-2xl font-bold text-gray-800">${statTotalDays}일</div>
+      <div class="bg-white rounded-xl p-4 border border-green-100 shadow-sm">
+        <div class="text-xs text-green-500 mb-1 flex items-center gap-1">
+          <i class="fas fa-leaf"></i> 총 잔여
+        </div>
+        <div class="text-2xl font-extrabold text-green-600">${statRemain}일</div>
       </div>
-      <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-        <div class="text-xs text-gray-500 mb-1">총 사용 연차</div>
-        <div class="text-2xl font-bold text-green-700">${statUsedDays}일</div>
-        <div class="text-xs text-gray-400">잔여 ${statTotalDays - statUsedDays}일</div>
+      <div class="bg-white rounded-xl p-4 border border-orange-100 shadow-sm">
+        <div class="text-xs text-orange-400 mb-1 flex items-center gap-1">
+          <i class="fas fa-clock"></i> 이번달 월차 소멸
+        </div>
+        <div class="text-2xl font-bold text-orange-500">${statExpireSoon}명</div>
+        <div class="text-xs text-gray-300 mt-0.5">입사 1년 도달 예정</div>
       </div>
     </div>
 
-    <!-- ── 월차(1년 미만) 섹션 ── -->
-    ${mlEnabled ? `
-    <div class="bg-white rounded-2xl shadow-sm border border-teal-100 overflow-hidden">
-      <div class="px-5 py-4 border-b border-teal-100 bg-teal-50 flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h3 class="font-bold text-teal-800"><i class="fas fa-calendar-plus mr-2 text-teal-600"></i>${year}년 월차 현황 <span class="text-xs font-normal text-teal-600 ml-1">(1년 미만 근무자)</span></h3>
-          <p class="text-xs text-teal-600 mt-0.5">입사 다음달부터 매달 1일 자동 발생 · 최대 ${scheduleWorkSettings?.monthly_leave_max_days || 11}일 · 1년 만료 시 연차 자동 전환</p>
-        </div>
-        <div class="flex gap-2 flex-wrap">
-          
-        </div>
+    <!-- 휴가 차감 방식 설정 배너 (admin / hospital / 영양사만 변경 가능) -->
+    ${(() => {
+      // executive는 조회만 가능, admin/hospital은 변경 가능
+      const canChangeSetting = (App.role === 'admin' || App.role === 'hospital')
+      const isHourly = leaveUnitType === 'hourly'
+      const badgeCls  = isHourly
+        ? 'bg-violet-100 text-violet-700 border-violet-300'
+        : 'bg-gray-100 text-gray-600 border-gray-300'
+      const badgeIcon = isHourly ? 'fa-clock' : 'fa-divide'
+      const badgeTxt  = isHourly ? '시간 단위 차감 (Hourly)' : '반차 단위 차감 (Halfday)'
+      return `
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 px-5 py-3 flex items-center justify-between flex-wrap gap-3">
+      <div class="flex items-center gap-3">
+        <span class="text-sm font-medium text-gray-600">
+          <i class="fas fa-sliders-h mr-1 text-gray-400"></i>휴가 차감 방식
+        </span>
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-semibold ${badgeCls}">
+          <i class="fas ${badgeIcon}"></i>${badgeTxt}
+        </span>
       </div>
-      <!-- 월차 요약 카드 -->
-      <div class="grid grid-cols-3 gap-3 p-4 border-b border-gray-100">
-        <div class="text-center">
-          <div class="text-xs text-gray-500 mb-1">1년 미만 직원</div>
-          <div class="text-xl font-bold text-teal-700">${mlEmps.length}명</div>
-        </div>
-        <div class="text-center">
-          <div class="text-xs text-gray-500 mb-1">총 발생 월차</div>
-          <div class="text-xl font-bold text-gray-800">${mlTotalDays}일</div>
-        </div>
-        <div class="text-center">
-          <div class="text-xs text-gray-500 mb-1">사용 / 잔여</div>
-          <div class="text-xl font-bold text-gray-800"><span class="text-blue-600">${mlUsedDays}</span><span class="text-gray-400 text-sm">일</span> / <span class="text-teal-600">${mlTotalDays - mlUsedDays}</span><span class="text-gray-400 text-sm">일</span></div>
-        </div>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-gray-50 border-b">
-            <tr>
-              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600">직원</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">입사월</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-teal-600">상태</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">근속</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-teal-600">발생(누계)</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-blue-600">사용</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">잔여</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">관리</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${emps.filter(e => e.hire_date).length === 0
-              ? `<tr><td colspan="8" class="text-center py-8 text-gray-400">직원이 없습니다</td></tr>`
-              : renderMonthlyLeaveRows(cookEmpsML, 'cook') + renderMonthlyLeaveRows(nutriEmpsML, 'nutrition')}
-          </tbody>
-        </table>
-      </div>
-    </div>` : `
-    <div class="bg-gray-50 rounded-xl border border-gray-200 p-4 text-center text-gray-400 text-sm">
-      <i class="fas fa-toggle-off mr-2"></i>월차 자동 생성이 비활성화되어 있습니다.
-      근무설정에서 <strong>월차 자동 생성 정책</strong>을 켜면 활성화됩니다.
-    </div>`}
+      ${canChangeSetting ? `
+      <button onclick="openLeaveUnitTypeModal()"
+        class="px-4 py-1.5 rounded-lg border border-gray-300 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-400 transition-colors">
+        <i class="fas fa-cog mr-1"></i>차감 방식 변경
+      </button>` : `
+      <span class="text-xs text-gray-400 flex items-center gap-1">
+        <i class="fas fa-lock"></i>조회 전용
+      </span>`}
+    </div>`
+    })()}
 
-    <!-- 연차 테이블 -->
+    <!-- 통합 연차·월차 테이블 -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h3 class="font-bold text-gray-800">${year}년 연차 현황</h3>
-          <p class="text-xs text-gray-400 mt-0.5">법정 연차 = 입사 1년 미만:월1개, 1년 이상:15일+근속증가(최대25일)</p>
+          <h3 class="font-bold text-gray-800">
+            <i class="fas fa-calendar-check mr-2 text-blue-500"></i>${year}년 연차 · 월차 현황
+          </h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            입사일 기준 자동 계산 &nbsp;·&nbsp; 행 클릭 시 상세 이력 및 수정
+          </p>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap">
+          <div class="flex items-center gap-3 text-xs text-gray-400">
+          <span class="flex items-center gap-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-teal-400 inline-block"></span>생성월차
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-blue-400 inline-block"></span>연차
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-red-400 inline-block"></span>사용
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-purple-400 inline-block"></span>반차
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-green-400 inline-block"></span>잔여
+          </span>
+          </div>
+
         </div>
 
-      </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-gray-50 border-b">
             <tr>
-              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600">직원</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">입사월</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-blue-600">법정일수</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-amber-600">이월연차</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">부여일수</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">사용</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-purple-600">반차</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-pink-600">경조사</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">잔여</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-green-600">D-day</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">사용률</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-green-600">수당지급</th>
-              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-600">관리</th>
+              <th class="px-4 py-3 text-left   text-xs font-semibold text-gray-600">직원</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-500">입사월</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-500">근속</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-teal-600">생성 월차<div class="text-[10px] font-normal text-gray-400">1년 미만</div></th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-blue-600">총 연차<div class="text-[10px] font-normal text-gray-400">1년 이상</div></th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-red-500">총 사용</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-purple-600">${leaveUnitType === 'hourly' ? '부분연차 사용' : '반차 사용'}<div class="text-[10px] font-normal text-gray-400">${leaveUnitType === 'hourly' ? '시간 단위' : '½day'}</div></th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-green-600">남은 연차 ★</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-400">D-day</th>
+              <th class="px-3 py-3 text-center text-xs font-semibold text-gray-400">관리</th>
             </tr>
           </thead>
           <tbody>
-            ${emps.length === 0
-              ? `<tr><td colspan="13" class="text-center py-12 text-gray-400">직원이 없습니다</td></tr>`
-              : renderRows(cookEmps, 'cook') + renderRows(nutriEmps, 'nutrition')}
+            ${activeEmps.length === 0
+              ? `<tr><td colspan="10" class="text-center py-14 text-gray-400">
+                  <i class="fas fa-inbox text-3xl mb-3 block text-gray-300"></i>
+                  직원이 없습니다
+                </td></tr>`
+              : renderTeamRows(cookEmps, 'cook') + renderTeamRows(nutriEmps, 'nutrition')}
           </tbody>
         </table>
       </div>
     </div>
+
   </div>`
 }
+
 
 // ════════════════════════════════════════════════════════════════
 // 연차 수정 모달
@@ -18304,6 +21038,675 @@ function renderLeaveEditModal() {
       </div>
     </div>
   </div>`
+}
+
+// ════════════════════════════════════════════════════════════════
+// 휴가 차감 방식(leave_unit_type) 변경 모달 + 함수
+// ════════════════════════════════════════════════════════════════
+function renderLeaveUnitTypeModal() {
+  return `
+  <div id="leaveUnitTypeModal" class="hidden modal-overlay" style="z-index:1030">
+    <div class="modal-box max-w-sm p-0 overflow-hidden">
+      <div class="bg-indigo-600 text-white px-6 py-4 flex items-center justify-between">
+        <h3 class="font-bold text-lg">
+          <i class="fas fa-sliders-h mr-2"></i>휴가 차감 방식 변경
+        </h3>
+        <button onclick="document.getElementById('leaveUnitTypeModal').classList.add('hidden')"
+          class="text-white/70 hover:text-white text-xl">&times;</button>
+      </div>
+      <div class="p-6 space-y-4">
+        <p class="text-sm text-gray-600">현재 병원의 휴가 차감 방식을 선택하세요.</p>
+
+        <!-- 반차 단위 옵션 -->
+        <label id="lutOptHalfday" class="flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all border-gray-200 hover:border-indigo-300">
+          <input type="radio" name="leaveUnitOpt" value="halfday" class="mt-0.5 accent-indigo-600"
+            onchange="onLeaveUnitTypeChange('halfday')">
+          <div>
+            <div class="font-semibold text-gray-800 flex items-center gap-2">
+              <i class="fas fa-divide text-gray-500"></i>반차 단위 (Halfday)
+            </div>
+            <p class="text-xs text-gray-500 mt-0.5">오전반차 / 오후반차 = 각 0.5일 고정 차감</p>
+            <p class="text-xs text-gray-400 mt-0.5">기존 방식. 변경 없이 유지하려면 선택하세요.</p>
+          </div>
+        </label>
+
+        <!-- 시간 단위 옵션 -->
+        <label id="lutOptHourly" class="flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all border-gray-200 hover:border-violet-300">
+          <input type="radio" name="leaveUnitOpt" value="hourly" class="mt-0.5 accent-violet-600"
+            onchange="onLeaveUnitTypeChange('hourly')">
+          <div>
+            <div class="font-semibold text-gray-800 flex items-center gap-2">
+              <i class="fas fa-clock text-violet-500"></i>시간 단위 (Hourly)
+            </div>
+            <p class="text-xs text-gray-500 mt-0.5">사용시간 ÷ 근무조 기준시간 = 차감일수 자동 계산</p>
+            <p class="text-xs text-gray-400 mt-0.5">예) 4h ÷ 8h = 0.5일, 3h ÷ 9h ≈ 0.33일</p>
+          </div>
+        </label>
+
+        <!-- 안내 문구 -->
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">
+          <i class="fas fa-info-circle mr-1"></i>
+          기존 반차 이력은 변경되지 않습니다. 이후 입력되는 연차·반차부터 새 방식이 적용됩니다.
+        </div>
+      </div>
+      <div class="px-6 pb-6 flex gap-3">
+        <button onclick="confirmLeaveUnitTypeChange()"
+          class="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-colors">
+          <i class="fas fa-save mr-1"></i>변경 저장
+        </button>
+        <button onclick="document.getElementById('leaveUnitTypeModal').classList.add('hidden')"
+          class="px-5 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-medium hover:bg-gray-200 transition-colors">
+          취소
+        </button>
+      </div>
+    </div>
+  </div>`
+}
+
+// 변경 방식 선택 시 UI 업데이트
+window.onLeaveUnitTypeChange = (val) => {
+  const hdLabel = document.getElementById('lutOptHalfday')
+  const hrLabel = document.getElementById('lutOptHourly')
+  if (!hdLabel || !hrLabel) return
+  if (val === 'halfday') {
+    hdLabel.classList.add('border-indigo-500', 'bg-indigo-50')
+    hrLabel.classList.remove('border-violet-500', 'bg-violet-50')
+    hrLabel.classList.add('border-gray-200')
+    hdLabel.classList.remove('border-gray-200')
+  } else {
+    hrLabel.classList.add('border-violet-500', 'bg-violet-50')
+    hdLabel.classList.remove('border-indigo-500', 'bg-indigo-50')
+    hdLabel.classList.add('border-gray-200')
+    hrLabel.classList.remove('border-gray-200')
+  }
+}
+
+// leave_unit_type 변경 모달 열기
+window.openLeaveUnitTypeModal = () => {
+  const current = window._currentLeaveUnitType || 'halfday'
+  // 현재 값으로 라디오 선택
+  const radios = document.querySelectorAll('input[name="leaveUnitOpt"]')
+  radios.forEach(r => { r.checked = (r.value === current) })
+  // UI 초기화
+  onLeaveUnitTypeChange(current)
+  document.getElementById('leaveUnitTypeModal').classList.remove('hidden')
+}
+
+// 변경 확인 (확인 모달 표시 후 저장)
+window.confirmLeaveUnitTypeChange = async () => {
+  const selected = document.querySelector('input[name="leaveUnitOpt"]:checked')?.value
+  if (!selected) { alert('변경할 방식을 선택해주세요.'); return }
+
+  const current = window._currentLeaveUnitType || 'halfday'
+  if (selected === current) {
+    document.getElementById('leaveUnitTypeModal').classList.add('hidden')
+    showToast('변경 사항이 없습니다.')
+    return
+  }
+
+  const label = selected === 'hourly' ? '시간 단위 (Hourly)' : '반차 단위 (Halfday)'
+  const confirmed = confirm(
+    `휴가 차감 방식을 "${label}"(으)로 변경하면\n이후 입력되는 연차/반차 계산 방식이 달라질 수 있습니다.\n\n변경하시겠습니까?`
+  )
+  if (!confirmed) return
+
+  try {
+    const hid = App.currentHospitalId
+    // payload: leave_unit_type 키로 정확히 전달 (백엔드 검증 필드명)
+    const payload = { leave_unit_type: selected, hospitalId: hid }
+    const res = await fetch('/api/schedule/hospital-settings/leave-unit-type', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${App.token}`
+      },
+      body: JSON.stringify(payload)
+    })
+
+    if (!res.ok) {
+      alert('휴가 차감 방식 저장 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.')
+      return
+    }
+
+    document.getElementById('leaveUnitTypeModal').classList.add('hidden')
+    showToast(`차감 방식이 "${label}"(으)로 변경되었습니다.`)
+
+    // 전역 캐시 업데이트 후 탭 다시 렌더링
+    window._currentLeaveUnitType = selected
+    window._hospitalLeaveUnitType = selected
+
+    // leaveBalance 재로드 후 탭 갱신
+    if (typeof loadLeaveBalance === 'function') {
+      await loadLeaveBalance()
+    }
+    // 연차관리 탭 다시 렌더링
+    const leavesTabEl = document.getElementById('leavesTabContent')
+    if (leavesTabEl) {
+      leavesTabEl.innerHTML = renderLeavesTab()
+    } else {
+      // switchScheduleTab 방식으로 탭 갱신
+      if (typeof switchScheduleTab === 'function') switchScheduleTab('leaves')
+    }
+  } catch (e) {
+    console.error('leaveUnitType change error:', e)
+    alert('변경 중 오류가 발생했습니다.')
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 반차 입력 모달 (hourly: 시간선택 / halfday: 0.5일 고정)
+// ════════════════════════════════════════════════════════════════
+function renderPartialLeaveModal() {
+  // [RECOVERY-GUARD] 부분연차/반차 서버 API 미비 → 진입 차단
+  if (window.__FEATURE_OFF_PARTIAL_LEAVE) {
+    alert('부분연차/반차 입력 기능은 현재 준비 중입니다.')
+    return ''
+  }
+  const hourBtns = [1,2,3,4,5,6,7,8].map(h =>
+    `<button type="button" onclick="selectPartialHour(${h})"
+        id="plHourBtn${h}"
+        class="px-3 py-1.5 rounded-lg border border-gray-200 text-sm font-medium text-gray-500 hover:border-violet-400 hover:text-violet-600 transition-all">
+        ${h}h
+      </button>`
+  ).join('')
+  return `
+  <div id="partialLeaveModal" class="hidden modal-overlay" style="z-index:1020">
+    <div class="modal-box max-w-sm p-0 overflow-hidden">
+      <!-- 헤더 -->
+      <div class="bg-violet-600 text-white px-6 py-4 flex items-center justify-between">
+        <h3 class="font-bold text-lg">
+          <i class="fas fa-clock mr-2"></i>반차 입력
+        </h3>
+        <button onclick="document.getElementById('partialLeaveModal').classList.add('hidden')"
+          class="text-white/70 hover:text-white text-xl leading-none">&times;</button>
+      </div>
+      <div class="p-6 space-y-5">
+        <input type="hidden" id="plEmpId">
+
+        <!-- 직원 선택 -->
+        <div>
+          <label class="text-sm font-semibold text-gray-700 block mb-1">
+            <i class="fas fa-user text-violet-500 mr-1"></i>직원
+          </label>
+          <select id="plEmpSelect" class="form-input w-full"
+            onchange="onPartialEmpChange()">
+            <option value="">직원을 선택하세요</option>
+          </select>
+        </div>
+
+        <!-- 날짜 선택 -->
+        <div>
+          <label class="text-sm font-semibold text-gray-700 block mb-1">
+            <i class="fas fa-calendar-day text-violet-500 mr-1"></i>날짜
+          </label>
+          <input type="date" id="plDate" class="form-input w-full" onchange="onPartialDateChange()">
+          <p id="plShiftInfo" class="text-xs text-violet-600 mt-1 min-h-[18px]"></p>
+        </div>
+
+        <!-- 기존 부분연차 이력 -->
+        <div id="plExistingLeaves" class="min-h-[20px]"></div>
+
+        <!-- 오전 / 오후 선택 -->
+        <div>
+          <label class="text-sm font-semibold text-gray-700 block mb-2">
+            <i class="fas fa-sun text-violet-500 mr-1"></i>시간대
+          </label>
+          <div class="flex gap-3">
+            <button type="button" id="plPeriodAm"
+              onclick="selectPartialPeriod('am')"
+              class="flex-1 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all border-gray-200 text-gray-400 hover:border-violet-300 hover:text-violet-500">
+              <i class="fas fa-cloud-sun mr-1"></i>오전
+            </button>
+            <button type="button" id="plPeriodPm"
+              onclick="selectPartialPeriod('pm')"
+              class="flex-1 py-2.5 rounded-xl border-2 text-sm font-semibold transition-all border-gray-200 text-gray-400 hover:border-violet-300 hover:text-violet-500">
+              <i class="fas fa-moon mr-1"></i>오후
+            </button>
+          </div>
+        </div>
+
+        <!-- 사용 시간 입력 (hourly 전용) -->
+        <div id="plHourSection">
+          <label class="text-sm font-semibold text-gray-700 block mb-2">
+            <i class="fas fa-hourglass-half text-violet-500 mr-1"></i>사용 시간
+          </label>
+          <div id="plHourBtns" class="flex flex-wrap gap-2 mb-3">${hourBtns}</div>
+          <div class="flex items-center gap-2">
+            <input type="number" id="plHours" min="1" max="24" step="1" value="4"
+              class="form-input w-28 text-center text-lg font-bold text-violet-700"
+              oninput="onPartialHoursChange()">
+            <span class="text-sm text-gray-500">시간</span>
+          </div>
+        </div>
+
+        <!-- 차감 미리보기 -->
+        <div id="plPreview" class="bg-violet-50 border border-violet-200 rounded-xl p-4 text-sm">
+          <div class="flex items-center justify-between">
+            <span class="text-violet-700 font-medium">
+              <i class="fas fa-calculator mr-1"></i>차감일수
+            </span>
+            <span id="plPreviewRatio" class="text-xl font-bold text-violet-800">-일</span>
+          </div>
+          <p id="plPreviewFormula" class="text-xs text-violet-500 mt-1"></p>
+          <p id="plShiftWarning" class="text-xs text-amber-600 mt-1 hidden">
+            <i class="fas fa-exclamation-triangle mr-1"></i>
+            해당 날짜에 배정된 근무조가 없어 기본 8시간 기준으로 계산됩니다
+          </p>
+        </div>
+
+        <!-- 메모 -->
+        <div>
+          <label class="text-sm font-medium text-gray-600 block mb-1">메모 (선택)</label>
+          <input type="text" id="plNote" class="form-input w-full" placeholder="예: 오전 외래 진료">
+        </div>
+      </div>
+
+      <!-- 하단 버튼 -->
+      <div class="px-6 pb-6 flex gap-3">
+        <button onclick="savePartialLeave()"
+          class="flex-1 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-bold hover:bg-violet-700 transition-colors">
+          <i class="fas fa-save mr-1"></i>저장
+        </button>
+        <button onclick="document.getElementById('partialLeaveModal').classList.add('hidden')"
+          class="px-5 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-medium hover:bg-gray-200 transition-colors">
+          취소
+        </button>
+      </div>
+    </div>
+  </div>`
+}
+
+// ── 부분연차 모달 내부 상태 ─────────────────────────────────────
+let _plSelectedPeriod = 'am'  // 'am' | 'pm'
+let _plStandardHours  = 8     // 해당 날짜 근무조 standard_hours (API로 조회)
+let _plShiftFetched   = false // 근무조 조회 완료 여부
+
+// ── 스케줄 상단 [반차] 버튼 클릭 핸들러 ─────────────────────────────
+// 선택된 셀에서 직원을 자동 감지하거나, 모달에서 직원 선택
+window.openHalfLeaveModalFromSchedule = () => {
+  // 선택된 셀에서 직원 id/name 자동 감지 (단일 셀 선택 시)
+  let autoEmpId   = null
+  let autoEmpName = null
+  let autoDate    = null
+  if (_selectedCells && _selectedCells.size === 1) {
+    const key = Array.from(_selectedCells)[0]  // empId_date
+    const [eid, dt] = key.split('_')
+    autoEmpId = parseInt(eid)
+    autoDate  = dt
+    const emp = (scheduleEmployees || []).find(e => e.id === autoEmpId)
+    autoEmpName = emp?.name || null
+  }
+  window._partialLeaveDefaultDate   = autoDate
+  window._partialLeaveDefaultPeriod = 'am'
+  openPartialLeaveModal(autoEmpId, autoEmpName)
+}
+
+// 직원 드롭다운 변경 시 날짜 이력 갱신
+window.onPartialEmpChange = async () => {
+  const sel = document.getElementById('plEmpSelect')
+  const empId = parseInt(sel.value)
+  if (!empId) {
+    document.getElementById('plEmpId').value = ''
+    document.getElementById('plExistingLeaves').innerHTML = ''
+    document.getElementById('plShiftInfo').textContent = ''
+    return
+  }
+  document.getElementById('plEmpId').value = empId
+  const date = document.getElementById('plDate').value
+  if (date) {
+    await Promise.all([
+      fetchPartialShiftInfo(),
+      loadExistingPartialLeaves(empId, date)
+    ])
+  }
+}
+
+// 반차 모달 열기
+window.openPartialLeaveModal = async (empId, empName) => {
+  _plSelectedPeriod = 'am'
+  _plStandardHours  = 8
+  _plShiftFetched   = false
+
+  const leaveUnitType = window._currentLeaveUnitType || 'halfday'
+
+  // ── 직원 드롭다운 채우기 ──
+  const empSel = document.getElementById('plEmpSelect')
+  if (empSel) {
+    empSel.innerHTML = '<option value="">직원을 선택하세요</option>'
+    const emps = scheduleEmployees || []
+    emps.forEach(e => {
+      const opt = document.createElement('option')
+      opt.value = e.id
+      opt.textContent = e.name
+      if (e.id === empId || e.id === Number(empId)) opt.selected = true
+      empSel.appendChild(opt)
+    })
+  }
+
+  // hidden empId 세팅
+  const eid = (empId && !isNaN(Number(empId))) ? Number(empId) : 0
+  document.getElementById('plEmpId').value = eid || ''
+
+  document.getElementById('plNote').value = ''
+  document.getElementById('plShiftWarning').classList.add('hidden')
+  document.getElementById('plShiftInfo').textContent = ''
+
+  // 날짜: 월간스케줄에서 넘어온 경우 해당 날짜 사용, 없으면 오늘
+  const defaultDate = window._partialLeaveDefaultDate || (() => {
+    const today = new Date()
+    return [today.getFullYear(), String(today.getMonth()+1).padStart(2,'0'), String(today.getDate()).padStart(2,'0')].join('-')
+  })()
+  window._partialLeaveDefaultDate = null
+  document.getElementById('plDate').value = defaultDate
+
+  // period
+  const defaultPeriod = window._partialLeaveDefaultPeriod || 'am'
+  window._partialLeaveDefaultPeriod = null
+
+  // ── 시간 입력 섹션 — halfday: 숨김(0.5일 고정) / hourly: 표시 ──
+  const hourSection = document.getElementById('plHourSection')
+  const isHalfday = leaveUnitType === 'halfday'
+  if (hourSection) hourSection.style.display = isHalfday ? 'none' : ''
+  document.getElementById('plHours').value = isHalfday ? '4' : '4'  // halfday엔 내부 4h 기본(저장 시 무시됨)
+  _plStandardHours = 8  // 기본값, fetchPartialShiftInfo()에서 실제 값으로 갱신됨
+
+  selectPartialPeriod(defaultPeriod)
+  updatePartialPreview()
+
+  document.getElementById('plDate').onchange = () => onPartialDateChange()
+  document.getElementById('partialLeaveModal').classList.remove('hidden')
+
+  // 기존 이력 조회 + 근무조 정보 조회 (항상 실행)
+  const promArr = []
+  if (eid) promArr.push(fetchPartialShiftInfo())
+  if (eid && defaultDate) promArr.push(loadExistingPartialLeaves(eid, defaultDate))
+  if (promArr.length) await Promise.all(promArr)
+}
+
+// 오전/오후 선택
+window.selectPartialPeriod = (period) => {
+  _plSelectedPeriod = period
+  const amBtn = document.getElementById('plPeriodAm')
+  const pmBtn = document.getElementById('plPeriodPm')
+  if (period === 'am') {
+    amBtn.classList.add('border-violet-500', 'text-violet-700', 'bg-violet-50')
+    amBtn.classList.remove('border-gray-200', 'text-gray-400')
+    pmBtn.classList.remove('border-violet-500', 'text-violet-700', 'bg-violet-50')
+    pmBtn.classList.add('border-gray-200', 'text-gray-400')
+  } else {
+    pmBtn.classList.add('border-violet-500', 'text-violet-700', 'bg-violet-50')
+    pmBtn.classList.remove('border-gray-200', 'text-gray-400')
+    amBtn.classList.remove('border-violet-500', 'text-violet-700', 'bg-violet-50')
+    amBtn.classList.add('border-gray-200', 'text-gray-400')
+  }
+  updatePartialPreview()
+}
+
+// 빠른 시간 선택
+window.selectPartialHour = (h) => {
+  document.getElementById('plHours').value = h
+  // 버튼 활성화 표시
+  for (let i = 1; i <= 8; i++) {
+    const btn = document.getElementById(`plHourBtn${i}`)
+    if (!btn) continue
+    if (i === h) {
+      btn.classList.add('border-violet-500', 'text-violet-700', 'bg-violet-50')
+    } else {
+      btn.classList.remove('border-violet-500', 'text-violet-700', 'bg-violet-50')
+      btn.classList.add('border-gray-200', 'text-gray-500')
+    }
+  }
+  updatePartialPreview()
+}
+
+// 시간 직접 입력 시 버튼 동기화
+window.onPartialHoursChange = () => {
+  const h = parseInt(document.getElementById('plHours').value) || 0
+  for (let i = 1; i <= 8; i++) {
+    const btn = document.getElementById(`plHourBtn${i}`)
+    if (!btn) continue
+    if (i === h) {
+      btn.classList.add('border-violet-500', 'text-violet-700', 'bg-violet-50')
+    } else {
+      btn.classList.remove('border-violet-500', 'text-violet-700', 'bg-violet-50')
+      btn.classList.add('border-gray-200', 'text-gray-500')
+    }
+  }
+  updatePartialPreview()
+}
+
+// 해당 날짜 근무조 standard_hours 조회
+async function fetchPartialShiftInfo() {
+  const empId  = parseInt(document.getElementById('plEmpId').value)
+  const date   = document.getElementById('plDate').value
+  if (!empId || !date) return
+
+  const infoEl   = document.getElementById('plShiftInfo')
+  const warnEl   = document.getElementById('plShiftWarning')
+  infoEl.textContent = '근무조 확인 중...'
+
+  try {
+    const hid = App.currentHospitalId
+    const url = `/api/schedule/employee-shift-on-date?hospitalId=${hid}&employeeId=${empId}&date=${date}`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${App.token}` } })
+    if (res.ok) {
+      const data = await res.json()
+      const isHalfday = (window._currentLeaveUnitType || 'halfday') === 'halfday'
+      if (data.shift) {
+        _plStandardHours = data.shift.standard_hours || 8
+        // halfday: 기준시간 노출 불필요 / hourly: 기준시간 표시
+        infoEl.textContent = isHalfday
+          ? `근무조: ${data.shift.shift_name}`
+          : `근무조: ${data.shift.shift_name} (기준 ${_plStandardHours}시간)`
+        warnEl.classList.add('hidden')
+      } else {
+        _plStandardHours = 8
+        infoEl.textContent = isHalfday ? '' : '해당 날짜 근무조 없음 — 기본 8시간 기준 적용'
+        if (!isHalfday) warnEl.classList.remove('hidden')
+        else warnEl.classList.add('hidden')
+      }
+    } else {
+      _plStandardHours = 8
+      const isHalfday2 = (window._currentLeaveUnitType || 'halfday') === 'halfday'
+      infoEl.textContent = isHalfday2 ? '' : '근무조 조회 실패 — 기본 8시간 기준 적용'
+      if (!isHalfday2) warnEl.classList.remove('hidden')
+      else warnEl.classList.add('hidden')
+    }
+  } catch (e) {
+    _plStandardHours = 8
+    const isHalfday3 = (window._currentLeaveUnitType || 'halfday') === 'halfday'
+    infoEl.textContent = isHalfday3 ? '' : '근무조 조회 오류 — 기본 8시간 기준 적용'
+    if (!isHalfday3) warnEl.classList.remove('hidden')
+    else warnEl.classList.add('hidden')
+  }
+
+  _plShiftFetched = true
+  updatePartialPreview()
+}
+
+// 해당 날짜 기존 부분연차 이력 조회 후 모달에 표시
+async function loadExistingPartialLeaves(empId, date) {
+  const existEl = document.getElementById('plExistingLeaves')
+  if (!existEl) return
+
+  existEl.innerHTML = '<p class="text-xs text-gray-400">조회 중...</p>'
+
+  try {
+    const hid = App.currentHospitalId
+    const res = await fetch(
+      `/api/schedule/partial-leave/history?hospitalId=${hid}&employeeId=${empId}&date=${date}`,
+      { headers: { Authorization: `Bearer ${App.token}` } }
+    )
+    if (!res.ok) { existEl.innerHTML = ''; return }
+    const data = await res.json()
+    const list = data.history || []
+
+    if (list.length === 0) {
+      existEl.innerHTML = '<p class="text-xs text-gray-400 italic">해당 날짜 부분연차 이력 없음</p>'
+      return
+    }
+
+    const totalHours = list.reduce((s, r) => s + (r.leave_hours || 0), 0)
+    const totalRatio = list.reduce((s, r) => s + (r.leave_ratio || 0), 0)
+    const periodLabel = p => p === 'am' ? '오전' : p === 'pm' ? '오후' : p || '-'
+
+    existEl.innerHTML = `
+      <div class="text-xs font-semibold text-violet-700 mb-1.5">
+        <i class="fas fa-history mr-1"></i>이미 입력된 부분연차 (${list.length}건)
+      </div>
+      <div class="space-y-1.5">
+        ${list.map(r => `
+        <div class="flex items-center justify-between bg-violet-50 border border-violet-100 rounded-lg px-3 py-1.5">
+          <span class="text-xs text-violet-600 font-medium">
+            <i class="fas fa-${r.leave_period === 'am' ? 'cloud-sun' : 'moon'} mr-1 text-xs"></i>
+            ${periodLabel(r.leave_period)} · ${r.leave_hours}시간
+          </span>
+          <span class="text-xs text-violet-500 font-bold">-${(r.leave_ratio||0).toFixed(2)}일</span>
+        </div>`).join('')}
+      </div>
+      <div class="flex items-center justify-between mt-2 pt-2 border-t border-violet-200">
+        <span class="text-xs text-violet-700 font-semibold">합계</span>
+        <span class="text-xs text-violet-800 font-bold">${totalHours}시간 · -${totalRatio.toFixed(2)}일 차감</span>
+      </div>
+    `
+  } catch(e) {
+    existEl.innerHTML = ''
+  }
+}
+
+// 날짜 변경 시 기존 이력도 함께 갱신 (항상 근무조 조회)
+async function onPartialDateChange() {
+  const empId = parseInt(document.getElementById('plEmpId').value)
+  const date  = document.getElementById('plDate').value
+  const promArr = []
+  promArr.push(fetchPartialShiftInfo())  // 항상 근무조 기준시간 조회
+  if (empId && date) promArr.push(loadExistingPartialLeaves(empId, date))
+  await Promise.all(promArr)
+}
+
+// 차감 미리보기 업데이트
+function updatePartialPreview() {
+  const previewEl = document.getElementById('plPreviewRatio')
+  const formulaEl = document.getElementById('plPreviewFormula')
+  const unitType  = window._currentLeaveUnitType || 'halfday'
+
+  if (unitType === 'halfday') {
+    // halfday: 오전/오후 선택만으로 0.5일 고정
+    if (previewEl) previewEl.textContent = '0.50일'
+    if (formulaEl) formulaEl.textContent = '반차 1회 = 0.5일 차감 (고정)'
+  } else {
+    // hourly: 시간 ÷ 기준시간
+    const hours = parseFloat(document.getElementById('plHours')?.value) || 0
+    const std   = _plStandardHours || 8
+    const ratio = hours / std
+    const ratioStr = ratio.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
+    if (previewEl) previewEl.textContent = `${ratio.toFixed(2)}일`
+    if (formulaEl) formulaEl.textContent = `${hours}시간 ÷ ${std}시간(기준) = ${ratioStr}일 차감`
+  }
+}
+
+// 부분연차 저장 (hourly / halfday 분기)
+window.savePartialLeave = async () => {
+  const empId  = parseInt(document.getElementById('plEmpId').value)
+  const date   = document.getElementById('plDate').value
+  const period = _plSelectedPeriod
+  const note   = document.getElementById('plNote').value.trim()
+
+  if (!empId) { alert('직원을 선택해주세요.'); return }
+  if (!date)  { alert('날짜를 선택해주세요.'); return }
+  if (!period){ alert('오전/오후를 선택해주세요.'); return }
+
+  const hid = App.currentHospitalId
+  const unitType = window._currentLeaveUnitType || 'halfday'
+
+  let hours, standardHours, ratio
+  if (unitType === 'halfday') {
+    // halfday: 시간 입력 무시, 0.5일 고정 (standard_hours 기준 환산)
+    standardHours = _plStandardHours || 8
+    hours         = standardHours * 0.5      // 예: 8h 기준 → 4h 저장 (비율 0.5 고정)
+    ratio         = 0.5
+  } else {
+    // hourly: 시간 직접 입력 기반 계산
+    hours = parseFloat(document.getElementById('plHours').value) || 0
+    if (hours <= 0 || hours > 24) { alert('사용 시간은 1~24 사이로 입력해주세요.'); return }
+    standardHours = _plStandardHours || 8
+    ratio = parseFloat((hours / standardHours).toFixed(4))
+  }
+
+  try {
+    const res = await fetch(`/api/schedule/partial-leave`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${App.token}`
+      },
+      body: JSON.stringify({
+        hospitalId: hid,
+        employeeId: empId,
+        date,
+        leaveHours: hours,
+        standardHours,
+        leavePeriod: period,
+        leaveRatio: ratio,
+        leaveSubtype: 'partial',
+        note
+      })
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      alert(err.error || '저장에 실패했습니다.')
+      return
+    }
+
+    const resData = await res.json().catch(() => ({}))
+    document.getElementById('partialLeaveModal').classList.add('hidden')
+    showToast(resData.updated ? '반차가 수정되었습니다.' : '반차가 저장되었습니다.')
+
+    // ── 월간 스케줄 셀에 반차 배지 즉시 반영 ──────────────────────────
+    // 정책: 반차는 근무조 코드를 바꾸지 않고, 기존 셀 위에 배지(뱃지)만 추가
+    // scheduleMonthData.sched_map[key].partial_am / partial_pm 갱신 후 DOM 배지 삽입
+    if (!scheduleMonthData) scheduleMonthData = { sched_map: {}, leave_map: {} }
+    const k = `${empId}_${date}`
+    const field = period === 'am' ? 'partial_am' : 'partial_pm'
+    if (!scheduleMonthData.sched_map[k]) scheduleMonthData.sched_map[k] = {}
+    scheduleMonthData.sched_map[k][field] = { hours, ratio, standard_hours: standardHours }
+
+    // 셀 DOM에 배지 삽입 (즉시) 또는 재로드 후 삽입
+    clearTimeout(window._partialLeaveCellRefreshTimer)
+    const _injectBadge = () => {
+      const cellEl = _getCellEl(empId, date)
+      if (!cellEl) return false
+      _applyPartialBadgeToCellDOM(cellEl, period, hours)
+      schedRecalcRow(empId)
+      return true
+    }
+
+    if (!_injectBadge()) {
+      // 셀을 못 찾으면 300ms 후 재시도 (스케줄 탭 재렌더 후)
+      window._partialLeaveCellRefreshTimer = setTimeout(async () => {
+        try {
+          const freshData = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
+          if (freshData) scheduleMonthData = freshData
+          if (!_injectBadge()) {
+            const tc = document.getElementById('scheduleTabContent')
+            if (tc && typeof renderMonthlyScheduleTab === 'function') tc.innerHTML = renderMonthlyScheduleTab()
+          }
+        } catch(e) { console.warn('[partialLeave] 셀 반영 실패:', e) }
+      }, 300)
+    }
+    // ─────────────────────────────────────────────────────────────────
+
+    // 연차 데이터 새로고침
+    if (typeof loadLeaveBalance === 'function') await loadLeaveBalance()
+    if (typeof renderLeavesTab === 'function') {
+      const leavesTabEl = document.getElementById('leavesTabContent')
+      if (leavesTabEl) leavesTabEl.innerHTML = renderLeavesTab()
+    }
+  } catch (e) {
+    console.error('savePartialLeave error:', e)
+    alert('저장 중 오류가 발생했습니다.')
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -18652,7 +22055,10 @@ function renderAnalysisTabSimple(ad, year, month) {
   const sm   = scheduleMonthData?.sched_map || {}
   const REST_CODES_S = new Set([...CALC_ENGINE.REST_CODES_SET, '반차','대체','오전','오후']) // ✅ CALC_ENGINE + 확장
   const ANNUAL_CODES = new Set(['연'])
-  const empsForSummary = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
+  const _today3 = new Date().toISOString().slice(0, 10)
+  const empsForSummary = (scheduleEmployees || []).filter(e =>
+    e.is_active !== 0 && (!e.resign_date || e.resign_date >= _today3)
+  )
 
   // 연차 잔여 맵 (scheduleLeavesData 기반)
   const leaveMap = {}
@@ -18975,15 +22381,23 @@ window.executePrintStaffView = function() {
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
 <style>
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:white; }
-  @page { margin:5mm; size:A4 landscape; }
-  @media print {
-    body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-    button { display:none!important; }
-  }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic','Apple SD Gothic Neo',sans-serif; background:white; }
   table { width:100%; border-collapse:collapse; font-size:8px; }
-  th, td { padding:1px; }
-  div[style*="overflow-x:auto"] { overflow:visible!important; max-height:none!important; }
+  th, td { padding:1px 2px; }
+  div[style*="overflow-x:auto"], div[style*="overflow-y:auto"] { overflow:visible!important; max-height:none!important; }
+  div[style*="overflow:hidden"] { overflow:visible!important; }
+  /* 텍스트 줄바꿈: 셀 내 자연스럽게 */
+  td { white-space:normal!important; word-break:keep-all; }
+  @media print {
+    @page { margin:6mm 8mm; size:A4 landscape; }
+    * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; }
+    body { background:white!important; margin:0!important; }
+    button { display:none!important; }
+    table { page-break-inside:auto!important; }
+    thead { display:table-header-group!important; }
+    tr { page-break-inside:avoid!important; }
+    [style*="linear-gradient"] { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; }
+  }
 </style>
 </head>
 <body>
@@ -19116,13 +22530,11 @@ window.printSchedule = () => {
 // 엑셀 내보내기
 // ════════════════════════════════════════════════════════════════
 window.exportScheduleExcel = async () => {
-  // XLSX 라이브러리 동적 로드
+  // XLSX 라이브러리 동적 로드 (통합 로더 사용)
   if (typeof XLSX === 'undefined') {
-    showToast('엑셀 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.', 'warning')
-    const s = document.createElement('script')
-    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-    document.head.appendChild(s)
-    await new Promise(r => { s.onload = r })
+    showToast('엑셀 라이브러리 로딩 중...', 'info')
+    const ok = await _loadXlsx()
+    if (!ok || typeof XLSX === 'undefined') { showToast('라이브러리 로드 실패. 잠시 후 다시 시도해주세요.', 'error'); return }
   }
 
   const year     = App.currentYear
@@ -19272,6 +22684,9 @@ window.switchScheduleTab = async (tab) => {
       // 직원 데이터도 같이 최신화
       const hospQ = (App.role === 'admin' && App.currentHospitalId) ? `&hospitalId=${App.currentHospitalId}` : ''
       const hospQs = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+      // 탭 진입 시 항상 fresh 데이터 — 반차 등 최신 이력 즉시 반영
+      _apiCacheInvalidate('/api/schedule/leave-balance')
+      _apiCacheInvalidate('/api/schedule/leaves')
       const [raw, emps, histSummary] = await Promise.all([
         api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hospQ}`).catch(() => []),
         api('GET', `/api/schedule/employees${hospQs}`).catch(() => []),
@@ -19280,28 +22695,55 @@ window.switchScheduleTab = async (tab) => {
       scheduleLeavesData = Array.isArray(raw) ? raw : (raw?.employees ? raw.employees : [])
       if (Array.isArray(emps)) scheduleEmployees = emps
       scheduleLeaveHistorySummary = histSummary
-      // 월차 데이터 갱신
+      // 월차 데이터 + 새 leave-balance 데이터 갱신 (캐시 무효화 후 fresh)
       await loadMonthlyLeaveData()
+      try {
+        const hospQb = (App.role === 'admin' && App.currentHospitalId) ? `&hospitalId=${App.currentHospitalId}` : ''
+        const freshBal = await api('GET', `/api/schedule/leave-balance/all?year=${App.currentYear}${hospQb}`)
+        window._leaveBalanceData = Array.isArray(freshBal) ? freshBal : []
+      } catch(e) { window._leaveBalanceData = [] }
+      // leave-balance 갱신 후 tc 영역 즉시 재렌더 (renderScheduleTab 호출 전 최신 데이터 보장)
+      const _leaveTc = document.getElementById('scheduleTabContent')
+      if (_leaveTc) _leaveTc.innerHTML = renderLeavesTab()
 
-      if (App.role === 'admin' || App.role === 'hospital') {
-        const hospQuery = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
-        // ── 미발생 월차 소급 자동처리 (조용히) ──────────────
+      // ── 백그라운드 자동발생 (관리자/병원 모두, 조용히) ─────
+      // 관리자 버튼 없이 항상 자동 실행: 월차 소급·1년 전환·잔액 auto-accrue
+      ;(async () => {
         try {
+          const hospQuery = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+          const hospQb    = (App.role === 'admin' && App.currentHospitalId) ? `&hospitalId=${App.currentHospitalId}` : ''
+
+          // 1) 입사일 기준 연차/월차 자동 발생 (employee_leave_balance)
+          await api('POST', `/api/schedule/leave-balance/auto-accrue${hospQuery}`, { year: App.currentYear }).catch(() => null)
+
+          // 2) 미발생 월차 소급 (monthly_leave_grants)
           const backfillRes = await api('POST', `/api/schedule/monthly-leave/backfill${hospQuery}`, {}).catch(() => null)
-          if (backfillRes?.summary?.granted > 0) {
-            await loadMonthlyLeaveData()
-          }
-        } catch(e) {}
-        // ── 1년 도달 직원 자동 연차 전환 (조용히) ───────────
-        try {
+
+          // 3) 1년 도달 자동 연차 전환 (조용히 — 토스트만)
           const transRes = await api('POST', `/api/schedule/monthly-leave/transition${hospQuery}`, {}).catch(() => null)
           if (transRes?.transitioned?.length > 0) {
             const names = transRes.transitioned.map(t => t.name).join(', ')
             showToast(`🎉 ${names} — 1년 근속 달성, 연차 자동 부여 완료`, 'success')
-            scheduleLeavesData = await api('GET', `/api/schedule/leaves/all?year=${App.currentYear}`).catch(() => [])
+          }
+
+          // 4) 갱신된 데이터 다시 로드
+          const needRefresh = (backfillRes?.summary?.granted > 0) || (transRes?.transitioned?.length > 0)
+          if (needRefresh) {
+            await Promise.all([
+              loadMonthlyLeaveData(),
+              api('GET', `/api/schedule/leave-balance/all?year=${App.currentYear}${hospQb}`)
+                .then(d => { window._leaveBalanceData = Array.isArray(d) ? d : [] }).catch(() => {}),
+              api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hospQb}`)
+                .then(d => { scheduleLeavesData = Array.isArray(d) ? d : [] }).catch(() => {}),
+            ])
+            // 화면 조용히 갱신
+            const tc = document.getElementById('scheduleTabContent')
+            if (tc && scheduleTab === 'leaves') {
+              tc.innerHTML = renderLeavesTab()
+            }
           }
         } catch(e) {}
-      }
+      })()
     } else if (tab === 'analysis') {
       const hq = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
       scheduleAnalysisData = await api('GET', `/api/schedule/analysis/${App.currentYear}/${App.currentMonth}${hq}`).catch(() => null)
@@ -19452,6 +22894,637 @@ window.autoGrantAllLeaves = async () => {
   scheduleMonthData  = await api('GET', `/api/schedule/${App.currentYear}/${App.currentMonth}`).catch(() => null)
   const content = document.getElementById('pageContent')
   renderScheduleTab(content)
+}
+
+// ════════════════════════════════════════════════════════════════
+// 새 연차/월차 잔액 관리 (leave-balance API 기반)
+// ════════════════════════════════════════════════════════════════
+
+// ── 연차/월차 잔액 수정 모달 (통합) ──────────────────────────────
+window.openLeaveBalanceEditModal = async (empId, empName, leaveType) => {
+  const year = App.currentYear
+  const hospQ = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  const isAnnual = leaveType === 'annual'
+  const color = isAnnual ? 'blue' : 'teal'
+  const title = isAnnual ? '연차 수정' : '월차 수정'
+  const icon  = isAnnual ? 'fa-umbrella-beach' : 'fa-calendar-plus'
+
+  // 기존 데이터 조회
+  let balData = null
+  try {
+    balData = await api('GET', `/api/schedule/leave-balance/${empId}?year=${year}`)
+  } catch(e) {}
+  const bal = balData?.balances?.[leaveType]
+
+  // ★ leave-balance/all 전역 캐시 (반차 포함 정확한 서버 계산값)
+  const cachedBalForEdit = (window._leaveBalanceByEmp || {})[empId]
+  const cachedLeave = leaveType === 'annual' ? cachedBalForEdit?.annual : cachedBalForEdit?.monthly
+
+  // 기존 employee_leaves fallback
+  const legacyLeave = (scheduleLeavesData || []).find(l => l.employee_id === empId && l.leave_type === leaveType)
+  const mlData = (window._monthlyLeavesData || []).find(m => m.employee_id === empId)
+
+  let currentGranted = bal?.granted_days ?? (isAnnual ? (legacyLeave?.total_days || 0) : (mlData?.monthly_total || 0))
+  let currentManual  = bal?.manual_adjust ?? 0
+  let currentPrior   = bal?.prior_used_days ?? (legacyLeave?.initial_used_days || 0)
+  let currentCarried = bal?.carried_over ?? (isAnnual ? (legacyLeave?.carried_over_days || 0) : 0)
+  // ★ used_days: cachedLeave(반차 포함 총합) 우선 → bal → legacy
+  let currentUsed    = cachedLeave?.used_days ?? bal?.used_days ?? (isAnnual ? (legacyLeave?.used_days || 0) : (mlData?.monthly_used || 0))
+  // ★ remain_days: cachedLeave 우선 (서버에서 partialRatioMap 포함해 계산한 정확한 값)
+  let currentRemain  = cachedLeave?.remain_days ?? null
+  let currentNote    = bal?.note ?? (legacyLeave?.note || '')
+  let currentAllowancePaid = isAnnual ? (bal?.allowance_paid || legacyLeave?.allowance_paid ? true : false) : false
+  let currentAllowancePaidAt = isAnnual ? (bal?.allowance_paid_at || legacyLeave?.allowance_paid_at || '') : ''
+
+  // 자동계산일수 (월차)
+  let autoCalcDays = 0
+  if (!isAnnual) {
+    const emp = scheduleEmployees.find(e => e.id === empId)
+    if (emp?.hire_date) {
+      const maxDays = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
+      const now = new Date()
+      const hired = new Date(emp.hire_date)
+      let cy = hired.getFullYear(), cm = hired.getMonth() + 2
+      if (cm > 12) { cm = 1; cy++ }
+      const ly = now.getFullYear(), lm = now.getMonth() + 1
+      let cnt = 0
+      while ((cy < ly || (cy === ly && cm <= lm)) && cnt < maxDays) { cnt++; cm++; if (cm > 12) { cm = 1; cy++ } }
+      autoCalcDays = cnt
+    }
+  }
+
+  // 법정 연차
+  const emp = scheduleEmployees.find(e => e.id === empId)
+  let legalDays = 0
+  if (isAnnual && emp?.hire_date) {
+    const hired = new Date(emp.hire_date)
+    const yearStart = new Date(`${year}-01-01`)
+    const yearsWorked = (yearStart - hired) / (365.25 * 24 * 3600 * 1000)
+    if (yearsWorked >= 3) legalDays = Math.min(15 + Math.floor((yearsWorked-1)/2), 25)
+    else if (yearsWorked >= 1) legalDays = 15
+  }
+
+  document.getElementById('leaveBalanceEditModal')?.remove()
+  const modal = document.createElement('div')
+  modal.id = 'leaveBalanceEditModal'
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4'
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+    <div class="bg-${color}-700 text-white px-6 py-4 flex items-center justify-between">
+      <h3 class="font-bold text-lg"><i class="fas ${icon} mr-2"></i>${title}: ${empName}</h3>
+      <button onclick="document.getElementById('leaveBalanceEditModal').remove()" class="text-white/70 hover:text-white text-xl">&times;</button>
+    </div>
+    <div class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+      <input type="hidden" id="lbEmpId" value="${empId}">
+      <input type="hidden" id="lbLeaveType" value="${leaveType}">
+      <input type="hidden" id="lbYear" value="${year}">
+
+      ${isAnnual ? `
+      <!-- 법정 연차 참고 -->
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-center justify-between">
+        <span class="text-sm text-blue-700"><i class="fas fa-balance-scale mr-1"></i>법정 연차 (참고)</span>
+        <span class="text-xl font-bold text-blue-700">${legalDays}일</span>
+      </div>
+      <!-- 이월 -->
+      <div>
+        <label class="text-sm font-medium text-amber-700 flex items-center gap-1">
+          <i class="fas fa-history text-amber-500"></i> 전년도 이월 일수
+        </label>
+        <input type="number" id="lbCarriedOver" min="0" max="25" step="0.5"
+          value="${currentCarried}" class="form-input mt-1 border-amber-300 focus:border-amber-500">
+      </div>
+      ` : `
+      <!-- 자동계산 참고 -->
+      <div class="bg-teal-50 border border-teal-200 rounded-xl p-3 flex items-center justify-between">
+        <span class="text-sm text-teal-700"><i class="fas fa-calculator mr-1"></i>자동계산 발생일수</span>
+        <span class="text-xl font-bold text-teal-700">${autoCalcDays}일</span>
+      </div>
+      `}
+
+      <!-- 부여(발생) 일수 — 파란색 -->
+      <div>
+        <label class="text-sm font-semibold text-blue-700 flex items-center gap-1">
+          <span class="w-3 h-3 rounded bg-blue-400 inline-block"></span>
+          발생(부여) 일수
+        </label>
+        <input type="number" id="lbGrantedDays" min="0" max="30" step="0.5"
+          value="${currentGranted}" class="form-input mt-1 border-blue-300 focus:border-blue-500"
+          oninput="lbUpdateRemain()">
+        <p class="text-xs text-gray-400 mt-1">입사일 기준 자동 발생 또는 관리자 부여 일수</p>
+      </div>
+
+      <!-- 기존 사용분 보정 — 도입 전 사용 -->
+      <div>
+        <label class="text-sm font-medium text-orange-700 flex items-center gap-1">
+          <i class="fas fa-history text-orange-500"></i> 도입 전 기존 사용일수 (초기 보정)
+        </label>
+        <input type="number" id="lbPriorUsed" min="0" max="30" step="0.5"
+          value="${currentPrior}" class="form-input mt-1 border-orange-300 focus:border-orange-500"
+          oninput="lbUpdateRemain()">
+        <p class="text-xs text-gray-400 mt-1">이 시스템 도입 전에 이미 사용한 휴가일수 (잔여 계산에 차감됨)</p>
+      </div>
+
+      <!-- 사용 일수 — 빨간색 -->
+      <div>
+        <label class="text-sm font-semibold text-red-600 flex items-center gap-1">
+          <span class="w-3 h-3 rounded bg-red-400 inline-block"></span>
+          사용 일수 (스케줄 연동)
+        </label>
+        <input type="number" id="lbUsedDays" min="0" max="30" step="0.5"
+          value="${currentUsed}" class="form-input mt-1 border-red-300 focus:border-red-500"
+          oninput="lbUpdateRemain()">
+        <p class="text-xs text-gray-400 mt-1">스케줄에서 자동 집계 · 반차 포함 (직접 수정도 가능)</p>
+      </div>
+
+      <!-- 잔여 자동계산 — 초록색 -->
+      <div class="bg-green-50 border border-green-200 rounded-xl p-3 flex items-center justify-between">
+        <span class="text-sm font-semibold text-green-700 flex items-center gap-1">
+          <span class="w-3 h-3 rounded bg-green-400 inline-block"></span> 잔여 (자동계산)
+        </span>
+        <span id="lbRemainDisplay" class="text-xl font-bold text-green-700">-</span>
+      </div>
+
+      ${isAnnual ? `
+      <!-- 연차수당 지급 -->
+      <div class="bg-green-50 border border-green-200 rounded-lg p-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="lbAllowancePaid" class="w-4 h-4 text-green-600 rounded"
+            ${currentAllowancePaid ? 'checked' : ''} onchange="lbToggleAllowanceDate()">
+          <span class="text-sm font-medium text-green-800">
+            <i class="fas fa-hand-holding-usd mr-1 text-green-600"></i> 연차수당 지급 완료
+          </span>
+        </label>
+        <div id="lbAllowanceDateRow" class="${currentAllowancePaid ? '' : 'hidden'} mt-2">
+          <input type="date" id="lbAllowancePaidAt" value="${currentAllowancePaidAt}"
+            class="form-input text-sm">
+        </div>
+      </div>
+      ` : `
+      <!-- 만료일 참고 -->
+      <div class="bg-orange-50 border border-orange-100 rounded-lg p-3 text-xs text-orange-600">
+        <i class="fas fa-clock mr-1"></i> 월차는 입사 1년 후 자동 만료됩니다.
+        ${emp?.hire_date ? `(만료 예정: ${new Date(new Date(emp.hire_date).getTime() + 365.25*24*3600*1000).toISOString().slice(0,7)})` : ''}
+      </div>
+      `}
+
+      <!-- 메모 -->
+      <div>
+        <label class="text-sm font-medium text-gray-700">메모</label>
+        <input type="text" id="lbNote" value="${currentNote}" class="form-input mt-1" placeholder="수정 사유 등">
+      </div>
+    </div>
+    <div class="flex gap-3 px-6 pb-6">
+      <button onclick="saveLeaveBalanceEdit()" class="btn btn-primary flex-1 bg-${color}-600 hover:bg-${color}-700">저장</button>
+      <button onclick="document.getElementById('leaveBalanceEditModal').remove()" class="btn btn-secondary">취소</button>
+    </div>
+  </div>`
+  document.body.appendChild(modal)
+  lbUpdateRemain()
+}
+
+window.lbToggleAllowanceDate = () => {
+  const chk = document.getElementById('lbAllowancePaid')
+  const row  = document.getElementById('lbAllowanceDateRow')
+  if (chk.checked) {
+    row.classList.remove('hidden')
+    const inp = document.getElementById('lbAllowancePaidAt')
+    if (!inp.value) inp.value = new Date().toISOString().slice(0,10)
+  } else {
+    row.classList.add('hidden')
+  }
+}
+
+window.lbUpdateRemain = () => {
+  const granted   = parseFloat(document.getElementById('lbGrantedDays')?.value || 0)
+  const priorUsed = parseFloat(document.getElementById('lbPriorUsed')?.value || 0)
+  const used      = parseFloat(document.getElementById('lbUsedDays')?.value || 0)
+  const carried   = parseFloat(document.getElementById('lbCarriedOver')?.value || 0)
+  // ★ 잔여 계산: cachedRemain(반차 포함 서버 계산값) 우선 사용
+  // 단, 입력값이 변경되었을 가능성이 있으므로 cachedRemain은 초기 1회만 적용
+  // → 실제로는 granted+carried-used-priorUsed 직접 계산이 더 정확
+  //   (used에 이미 반차 포함된 cachedLeave.used_days가 들어 있으므로)
+  const remain    = Math.max(0, granted + carried - used - priorUsed)
+  const el = document.getElementById('lbRemainDisplay')
+  if (el) {
+    el.textContent = remain + '일'
+    el.className = `text-xl font-bold ${remain <= 3 ? 'text-red-600' : remain <= 7 ? 'text-yellow-600' : 'text-green-700'}`
+  }
+}
+
+window.saveLeaveBalanceEdit = async () => {
+  const empId     = parseInt(document.getElementById('lbEmpId').value)
+  const leaveType = document.getElementById('lbLeaveType').value
+  const year      = parseInt(document.getElementById('lbYear').value)
+  const grantedDays = parseFloat(document.getElementById('lbGrantedDays').value || 0)
+  const priorUsedDays = parseFloat(document.getElementById('lbPriorUsed').value || 0)
+  const usedDays  = parseFloat(document.getElementById('lbUsedDays').value || 0)
+  const carriedOver = parseFloat(document.getElementById('lbCarriedOver')?.value || 0)
+  const note      = document.getElementById('lbNote').value
+  const allowancePaid    = document.getElementById('lbAllowancePaid')?.checked ?? false
+  const allowancePaidAt  = document.getElementById('lbAllowancePaidAt')?.value || null
+
+  if (allowancePaid && !allowancePaidAt) { showToast('수당 지급일을 입력하세요', 'error'); return }
+
+  const res = await api('PUT', `/api/schedule/leave-balance/${empId}`, {
+    year, leaveType, grantedDays, manualAdjust: 0, priorUsedDays, carriedOver,
+    usedDays, note, allowancePaid, allowancePaidAt
+  })
+  if (res?.success) {
+    showToast('저장되었습니다', 'success')
+    document.getElementById('leaveBalanceEditModal')?.remove()
+    // 데이터 갱신
+    await _refreshLeaveData()
+    const content = document.getElementById('pageContent')
+    renderScheduleTab(content)
+  } else {
+    showToast(res?.error || '저장 실패', 'error')
+  }
+}
+
+// ── 자동발생 (내부 조용히 — 버튼 없음, 탭 진입 시 자동 호출됨) ──
+window.autoAccrueLeaveAll = async () => {
+  // 하위 호환용 — 외부에서 직접 호출 시 조용히 실행
+  const hospQ = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  await api('POST', `/api/schedule/leave-balance/auto-accrue${hospQ}`, { year: App.currentYear }).catch(() => null)
+}
+
+// ── 상세 이력 모달 ───────────────────────────────────────────────
+window.openLeaveDetailModal = async (empId, empName) => {
+  const year = App.currentYear
+  document.getElementById('leaveDetailModal')?.remove()
+
+  // 로딩 모달 먼저 표시
+  const modal = document.createElement('div')
+  modal.id = 'leaveDetailModal'
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4'
+  modal.innerHTML = `
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden">
+    <div class="bg-gray-700 text-white px-6 py-4 flex items-center justify-between">
+      <h3 class="font-bold text-lg"><i class="fas fa-history mr-2"></i>연차/월차 상세 이력: ${empName}</h3>
+      <button onclick="document.getElementById('leaveDetailModal').remove()" class="text-white/70 hover:text-white text-xl">&times;</button>
+    </div>
+    <div id="leaveDetailBody" class="p-6 text-center text-gray-400 py-12">
+      <i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>이력 조회 중...
+    </div>
+  </div>`
+  document.body.appendChild(modal)
+
+  // 데이터 조회
+  let data = null
+  try {
+    data = await api('GET', `/api/schedule/leave-balance/${empId}?year=${year}`)
+  } catch(e) {}
+
+  const body = document.getElementById('leaveDetailBody')
+  if (!body) return
+
+  if (!data) {
+    body.innerHTML = '<div class="text-center text-gray-400 py-8">데이터를 불러올 수 없습니다</div>'
+    return
+  }
+
+  const emp    = data.employee || {}
+  const bal    = data.balances || {}
+  const logs   = data.accrual_logs || []
+  const hist   = data.leave_history || []
+  const grants = data.monthly_grants || []
+
+  const unitType = data.leave_unit_type || window._currentLeaveUnitType || 'halfday'
+
+  // partial_summary: API 응답 우선, 없으면 _leaveBalanceByEmp(연차관리 테이블 캐시)에서 보완
+  const cachedBal = (window._leaveBalanceByEmp || {})[empId]
+  const apiPartial = data.partial_summary || null
+  const partialSummary = {
+    total:    apiPartial?.total    ?? cachedBal?.annual?.partial_total    ?? cachedBal?.monthly?.partial_total    ?? 0,
+    am_cnt:   apiPartial?.am_cnt   ?? cachedBal?.annual?.partial_am_cnt   ?? cachedBal?.monthly?.partial_am_cnt   ?? 0,
+    pm_cnt:   apiPartial?.pm_cnt   ?? cachedBal?.annual?.partial_pm_cnt   ?? cachedBal?.monthly?.partial_pm_cnt   ?? 0,
+    am_hours: apiPartial?.am_hours ?? cachedBal?.annual?.partial_am_hours ?? cachedBal?.monthly?.partial_am_hours ?? 0,
+    pm_hours: apiPartial?.pm_hours ?? cachedBal?.annual?.partial_pm_hours ?? cachedBal?.monthly?.partial_pm_hours ?? 0,
+  }
+
+  const annualBal   = bal['annual']
+  const monthlyBal  = bal['monthly']
+
+  // ── 잔여 계산 ──────────────────────────────────────────────────
+  // 우선순위: ① cachedBal.remain_days (서버 정확값) → ② cachedBal 필드로 직접 계산 → ③ DB 원본 계산
+  // ※ leave-balance/all 은 annualTotal=0이면 remain_days=null 반환하므로
+  //   remain_days=null 이더라도 cachedBal의 total_days/used_days 로 재계산
+  const calcRemain = (b, cached) => {
+    // ① cachedBal.remain_days 가 유효한 숫자이면 우선 사용
+    if (cached?.remain_days != null) return Math.max(0, Number(cached.remain_days))
+    // ② cachedBal 필드가 있으면 직접 계산 (remain_days=null 이지만 total_days 등이 있을 때)
+    if (cached != null) {
+      const cTotal = (cached.total_days||0)
+      const cUsed  = (cached.used_days||0)
+      const cPrior = (cached.prior_used||cached.prior_used_days||0)
+      if (cTotal > 0) return Math.max(0, cTotal - cUsed - cPrior)
+    }
+    // ③ DB 원본(balances 필드) fallback
+    if (!b) return null
+    const total = (b.granted_days||0) + (b.manual_adjust||0) + (b.carried_over||0)
+    return Math.max(0, total - (b.used_days||0) - (b.prior_used_days||0))
+  }
+  const aRemain = calcRemain(annualBal,  cachedBal?.annual)
+  const mRemain = calcRemain(monthlyBal, cachedBal?.monthly)
+
+  // 기존 employee_leaves fallback
+  const legacyAnnual = (scheduleLeavesData||[]).find(l => l.employee_id === empId && l.leave_type === 'annual')
+  const legacyMonthly = (scheduleLeavesData||[]).find(l => l.employee_id === empId && l.leave_type === 'monthly')
+  const mlData = (window._monthlyLeavesData||[]).find(m => m.employee_id === empId)
+
+  const showAnnual = annualBal || legacyAnnual
+  const showMonthly = monthlyBal || legacyMonthly || mlData
+
+  const CHANGE_LABELS = {
+    accrual_monthly: { label: '월차 발생', color: 'bg-blue-100 text-blue-700', icon: 'fa-plus' },
+    accrual_annual:  { label: '연차 발생', color: 'bg-blue-100 text-blue-700', icon: 'fa-plus' },
+    manual_grant:    { label: '수동 부여', color: 'bg-purple-100 text-purple-700', icon: 'fa-hand-paper' },
+    manual_adjust:   { label: '수동 조정', color: 'bg-amber-100 text-amber-700', icon: 'fa-edit' },
+    used:            { label: '사용',      color: 'bg-red-100 text-red-700',    icon: 'fa-minus' },
+    used_cancel:     { label: '사용취소',  color: 'bg-gray-100 text-gray-700', icon: 'fa-undo' },
+    expire:          { label: '만료',      color: 'bg-red-200 text-red-800',   icon: 'fa-clock' },
+    carryover:       { label: '이월',      color: 'bg-amber-100 text-amber-700', icon: 'fa-arrow-right' },
+    prior_used:      { label: '도입전 사용보정', color: 'bg-orange-100 text-orange-700', icon: 'fa-history' },
+  }
+
+  // 이력 로그 렌더 (발생/사용/조정)
+  function renderLogRow(l) {
+    const ct = CHANGE_LABELS[l.change_type] || { label: l.change_type, color: 'bg-gray-100 text-gray-700', icon: 'fa-circle' }
+    const sign = l.days >= 0 ? '+' : ''
+    const dColor = l.days >= 0 ? 'text-blue-700' : 'text-red-600'
+    const date = (l.leave_date || l.accrual_month || l.created_at || '').substring(0,10)
+    return `<tr class="border-b hover:bg-gray-50">
+      <td class="px-3 py-2 text-xs text-gray-500">${date}</td>
+      <td class="px-3 py-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-bold ${ct.color}">
+          <i class="fas ${ct.icon} mr-1"></i>${ct.label}
+        </span>
+      </td>
+      <td class="px-3 py-2 text-center">
+        <span class="font-bold text-sm ${dColor}">${sign}${l.days}일</span>
+      </td>
+      <td class="px-3 py-2 text-xs text-gray-500 max-w-xs truncate">${l.memo || l.note || '-'}</td>
+    </tr>`
+  }
+
+  // 반차/경조사 이력 렌더 — partial/half_am/half_pm 포함 leaveUnitType 분기
+  function renderHistRow(l) {
+    // leave_subtype + leave_period 조합으로 레이블/색상 결정
+    const isPartial = ['partial','half_am','half_pm'].includes(l.leave_subtype)
+    const period = l.leave_period || (l.leave_subtype === 'half_am' ? 'am' : l.leave_subtype === 'half_pm' ? 'pm' : null)
+
+    let labelText, badgeColor, extraInfo = ''
+    if (isPartial) {
+      const periodLabel = period === 'am' ? '오전' : period === 'pm' ? '오후' : ''
+      if (unitType === 'halfday') {
+        // halfday: "오전반차" / "오후반차" / "반차"
+        labelText   = periodLabel ? `${periodLabel}반차` : '반차'
+        badgeColor  = period === 'am'
+          ? 'bg-violet-100 text-violet-700'
+          : period === 'pm'
+            ? 'bg-indigo-100 text-indigo-700'
+            : 'bg-purple-100 text-purple-700'
+        extraInfo   = `<span class="text-purple-500 font-bold ml-1">-0.5일</span>`
+      } else {
+        // hourly: "오전 반차 Xh" / "오후 반차 Xh"
+        const h   = Number(l.leave_hours || 0)
+        const std = Number(l.standard_hours || 8)
+        const rat = Number(l.leave_ratio || (h / std) || 0.5)
+        labelText   = periodLabel ? `${periodLabel} 반차` : '반차'
+        badgeColor  = period === 'am'
+          ? 'bg-violet-100 text-violet-700'
+          : period === 'pm'
+            ? 'bg-indigo-100 text-indigo-700'
+            : 'bg-purple-100 text-purple-700'
+        extraInfo   = h > 0
+          ? `<span class="text-purple-500 font-bold ml-1">${h}h</span><span class="text-gray-400 ml-1">(-${(Math.round(rat*1000)/1000)}일)</span>`
+          : `<span class="text-purple-500 font-bold ml-1">-${(Math.round(rat*1000)/1000)}일</span>`
+      }
+    } else {
+      const subtypeLabel = { annual:'연차', half_am:'오전반차', half_pm:'오후반차', event:'경조사', sick:'병가' }
+      const subtypeColor = {
+        annual:'bg-blue-100 text-blue-700',
+        half_am:'bg-violet-100 text-violet-700', half_pm:'bg-indigo-100 text-indigo-700',
+        event:'bg-pink-100 text-pink-700', sick:'bg-red-100 text-red-700'
+      }
+      labelText  = subtypeLabel[l.leave_subtype] || l.leave_subtype
+      badgeColor = subtypeColor[l.leave_subtype] || 'bg-gray-100 text-gray-700'
+    }
+
+    const dateStr = (l.leave_date_fmt || l.leave_date || '-').substring(0, 10)
+    return `<tr class="border-b hover:bg-gray-50">
+      <td class="px-3 py-2 text-xs text-gray-500">${dateStr}</td>
+      <td class="px-3 py-2">
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-bold ${badgeColor}">${labelText}</span>
+        ${extraInfo}
+      </td>
+      <td class="px-3 py-2 text-xs text-gray-500 max-w-xs truncate">${l.note || '-'}</td>
+    </tr>`
+  }
+
+  body.innerHTML = `
+  <div class="space-y-5 max-h-[70vh] overflow-y-auto">
+    <!-- 잔액 요약 카드 -->
+    <div class="grid grid-cols-2 gap-3">
+      ${showAnnual ? `
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
+        <div class="text-xs text-blue-600 font-bold mb-2"><i class="fas fa-umbrella-beach mr-1"></i>연차 (${year}년)</div>
+        <div class="flex justify-between text-xs text-gray-600 mb-1">
+          <span class="text-blue-700 font-bold">🟦 발생</span>
+          <span class="font-bold text-blue-700">${(cachedBal?.annual?.total_days ?? annualBal?.granted_days ?? legacyAnnual?.total_days ?? 0)}일</span>
+        </div>
+        <div class="flex justify-between text-xs text-gray-600 mb-1">
+          <span class="text-red-600 font-bold">🟥 사용</span>
+          <span class="font-bold text-red-600">${(cachedBal?.annual?.used_days ?? annualBal?.used_days ?? legacyAnnual?.used_days ?? 0)}일</span>
+        </div>
+        ${partialSummary.total > 0 ? `
+        <div class="flex justify-between text-xs text-gray-600 mb-1">
+          <span class="text-purple-600 font-bold">🟪 반차</span>
+          <span class="font-bold text-purple-600">${Math.round(partialSummary.total * 1000) / 1000}일
+            <span class="font-normal text-gray-400 ml-1">(${unitType === 'hourly'
+              ? `오전 ${partialSummary.am_hours}h / 오후 ${partialSummary.pm_hours}h`
+              : `오전 ${partialSummary.am_cnt}회 / 오후 ${partialSummary.pm_cnt}회`})</span>
+          </span>
+        </div>` : ''}
+        <div class="flex justify-between text-xs font-bold mt-2 border-t border-blue-200 pt-1">
+          <span class="text-green-700">🟩 잔여</span>
+          <span class="${(aRemain??0) <= 3 ? 'text-red-600' : 'text-green-700'} text-lg">${aRemain ?? '-'}일</span>
+        </div>
+      </div>` : '<div></div>'}
+
+      ${showMonthly ? `
+      <div class="bg-teal-50 border border-teal-200 rounded-xl p-4">
+        <div class="text-xs text-teal-600 font-bold mb-2"><i class="fas fa-calendar-plus mr-1"></i>월차 (${year}년)</div>
+        <div class="flex justify-between text-xs text-gray-600 mb-1">
+          <span class="text-blue-700 font-bold">🟦 발생</span>
+          <span class="font-bold text-blue-700">${(monthlyBal?.granted_days ?? legacyMonthly?.total_days ?? mlData?.monthly_total ?? 0)}일</span>
+        </div>
+        <div class="flex justify-between text-xs text-gray-600 mb-1">
+          <span class="text-red-600 font-bold">🟥 사용</span>
+          <span class="font-bold text-red-600">${(monthlyBal?.used_days ?? legacyMonthly?.used_days ?? mlData?.monthly_used ?? 0)}일</span>
+        </div>
+        <div class="flex justify-between text-xs font-bold mt-2 border-t border-teal-200 pt-1">
+          <span class="text-green-700">🟩 잔여</span>
+          <span class="${(mRemain??0) <= 3 ? 'text-red-600' : 'text-green-700'} text-lg">${mRemain ?? (mlData ? mlData.monthly_total - mlData.monthly_used : '-')}일</span>
+        </div>
+      </div>` : '<div></div>'}
+    </div>
+
+    <!-- 발생/조정 이력 -->
+    ${logs.length > 0 ? `
+    <div>
+      <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-history mr-1 text-blue-500"></i>발생/사용/조정 이력</h4>
+      <div class="overflow-x-auto rounded-lg border border-gray-200">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">날짜</th>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">구분</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-500">일수</th>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">메모</th>
+            </tr>
+          </thead>
+          <tbody>${logs.map(renderLogRow).join('')}</tbody>
+        </table>
+      </div>
+    </div>` : ''}
+
+    <!-- 반차/경조사 이력 -->
+    ${hist.length > 0 ? `
+    <div>
+      <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-calendar-alt mr-1 text-purple-500"></i>${unitType === 'hourly' ? '부분연차/경조사 이력' : '반차/경조사 이력'} (${year}년)</h4>
+      <div class="overflow-x-auto rounded-lg border border-gray-200">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">날짜</th>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">구분</th>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">메모</th>
+            </tr>
+          </thead>
+          <tbody>${hist.map(renderHistRow).join('')}</tbody>
+        </table>
+      </div>
+    </div>` : ''}
+
+    <!-- 월차 발생 내역 -->
+    ${grants.length > 0 ? `
+    <div>
+      <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-calendar-plus mr-1 text-teal-500"></i>월차 발생 내역</h4>
+      <div class="overflow-x-auto rounded-lg border border-gray-200">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">대상 월</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-500">발생일수</th>
+              <th class="px-3 py-2 text-center text-xs text-gray-500">상태</th>
+              <th class="px-3 py-2 text-left text-xs text-gray-500">메모</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${grants.map(g => `<tr class="border-b hover:bg-gray-50">
+              <td class="px-3 py-2 text-xs text-gray-600">${g.target_year}-${String(g.target_month).padStart(2,'0')}</td>
+              <td class="px-3 py-2 text-center font-bold text-blue-700">${g.days_granted}일</td>
+              <td class="px-3 py-2 text-center">
+                <span class="inline-block px-2 py-0.5 rounded text-xs ${g.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}">${g.status === 'active' ? '유효' : g.status}</span>
+              </td>
+              <td class="px-3 py-2 text-xs text-gray-500">${g.note || (g.grant_type === 'auto' ? '자동발생' : '수동')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
+
+    <!-- 반차 사용 요약 (hist가 없어도 partial_summary에 데이터 있으면 표시) -->
+    ${partialSummary.total > 0 && hist.filter(h => ['partial','half_am','half_pm'].includes(h.leave_subtype)).length === 0 ? `
+    <div class="bg-purple-50 border border-purple-200 rounded-xl p-4">
+      <h4 class="text-sm font-bold text-purple-700 mb-2"><i class="fas fa-calendar-half mr-1"></i>${unitType === 'hourly' ? '부분연차 사용 현황' : '반차 사용 현황'} (${year}년)</h4>
+      <div class="flex items-center gap-4 text-sm">
+        <span class="font-bold text-purple-700">${Math.round(partialSummary.total * 1000) / 1000}일 사용</span>
+        <span class="text-gray-400 text-xs">
+          ${unitType === 'hourly'
+            ? `오전 ${partialSummary.am_cnt}회 ${partialSummary.am_hours}h / 오후 ${partialSummary.pm_cnt}회 ${partialSummary.pm_hours}h`
+            : `오전 ${partialSummary.am_cnt}회 / 오후 ${partialSummary.pm_cnt}회`}
+        </span>
+      </div>
+      <p class="text-xs text-purple-400 mt-2">상세 이력은 반차 이력 동기화 후 표시됩니다.</p>
+    </div>` : ''}
+
+    ${logs.length === 0 && hist.length === 0 && grants.length === 0 && partialSummary.total === 0 ? `
+    <div class="text-center text-gray-400 py-8">
+      <i class="fas fa-inbox text-3xl mb-2 block"></i>
+      이력이 없습니다. 연차/월차를 설정하면 이력이 기록됩니다.
+    </div>` : ''}
+  </div>
+  <div class="flex gap-2 mt-4 pt-4 border-t">
+    ${App.role === 'admin' || App.role === 'hospital' ? `
+    <button onclick="document.getElementById('leaveDetailModal').remove(); openLeaveBalanceEditModal(${empId},'${empName.replace(/'/g,"\\'")}','annual')"
+      class="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-700">
+      <i class="fas fa-edit mr-1"></i>연차 수정
+    </button>
+    <button onclick="document.getElementById('leaveDetailModal').remove(); openLeaveBalanceEditModal(${empId},'${empName.replace(/'/g,"\\'")}','monthly')"
+      class="px-3 py-1.5 rounded-lg text-xs bg-teal-600 text-white hover:bg-teal-700">
+      <i class="fas fa-edit mr-1"></i>월차 수정
+    </button>
+    ` : ''}
+    <button onclick="document.getElementById('leaveDetailModal').remove()" class="ml-auto px-3 py-1.5 rounded-lg text-xs bg-gray-200 text-gray-700 hover:bg-gray-300">닫기</button>
+  </div>`
+}
+
+// ── 데이터 갱신 헬퍼 ─────────────────────────────────────────────
+async function _refreshLeaveData() {
+  const hospQ = App.role === 'admin' && App.currentHospitalId ? `&hospitalId=${App.currentHospitalId}` : ''
+  const hospQs = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+  // 반드시 최신 데이터를 가져오기 위해 관련 캐시 먼저 무효화
+  _apiCacheInvalidate('/api/schedule/leave-balance')
+  _apiCacheInvalidate('/api/schedule/leaves')
+  const [raw, histSummary] = await Promise.all([
+    api('GET', `/api/schedule/leaves/all?year=${App.currentYear}${hospQ}`).catch(() => []),
+    api('GET', `/api/schedule/leaves/history-summary?year=${App.currentYear}${hospQ}`).catch(() => null),
+  ])
+  scheduleLeavesData = Array.isArray(raw) ? raw : []
+  scheduleLeaveHistorySummary = histSummary
+  // 새 leave-balance 데이터 갱신 (캐시 무효화 후 fresh fetch)
+  try {
+    window._leaveBalanceData = await api('GET', `/api/schedule/leave-balance/all?year=${App.currentYear}${hospQ}`)
+  } catch(e) { window._leaveBalanceData = [] }
+  await loadMonthlyLeaveData()
+}
+
+// ════════════════════════════════════════════════════════════════
+// 반차 이력 동기화 (기존 스케줄 → employee_leave_history 보정)
+// 관리자용 1회성 보정 버튼 핸들러
+// ════════════════════════════════════════════════════════════════
+async function runHalfDayBackfill() {
+  const btn = document.getElementById('btn-halfday-backfill')
+  if (btn) {
+    btn.disabled = true
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>동기화 중...'
+  }
+  try {
+    const hospQ = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+    const yearQ = `${hospQ ? '&' : '?'}year=${App.currentYear}`
+    const res = await api('POST', `/api/schedule/admin/backfill-halfday${hospQ}${yearQ}`)
+    const s = res?.summary || {}
+    alert(
+      `✅ 반차 이력 동기화 완료 (${App.currentYear}년)\n\n` +
+      `• 스캔한 스케줄: ${s.scanned ?? 0}건\n` +
+      `• 반차 이력 생성: ${s.inserted ?? 0}건\n` +
+      `• 삭제된 오류 이력: ${s.deleted ?? 0}건\n` +
+      `• 재집계된 직원: ${s.recalculated ?? 0}명`
+    )
+    // 화면 새로고침
+    await _refreshLeaveData()
+    const tc = document.querySelector('[data-tab-content="leaves"]') || document.getElementById('tab-leaves-content')
+    if (tc) tc.innerHTML = renderLeavesTab()
+  } catch(e) {
+    alert('동기화 중 오류가 발생했습니다: ' + (e?.message || e))
+  } finally {
+    if (btn) {
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-sync-alt"></i>반차 이력 동기화'
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -20291,6 +24364,13 @@ function renderWorkSettingsModal() {
                   <div class="text-xs text-gray-500">공휴일 출근 후 대체휴무 자동 생성 (off_type: substitute)</div>
                 </div>
               </label>
+              <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors">
+                <input type="radio" name="ws_holiday_policy" id="ws_hp_work_normal" value="work_normal" class="w-4 h-4 text-gray-600">
+                <div>
+                  <div class="text-sm font-medium text-gray-800">공휴일 = 근무 <span class="text-xs text-gray-400 ml-1">(추가 수당 없음)</span></div>
+                  <div class="text-xs text-gray-500">공휴일을 일반 근무일과 동일 처리 — 자동 휴무·수당·대체휴무 없음</div>
+                </div>
+              </label>
             </div>
 
             <!-- 순환/혼합형 공휴일 충돌 처리 (cycle/mixed 선택 시 표시) -->
@@ -20648,9 +24728,10 @@ window.openSchedDetailModal = (empId, dateStr, empName, cell) => {
   const modal = document.getElementById('schedDetailModal')
   if (!modal) return
   // 저장용 데이터 전달
-  modal.dataset.empId   = empId
-  modal.dataset.dateStr = dateStr
-  modal.dataset.cell    = '' // cell은 직접 참조
+  modal.dataset.empId    = empId
+  modal.dataset.dateStr  = dateStr
+  modal.dataset.cell     = '' // cell은 직접 참조
+  modal.dataset.prevCode = cell?.dataset?.shift || '' // 이전 코드 기억 (반차 변경 감지용)
 
   document.getElementById('schedDetailTitle').textContent   = `${empName} - ${dateStr}`
   document.getElementById('schedDetailSubtitle').textContent = '우클릭으로 열린 상세 입력 (코드 클릭 시 좌클릭과 동일)'
@@ -20767,6 +24848,16 @@ window.saveSchedDetail = async () => {
     schedRecalcRow(parseInt(empId))
     showToast('저장되었습니다', 'success')
     modal.classList.add('hidden')
+    // ── 반차 저장 시 연차관리 탭 즉시 갱신 ──
+    // 전반/후반 + schedule_shifts half_type 코드만 반차 처리 (오전/오후는 파출/알바 전용)
+    const _halfShiftCodes = (scheduleShifts || []).filter(s => s.half_type && !['오전','오후'].includes(s.shift_code)).map(s => s.shift_code)
+    const HALF_CODES = new Set(['전반','후반', ..._halfShiftCodes])
+    const prevCode = modal.dataset.prevCode || ''
+    if (HALF_CODES.has(code) || HALF_CODES.has(prevCode)) {
+      await _refreshLeaveData()
+      const tc = document.querySelector('[data-tab-content="leaves"]') || document.getElementById('tab-leaves-content')
+      if (tc) tc.innerHTML = renderLeavesTab()
+    }
   } else {
     showToast('저장 실패', 'error')
   }
@@ -21572,26 +25663,72 @@ function renderLaborCostTab() {
   const extPtTotal       = data.extParttimeTotal  || 0
   const SHIFT_LABELS     = data.shiftTypeLabels   || { morning:'오전', afternoon:'오후', full_9h:'9H', full_12h:'12H' }
 
-  // ── 상단 요약 카드 ────────────────────────────────────────────
-  const summaryCards = [
-    { label:'이달 합계',   value: grandTotal,             color:'text-white',           bg:'bg-gray-800',    icon:'fa-won-sign',    span: true },
-    { label:'직원 추가수당',value: empTotals.totalAddCost||0, color:'text-emerald-700',  bg:'bg-emerald-50',  icon:'fa-users' },
-    { label:'외부인력비',  value: dispTotal,               color:'text-orange-700',      bg:'bg-orange-50',   icon:'fa-user-plus' },
-    { label:'OT 수당',     value: empTotals.otCost||0,     color:'text-blue-700',        bg:'bg-blue-50',     icon:'fa-clock' },
-    { label:'야간 수당',   value: empTotals.nightCost||0,  color:'text-purple-700',      bg:'bg-purple-50',   icon:'fa-moon' },
-    { label:'휴일 수당',   value: empTotals.holidayCost||0,color:'text-red-700',         bg:'bg-red-50',      icon:'fa-calendar-times' },
-    { label:'주휴 수당',   value: empTotals.weeklyHolidayCost||0, color:'text-teal-700', bg:'bg-teal-50',     icon:'fa-calendar-check' },
-  ]
+  // ── 추가인력비 세부 계산 ──────────────────────────────────────
+  const otCost        = empTotals.otCost          || 0
+  const nightCost     = empTotals.nightCost        || 0
+  const holidayCost   = empTotals.holidayCost      || 0
+  const wkHolCost     = empTotals.weeklyHolidayCost|| 0
+  const addLaborTotal = otCost + nightCost + holidayCost + wkHolCost
+
+  // OT/야간/휴일 각각 발생 직원 수 집계
+  const otEmpCnt      = byEmp.filter(r => (r.otHours||0) > 0).length
+  const nightEmpCnt   = byEmp.filter(r => (r.nightHours||0) > 0).length
+  const holidayEmpCnt = byEmp.filter(r => (r.holidayHours||0) > 0).length
+  const wkHolEmpCnt   = byEmp.filter(r => (r.weeklyHolidayDays||0) > 0).length
 
   return `
   <div class="space-y-4">
-    <!-- 요약 카드 -->
-    <div class="grid grid-cols-2 md:grid-cols-7 gap-2">
-      ${summaryCards.map((c,i) => `
-      <div class="${c.bg} rounded-xl p-3 border border-gray-100 ${i===0?'col-span-2 md:col-span-1':''}" >
-        <div class="text-xs opacity-60 mb-0.5"><i class="fas ${c.icon} mr-1"></i>${c.label}</div>
-        <div class="text-lg font-bold ${c.color}">${fmt(c.value)}원</div>
-      </div>`).join('')}
+    <!-- 1행: 이달 합계 + 직원수당 + 외부인력 -->
+    <div class="grid grid-cols-3 gap-2">
+      <div class="bg-gray-800 rounded-xl p-3 border border-gray-700">
+        <div class="text-xs text-gray-400 mb-0.5"><i class="fas fa-won-sign mr-1"></i>이달 인력비 합계</div>
+        <div class="text-xl font-bold text-white">${fmt(grandTotal)}원</div>
+        <div class="text-xs text-gray-400 mt-0.5">직원수당+외부인력 포함</div>
+      </div>
+      <div class="bg-emerald-50 rounded-xl p-3 border border-emerald-100">
+        <div class="text-xs text-emerald-600 mb-0.5"><i class="fas fa-users mr-1"></i>직원 추가수당</div>
+        <div class="text-xl font-bold text-emerald-700">${fmt(empTotals.totalAddCost||0)}원</div>
+        <div class="text-xs text-emerald-500 mt-0.5">${byEmp.filter(r=>(r.totalAddCost||0)>0).length}명 발생</div>
+      </div>
+      <div class="bg-orange-50 rounded-xl p-3 border border-orange-100">
+        <div class="text-xs text-orange-600 mb-0.5"><i class="fas fa-user-plus mr-1"></i>외부인력비</div>
+        <div class="text-xl font-bold text-orange-700">${fmt(dispTotal)}원</div>
+        <div class="text-xs text-orange-500 mt-0.5">파출 ${fmt(extDispTotal)} · 알바 ${fmt(extPtTotal)}</div>
+      </div>
+    </div>
+
+    <!-- 2행: 추가인력비 세부 (OT / 야간 / 휴일 / 주휴) 통합 패널 -->
+    <div class="bg-blue-50 rounded-xl border border-blue-100 overflow-hidden">
+      <div class="px-4 py-2 bg-blue-100 flex items-center justify-between">
+        <span class="text-sm font-bold text-blue-800"><i class="fas fa-clock mr-1"></i>추가 인력 비용 세부 내역</span>
+        <span class="text-sm font-bold text-blue-900">${fmt(addLaborTotal)}원</span>
+      </div>
+      <div class="grid grid-cols-4 divide-x divide-blue-100">
+        <!-- OT -->
+        <div class="p-3 text-center">
+          <div class="text-xs text-blue-500 mb-1"><i class="fas fa-business-time mr-1"></i>OT 수당</div>
+          <div class="text-lg font-bold ${otCost>0?'text-blue-700':'text-gray-300'}">${otCost>0?fmt(otCost)+'원':'없음'}</div>
+          ${otCost>0?`<div class="text-xs text-blue-400 mt-0.5">${otEmpCnt}명 · ${byEmp.reduce((a,r)=>a+(r.otHours||0),0).toFixed(1)}h</div>`:``}
+        </div>
+        <!-- 야간 -->
+        <div class="p-3 text-center">
+          <div class="text-xs text-purple-500 mb-1"><i class="fas fa-moon mr-1"></i>야간 수당</div>
+          <div class="text-lg font-bold ${nightCost>0?'text-purple-700':'text-gray-300'}">${nightCost>0?fmt(nightCost)+'원':'없음'}</div>
+          ${nightCost>0?`<div class="text-xs text-purple-400 mt-0.5">${nightEmpCnt}명 · ${byEmp.reduce((a,r)=>a+(r.nightHours||0),0).toFixed(1)}h</div>`:``}
+        </div>
+        <!-- 휴일 -->
+        <div class="p-3 text-center">
+          <div class="text-xs text-red-500 mb-1"><i class="fas fa-calendar-times mr-1"></i>휴일 수당</div>
+          <div class="text-lg font-bold ${holidayCost>0?'text-red-700':'text-gray-300'}">${holidayCost>0?fmt(holidayCost)+'원':'없음'}</div>
+          ${holidayCost>0?`<div class="text-xs text-red-400 mt-0.5">${holidayEmpCnt}명 · ${byEmp.reduce((a,r)=>a+(r.holidayHours||0),0).toFixed(1)}h</div>`:``}
+        </div>
+        <!-- 주휴 -->
+        <div class="p-3 text-center">
+          <div class="text-xs text-teal-500 mb-1"><i class="fas fa-umbrella-beach mr-1"></i>주휴 수당</div>
+          <div class="text-lg font-bold ${wkHolCost>0?'text-teal-700':'text-gray-300'}">${wkHolCost>0?fmt(wkHolCost)+'원':'없음'}</div>
+          ${wkHolCost>0?`<div class="text-xs text-teal-400 mt-0.5">${wkHolEmpCnt}명 · ${byEmp.reduce((a,r)=>a+(r.weeklyHolidayDays||0),0)}일</div>`:``}
+        </div>
+      </div>
     </div>
 
     <!-- 관리자 버튼 행 -->
@@ -22086,31 +26223,25 @@ window.saveExternalWorker = async () => {
   }
 }
 
-// ── 외부인력 셀 클릭 (근무유형 순환) ─────────────────────────
-// ── 외부인력 이벤트 위임 초기화 ─────────────────────────────
+// ── 외부인력 이벤트 위임 초기화 (버튼/우클릭만, 셀은 인라인 핸들러로 처리) ──
 function initExtWorkerEvents() {
   const tc = document.getElementById('scheduleTabContent')
   if (!tc) return
 
-  // 이전 리스너 제거 후 재등록 (중복 방지)
+  // 이전 리스너 제거 (중복 방지)
   if (tc._extEvtBound) {
-    tc.removeEventListener('click',       tc._extEvtHandler)
-    tc.removeEventListener('dblclick',    tc._extDblHandler)
-    tc.removeEventListener('mousedown',   tc._extMdHandler)
-    tc.removeEventListener('mousemove',   tc._extMmHandler)
-    tc.removeEventListener('mouseup',     tc._extMuHandler)
-    if (tc._extCtxHandler) tc.removeEventListener('contextmenu', tc._extCtxHandler)
+    if (tc._extEvtHandler)  tc.removeEventListener('click',       tc._extEvtHandler)
+    if (tc._extCtxHandler)  tc.removeEventListener('contextmenu', tc._extCtxHandler)
   }
 
+  // 클릭 위임: 추가/삭제 버튼 + 셀 바깥 선택 해제
   tc._extEvtHandler = function(e) {
-    // 파출/알바 추가 버튼
     const addBtn = e.target.closest('.ext-add-btn')
     if (addBtn) {
       e.preventDefault(); e.stopPropagation()
       openAddExternalWorkerModal(addBtn.dataset.stype || 'dispatch')
       return
     }
-    // 외부인력 삭제 버튼
     const delBtn = e.target.closest('.ext-del-btn')
     if (delBtn) {
       e.preventDefault(); e.stopPropagation()
@@ -22118,78 +26249,14 @@ function initExtWorkerEvents() {
       if (wid) deleteExternalWorker(wid, delBtn.dataset.wname || '')
       return
     }
-    // inline select 드롭다운 클릭이면 무시 (select 자체가 처리)
-    if (e.target.closest('.ext-inline-select')) return
-    // 외부인력 셀 클릭 (단독 클릭 = 선택만)
-    const cell = e.target.closest('.ext-cell')
-    if (cell) {
-      if (!(App.role === 'admin' || App.role === 'hospital')) return
-      // 드래그 중에는 click 무시 (드래그가 이미 선택 처리함)
-      if (_extIsDragging) return
-      _extHandleCellClick(e, cell)
-      return
-    }
-    // 셀 바깥 클릭 → 선택 해제
+    // 셀 바깥 클릭 → 선택 해제 (단, 드래그 직후 버블링된 click은 무시)
     if (!e.target.closest('#multiSelectBar') && !e.target.closest('.ext-cell')) {
+      if (_extDragJustEnded) { _extDragJustEnded = false; return }
       _extClearSelection()
     }
   }
 
-  // 더블클릭 → 드롭다운 입력
-  if (tc._extDblHandler) tc.removeEventListener('dblclick', tc._extDblHandler)
-  tc._extDblHandler = function(e) {
-    const cell = e.target.closest('.ext-cell')
-    if (!cell) return
-    if (!(App.role === 'admin' || App.role === 'hospital')) return
-    e.preventDefault(); e.stopPropagation()
-    // 재클릭 타이머 취소 (더블클릭은 이 핸들러에서 처리)
-    if (typeof _extClickTimer !== 'undefined' && _extClickTimer) {
-      clearTimeout(_extClickTimer); _extClickTimer = null
-    }
-    const wid  = parseInt(cell.dataset.extid)
-    const date = cell.dataset.date
-    // 선택 상태 맞추기
-    const key = _extCellKey(cell)
-    _extSelectedCells.clear()
-    _extSelectedCells.add(key)
-    _extAnchorKey = key
-    _extUpdateSelectStyle()
-    _extOpenInlineInput(wid, date, cell, null)
-  }
-  // (dblclick 핸들러는 아래에서 한 번만 등록)
-
-  // 마우스다운: 드래그 시작
-  tc._extMdHandler = function(e) {
-    if (e.button !== 0) return
-    const cell = e.target.closest('.ext-cell')
-    if (!cell) return
-    if (!(App.role === 'admin' || App.role === 'hospital')) return
-    // fill handle 드래그
-    if (e.target.classList.contains('ext-fill-handle')) {
-      e.preventDefault(); e.stopPropagation()
-      _extFillDragStart(cell)
-      return
-    }
-    // inline select 클릭이면 무시
-    if (e.target.closest('.ext-inline-select')) return
-    // 일반 드래그 시작 (e.preventDefault 제거 - click 이벤트 살리기)
-    _extDragStart(cell, e)
-  }
-
-  tc._extMmHandler = function(e) {
-    const cell = e.target.closest('.ext-cell')
-    if (!cell) return
-    if (_extIsFillDrag) { _extFillDragMove(cell); return }
-    if (_extIsDragging)  { _extDragMove(cell) }
-  }
-
-  tc._extMuHandler = function(e) {
-    if (_extIsFillDrag) { _extFillDragEnd(); return }
-    if (_extIsDragging) { _extDragEnd() }
-  }
-
-  // contextmenu: 외부인력 셀 우클릭 → 인라인 입력 열기 (드롭다운 선택)
-  if (tc._extCtxHandler) tc.removeEventListener('contextmenu', tc._extCtxHandler)
+  // 우클릭: 인라인 입력 열기
   tc._extCtxHandler = function(e) {
     const cell = e.target.closest('.ext-cell')
     if (!cell) return
@@ -22205,13 +26272,151 @@ function initExtWorkerEvents() {
     _extOpenInlineInput(wid, date, cell, null)
   }
 
+  // ── 버튼 전용 위임 (추가/삭제 버튼만, 셀은 인라인 핸들러로 처리) ──
   tc.addEventListener('click',       tc._extEvtHandler)
-  tc.addEventListener('dblclick',    tc._extDblHandler)  // 한 번만 등록
-  tc.addEventListener('mousedown',   tc._extMdHandler)
-  tc.addEventListener('mousemove',   tc._extMmHandler)
-  tc.addEventListener('mouseup',     tc._extMuHandler)
   tc.addEventListener('contextmenu', tc._extCtxHandler)
   tc._extEvtBound = true
+}
+
+// ════════════════════════════════════════════════════════════════
+//  파출/알바 셀 인라인 핸들러 (직원 schedDragStart/Move/End 와 동일 패턴)
+//  각 셀 HTML에 onclick/ondblclick/onmousedown/onmousemove/onmouseup 으로 직접 부착
+// ════════════════════════════════════════════════════════════════
+
+window.extCellClick = (event, wid, date, cell) => {
+  if (event.target.classList.contains('ext-fill-handle')) return
+  // 드래그 직후 click은 무시 (드래그 완료 후 선택이 clear되는 버그 방지)
+  if (_extDragJustEnded) { _extDragJustEnded = false; return }
+  // 직원 선택 있으면 해제
+  if (_selectedCells?.size > 0) clearMultiSelection && clearMultiSelection()
+
+  const key = `${wid}_${date}`
+
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault()
+    if (_extSelectedCells.has(key)) _extSelectedCells.delete(key)
+    else { _extSelectedCells.add(key); if (!_extAnchorKey) _extAnchorKey = key }
+    _extUpdateSelectStyle()
+    _extShowFillHandle()
+    _extUpdateBar()
+
+  } else if (event.shiftKey && _extAnchorKey) {
+    event.preventDefault()
+    _extSelectRange(_extAnchorKey, key)
+    _extUpdateSelectStyle()
+    _extShowFillHandle()
+    _extUpdateBar()
+
+  } else {
+    // 단일 클릭: 선택만 (값 변경 없음)
+    _extSelectedCells.clear()
+    _extSelectedCells.add(key)
+    _extAnchorKey = key
+    _extUpdateSelectStyle()
+    _extShowFillHandle()
+    _extUpdateBar()
+  }
+}
+
+window.extCellDbl = (event, wid, date, cell) => {
+  event.preventDefault(); event.stopPropagation()
+  _extSelectedCells.clear()
+  _extSelectedCells.add(`${wid}_${date}`)
+  _extAnchorKey = `${wid}_${date}`
+  _extUpdateSelectStyle()
+  _extOpenInlineInput(wid, date, cell, null)
+}
+
+window.extCellMd = (event, wid, date, cell) => {
+  if (event.button !== 0) return
+  if (!(App.role === 'admin' || App.role === 'hospital')) return
+  if (event.target.closest('.ext-inline-input') || event.target.closest('.ext-inline-select')) return
+
+  // fill handle 드래그 시작
+  if (event.target.classList.contains('ext-fill-handle')) {
+    event.preventDefault(); event.stopPropagation()
+    _extFillDragStart(cell)
+    return
+  }
+
+  // 일반 드래그 준비 (직원과 동일: mousedown에서 선택 시작)
+  if (event.ctrlKey || event.metaKey || event.shiftKey) return
+  event.preventDefault()
+  _extIsDragging = true
+  _extDragStartKey = `${wid}_${date}`
+  // 직원처럼 즉시 선택 시작
+  if (_selectedCells?.size > 0) clearMultiSelection && clearMultiSelection()
+  _extSelectedCells.clear()
+  _extSelectedCells.add(_extDragStartKey)
+  _extAnchorKey = _extDragStartKey
+  _extUpdateSelectStyle()
+  _extUpdateBar()
+}
+
+window.extCellMm = (event, wid, date, cell) => {
+  // fill handle 드래그 중 → 멀티행 미리보기 (행 제한 없음)
+  if (_extIsFillDrag && _extFillSrcKey) {
+    event.preventDefault()
+    _extFillDragMove(cell)  // 멀티행 지원 버전으로 위임
+    return
+  }
+
+  // 일반 드래그: 범위 선택 업데이트
+  if (!_extIsDragging || !_extDragStartKey) return
+  const curKey = `${wid}_${date}`
+  if (curKey === _extDragStartKey) return
+
+  _extSelectRange(_extDragStartKey, curKey)
+  _extUpdateSelectStyle()
+}
+
+window.extCellMu = (event, wid, date, cell) => {
+  _extFinalizeDrag()  // 공통 drag/fill 종료 처리
+}
+
+// document 레벨 mouseup 등록은 변수 선언 이후(_extDocRegisterHandlers)에 수행
+
+// 드래그 직후 click 무시 플래그 (mouseup → click 순서로 이벤트가 연속 발생하므로)
+// var 사용: let/const와 달리 TDZ 없이 호이스팅되므로 선언 전 참조(extCellClick)에서도 안전
+var _extDragJustEnded = false
+
+// 드래그/fill 종료 공통 처리
+function _extFinalizeDrag() {
+  // fill handle 드래그 완료 → 자동채우기 적용
+  if (_extIsFillDrag && _extFillSrcKey) {
+    _extIsFillDrag = false
+    const { workerId: srcWid } = _extParseKey(_extFillSrcKey)
+
+    // 소스 코드: 선택된 셀 중 srcWid 행의 코드
+    const srcCodes2 = Array.from(_extSelectedCells)
+      .filter(k => _extParseKey(k).workerId === srcWid).sort()
+      .map(k => { const { workerId: w2, date: d2 } = _extParseKey(k); return _extGetCell(w2, d2)?.dataset?.extshift || '' })
+
+    // 모든 preview 셀에 적용 (멀티행 포함)
+    const previews2 = document.querySelectorAll('.ext-cell.ext-cell-fill-preview')
+    const fillItems2 = []
+    previews2.forEach((c, i) => {
+      fillItems2.push({ workerId: parseInt(c.dataset.extid), date: c.dataset.date, shiftType: srcCodes2[i % srcCodes2.length] || '' })
+      c.classList.remove('ext-cell-fill-preview')
+    })
+    if (fillItems2.length > 0) {
+      _extApplyBatch(fillItems2)
+      showToast(`${fillItems2.length}개 셀 자동채우기 완료`, 'success')
+    }
+    _extFillSrcKey = null
+    _extShowFillHandle()
+    return
+  }
+
+  // 일반 드래그 완료 → 선택 범위 유지 (값 변경 없음)
+  if (!_extIsDragging) return
+  _extIsDragging = false
+  _extDragStartKey = null
+  // 드래그 직후 발생하는 click 이벤트가 선택을 clear하지 않도록 플래그 설정
+  _extDragJustEnded = true
+  setTimeout(() => { _extDragJustEnded = false }, 200)
+  _extShowFillHandle()
+  _extUpdateBar()
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -22254,6 +26459,15 @@ const EXT_UNDO_LIMIT  = 50
 window._extUndoStack  = []
 window._extRedoStack  = []
 
+// ── document 레벨 mouseup/mouseleave: 셀 밖에서 마우스를 놓아도 드래그 해제 ──
+// 반드시 변수 선언(_extIsDragging 등) 이후에 등록해야 올바르게 동작함
+document.addEventListener('mouseup', function _extDocMu(e) {
+  if (_extIsDragging || _extIsFillDrag) _extFinalizeDrag()
+})
+document.addEventListener('mouseleave', function _extDocMl(e) {
+  if (_extIsDragging || _extIsFillDrag) _extFinalizeDrag()
+})
+
 // ── 셀 키 파싱 ────────────────────────────────────────────────
 function _extParseKey(key) {
   const parts = key.split('_')
@@ -22273,6 +26487,7 @@ function _extApplyDOM(workerId, date, cell, shiftType) {
   const key = `${workerId}_${date}`
   const isEmpty = !shiftType
   cell.dataset.extshift = shiftType || ''
+  cell.dataset.shift = shiftType || ''  // 설계모드 data-shift 동기화
   const span = cell.querySelector('span')
   if (span) {
     span.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;font-size:10px;font-weight:700;${EXT_SHIFT_COLORS[shiftType]||EXT_SHIFT_COLORS['']}`
@@ -22376,15 +26591,16 @@ function _extRecalcRow(workerId) {
     const ds = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`
     if (scheduleExtSchedMap?.[`${workerId}_${ds}`]?.shift_type) cnt++
   }
-  // 행 찾기
+  // 행 찾기 (마지막 td가 근무일 컬럼)
   const anyCell = document.querySelector(`.ext-cell[data-extid="${workerId}"]`)
   if (!anyCell) return
   const row = anyCell.closest('tr')
   if (!row) return
   const tds = row.querySelectorAll('td')
-  if (tds && tds.length >= 2) {
-    tds[1].textContent = cnt + '일'
-    tds[1].style.cssText = 'text-align:center;font-size:10px;font-weight:600;color:#6b7280;padding:2px'
+  if (tds && tds.length >= 1) {
+    const lastTd = tds[tds.length - 1]
+    lastTd.textContent = cnt + '일'
+    lastTd.style.cssText = 'text-align:center;font-size:10px;font-weight:700;color:inherit;padding:1px 2px;min-width:36px;width:36px;background:#fff7ed;border-left:2px solid #fed7aa'
   }
 }
 
@@ -22444,7 +26660,7 @@ function _extHandleCellClick(e, cell) {
     else _extSelectedCells.add(key)
     _extAnchorKey = key
   } else if (e.shiftKey && _extAnchorKey) {
-    // Shift+클릭: 범위 선택
+    // Shift+클릭: 범위 선택 (앵커 worker 기준으로 직사각형)
     if (_extClickTimer) { clearTimeout(_extClickTimer); _extClickTimer = null }
     _extSelectRange(_extAnchorKey, key)
   } else if (_extSelectedCells.has(key) && _extSelectedCells.size === 1) {
@@ -22471,28 +26687,69 @@ function _extHandleCellClick(e, cell) {
 }
 
 // ── 범위 선택 ─────────────────────────────────────────────────
+// 엑셀처럼 fromKey~toKey 사이의 직사각형 범위를 선택
+// - 같은 행(workerId)만 드래그 시: 해당 행의 날짜 범위만 선택
+// - 다른 행에 걸친 범위: DOM 순서 기반 직사각형 선택 (멀티행)
 function _extSelectRange(fromKey, toKey) {
   const { workerId: wid1, date: d1 } = _extParseKey(fromKey)
   const { workerId: wid2, date: d2 } = _extParseKey(toKey)
   _extSelectedCells.clear()
-  // 모든 ext-cell 순회하며 날짜 범위에 해당하는 항목 선택 (같은 worker or 전체)
+
   const minDate = d1 < d2 ? d1 : d2
   const maxDate = d1 < d2 ? d2 : d1
-  document.querySelectorAll('.ext-cell').forEach(c => {
-    if (c.dataset.date >= minDate && c.dataset.date <= maxDate) {
-      _extSelectedCells.add(_extCellKey(c))
-    }
-  })
+
+  if (wid1 === wid2) {
+    // ── 같은 행 드래그: 해당 worker의 날짜 범위만 선택 ──
+    document.querySelectorAll(`.ext-cell[data-extid="${wid1}"]`).forEach(c => {
+      if (c.dataset.date >= minDate && c.dataset.date <= maxDate) {
+        _extSelectedCells.add(_extCellKey(c))
+      }
+    })
+  } else {
+    // ── 멀티행 드래그: DOM 순서 기반 worker 범위 + 날짜 범위 직사각형 ──
+    // 화면에 등장하는 worker 순서 파악
+    const workerOrder = []
+    const seenWids = new Set()
+    document.querySelectorAll('.ext-cell[data-extid]').forEach(c => {
+      const wid = parseInt(c.dataset.extid)
+      if (!seenWids.has(wid)) { seenWids.add(wid); workerOrder.push(wid) }
+    })
+    const i1 = workerOrder.indexOf(wid1)
+    const i2 = workerOrder.indexOf(wid2)
+    if (i1 === -1 || i2 === -1) return
+    const loIdx = Math.min(i1, i2), hiIdx = Math.max(i1, i2)
+    const selectedWids = new Set(workerOrder.slice(loIdx, hiIdx + 1))
+    document.querySelectorAll('.ext-cell').forEach(c => {
+      const cwid = parseInt(c.dataset.extid)
+      if (selectedWids.has(cwid) && c.dataset.date >= minDate && c.dataset.date <= maxDate) {
+        _extSelectedCells.add(_extCellKey(c))
+      }
+    })
+  }
 }
 
 // ── fill handle 표시 ──────────────────────────────────────────
+// 단일 행(worker) 선택 시에만 fill handle 표시 (마지막 날짜 셀 우하단)
+// 멀티행 선택 시에는 fill handle 숨김
 function _extShowFillHandle() {
   document.querySelectorAll('.ext-fill-handle').forEach(h => h.remove())
   if (_extSelectedCells.size === 0) return
-  const keys = Array.from(_extSelectedCells).sort()
-  const lastKey = keys[keys.length - 1]
-  const { workerId, date } = _extParseKey(lastKey)
-  const cell = _extGetCell(workerId, date)
+
+  // 선택된 셀들의 worker 목록 파악
+  const selectedWids = new Set()
+  _extSelectedCells.forEach(k => selectedWids.add(_extParseKey(k).workerId))
+
+  // 멀티행 선택이면 fill handle 표시 안 함
+  if (selectedWids.size !== 1) return
+
+  // 단일 행: 해당 worker의 선택 셀 중 가장 늦은 날짜 셀에 핸들 부착
+  const [wid] = selectedWids
+  const wKeys = Array.from(_extSelectedCells)
+    .filter(k => _extParseKey(k).workerId === wid)
+    .sort()
+  const lastKey = wKeys[wKeys.length - 1]
+  const { date } = _extParseKey(lastKey)
+  const cell = _extGetCell(wid, date)
   if (!cell) return
   const handle = document.createElement('div')
   handle.className = 'ext-fill-handle'
@@ -22516,11 +26773,11 @@ function _extDragMove(cell) {
   // 실제로 다른 셀로 이동 → 드래그 모드 시작
   if (!_extIsDragging) {
     _extIsDragging = true
-    // 드래그 시작 셀 선택
     _extSelectedCells.clear()
     _extSelectedCells.add(_extDragStartKey)
     _extAnchorKey = _extDragStartKey
   }
+  // 범위 선택만 (값 자동채우기 없음 — fill handle 드래그만 채우기 수행)
   _extSelectRange(_extDragStartKey, key)
   _extUpdateSelectStyle()
 }
@@ -22542,22 +26799,36 @@ function _extFillDragStart(srcCell) {
   document.querySelectorAll('.ext-cell').forEach(c => c.classList.remove('ext-cell-fill-preview'))
 }
 function _extFillDragMove(cell) {
-  if (!_extIsFillDrag) return
+  if (!_extIsFillDrag || !_extFillSrcKey) return
   const { workerId: srcWid, date: srcDate } = _extParseKey(_extFillSrcKey)
-  const targetWid = parseInt(cell.dataset.extid)
-  if (targetWid !== srcWid) return  // 같은 행만 드래그 Fill
+  const targetWid  = parseInt(cell.dataset.extid)
   const targetDate = cell.dataset.date
 
-  // 선택된 셀들의 날짜 범위와 srcDate 기준으로 Preview
+  // 소스 선택 셀들의 날짜 범위
   const srcDates = Array.from(_extSelectedCells)
     .filter(k => _extParseKey(k).workerId === srcWid)
     .map(k => _extParseKey(k).date).sort()
+  const fillDateStart = srcDates[0] || srcDate
+  const fillDateEnd   = targetDate >= fillDateStart ? targetDate : srcDate
 
-  const fillStart = srcDates[0] || srcDate
-  const fillEnd   = targetDate >= srcDate ? targetDate : srcDate
+  // 멀티행 여부: 드래그 목표가 다른 worker이면 worker 범위도 포함
+  // worker 화면 순서 파악
+  const workerOrder = []
+  const seenW = new Set()
+  document.querySelectorAll('.ext-cell[data-extid]').forEach(c => {
+    const wid = parseInt(c.dataset.extid)
+    if (!seenW.has(wid)) { seenW.add(wid); workerOrder.push(wid) }
+  })
+  const srcIdx = workerOrder.indexOf(srcWid)
+  const tgtIdx = workerOrder.indexOf(targetWid)
+  const loIdx  = Math.min(srcIdx, tgtIdx < 0 ? srcIdx : tgtIdx)
+  const hiIdx  = Math.max(srcIdx, tgtIdx < 0 ? srcIdx : tgtIdx)
+  const previewWids = new Set(workerOrder.slice(loIdx, hiIdx + 1))
 
-  document.querySelectorAll(`.ext-cell[data-extid="${srcWid}"]`).forEach(c => {
-    if (c.dataset.date >= fillStart && c.dataset.date <= fillEnd) {
+  document.querySelectorAll('.ext-cell').forEach(c => {
+    const cwid = parseInt(c.dataset.extid)
+    const cd   = c.dataset.date
+    if (previewWids.has(cwid) && cd >= fillDateStart && cd <= fillDateEnd) {
       c.classList.add('ext-cell-fill-preview')
     } else {
       c.classList.remove('ext-cell-fill-preview')
@@ -22565,33 +26836,8 @@ function _extFillDragMove(cell) {
   })
 }
 function _extFillDragEnd() {
-  _extIsFillDrag = false
-  if (!_extFillSrcKey) return
-  const { workerId: srcWid } = _extParseKey(_extFillSrcKey)
-
-  // 소스 코드 가져오기 (선택 셀들에서)
-  const srcCodes = Array.from(_extSelectedCells)
-    .filter(k => _extParseKey(k).workerId === srcWid)
-    .sort()
-    .map(k => {
-      const { workerId, date } = _extParseKey(k)
-      const c = _extGetCell(workerId, date)
-      return c?.dataset.extshift || ''
-    })
-  if (srcCodes.length === 0) return
-
-  const previews = document.querySelectorAll(`.ext-cell[data-extid="${srcWid}"].ext-cell-fill-preview`)
-  const fillItems = []
-  previews.forEach((c, i) => {
-    const shiftType = srcCodes[i % srcCodes.length]
-    fillItems.push({ workerId: srcWid, date: c.dataset.date, shiftType })
-    c.classList.remove('ext-cell-fill-preview')
-  })
-  if (fillItems.length > 0) {
-    _extApplyBatch(fillItems)
-    showToast(`${fillItems.length}개 셀 자동채우기 완료`, 'success')
-  }
-  _extFillSrcKey = null
+  // _extFinalizeDrag()에서 처리하므로 여기서는 호환성만 유지
+  if (_extIsFillDrag) _extFinalizeDrag()
 }
 
 // ── 복사/붙여넣기 ────────────────────────────────────────────
@@ -22613,37 +26859,74 @@ window.extCopyCells = () => {
 
 window.extPasteCells = () => {
   if (!_extCopiedData?.entries?.length) { showToast('복사된 셀이 없습니다', 'info'); return }
-  // 선택된 셀이 없으면 앵커 셀만 대상으로
-  const anchorKey = _extAnchorKey
-  if (_extSelectedCells.size === 0 && !anchorKey) {
+
+  // 붙여넣기 기준점: 선택 셀이 1개면 그 셀, 여러 개면 첫 번째 셀, 없으면 앵커
+  let anchorKey = null
+  if (_extSelectedCells.size === 1) {
+    anchorKey = Array.from(_extSelectedCells)[0]
+  } else if (_extSelectedCells.size > 1) {
+    anchorKey = Array.from(_extSelectedCells).sort()[0]
+  } else if (_extAnchorKey) {
+    anchorKey = _extAnchorKey
+  } else {
     showToast('붙여넣기할 대상 셀을 먼저 선택하세요', 'info'); return
   }
-  const targets = _extSelectedCells.size > 0
-    ? Array.from(_extSelectedCells).sort()
-    : [anchorKey]
+
   const src = _extCopiedData.entries
   const items = []
+
+  const days = getDaysInMonth(App.currentYear, App.currentMonth)
+  const mm   = String(App.currentMonth).padStart(2,'0')
+  const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
+
+  // worker 화면 순서 파악
+  const workerOrder = []
+  const seenW = new Set()
+  document.querySelectorAll('.ext-cell[data-extid]').forEach(c => {
+    const wid = parseInt(c.dataset.extid)
+    if (!seenW.has(wid)) { seenW.add(wid); workerOrder.push(wid) }
+  })
+
   if (src.length === 1) {
-    // 단일 소스 → 선택 전체에 동일 코드 붙여넣기
-    targets.forEach(k => {
-      const { workerId, date } = _extParseKey(k)
-      items.push({ workerId, date, shiftType: src[0].shiftType })
-    })
+    // 단일 셀 복사 → 기준 셀 1개에만 적용 (Excel 동작)
+    const { workerId, date } = _extParseKey(anchorKey)
+    items.push({ workerId, date, shiftType: src[0].shiftType })
   } else {
-    // 다중 소스 → 대상 첫 셀 기준으로 날짜 오프셋
-    const { workerId: tWid, date: tStartDate } = _extParseKey(targets[0])
-    const srcStartDate = src[0].date
-    const msPerDay = 86400000
-    const dateDiff = (new Date(tStartDate) - new Date(srcStartDate)) / msPerDay
-    src.forEach((s) => {
-      const d = new Date(s.date)
-      d.setDate(d.getDate() + dateDiff)
-      const newDate = d.toISOString().slice(0,10)
-      items.push({ workerId: tWid, date: newDate, shiftType: s.shiftType })
-    })
+    // 다중 셀 복사 → 기준점(좌상단) 기준으로 상대 위치 유지
+    // 복사 범위의 좌상단: 가장 빠른 날짜 × 화면상 가장 위 worker
+    const srcDates  = src.map(e => e.date).sort()
+    const srcWids   = [...new Set(src.map(e => e.workerId))]
+    srcWids.sort((a,b) => workerOrder.indexOf(a) - workerOrder.indexOf(b))
+    const srcMinDate    = srcDates[0]
+    const srcTopWid     = srcWids[0]
+    const srcTopWidIdx  = workerOrder.indexOf(srcTopWid)
+    const srcMinDateIdx = allDates.indexOf(srcMinDate)
+
+    // 붙여넣기 기준점
+    const { workerId: dstWid, date: dstDate } = _extParseKey(anchorKey)
+    const dstWidIdx  = workerOrder.indexOf(dstWid)
+    const dstDateIdx = allDates.indexOf(dstDate)
+
+    const dateOffset   = dstDateIdx  - srcMinDateIdx
+    const workerOffset = dstWidIdx   - srcTopWidIdx
+
+    for (const s of src) {
+      const newDateIdx = allDates.indexOf(s.date) + dateOffset
+      if (newDateIdx < 0 || newDateIdx >= allDates.length) continue
+      const srcWidIdx2 = workerOrder.indexOf(s.workerId)
+      const dstWidIdx2 = srcWidIdx2 + workerOffset
+      if (dstWidIdx2 < 0 || dstWidIdx2 >= workerOrder.length) continue
+      items.push({ workerId: workerOrder[dstWidIdx2], date: allDates[newDateIdx], shiftType: s.shiftType })
+    }
   }
+
+  if (items.length === 0) return
   _extApplyBatch(items)
-  // 복사 아웃라인은 유지 (재사용 가능)
+  // 붙여넣은 셀 선택으로 교체
+  _extSelectedCells.clear()
+  items.forEach(({ workerId, date }) => _extSelectedCells.add(`${workerId}_${date}`))
+  _extAnchorKey = `${items[0].workerId}_${items[0].date}`
+  _extUpdateSelectStyle(); _extShowFillHandle(); _extUpdateBar()
   const label = src.length === 1
     ? `[${EXT_SHIFT_LABEL_MAP[src[0].shiftType] || src[0].shiftType || '비움'}]`
     : `${src.length}개 코드`
@@ -22691,59 +26974,145 @@ function _extMoveSelection(dir) {
   _extGetCell(newWorkerId, newDate)?.scrollIntoView({ block:'nearest', inline:'nearest' })
 }
 
-// ── 직접 타이핑 입력 ─────────────────────────────────────────
+// ── 직접 타이핑 입력 (직원 스케줄과 동일한 인라인 텍스트 입력 방식) ─────
 function _extOpenInlineInput(workerId, date, cell, initChar) {
   if (!cell) cell = _extGetCell(workerId, date)
   if (!cell) return
-  // 이미 열린 드롭다운이 있으면 — initChar가 없으면 그냥 focus만 (닫지 않음)
-  const existing = cell.querySelector('.ext-inline-select')
+  // 이미 열린 입력창이 있으면 닫기
+  const existing = cell.querySelector('.ext-inline-input')
   if (existing) {
     if (!initChar) { existing.focus(); return }
     existing.remove()
   }
-  const seq = getExtShiftSeq().filter(s => s !== '')
-  if (seq.length === 0) { showToast('활성화된 근무유형이 없습니다. 근무조 설정에서 활성화하세요.', 'info'); return }
-  // select 드롭다운 생성
-  const sel = document.createElement('select')
-  sel.className = 'ext-inline-select'
-  sel.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;font-size:10px;border:2px solid #3b82f6;border-radius:3px;background:white;z-index:20;cursor:pointer'
-  sel.innerHTML = seq.map(s => {
-    const cfg = _getExtShiftCfg(s)
-    const label = cfg?.label || EXT_SHIFT_LABEL_MAP[s] || s
-    return `<option value="${s}" ${cell.dataset.extshift===s?'selected':''}>${label}</option>`
-  }).join('')
-  // 초기 문자로 미리 매핑
-  if (initChar) {
-    const labelMap = { '오':'morning', 'ㅇ':'morning', 'a':'morning', 'A':'morning',
-      'b':'afternoon', 'B':'afternoon', '9':'full_9h', '1':'full_12h', 'F':'full_12h', 'f':'full_12h' }
-    const matched = labelMap[initChar] || labelMap[initChar.toUpperCase()]
-    if (matched && seq.includes(matched)) sel.value = matched
+
+  const currentCode = cell.dataset.extshift || ''
+  const origContent = cell.innerHTML
+
+  // 인라인 텍스트 입력창 생성 (직원 스케줄과 동일)
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'ext-inline-input'
+  // initChar가 있으면 그 문자로 시작, 없으면 기존 코드 표시
+  input.value = initChar !== null ? initChar : currentCode
+  input.style.cssText = `
+    width:34px;height:28px;border:2px solid #ea580c;border-radius:4px;
+    text-align:center;font-size:11px;font-weight:700;
+    background:white;color:#1f2937;outline:none;padding:0 2px;
+    position:relative;z-index:20;box-shadow:0 0 0 3px rgba(234,88,12,0.2);
+  `
+  cell.innerHTML = ''
+  cell.appendChild(input)
+  input.focus()
+  if (initChar !== null) {
+    const len = input.value.length
+    input.setSelectionRange(len, len)
+  } else {
+    input.select()
   }
-  cell.style.position = 'relative'
-  cell.appendChild(sel)
-  // 짧은 딜레이 후 focus (이벤트 버블링 방지)
-  requestAnimationFrame(() => { sel.focus() })
-  const _commit = (v) => {
-    const oldShift = cell.dataset.extshift || ''
-    if (v !== oldShift) {
-      _extPushUndo([{ workerId, date, oldType: oldShift, newType: v }])
-      _extApplyDOM(workerId, date, cell, v)
-      _extQueueSave(workerId, date, v)
+
+  let _applied = false
+
+  const applyInput = () => {
+    let newCode = input.value.trim().toUpperCase()
+    cell.innerHTML = origContent
+    const oldShift = currentCode
+    if (newCode !== oldShift) {
+      // EXT_SHIFT_LABEL_MAP/EXT_SHIFT_COLORS 동적 업데이트 (커스텀 코드 지원)
+      if (newCode && !EXT_SHIFT_LABEL_MAP[newCode]) {
+        EXT_SHIFT_LABEL_MAP[newCode] = newCode
+        EXT_SHIFT_COLORS[newCode] = `background:#f9fafb;color:#374151;border:1px solid #d1d5db`
+      }
+      _extPushUndo([{ workerId, date, oldType: oldShift, newType: newCode }])
+      _extApplyDOM(workerId, date, cell, newCode)
+      _extQueueSave(workerId, date, newCode)
       _extRecalcRow(workerId)
     }
-    sel.remove()
     _extSelectedCells.clear()
     _extSelectedCells.add(`${workerId}_${date}`)
     _extAnchorKey = `${workerId}_${date}`
     _extUpdateSelectStyle()
     _extUpdateBar()
   }
-  sel.onchange = () => _commit(sel.value)
-  sel.onblur = () => { setTimeout(() => { if (cell.contains(sel)) sel.remove() }, 150) }
-  sel.onkeydown = (ev) => {
-    if (ev.key === 'Escape') { sel.remove(); ev.preventDefault() }
-    if (ev.key === 'Enter') { ev.preventDefault(); _commit(sel.value) }
+
+  const cancelInput = () => {
+    cell.innerHTML = origContent
   }
+
+  input.addEventListener('keydown', (ev) => {
+    ev.stopPropagation()
+    if (ev.key === 'Enter' || ev.key === 'Tab') {
+      ev.preventDefault()
+      if (_applied) return; _applied = true
+      applyInput()
+      if (ev.key === 'Tab') {
+        // Tab: 다음 날짜로 이동
+        const days = getDaysInMonth(App.currentYear, App.currentMonth)
+        const mm = String(App.currentMonth).padStart(2,'0')
+        const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
+        const idx = allDates.indexOf(date)
+        const nextDate = allDates[idx+1]
+        if (nextDate) {
+          const nextCell = _extGetCell(workerId, nextDate)
+          if (nextCell) {
+            _extSelectedCells.clear()
+            _extSelectedCells.add(`${workerId}_${nextDate}`)
+            _extAnchorKey = `${workerId}_${nextDate}`
+            _extUpdateSelectStyle()
+            setTimeout(() => _extOpenInlineInput(workerId, nextDate, nextCell, null), 50)
+          }
+        }
+      }
+    } else if (ev.key === 'ArrowRight') {
+      ev.preventDefault()
+      if (_applied) return; _applied = true
+      applyInput()
+      const days2 = getDaysInMonth(App.currentYear, App.currentMonth)
+      const mm2 = String(App.currentMonth).padStart(2,'0')
+      const allDates2 = Array.from({length:days2},(_,i)=>`${App.currentYear}-${mm2}-${String(i+1).padStart(2,'0')}`)
+      const idx2 = allDates2.indexOf(date)
+      const nextD = allDates2[idx2+1]
+      if (nextD) {
+        const nc = _extGetCell(workerId, nextD)
+        if (nc) {
+          _extSelectedCells.clear()
+          _extSelectedCells.add(`${workerId}_${nextD}`)
+          _extAnchorKey = `${workerId}_${nextD}`
+          _extUpdateSelectStyle()
+          setTimeout(() => _extOpenInlineInput(workerId, nextD, nc, null), 50)
+        }
+      }
+    } else if (ev.key === 'ArrowLeft') {
+      ev.preventDefault()
+      if (_applied) return; _applied = true
+      applyInput()
+      const days3 = getDaysInMonth(App.currentYear, App.currentMonth)
+      const mm3 = String(App.currentMonth).padStart(2,'0')
+      const allDates3 = Array.from({length:days3},(_,i)=>`${App.currentYear}-${mm3}-${String(i+1).padStart(2,'0')}`)
+      const idx3 = allDates3.indexOf(date)
+      const prevD = allDates3[idx3-1]
+      if (prevD) {
+        const pc = _extGetCell(workerId, prevD)
+        if (pc) {
+          _extSelectedCells.clear()
+          _extSelectedCells.add(`${workerId}_${prevD}`)
+          _extAnchorKey = `${workerId}_${prevD}`
+          _extUpdateSelectStyle()
+          setTimeout(() => _extOpenInlineInput(workerId, prevD, pc, null), 50)
+        }
+      }
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault()
+      _applied = true
+      cancelInput()
+    }
+  })
+
+  input.addEventListener('blur', () => {
+    if (!_applied && cell.querySelector('.ext-inline-input')) {
+      _applied = true
+      applyInput()
+    }
+  })
 }
 
 // 헬퍼: extShiftConfig에서 특정 키의 설정 가져오기
@@ -23048,9 +27417,9 @@ window.printExecutiveView = function() {
     * { box-sizing:border-box; margin:0; padding:0; }
     body { font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic','Apple SD Gothic Neo',sans-serif;
            background:white; color:#1f2937; }
-    .page { width:210mm; min-height:297mm; padding:16mm 14mm; margin:0 auto; background:white; }
+    .page { width:210mm; min-height:auto; padding:14mm 12mm; margin:0 auto; background:white; }
     h2 { font-size:20px; font-weight:900; }
-    section { margin-bottom:18px; break-inside:avoid; }
+    section { margin-bottom:16px; break-inside:avoid; page-break-inside:avoid; }
     .section-title { font-size:13px; font-weight:700; color:#374151; margin-bottom:10px;
                      padding-bottom:6px; border-bottom:2px solid #e5e7eb;
                      display:flex; align-items:center; gap:6px; }
@@ -23058,9 +27427,13 @@ window.printExecutiveView = function() {
     .warn-block { margin-bottom:6px; }
     .week-chart { display:flex; gap:10px; align-items:flex-end; height:80px; padding:0 4px; }
     @media print {
-      body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-      .page { padding:10mm 10mm; }
+      @page { size:A4 portrait; margin:8mm 10mm; }
+      * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; }
+      body { background:white!important; margin:0!important; }
+      .page { padding:10mm 10mm!important; min-height:auto!important; }
       .no-print { display:none!important; }
+      section { page-break-inside:avoid!important; break-inside:avoid!important; }
+      [style*="border-radius"] { page-break-inside:avoid!important; break-inside:avoid!important; }
     }
   </style>
 </head>
@@ -23314,9 +27687,17 @@ window.printMonthlyAnalysisReport = function() {
     .stat-lbl{font-size:10px;color:#6b7280;margin-top:2px}
     .no-print{display:none!important}
     @media print{
-      body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-      .page{padding:8mm 8mm}
+      @page{size:A4 portrait;margin:8mm 10mm;}
+      *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
+      body{background:white!important;margin:0!important;}
+      .page{padding:8mm 8mm!important;}
       .no-print{display:none!important}
+      section{page-break-inside:avoid!important;break-inside:avoid!important;}
+      table{page-break-inside:auto!important;width:100%!important;}
+      thead{display:table-header-group!important;}
+      tr{page-break-inside:avoid!important;}
+      div[style*="overflow-x:auto"]{overflow:visible!important;}
+      div[style*="border-radius:8px"]{page-break-inside:avoid!important;}
     }
   </style>
 </head>
@@ -23454,75 +27835,202 @@ window.printMonthlyAnalysisReport = function() {
   printWin2.document.close()
 }
 
-// ── 파출/알바 근무유형 행 삭제 ────────────────────────────────
+// ── 파출/알바 근무유형 행 삭제 (구버전 호환) ──────────────────
 window.deleteExtShiftRow = (idx) => {
   const row = document.getElementById(`extShiftRow_${idx}`)
   if (!row) return
-  const label = document.getElementById(`extLabel_${idx}`)?.value || `항목 ${idx+1}`
-  if (!confirm(`"${label}" 근무유형을 삭제하시겠습니까?`)) return
-  row.remove()
-  showToast('삭제되었습니다. 저장 버튼을 눌러 적용하세요.', 'info')
+  const key = row.dataset.key || ''
+  const label = row.querySelector('td:nth-child(2)')?.textContent?.trim() || `항목 ${idx+1}`
+  deleteExtShiftItem(key, label)
 }
 
-// ── 파출/알바 근무유형 행 추가 ────────────────────────────────
-window.addExtShiftRow = () => {
-  const container = document.getElementById('extShiftConfigRows')
-  if (!container) return
-  const existing = container.querySelectorAll('div[id^="extShiftRow_"]')
-  const idx = existing.length
-  const newKey = `custom_${Date.now()}`
-  const div = document.createElement('div')
-  div.className = 'flex items-center gap-3 p-3 rounded-xl border border-orange-200 bg-orange-50'
-  div.id = `extShiftRow_${idx}`
-  div.innerHTML = `
-    <label class="flex items-center gap-1.5 cursor-pointer shrink-0">
-      <input type="checkbox" checked onchange="toggleExtShiftRow(${idx}, this.checked)"
-        class="rounded border-orange-300 text-orange-500">
-      <span class="text-xs font-semibold text-orange-700">사용</span>
-    </label>
-    <div class="w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold shrink-0"
-      style="background:#fff7ed;color:#ea580c">신규</div>
-    <div class="grid grid-cols-2 gap-2 flex-1 min-w-0">
-      <div>
-        <label class="text-xs text-gray-500 block mb-0.5">표시 이름</label>
-        <input type="text" value="" id="extLabel_${idx}" class="w-full border border-gray-200 rounded px-2 py-1 text-xs" placeholder="근무유형 이름">
-      </div>
-      <div>
-        <label class="text-xs text-gray-500 block mb-0.5">근무시간 (h)</label>
-        <input type="number" value="8" id="extHours_${idx}" min="1" max="24" class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-      </div>
-      <div>
-        <label class="text-xs text-gray-500 block mb-0.5">시작 시간</label>
-        <input type="time" value="07:00" id="extStart_${idx}" class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-      </div>
-      <div>
-        <label class="text-xs text-gray-500 block mb-0.5">종료 시간</label>
-        <input type="time" value="19:00" id="extEnd_${idx}" class="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-      </div>
-    </div>
-    <div class="shrink-0 text-xs text-gray-400 text-center" style="min-width:52px">
-      <div class="font-mono text-[10px] text-gray-400">${newKey}</div>
-      <button onclick="deleteExtShiftRow(${idx})" title="이 근무유형 삭제"
-        class="mt-1 w-full px-1 py-0.5 rounded text-[10px] bg-red-50 hover:bg-red-100 text-red-400 hover:text-red-600 border border-red-200 transition-colors">
-        <i class="fas fa-trash"></i> 삭제
-      </button>
-    </div>
-  `
-  container.appendChild(div)
-  showToast('항목이 추가되었습니다. 이름 입력 후 저장하세요.', 'info')
+// ── 파출/알바 근무유형 항목 삭제 (새 방식) ───────────────────
+window.deleteExtShiftItem = (key, label) => {
+  if (!confirm(`"${label}" 근무유형을 삭제하시겠습니까?`)) return
+  const cfg = _loadExtShiftCfg()
+  const newCfg = cfg.filter(c => c.key !== key)
+  localStorage.setItem('extShiftConfig', JSON.stringify(newCfg))
+  showToast('삭제되었습니다', 'success')
+  _refreshExtShiftTable(newCfg)
 }
+
+// ── 파출/알바 근무유형 사용 토글 ──────────────────────────────
+window.toggleExtShiftEnabled = (key, enabled) => {
+  const cfg = _loadExtShiftCfg()
+  const item = cfg.find(c => c.key === key)
+  if (item) {
+    item.enabled = enabled
+    localStorage.setItem('extShiftConfig', JSON.stringify(cfg))
+  }
+}
+
+// ── 파출/알바 근무유형 행 추가 (구버전 호환) ─────────────────
+window.addExtShiftRow = () => { openExtShiftModal() }
 
 // ── 파출/알바 근무유형 기본값 초기화 ─────────────────────────
 window.resetExtShiftConfig = () => {
   if (!confirm('파출/알바 근무유형을 기본값(오전/오후/9H/12H)으로 초기화하시겠습니까?')) return
   localStorage.removeItem('extShiftConfig')
   showToast('기본값으로 초기화되었습니다', 'success')
-  // 근무조 탭 재렌더링
   const content = document.getElementById('pageContent')
   if (content) renderScheduleTab(content)
 }
 
-// ── 법정근무시간 설정 모달 열기/저장 ──────────────────────────
+// ── 헬퍼: localStorage에서 extShiftConfig 로드 ───────────────
+function _loadExtShiftCfg() {
+  const EXT_DEFAULTS = [
+    { key:'morning',   label:'오전', color:'#c2410c', bg:'#fff7ed', enabled:true,  hours:'4', startTime:'07:00', endTime:'13:00' },
+    { key:'afternoon', label:'오후', color:'#b45309', bg:'#fef3c7', enabled:true,  hours:'4', startTime:'13:00', endTime:'19:00' },
+    { key:'full_9h',   label:'9H',   color:'#ea580c', bg:'#ffedd5', enabled:true,  hours:'9', startTime:'07:00', endTime:'16:00' },
+    { key:'full_12h',  label:'12H',  color:'#dc2626', bg:'#fee2e2', enabled:true,  hours:'12',startTime:'07:00', endTime:'19:00' },
+  ]
+  try {
+    const s = localStorage.getItem('extShiftConfig')
+    return s ? JSON.parse(s) : EXT_DEFAULTS
+  } catch(e) { return EXT_DEFAULTS }
+}
+
+// ── 헬퍼: extShiftConfig 테이블 행 갱신 ─────────────────────
+function _refreshExtShiftTable(cfg) {
+  const tbody = document.getElementById('extShiftConfigRows')
+  if (!tbody) return
+  cfg = cfg || _loadExtShiftCfg()
+  tbody.innerHTML = cfg.map((item, idx) => `
+  <tr class="border-b border-orange-50 hover:bg-orange-50/50" id="extShiftRow_${idx}" data-key="${item.key}">
+    <td class="px-4 py-3">
+      <span class="inline-flex items-center justify-center w-9 h-9 rounded-lg text-sm font-bold"
+        style="background:${item.bg||'#fff7ed'};color:${item.color||'#ea580c'}">${item.label}</span>
+    </td>
+    <td class="px-4 py-3 font-medium text-gray-800">${item.label}</td>
+    <td class="px-4 py-3 text-gray-600">${item.startTime||'07:00'} ~ ${item.endTime||'19:00'} (${item.hours||'8'}h)</td>
+    <td class="px-4 py-3">
+      <span class="inline-block w-5 h-5 rounded" style="background:${item.color||'#ea580c'}"></span>
+      <span class="text-xs text-gray-400 ml-1">${item.color||'#ea580c'}</span>
+    </td>
+    <td class="px-4 py-3 text-center">
+      <label class="inline-flex items-center cursor-pointer">
+        <input type="checkbox" ${item.enabled !== false ? 'checked' : ''}
+          onchange="toggleExtShiftEnabled('${item.key}', this.checked)"
+          class="rounded border-orange-300 text-orange-500 mr-1">
+        <span class="text-xs ${item.enabled !== false ? 'text-orange-600 font-semibold' : 'text-gray-400'}">
+          ${item.enabled !== false ? '사용' : '미사용'}
+        </span>
+      </label>
+    </td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-center gap-1">
+        <button onclick="openExtShiftModal('${item.key}')"
+          class="p-1.5 rounded hover:bg-orange-100 hover:text-orange-600 text-gray-400 transition-colors">
+          <i class="fas fa-pen text-xs"></i>
+        </button>
+        <button onclick="deleteExtShiftItem('${item.key}','${item.label}')"
+          class="p-1.5 rounded hover:bg-red-100 hover:text-red-600 text-gray-400 transition-colors">
+          <i class="fas fa-trash text-xs"></i>
+        </button>
+      </div>
+    </td>
+  </tr>`).join('')
+}
+
+// ── 파출/알바 근무유형 모달 열기 ─────────────────────────────
+window.openExtShiftModal = (key) => {
+  const modal = document.getElementById('extShiftModal')
+  if (!modal) return
+  const cfg = _loadExtShiftCfg()
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v }
+  const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v }
+  if (key) {
+    // 수정 모드
+    const item = cfg.find(c => c.key === key)
+    if (!item) return
+    document.getElementById('extShiftModalTitle').textContent = '수정'
+    setVal('esm_key',   item.key)
+    setVal('esm_code',  item.label)
+    setVal('esm_name',  item.label)
+    setVal('esm_start', item.startTime || '07:00')
+    setVal('esm_end',   item.endTime   || '19:00')
+    setVal('esm_color', item.color || '#ea580c')
+    setChk('esm_enabled', item.enabled !== false)
+    const prev = document.getElementById('esm_preview')
+    if (prev) {
+      prev.textContent = item.label
+      prev.style.color = item.color || '#ea580c'
+      prev.style.background = (item.bg || (item.color || '#ea580c') + '22')
+    }
+  } else {
+    // 추가 모드
+    document.getElementById('extShiftModalTitle').textContent = '추가'
+    setVal('esm_key',   '')
+    setVal('esm_code',  '')
+    setVal('esm_name',  '')
+    setVal('esm_start', '07:00')
+    setVal('esm_end',   '19:00')
+    setVal('esm_color', '#ea580c')
+    setChk('esm_enabled', true)
+    const prev = document.getElementById('esm_preview')
+    if (prev) { prev.textContent = '?'; prev.style.color = '#ea580c'; prev.style.background = '#fff7ed' }
+  }
+  modal.classList.remove('hidden')
+}
+
+// ── 파출/알바 근무유형 모달 저장 ─────────────────────────────
+window.saveExtShiftModal = () => {
+  const key      = document.getElementById('esm_key')?.value?.trim()
+  const code     = document.getElementById('esm_code')?.value?.trim()
+  const name     = document.getElementById('esm_name')?.value?.trim()
+  const start    = document.getElementById('esm_start')?.value || '07:00'
+  const end      = document.getElementById('esm_end')?.value   || '19:00'
+  const color    = document.getElementById('esm_color')?.value || '#ea580c'
+  const enabled  = document.getElementById('esm_enabled')?.checked !== false
+
+  if (!code) { showToast('근무코드(표시 이름)는 필수입니다', 'error'); return }
+
+  const cfg = _loadExtShiftCfg()
+  // 시간 기반 근무시간 계산
+  const [sh, sm] = start.split(':').map(Number)
+  const [eh, em] = end.split(':').map(Number)
+  let hours = ((eh * 60 + em) - (sh * 60 + sm)) / 60
+  if (hours <= 0) hours += 24
+  const hoursStr = String(Math.round(hours))
+
+  // bg = color + 22 (투명 배경)
+  const bg = color + '22'
+
+  if (key) {
+    // 수정: 기존 항목 업데이트
+    const idx = cfg.findIndex(c => c.key === key)
+    if (idx >= 0) {
+      cfg[idx] = { ...cfg[idx], label: code, color, bg, hours: hoursStr, startTime: start, endTime: end, enabled }
+    }
+  } else {
+    // 추가: 중복 코드 체크
+    if (cfg.some(c => c.label === code)) {
+      showToast(`"${code}" 코드가 이미 존재합니다`, 'error'); return
+    }
+    const newKey = `custom_${Date.now()}`
+    cfg.push({ key: newKey, label: code, color, bg, hours: hoursStr, startTime: start, endTime: end, enabled })
+  }
+
+  localStorage.setItem('extShiftConfig', JSON.stringify(cfg))
+  // EXT_SHIFT_LABEL_MAP 동적 업데이트
+  cfg.forEach(c => { if (window.EXT_SHIFT_LABEL_MAP) EXT_SHIFT_LABEL_MAP[c.key] = c.label })
+
+  document.getElementById('extShiftModal').classList.add('hidden')
+  showToast('저장되었습니다', 'success')
+  _refreshExtShiftTable(cfg)
+}
+
+// ── 파출/알바 근무유형 설정 저장 (구버전 호환) ────────────────
+window.saveExtShiftConfig = () => {
+  showToast('각 항목의 편집/삭제 버튼을 사용하거나 근무유형 추가 버튼을 눌러주세요', 'info')
+}
+
+window.toggleExtShiftRow = (idx, enabled) => {
+  const row = document.getElementById(`extShiftRow_${idx}`)
+  if (!row) return
+  const key = row.dataset.key || ''
+  toggleExtShiftEnabled(key, enabled)
+}
 window.openWorkSettingsModal = async () => {
   const modal = document.getElementById('workSettingsModal')
   if (!modal) return
@@ -23918,6 +28426,10 @@ window.saveEmployeeCard = async (empId) => {
     cycleWorkDays: document.getElementById('ei_cycle_work_days')?.value ? parseInt(document.getElementById('ei_cycle_work_days').value) : null,
     cycleRestDays: document.getElementById('ei_cycle_rest_days')?.value ? parseInt(document.getElementById('ei_cycle_rest_days').value) : null,
   }
+  // admin이 병원을 선택한 경우 hospitalId를 body에 포함 (서버에서 admin의 user.hospitalId가 null이므로 필수)
+  if (App.role === 'admin' && App.currentHospitalId) {
+    body.hospitalId = App.currentHospitalId
+  }
 
   let res
   if (empId) {
@@ -23927,11 +28439,43 @@ window.saveEmployeeCard = async (empId) => {
   }
 
   if (res?.success) {
+    const savedEmpId = empId || res.id
+    // ── 기존 연차/월차 사용분 보정 저장 (수정 모드 or 신규 직원 모두) ──
+    const priorAnnualUsedEl  = document.getElementById('ei_priorAnnualUsed')
+    const priorMonthlyUsedEl = document.getElementById('ei_priorMonthlyUsed')
+    if (savedEmpId && (priorAnnualUsedEl || priorMonthlyUsedEl)) {
+      const priorAnnual  = parseFloat(priorAnnualUsedEl?.value  || 0)
+      const priorMonthly = parseFloat(priorMonthlyUsedEl?.value || 0)
+      const hospQe = App.role === 'admin' && App.currentHospitalId ? `?hospitalId=${App.currentHospitalId}` : ''
+      // 연차 prior_used 저장
+      if (priorAnnual > 0 || empId) {
+        await api('PUT', `/api/schedule/leave-balance/${savedEmpId}`, {
+          year: App.currentYear, leaveType: 'annual',
+          grantedDays: parseFloat(document.getElementById('ei_annualLeave')?.value || 15),
+          manualAdjust: 0, priorUsedDays: priorAnnual,
+          carriedOver: 0, usedDays: 0, note: '직원 카드에서 초기 보정',
+        }).catch(()=>{})
+      }
+      // 월차 prior_used 저장 (입력값이 있을 때만)
+      if (priorMonthly > 0) {
+        await api('PUT', `/api/schedule/leave-balance/${savedEmpId}`, {
+          year: App.currentYear, leaveType: 'monthly',
+          grantedDays: 0, manualAdjust: 0, priorUsedDays: priorMonthly,
+          carriedOver: 0, usedDays: 0, note: '직원 카드에서 초기 보정',
+        }).catch(()=>{})
+      }
+    }
+
     document.getElementById('empCardModal').classList.add('hidden')
     showToast(empId ? '수정되었습니다' : '직원이 추가되었습니다', 'success')
-    // 데이터 리로드
+    // 데이터 리로드 (admin이 병원 선택한 경우 hospitalId 파라미터 포함)
     const _ym = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}`
-    scheduleEmployees = await api('GET', `/api/schedule/employees?yearMonth=${_ym}`).catch(() => [])
+    const _empHqs = (App.role === 'admin' && App.currentHospitalId) ? `&hospitalId=${App.currentHospitalId}` : ''
+    scheduleEmployees = await api('GET', `/api/schedule/employees?yearMonth=${_ym}${_empHqs}`).catch(() => [])
+    // leave-balance 데이터도 갱신
+    try {
+      window._leaveBalanceData = await api('GET', `/api/schedule/leave-balance/all?year=${App.currentYear}${_empHqs}`)
+    } catch(e) { window._leaveBalanceData = [] }
     const content = document.getElementById('pageContent')
     renderScheduleTab(content)
   } else {
@@ -23945,7 +28489,8 @@ window.confirmResignEmployee = (empId, name) => {
     if (res?.success) {
       showToast(`${name}님 퇴사 처리됨`, 'success')
       const _ym2 = `${App.currentYear}-${String(App.currentMonth).padStart(2,'0')}`
-      api('GET', `/api/schedule/employees?yearMonth=${_ym2}`).then(data => {
+      const _empHqs2 = (App.role === 'admin' && App.currentHospitalId) ? `&hospitalId=${App.currentHospitalId}` : ''
+      api('GET', `/api/schedule/employees?yearMonth=${_ym2}${_empHqs2}`).then(data => {
         scheduleEmployees = data || []
         const content = document.getElementById('pageContent')
         renderScheduleTab(content)
@@ -23965,7 +28510,9 @@ window.openShiftModal = (shiftId) => {
     document.getElementById('sm_start').value = s.start_time
     document.getElementById('sm_end').value = s.end_time
     document.getElementById('sm_team').value = s.team || ''
+    document.getElementById('sm_half_type').value = s.half_type || ''
     document.getElementById('sm_color').value = s.color
+    document.getElementById('sm_standard_hours').value = s.standard_hours ?? 8
   } else {
     document.getElementById('shiftModalTitle').textContent = '추가'
     document.getElementById('sm_id').value = ''
@@ -23974,7 +28521,9 @@ window.openShiftModal = (shiftId) => {
     document.getElementById('sm_start').value = '09:00'
     document.getElementById('sm_end').value = '18:00'
     document.getElementById('sm_team').value = ''
+    document.getElementById('sm_half_type').value = ''
     document.getElementById('sm_color').value = '#3B82F6'
+    document.getElementById('sm_standard_hours').value = 8
   }
   document.getElementById('shiftModal').classList.remove('hidden')
 }
@@ -23987,7 +28536,13 @@ window.saveShift = async () => {
     startTime: document.getElementById('sm_start').value,
     endTime: document.getElementById('sm_end').value,
     team: document.getElementById('sm_team').value || null,
-    color: document.getElementById('sm_color').value
+    halfType: document.getElementById('sm_half_type').value || null,
+    color: document.getElementById('sm_color').value,
+    standardHours: parseFloat(document.getElementById('sm_standard_hours').value) || 8
+  }
+  // admin은 현재 선택된 병원의 hospitalId를 body에 포함 (서버에서 admin의 user.hospitalId가 null일 수 있음)
+  if (App.role === 'admin' && App.currentHospitalId) {
+    body.hospitalId = App.currentHospitalId
   }
   if (!body.shiftCode || !body.shiftName) { showToast('코드와 이름은 필수입니다', 'error'); return }
 
@@ -24001,7 +28556,9 @@ window.saveShift = async () => {
   if (res?.success) {
     document.getElementById('shiftModal').classList.add('hidden')
     showToast('저장되었습니다', 'success')
-    scheduleShifts = await api('GET', '/api/schedule/shifts').catch(() => [])
+    // admin이 병원을 선택한 경우 hospitalId 파라미터 포함하여 조회
+    const _shiftsHqs = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+    scheduleShifts = await api('GET', `/api/schedule/shifts${_shiftsHqs}`).catch(() => [])
     const content = document.getElementById('pageContent')
     renderScheduleTab(content)
   } else {
@@ -24014,7 +28571,9 @@ window.deleteShift = async (id, name) => {
   const res = await api('DELETE', `/api/schedule/shifts/${id}`)
   if (res?.success) {
     showToast('삭제되었습니다', 'success')
-    scheduleShifts = await api('GET', '/api/schedule/shifts').catch(() => [])
+    // admin이 병원을 선택한 경우 hospitalId 파라미터 포함하여 조회
+    const _shiftsHqs = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+    scheduleShifts = await api('GET', `/api/schedule/shifts${_shiftsHqs}`).catch(() => [])
     const content = document.getElementById('pageContent')
     renderScheduleTab(content)
   }
@@ -24097,7 +28656,43 @@ function _parseKey(key) {
   return { empId: parts[0], date: parts.slice(1).join('_') }
 }
 
-// ── 선택 스타일 적용/해제 (CSS 클래스 기반) ──────────────────
+// ── 반차 배지 DOM 삽입/갱신 헬퍼 ────────────────────────────────────────
+// cellEl: td 요소, period: 'am'|'pm', hours: 사용시간(숫자)
+// 같은 period 기존 배지는 교체, 상단(am)/하단(pm) 위치 구분
+// leaveUnitType: halfday → "전반 반차"/"후반 반차", hourly → "전반 Xh"/"후반 Xh"
+function _applyPartialBadgeToCellDOM(cellEl, period, hours) {
+  if (!cellEl) return
+  const isMorning = period === 'am'
+  const badgeClass = isMorning ? 'pl-badge-am' : 'pl-badge-pm'
+  // 기존 같은 period 배지 제거
+  cellEl.querySelectorAll('.' + badgeClass).forEach(el => el.remove())
+  const wrapDiv = cellEl.querySelector('div')
+  if (!wrapDiv) return
+  const badge = document.createElement('div')
+  badge.className = `pl-badge ${badgeClass}`
+  badge.style.cssText = [
+    'font-size:8px',
+    'font-weight:700',
+    'line-height:1.2',
+    'margin-top:1px',
+    'border-radius:3px',
+    'padding:1px 3px',
+    'text-align:center',
+    'white-space:nowrap',
+    isMorning
+      ? 'background:#ede9fe;color:#7c3aed;border:1px solid #c4b5fd'
+      : 'background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd'
+  ].join(';')
+  const label = isMorning ? '전반' : '후반'
+  const unitType = window._currentLeaveUnitType || 'halfday'
+  // halfday: "오전반차" / "오후반차" — hourly: "전반 Xh" / "후반 Xh"
+  if (unitType === 'hourly') {
+    badge.textContent = hours > 0 ? `${label} ${hours}h` : label
+  } else {
+    badge.textContent = isMorning ? '오전반차' : '오후반차'
+  }
+  wrapDiv.appendChild(badge)
+}
 function updateCellSelectStyle(cell, selected) {
   if (!cell) return
   if (selected) {
@@ -24670,10 +29265,39 @@ async function _flushSave() {
       try { renderAdminSummaryPanel() } catch(e) { console.warn('[_flushSave] adminPanel 재계산 오류:', e) }
     }, 400)
   }
+  // ── 반차 코드 포함 시 연차관리 탭 즉시 갱신 ──
+  // 전반/후반 + schedule_shifts half_type 코드만 반차 처리 (오전/오후는 파출/알바 전용)
+  const _halfShiftCodes2 = (scheduleShifts || []).filter(s => s.half_type && !['오전','오후'].includes(s.shift_code)).map(s => s.shift_code)
+  const HALF_CODES = new Set(['전반','후반', ..._halfShiftCodes2])
+  const hasHalf = items.some(i => HALF_CODES.has(i.code || ''))
+  if (hasHalf) {
+    clearTimeout(window._halfLeaveRefreshTimer)
+    window._halfLeaveRefreshTimer = setTimeout(async () => {
+      try {
+        await _refreshLeaveData()
+        const tc = document.querySelector('[data-tab-content="leaves"]') || document.getElementById('tab-leaves-content')
+        if (tc) tc.innerHTML = renderLeavesTab()
+      } catch(e) {}
+    }, 800) // 배치 저장 완료 후 약간의 딜레이로 갱신
+  }
 }
 
 // ── 내부용: undo 스택에 push하지 않는 순수 적용 ──────────────
 function _applyCodeNoPush(empId, date, cell, code) {
+  // ── 반차 코드 셀 직접 입력 차단 (hourly / halfday 공통) ──
+  // half_type이 있는 코드를 셀에 직접 입력하면 반차 모달로 전환
+  const halfShift = (scheduleShifts || []).find(s =>
+    s.shift_code === code && (s.half_type === 'half_am' || s.half_type === 'half_pm')
+  )
+  if (halfShift) {
+    const emp = (scheduleEmployees || []).find(e => e.id === empId || e.id === Number(empId))
+    const empName = emp?.name || String(empId)
+    const defaultPeriod = halfShift.half_type === 'half_am' ? 'am' : 'pm'
+    window._partialLeaveDefaultDate   = date
+    window._partialLeaveDefaultPeriod = defaultPeriod
+    openPartialLeaveModal(empId, empName)
+    return  // 일반 코드 저장/DOM 반영 중단
+  }
   _applyCodeDOM(empId, date, cell, code)
   _queueSave(empId, date, code)
   schedRecalcRow(empId)
@@ -24756,59 +29380,68 @@ window.schedCopyCells = () => {
 window.schedPasteCells = () => {
   if (!_copiedCellData) { showToast('먼저 셀을 복사(Ctrl+C)하세요', 'error'); return }
 
-  // 선택 셀이 없으면 → 앵커(마지막 선택 위치) 기준으로 붙여넣기
-  if (_selectedCells.size === 0) {
-    if (!_anchorKey) { showToast('붙여넣을 위치의 셀을 클릭하세요', 'error'); return }
-    _selectedCells.add(_anchorKey)
+  // 붙여넣기 기준점: 선택 셀이 1개면 그 셀, 여러 개면 첫 번째 셀, 없으면 앵커
+  let anchorKey = null
+  if (_selectedCells.size === 1) {
+    anchorKey = Array.from(_selectedCells)[0]
+  } else if (_selectedCells.size > 1) {
+    anchorKey = Array.from(_selectedCells).sort()[0]
+  } else if (_anchorKey) {
+    anchorKey = _anchorKey
+  } else {
+    showToast('붙여넣을 위치의 셀을 클릭하세요', 'error'); return
   }
 
   const { entries: srcEntries } = _copiedCellData
-  const dstKeys = Array.from(_selectedCells).sort()
   const batchItems = []
 
-  if (srcEntries.length === 1) {
-    // 단일 셀 복사 → 선택 셀 전체에 동일 코드 적용
-    const srcCode = srcEntries[0].code
-    for (const dstKey of dstKeys) {
-      const { empId, date } = _parseKey(dstKey)
-      batchItems.push({ empId, date, code: srcCode || '-' })
-    }
-  } else {
-    // 다중 셀 복사 → 대상 첫 번째 셀 기준으로 날짜 오프셋 + 직원 오프셋 적용
-    const srcFirst = srcEntries[0]
-    const dstFirst = _parseKey(dstKeys[0])
-    const days = getDaysInMonth(App.currentYear, App.currentMonth)
-    const mm = String(App.currentMonth).padStart(2,'0')
-    const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
-    const dateOffset = allDates.indexOf(dstFirst.date) - allDates.indexOf(srcFirst.date)
+  const days = getDaysInMonth(App.currentYear, App.currentMonth)
+  const mm = String(App.currentMonth).padStart(2,'0')
+  const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
 
-    // 직원 순서 배열 (DOM에서 data-empid 순서 추출)
-    const allEmpCells = Array.from(document.querySelectorAll('td[data-empid][data-date]'))
-    const empOrder = []
-    allEmpCells.forEach(c => {
-      if (!empOrder.includes(c.dataset.empid)) empOrder.push(c.dataset.empid)
-    })
+  // 직원 순서 배열 (DOM에서 data-empid 순서 추출)
+  const empOrder = []
+  document.querySelectorAll('td[data-empid][data-date]').forEach(c => {
+    if (!empOrder.includes(c.dataset.empid)) empOrder.push(c.dataset.empid)
+  })
+
+  if (srcEntries.length === 1) {
+    // 단일 셀 복사 → 붙여넣기 기준 셀 1개에만 적용 (Excel 동작)
+    const { empId, date } = _parseKey(anchorKey)
+    batchItems.push({ empId, date, code: srcEntries[0].code || '-' })
+  } else {
+    // 다중 셀 복사 → 기준점(좌상단) 기준으로 상대 위치 유지
+    // 복사 범위의 좌상단: 가장 빠른 날짜 × 가장 위 직원
+    const srcDates  = srcEntries.map(e => e.date).sort()
     const srcEmpIds = [...new Set(srcEntries.map(e => e.empId))]
-    const srcFirstEmpIdx = empOrder.indexOf(srcFirst.empId)
-    const dstFirstEmpIdx = empOrder.indexOf(dstFirst.empId)
-    const empOffset = dstFirstEmpIdx - srcFirstEmpIdx
+    srcEmpIds.sort((a,b) => empOrder.indexOf(a) - empOrder.indexOf(b))
+    const srcMinDate   = srcDates[0]
+    const srcTopEmpId  = srcEmpIds[0]
+    const srcTopEmpIdx = empOrder.indexOf(srcTopEmpId)
+    const srcMinDateIdx = allDates.indexOf(srcMinDate)
+
+    // 붙여넣기 기준점
+    const { empId: dstEmpId, date: dstDate } = _parseKey(anchorKey)
+    const dstEmpIdx   = empOrder.indexOf(dstEmpId)
+    const dstDateIdx  = allDates.indexOf(dstDate)
+
+    const dateOffset = dstDateIdx - srcMinDateIdx
+    const empOffset  = dstEmpIdx  - srcTopEmpIdx
 
     for (const srcEntry of srcEntries) {
-      const dstIdx = allDates.indexOf(srcEntry.date) + dateOffset
-      if (dstIdx < 0 || dstIdx >= allDates.length) continue
-      // 직원 오프셋 계산
-      const srcEmpIdx = empOrder.indexOf(srcEntry.empId)
-      const dstEmpIdx = srcEmpIdx + empOffset
-      const dstEmpId = (dstEmpIdx >= 0 && dstEmpIdx < empOrder.length) ? empOrder[dstEmpIdx] : dstFirst.empId
-      batchItems.push({ empId: dstEmpId, date: allDates[dstIdx], code: srcEntry.code || '-' })
+      const newDateIdx = allDates.indexOf(srcEntry.date) + dateOffset
+      if (newDateIdx < 0 || newDateIdx >= allDates.length) continue
+      const srcEmpIdx2 = empOrder.indexOf(srcEntry.empId)
+      const dstEmpIdx2 = srcEmpIdx2 + empOffset
+      if (dstEmpIdx2 < 0 || dstEmpIdx2 >= empOrder.length) continue
+      batchItems.push({ empId: empOrder[dstEmpIdx2], date: allDates[newDateIdx], code: srcEntry.code || '-' })
     }
   }
 
   if (batchItems.length === 0) return
   schedApplyBatch(batchItems)
   showToast(`${batchItems.length}개 셀 붙여넣기 완료 · 계속 Ctrl+V 가능`, 'success')
-  // ※ 복사 버퍼 유지 - 계속 붙여넣기 가능
-  // 붙여넣은 셀 선택 유지
+  // 붙여넣은 셀 선택으로 교체
   clearMultiSelection()
   batchItems.forEach(({ empId, date }) => _selectedCells.add(`${empId}_${date}`))
   _anchorKey = `${batchItems[0].empId}_${batchItems[0].date}`
@@ -24876,19 +29509,45 @@ window.schedDragMove = (event, empId, date, cell) => {
     return
   }
 
-  // ── 일반 셀 범위 드래그 선택 ─────────────────────────────
+  // ── 일반 셀 범위 드래그 선택 (멀티행 지원) ───────────────
   if (!_isDragging || !_dragStartKey) return
   const { empId: startEmpId, date: startDate } = _parseKey(_dragStartKey)
-  if (String(empId) !== String(startEmpId)) return  // 같은 행만
 
   const days   = getDaysInMonth(App.currentYear, App.currentMonth)
   const mm     = String(App.currentMonth).padStart(2,'0')
   const allDates = Array.from({length:days},(_,i)=>`${App.currentYear}-${mm}-${String(i+1).padStart(2,'0')}`)
-  const i1 = allDates.indexOf(startDate), i2 = allDates.indexOf(date)
-  const [lo, hi] = [Math.min(i1,i2), Math.max(i1,i2)]
 
-  _selectedCells.clear()
-  for (let i=lo; i<=hi; i++) _selectedCells.add(`${startEmpId}_${allDates[i]}`)
+  // 멀티행 드래그: 같은 행이면 기존 방식, 다른 행이면 멀티행 범위 선택
+  if (String(empId) === String(startEmpId)) {
+    // 같은 행 드래그 (기존 방식)
+    const i1 = allDates.indexOf(startDate), i2 = allDates.indexOf(date)
+    const [lo, hi] = [Math.min(i1,i2), Math.max(i1,i2)]
+    _selectedCells.clear()
+    for (let i=lo; i<=hi; i++) _selectedCells.add(`${startEmpId}_${allDates[i]}`)
+  } else {
+    // 멀티행 드래그 - 시작 셀~현재 셀까지 직사각형 범위 선택
+    // 같은 테이블 내의 직원 행 순서를 파악
+    const allEmpCells = document.querySelectorAll('td[data-empid]')
+    const empOrder = []
+    const seenEmps = new Set()
+    allEmpCells.forEach(c => {
+      const eid = c.dataset.empid
+      if (!seenEmps.has(eid)) { seenEmps.add(eid); empOrder.push(eid) }
+    })
+    const startIdx = empOrder.indexOf(String(startEmpId))
+    const endIdx   = empOrder.indexOf(String(empId))
+    if (startIdx === -1 || endIdx === -1) return
+    const [loEmp, hiEmp] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)]
+    const i1 = allDates.indexOf(startDate), i2 = allDates.indexOf(date)
+    const [loDate, hiDate] = [Math.min(i1,i2), Math.max(i1,i2)]
+    _selectedCells.clear()
+    for (let ei = loEmp; ei <= hiEmp; ei++) {
+      const eid = empOrder[ei]
+      for (let di = loDate; di <= hiDate; di++) {
+        _selectedCells.add(`${eid}_${allDates[di]}`)
+      }
+    }
+  }
   applyRangeStyle()
   updateMultiSelectBar()
 }
@@ -24930,30 +29589,11 @@ window.schedDragEnd = (event) => {
     return
   }
 
-  // ── 일반 드래그 선택 완료 → 엑셀처럼 소스 셀 코드를 범위 전체에 자동 채움 ────
+  // ── 일반 드래그 선택 완료 → 선택 범위만 유지 (자동 채우기 없음) ────
+  // 엑셀처럼 일반 드래그는 범위 선택만, 자동 채우기는 fill handle(▪)로만 수행
   if (!_isDragging) return
   _isDragging = false
-
-  const srcKey = _dragStartKey
   _dragStartKey = null
-
-  // 드래그 범위가 2개 이상이면 소스 셀 코드를 전체 범위에 자동 적용 (undo 단위)
-  if (_selectedCells.size > 1 && srcKey) {
-    const { empId: srcEmpId, date: srcDate } = _parseKey(srcKey)
-    const srcCell = _getCellEl(srcEmpId, srcDate)
-    const srcCode = srcCell?.dataset?.shift || ''
-
-    if (srcCode && srcCode !== '-') {
-      const allKeys = Array.from(_selectedCells).sort()
-      const otherKeys = allKeys.filter(k => k !== srcKey)
-      const fillBatch = otherKeys.map(k => {
-        const { empId, date } = _parseKey(k)
-        return { empId, date, code: srcCode }
-      })
-      schedApplyBatch(fillBatch)
-      if (fillBatch.length > 0) showToast(`${fillBatch.length}개 셀에 [${srcCode}] 채우기`, 'success')
-    }
-  }
 
   // 선택 범위 유지 + 툴바 표시
   applyRangeStyle()
@@ -25355,7 +29995,10 @@ function updateSchedRightPanel() {
 
   const sm   = scheduleMonthData?.sched_map || {}
   const lm   = scheduleMonthData?.leave_map || {}
-  const emps = (scheduleEmployees || []).filter(e => e.is_active !== 0 && !e.resign_date)
+  const _today4 = new Date().toISOString().slice(0, 10)
+  const emps = (scheduleEmployees || []).filter(e =>
+    e.is_active !== 0 && (!e.resign_date || e.resign_date >= _today4)
+  )
   const year = App.currentYear, month = App.currentMonth
   const days = new Date(year, month, 0).getDate()
   // ✅ CALC_ENGINE: REST_CODES_SET 전역 상수 사용
@@ -26206,13 +30849,18 @@ async function renderHospitalManage() {
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <div class="p-5 border-b border-gray-100 flex items-center justify-between">
       <h2 class="font-bold text-gray-800"><i class="fas fa-hospital text-green-600 mr-2"></i>병원 목록</h2>
-      <span class="text-sm text-gray-400">총 ${(hospitals||[]).length}개 병원</span>
+      <div class="flex items-center gap-2">
+        <span class="text-sm text-gray-400">총 ${(hospitals||[]).length}개 병원</span>
+        <button onclick="showAddHospitalModal()" class="btn btn-primary btn-sm">
+          <i class="fas fa-plus mr-1"></i>신규 병원 추가
+        </button>
+      </div>
     </div>
     <div class="divide-y divide-gray-50">
       ${(hospitals||[]).map(h => `
-        <div class="p-3 md:p-4 hover:bg-gray-50 transition cursor-pointer" onclick="openHospitalDetail(${h.id})">
+        <div class="p-3 md:p-4 hover:bg-gray-50 transition">
           <div class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2 md:gap-3 min-w-0">
+            <div class="flex items-center gap-2 md:gap-3 min-w-0 cursor-pointer flex-1" onclick="openHospitalDetail(${h.id})">
               <div class="w-9 h-9 rounded-xl bg-green-100 flex items-center justify-center flex-shrink-0">
                 <i class="fas fa-hospital text-green-600 text-sm"></i>
               </div>
@@ -26223,15 +30871,26 @@ async function renderHospitalManage() {
                   ${h.licensed_beds||'-'}병상 · 
                   ${h.dietitian_name||'영양사 미등록'}
                   ${h.main_specialty ? ` · <span class="text-green-600 font-medium">${h.main_specialty}</span>` : ''}
+                  ${!h.current_meal_price && !h.hospital_type ? '<span class="text-orange-500 font-medium"> · ⚠ 초기화 필요</span>' : ''}
                 </div>
               </div>
             </div>
-            <div class="flex flex-col items-end gap-1 flex-shrink-0 md:flex-row md:items-center md:gap-3">
+            <div class="flex flex-col items-end gap-1 flex-shrink-0 md:flex-row md:items-center md:gap-2">
               <span class="badge ${h.closing_status==='requested'?'badge-yellow':h.closing_status==='closed'?'badge-green':'badge-gray'} text-xs">
                 ${h.closing_status==='requested'?'마감요청':h.closing_status==='closed'?'마감':'운영중'}
               </span>
-              <span class="text-xs text-green-700 font-semibold">${h.current_year||2026}년 ${h.current_month||3}월</span>
-              <i class="fas fa-chevron-right text-gray-300 text-xs hidden md:block"></i>
+              <span class="text-xs text-green-700 font-semibold">${h.current_year||new Date().getFullYear()}년 ${h.current_month||new Date().getMonth()+1}월</span>
+              <button onclick="event.stopPropagation(); initializeHospital(${h.id},'${(h.name||'').replace(/'/g,"\\'")}')"
+                title="hospital_info/monthly_settings 누락 시 자동 보완"
+                class="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 transition whitespace-nowrap">
+                <i class="fas fa-wrench mr-1"></i>초기화
+              </button>
+              <button onclick="event.stopPropagation(); showCloneDataModal(${h.id},'${(h.name||'').replace(/'/g,"\\'")}')"
+                title="기준 병원 데이터를 복제하여 완성형 샘플 병원 구성"
+                class="text-xs px-2 py-1 rounded-lg bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 transition whitespace-nowrap">
+                <i class="fas fa-copy mr-1"></i>복제
+              </button>
+              <i class="fas fa-chevron-right text-gray-300 text-xs hidden md:block cursor-pointer" onclick="openHospitalDetail(${h.id})"></i>
             </div>
           </div>
         </div>
@@ -26248,11 +30907,372 @@ function getHospitalTypeLabel(type) {
   return map[type] || '병원'
 }
 
+// ══════════════════════════════════════════════════════════════
+// 신규 병원 추가 모달
+// ══════════════════════════════════════════════════════════════
+function showAddHospitalModal() {
+  // 기존 병원 목록 가져오기 (복제 선택용)
+  const existingHospitals = App._adminHospitals || []
+
+  const modalHtml = `
+  <div id="addHospitalModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.5)">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <div class="p-6 border-b border-gray-100 flex items-center justify-between">
+        <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-plus-circle text-green-600 mr-2"></i>신규 병원 추가</h3>
+        <button onclick="document.getElementById('addHospitalModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl">×</button>
+      </div>
+      <div class="p-6 space-y-4">
+
+        <!-- 기본정보 -->
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">병원명 <span class="text-red-500">*</span></label>
+          <input id="newHospName" type="text" placeholder="예: 리엔에이치 한방병원" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">병원 코드 <span class="text-red-500">*</span><span class="text-xs font-normal text-gray-400 ml-1">(영문 대문자, 예: LIEN)</span></label>
+          <input id="newHospCode" type="text" placeholder="예: LIEN" class="input w-full" style="text-transform:uppercase"
+            oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9_]/g,'')" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">병원 유형</label>
+          <select id="newHospType" class="input w-full">
+            <option value="general">종합병원</option>
+            <option value="oriental">한방병원</option>
+            <option value="nursing">요양병원</option>
+            <option value="rehab">재활병원</option>
+            <option value="clinic">의원</option>
+            <option value="care_facility">요양원</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">영양사 이름</label>
+          <input id="newHospDietitian" type="text" placeholder="예: 홍길동" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-700 mb-1">영양사 연락처</label>
+          <input id="newHospPhone" type="text" placeholder="010-0000-0000" class="input w-full" />
+        </div>
+
+        <!-- 계정 생성 -->
+        <div class="bg-blue-50 rounded-xl p-4 space-y-3">
+          <div class="text-sm font-semibold text-blue-800"><i class="fas fa-user mr-1"></i>영양사 계정 생성 (선택)</div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">아이디</label>
+            <input id="newHospUsername" type="text" placeholder="예: lien2025" class="input w-full text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">비밀번호</label>
+            <input id="newHospPassword" type="text" placeholder="예: pass1234" class="input w-full text-sm" />
+          </div>
+        </div>
+
+        <!-- 기존 병원 복제 (선택) -->
+        ${existingHospitals.length > 0 ? `
+        <div class="bg-amber-50 rounded-xl p-4 space-y-2">
+          <div class="text-sm font-semibold text-amber-800"><i class="fas fa-copy mr-1"></i>기존 병원 설정 복제 (선택)</div>
+          <p class="text-xs text-amber-600">선택하면 업체·환자군 설정을 복제합니다 (예산은 0으로 초기화)</p>
+          <select id="newHospCloneFrom" class="input w-full text-sm">
+            <option value="">-- 복제하지 않음 (항암식 기본 필드만 생성) --</option>
+            ${existingHospitals.map(h => `<option value="${h.id}">${h.name}</option>`).join('')}
+          </select>
+        </div>` : ''}
+
+      </div>
+      <div class="p-6 pt-0 flex gap-3">
+        <button onclick="document.getElementById('addHospitalModal').remove()" class="btn btn-outline flex-1">취소</button>
+        <button onclick="submitAddHospital()" class="btn btn-primary flex-1">
+          <i class="fas fa-plus mr-1"></i>병원 생성
+        </button>
+      </div>
+    </div>
+  </div>`
+  document.body.insertAdjacentHTML('beforeend', modalHtml)
+}
+
+async function submitAddHospital() {
+  const name = document.getElementById('newHospName')?.value?.trim()
+  const code = document.getElementById('newHospCode')?.value?.trim()
+  const hospitalType = document.getElementById('newHospType')?.value || 'general'
+  const dietitianName = document.getElementById('newHospDietitian')?.value?.trim() || ''
+  const dietitianPhone = document.getElementById('newHospPhone')?.value?.trim() || ''
+  const username = document.getElementById('newHospUsername')?.value?.trim() || ''
+  const password = document.getElementById('newHospPassword')?.value?.trim() || ''
+  const cloneFromEl = document.getElementById('newHospCloneFrom')
+  const cloneFrom = cloneFromEl ? Number(cloneFromEl.value) || null : null
+
+  if (!name) { alert('병원명을 입력하세요'); return }
+  if (!code) { alert('병원 코드를 입력하세요'); return }
+  if (username && !password) { alert('비밀번호를 입력하세요'); return }
+
+  const btn = document.querySelector('#addHospitalModal .btn-primary')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>생성 중...' }
+
+  try {
+    const res = await api('POST', '/api/admin/hospitals', {
+      name, code,
+      hospital_type: hospitalType,
+      dietitian_name: dietitianName,
+      dietitian_phone: dietitianPhone,
+      username: username || undefined,
+      password: password || undefined,
+      clone_from_hospital_id: cloneFrom || undefined,
+    })
+
+    if (res?.success) {
+      document.getElementById('addHospitalModal')?.remove()
+      const cloneMsg = cloneFrom ? ' (설정 복제 완료)' : ' (기본 초기화 완료)'
+      showToast(`✅ '${name}' 병원이 생성되었습니다${cloneMsg}`, 'success')
+      // 병원 목록 새로고침
+      await renderHospitalManage()
+    } else {
+      alert(res?.error || '병원 생성에 실패했습니다')
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus mr-1"></i>병원 생성' }
+    }
+  } catch (e) {
+    alert('오류: ' + (e?.message || e))
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus mr-1"></i>병원 생성' }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// 기존 병원 운영 초기화 (누락 데이터 자동 보완)
+// ══════════════════════════════════════════════════════════════
+async function initializeHospital(hospitalId, hospitalName) {
+  // [RECOVERY-GUARD] 병원 초기화 서버 API 미비 → 차단 (데이터 보호)
+  if (window.__FEATURE_OFF_HOSPITAL_CLONE) {
+    alert('병원 초기화 기능은 현재 준비 중입니다.')
+    return
+  }
+  if (!confirm(`'${hospitalName}' 병원의 누락 초기 데이터를 자동 보완할까요?\n\n보완 항목:\n• hospital_info (없는 경우)\n• monthly_settings 현재 년월 (없는 경우)\n• meal_custom_fields 항암 기본 필드 (없는 경우)\n• vendors cost_type_default 보완\n\n기존 데이터는 변경되지 않습니다.`)) return
+  try {
+    const res = await api('POST', `/api/admin/hospitals/${hospitalId}/initialize`)
+    if (res?.success) {
+      const msg = res.fixed?.length > 0
+        ? `✅ 초기화 완료:\n${res.fixed.join('\n')}`
+        : '✅ 이미 정상 초기화 상태입니다'
+      alert(msg)
+      await renderHospitalManage()
+    } else {
+      alert(res?.error || '초기화 실패')
+    }
+  } catch (e) {
+    alert('오류: ' + (e?.message || e))
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// 데이터 복제 모달 (아미나병원 등 기준 병원 데이터 복제)
+// ══════════════════════════════════════════════════════════════
+function showCloneDataModal(targetHospitalId, targetHospitalName) {
+  // [RECOVERY-GUARD] 병원 데이터 복제 서버 API 미비 → 차단 (데이터 보호)
+  if (window.__FEATURE_OFF_HOSPITAL_CLONE) {
+    alert('병원 데이터 복제 기능은 현재 준비 중입니다.')
+    return
+  }
+  const existingHospitals = (App._adminHospitals || []).filter(h => h.id !== targetHospitalId)
+  const currentYear = new Date().getFullYear()
+  const currentMonth = new Date().getMonth() + 1
+
+  const modalHtml = `
+  <div id="cloneDataModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.6)">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[92vh] overflow-y-auto">
+      <div class="p-5 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white z-10">
+        <div>
+          <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-copy text-purple-600 mr-2"></i>데이터 복제</h3>
+          <p class="text-xs text-gray-500 mt-0.5">대상 병원: <span class="font-semibold text-gray-700">${targetHospitalName}</span></p>
+        </div>
+        <button onclick="document.getElementById('cloneDataModal').remove()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+      </div>
+
+      <div class="p-5 space-y-4">
+
+        <!-- 소스 병원 선택 -->
+        <div class="bg-purple-50 rounded-xl p-4 space-y-3">
+          <div class="text-sm font-bold text-purple-800"><i class="fas fa-hospital mr-1"></i>기준(소스) 병원 선택</div>
+          <select id="cloneSrcHospital" class="input w-full" onchange="updateCloneSrcHospitalName(this)">
+            <option value="">-- 기준 병원 선택 --</option>
+            ${existingHospitals.map(h => `<option value="${h.id}">${h.name}</option>`).join('')}
+          </select>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs font-medium text-gray-600 block mb-1">소스 연도</label>
+              <input id="cloneSrcYear" type="number" value="${currentYear}" min="2020" max="2030" class="input w-full text-sm" />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-600 block mb-1">소스 월</label>
+              <select id="cloneSrcMonth" class="input w-full text-sm">
+                ${Array.from({length:12},(_, i)=>`<option value="${i+1}" ${i+1===currentMonth?'selected':''}>${i+1}월</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 대상 년월 -->
+        <div class="bg-blue-50 rounded-xl p-4 space-y-3">
+          <div class="text-sm font-bold text-blue-800"><i class="fas fa-calendar mr-1"></i>복제 대상 년월 (기본: 소스와 동일)</div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs font-medium text-gray-600 block mb-1">대상 연도</label>
+              <input id="cloneTgtYear" type="number" value="${currentYear}" min="2020" max="2030" class="input w-full text-sm" />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-600 block mb-1">대상 월</label>
+              <select id="cloneTgtMonth" class="input w-full text-sm">
+                ${Array.from({length:12},(_, i)=>`<option value="${i+1}" ${i+1===currentMonth?'selected':''}>${i+1}월</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 복제 항목 선택 -->
+        <div class="bg-amber-50 rounded-xl p-4">
+          <div class="text-sm font-bold text-amber-800 mb-3"><i class="fas fa-check-square mr-1"></i>복제 항목 선택</div>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneVendors" checked class="rounded" />
+              <span class="text-sm text-gray-700">업체 구조</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneCategories" checked class="rounded" />
+              <span class="text-sm text-gray-700">환자군 카테고리</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneMealFields" checked class="rounded" />
+              <span class="text-sm text-gray-700">식수 필드 구조</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneMonthlySettings" checked class="rounded" />
+              <span class="text-sm text-gray-700">월별 예산 설정</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneCategorySettings" checked class="rounded" />
+              <span class="text-sm text-gray-700">카테고리별 설정</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneOrders" checked class="rounded" />
+              <span class="text-sm text-gray-700">발주 데이터</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneMeals" checked class="rounded" />
+              <span class="text-sm text-gray-700">식수 데이터</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" id="cloneCards" checked class="rounded" />
+              <span class="text-sm text-gray-700">법인카드 데이터</span>
+            </label>
+          </div>
+          <div class="mt-3 flex gap-2">
+            <button type="button" onclick="document.querySelectorAll('#cloneDataModal input[type=checkbox]').forEach(cb=>cb.checked=true)"
+              class="text-xs text-purple-600 underline">전체 선택</button>
+            <button type="button" onclick="document.querySelectorAll('#cloneDataModal input[type=checkbox]').forEach(cb=>cb.checked=false)"
+              class="text-xs text-gray-400 underline">전체 해제</button>
+          </div>
+        </div>
+
+        <!-- 경고 -->
+        <div class="bg-red-50 rounded-xl p-3 text-xs text-red-700">
+          <i class="fas fa-exclamation-triangle mr-1"></i>
+          <strong>주의:</strong> 대상 병원의 기존 데이터(발주·식수·법인카드)는 선택된 항목 기준으로 <strong>덮어씌워집니다</strong>. 
+          소스 병원 원본 데이터는 절대 변경되지 않습니다.
+        </div>
+
+      </div>
+
+      <div class="p-5 pt-0 flex gap-3 sticky bottom-0 bg-white border-t border-gray-100">
+        <button onclick="document.getElementById('cloneDataModal').remove()" class="btn btn-outline flex-1">취소</button>
+        <button id="cloneDataSubmitBtn" onclick="submitCloneData(${targetHospitalId},'${targetHospitalName.replace(/'/g,"\\'")}')" 
+          class="btn btn-primary flex-1 bg-purple-600 hover:bg-purple-700 border-purple-600">
+          <i class="fas fa-copy mr-1"></i>데이터 복제 실행
+        </button>
+      </div>
+    </div>
+  </div>`
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml)
+}
+
+async function submitCloneData(targetHospitalId, targetHospitalName) {
+  const srcHospital = Number(document.getElementById('cloneSrcHospital')?.value)
+  const srcYear = Number(document.getElementById('cloneSrcYear')?.value)
+  const srcMonth = Number(document.getElementById('cloneSrcMonth')?.value)
+  const tgtYear = Number(document.getElementById('cloneTgtYear')?.value)
+  const tgtMonth = Number(document.getElementById('cloneTgtMonth')?.value)
+
+  if (!srcHospital) { alert('기준 병원을 선택하세요'); return }
+  if (!srcYear || !srcMonth) { alert('소스 연도/월을 입력하세요'); return }
+
+  const cloneVendors = document.getElementById('cloneVendors')?.checked
+  const cloneCategories = document.getElementById('cloneCategories')?.checked
+  const cloneMealFields = document.getElementById('cloneMealFields')?.checked
+  const cloneMonthlySettings = document.getElementById('cloneMonthlySettings')?.checked
+  const cloneCategorySettings = document.getElementById('cloneCategorySettings')?.checked
+  const cloneOrders = document.getElementById('cloneOrders')?.checked
+  const cloneMeals = document.getElementById('cloneMeals')?.checked
+  const cloneCards = document.getElementById('cloneCards')?.checked
+
+  const srcName = (App._adminHospitals || []).find(h => h.id === srcHospital)?.name || `병원 #${srcHospital}`
+  const confirmMsg = `[데이터 복제 확인]\n\n` +
+    `소스: ${srcName} ${srcYear}년 ${srcMonth}월\n` +
+    `대상: ${targetHospitalName} ${tgtYear}년 ${tgtMonth}월\n\n` +
+    `선택 항목: ${[
+      cloneVendors && '업체구조',
+      cloneCategories && '환자군',
+      cloneMealFields && '식수필드',
+      cloneMonthlySettings && '월설정',
+      cloneCategorySettings && '카테고리설정',
+      cloneOrders && '발주데이터',
+      cloneMeals && '식수데이터',
+      cloneCards && '법인카드'
+    ].filter(Boolean).join(', ')}\n\n` +
+    `대상 병원의 기존 데이터가 덮어씌워집니다. 계속하시겠습니까?`
+
+  if (!confirm(confirmMsg)) return
+
+  const btn = document.getElementById('cloneDataSubmitBtn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>복제 중...' }
+
+  try {
+    const res = await api('POST', `/api/admin/hospitals/${targetHospitalId}/clone-data`, {
+      source_hospital_id: srcHospital,
+      source_year: srcYear,
+      source_month: srcMonth,
+      target_year: tgtYear,
+      target_month: tgtMonth,
+      clone_vendors: cloneVendors,
+      clone_categories: cloneCategories,
+      clone_meal_fields: cloneMealFields,
+      clone_monthly_settings: cloneMonthlySettings,
+      clone_category_settings: cloneCategorySettings,
+      clone_orders: cloneOrders,
+      clone_meals: cloneMeals,
+      clone_cards: cloneCards,
+    })
+
+    if (res?.success) {
+      document.getElementById('cloneDataModal')?.remove()
+      const logSummary = (res.log || []).join('\n• ')
+      showToast(`✅ 복제 완료!\n• ${logSummary}`, 'success')
+      alert(`✅ 데이터 복제 완료!\n\n복제 결과:\n• ${logSummary}\n\n영양사 페이지에서 확인하세요.`)
+      await renderHospitalManage()
+    } else {
+      alert('❌ 복제 실패: ' + (res?.error || '알 수 없는 오류'))
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-copy mr-1"></i>데이터 복제 실행' }
+    }
+  } catch (e) {
+    alert('오류: ' + (e?.message || e))
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-copy mr-1"></i>데이터 복제 실행' }
+  }
+}
+
 async function approveClosing(hospitalId, year, month) {
   if (!confirm(`${year}년 ${month}월 마감을 승인하고 다음달로 전환할까요?`)) return
   const res = await api('POST', `/api/admin/closing-approve/${hospitalId}`, { year, month })
   if (res?.success) {
     showToast(`마감 승인 완료! ${res.nextYear}년 ${res.nextMonth}월로 전환되었습니다`, 'success')
+    // 마감 승인 후 admin dashboard 캐시 전체 무효화
+    _apiCacheInvalidate('/api/admin/dashboard')
+    _apiCacheInvalidate('/api/admin/staff-labor')
+    _apiCacheInvalidate('/api/admin/overview')
     renderHospitalManage()
   }
 }
@@ -26295,6 +31315,7 @@ async function openHospitalDetail(hospitalId) {
   // 현재 관리 중인 hospitalId를 전역에 저장
   window._adminHospitalId = hospitalId
   window._adminHospVendors = vendors  // 예산탭 갱신에 사용
+  window._adminVendorList = vendors   // 운영비 자동계산에 사용
 
   const modal = document.createElement('div')
   modal.className = 'modal-overlay'
@@ -26322,6 +31343,11 @@ async function openHospitalDetail(hospitalId) {
         </button>
         <button id="tabSaveBtn-accounts" class="btn btn-success btn-sm hidden" onclick="showAdminAddAccountModal()">
           <i class="fas fa-plus mr-1"></i>계정 추가
+        </button>
+        <button onclick="document.getElementById('hospDetailModal').remove(); showCloneDataModal(${hospitalId},'${(hosp.name||'').replace(/'/g,"\\'")}')"
+          title="기준 병원 데이터를 복제하여 완성형 샘플 병원 구성"
+          class="btn btn-sm bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 whitespace-nowrap">
+          <i class="fas fa-copy mr-1"></i>데이터 복제
         </button>
         <button onclick="document.getElementById('hospDetailModal').remove()" class="text-gray-400 hover:text-gray-600 text-xl w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100">✕</button>
       </div>
@@ -26533,34 +31559,73 @@ async function openHospitalDetail(hospitalId) {
           <p class="text-xs text-indigo-500 mt-2"><i class="fas fa-info-circle mr-1"></i>업체 합계를 직접 반영하거나 수동으로 입력할 수 있습니다.</p>
         </div>
 
-        <!-- ══ STEP 3: 세부 항목 차감 ══ -->
+        <!-- ══ STEP 3: 운영비 예산 항목 (업체별 목표금액에서 자동 집계) ══ -->
+        <div id="hb-settings-fallback-banner" style="display:none" class="mb-3"></div>
+        <!-- hidden inputs: 저장 로직 유지 (자동계산값이 sync됨) -->
+        <input type="hidden" id="hb-event" value="${(s.event_budget||0)}">
+        <input type="hidden" id="hb-supply" value="${(s.supply_budget||0)}">
+        <input type="hidden" id="hb-card" value="${(s.card_budget||0)}">
         <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-          <div class="flex items-center gap-2 mb-3">
+          <div class="flex items-center gap-2 mb-1">
             <span class="w-6 h-6 rounded-full bg-amber-500 text-white text-xs flex items-center justify-center font-bold">③</span>
-            <h3 class="font-bold text-amber-800 text-sm">세부 예산 항목 (차감 항목)</h3>
-            <span class="text-xs text-amber-600 font-normal">월 총 목표금액에서 아래 항목을 차감한 나머지가 식재료 기본예산입니다</span>
+            <h3 class="font-bold text-amber-800 text-sm">운영비 예산 항목</h3>
+            <span class="text-xs bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full font-semibold">식재료비에서 제외</span>
+            <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold ml-1"><i class="fas fa-sync-alt mr-1"></i>①업체 목표금액 자동 반영</span>
           </div>
+          <p class="text-xs text-amber-600 mb-3 ml-8">이벤트·소모품·법인카드 업체의 목표금액 합계가 자동으로 반영됩니다. 업체관리 탭에서 비용구분을 설정하세요.</p>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+            <!-- 이벤트 -->
             <div class="bg-white rounded-lg p-3 border border-amber-100">
-              <label class="block text-xs font-semibold text-orange-600 mb-1.5"><i class="fas fa-calendar-star mr-1"></i>이벤트 예산 (원)</label>
-              <input id="hb-event" type="text" inputmode="numeric" class="form-input text-sm comma-input" value="${(s.event_budget||0) > 0 ? (s.event_budget||0).toLocaleString('ko-KR') : ''}" oninput="recalcFoodBudget()" placeholder="0">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-semibold text-orange-600"><i class="fas fa-calendar-star mr-1"></i>이벤트 예산</span>
+                <span class="text-xs text-gray-400">업체 합계</span>
+              </div>
+              <div id="hb-event-auto-display" class="text-lg font-bold text-orange-600">
+                ${(()=>{const ev=(vendors||[]).filter(v=>(v.cost_type_default||VENDOR_CAT_TO_COST_TYPE[v.category]||'food')==='event').reduce((s,v)=>s+(v.monthly_budget||0),0);return ev>0?ev.toLocaleString('ko-KR'):'0'})()}원
+              </div>
+              <div class="text-xs text-gray-400 mt-0.5" id="hb-event-vendor-list">
+                ${(()=>{const evVs=(vendors||[]).filter(v=>(v.cost_type_default||VENDOR_CAT_TO_COST_TYPE[v.category]||'food')==='event');return evVs.length>0?evVs.map(v=>`<span class="inline-block bg-orange-50 text-orange-600 px-1 rounded mr-1">${v.name}</span>`).join(''):'<span class="text-gray-300">해당 업체 없음</span>'})()}
+              </div>
+              <div id="hb-event-used" class="mt-1.5 text-xs text-gray-400">실사용 로딩중...</div>
             </div>
+            <!-- 소모품 -->
             <div class="bg-white rounded-lg p-3 border border-amber-100">
-              <label class="block text-xs font-semibold text-purple-600 mb-1.5"><i class="fas fa-box mr-1"></i>소모품 목표금액 (원)</label>
-              <input id="hb-supply" type="text" inputmode="numeric" class="form-input text-sm comma-input" value="${(s.supply_budget||0) > 0 ? (s.supply_budget||0).toLocaleString('ko-KR') : ''}" oninput="recalcFoodBudget()" placeholder="0">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-semibold text-purple-600"><i class="fas fa-box mr-1"></i>소모품 목표금액</span>
+                <span class="text-xs text-gray-400">업체 합계</span>
+              </div>
+              <div id="hb-supply-auto-display" class="text-lg font-bold text-purple-600">
+                ${(()=>{const sup=(vendors||[]).filter(v=>(v.cost_type_default||VENDOR_CAT_TO_COST_TYPE[v.category]||'food')==='supply').reduce((s,v)=>s+(v.monthly_budget||0),0);return sup>0?sup.toLocaleString('ko-KR'):'0'})()}원
+              </div>
+              <div class="text-xs text-gray-400 mt-0.5" id="hb-supply-vendor-list">
+                ${(()=>{const suVs=(vendors||[]).filter(v=>(v.cost_type_default||VENDOR_CAT_TO_COST_TYPE[v.category]||'food')==='supply');return suVs.length>0?suVs.map(v=>`<span class="inline-block bg-purple-50 text-purple-600 px-1 rounded mr-1">${v.name}</span>`).join(''):'<span class="text-gray-300">해당 업체 없음</span>'})()}
+              </div>
+              <div id="hb-supply-used" class="mt-1.5 text-xs text-gray-400">실사용 로딩중...</div>
             </div>
+            <!-- 법인카드 -->
             <div class="bg-white rounded-lg p-3 border border-amber-100">
-              <label class="block text-xs font-semibold text-blue-600 mb-1.5"><i class="fas fa-credit-card mr-1"></i>법인카드 목표금액 (원)</label>
-              <input id="hb-card" type="text" inputmode="numeric" class="form-input text-sm comma-input" value="${(s.card_budget||0) > 0 ? (s.card_budget||0).toLocaleString('ko-KR') : ''}" oninput="recalcFoodBudget()" placeholder="0">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-semibold text-blue-600"><i class="fas fa-credit-card mr-1"></i>법인카드 목표금액</span>
+                <span class="text-xs text-gray-400">업체 합계</span>
+              </div>
+              <div id="hb-card-auto-display" class="text-lg font-bold text-blue-600">
+                ${(()=>{const card=(vendors||[]).filter(v=>v.is_card_type).reduce((s,v)=>s+(v.monthly_budget||0),0);return card>0?card.toLocaleString('ko-KR'):'0'})()}원
+              </div>
+              <div class="text-xs text-gray-400 mt-0.5" id="hb-card-vendor-list">
+                ${(()=>{const caVs=(vendors||[]).filter(v=>v.is_card_type);return caVs.length>0?caVs.map(v=>`<span class="inline-block bg-blue-50 text-blue-600 px-1 rounded mr-1">${v.name}</span>`).join(''):'<span class="text-gray-300">법인카드 업체 없음</span>'})()}
+              </div>
+              <div id="hb-card-used" class="mt-1.5 text-xs text-gray-400">실사용 로딩중...</div>
             </div>
           </div>
+          <p class="text-xs text-amber-500 ml-0.5"><i class="fas fa-info-circle mr-1"></i>수정이 필요하면 <b>업체관리</b> 탭에서 해당 업체의 비용구분 및 월 목표금액을 변경하세요.</p>
         </div>
 
-        <!-- ══ STEP 4: 식재료 기본예산 자동계산 결과 ══ -->
+        <!-- ══ STEP 4: 식재료비 예산 자동계산 ══ -->
         <div class="mb-4 p-4 bg-emerald-50 border-2 border-emerald-400 rounded-xl">
           <div class="flex items-center gap-2 mb-2">
             <span class="w-6 h-6 rounded-full bg-emerald-600 text-white text-xs flex items-center justify-center font-bold">④</span>
-            <h3 class="font-bold text-emerald-800 text-sm">식재료 기본 예산 (자동계산)</h3>
+            <h3 class="font-bold text-emerald-800 text-sm">식재료비 예산 (자동계산)</h3>
+            <span class="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">식단가 계산 기준</span>
           </div>
           <div class="flex items-center gap-3">
             <div class="flex-1 bg-white border-2 border-emerald-400 rounded-lg px-4 py-3 flex items-center justify-between">
@@ -26570,19 +31635,14 @@ async function openHospitalDetail(hospitalId) {
               </span>
             </div>
           </div>
-          <div class="mt-2 flex gap-4 text-xs text-emerald-600">
+          <div class="mt-2 flex items-center justify-between text-xs text-emerald-600">
             <span><i class="fas fa-equals mr-1"></i><span id="hb-food-formula-display">${s.total_budget||0} − (${s.event_budget||0} + ${s.supply_budget||0} + ${s.card_budget||0})</span></span>
+            <span id="hb-food-used" class="text-emerald-700 font-semibold"></span>
           </div>
         </div>
 
         <!-- ══ 기타 설정 ══ -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-          <div class="bg-white border border-gray-100 rounded-lg p-3">
-            <label class="block text-xs font-semibold text-gray-500 mb-1">목표 식단가 (원/식)
-              <span class="text-green-500 font-normal ml-1"><i class="fas fa-magic mr-0.5"></i>목표 식단가 기반 가중평균 자동반영</span>
-            </label>
-            <input id="hb-mealprice" type="text" inputmode="numeric" class="form-input comma-input" value="${(s.meal_price||0) > 0 ? (s.meal_price||0).toLocaleString('ko-KR') : ''}">
-          </div>
           <div class="bg-white border border-gray-100 rounded-lg p-3">
             <label class="block text-xs font-semibold text-gray-500 mb-1">잔반 목표금액 (원)</label>
             <input id="hb-waste" type="text" inputmode="numeric" class="form-input comma-input" value="${(s.food_waste_budget||0) > 0 ? (s.food_waste_budget||0).toLocaleString('ko-KR') : ''}">
@@ -26602,39 +31662,70 @@ async function openHospitalDetail(hospitalId) {
         </div>
       </div>
 
-      <!-- 식단가설정 탭 (단순화: 목표 식단가 직접 입력만) -->
+      <!-- 식단가설정 탭 — A/B/C/D 4구역 구조 -->
       <div id="hospTab-mealpricing" class="hidden">
 
-        <!-- KPI 기준 안내 배너 -->
-        <div class="mb-4 p-3 bg-green-50 border border-green-200 rounded-xl">
+        <!-- 탭 헤더 안내 -->
+        <div class="mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-xl">
           <div class="flex items-start gap-2">
-            <i class="fas fa-bullseye text-green-600 mt-0.5"></i>
+            <i class="fas fa-info-circle text-indigo-500 mt-0.5 text-sm"></i>
             <div>
-              <div class="font-bold text-green-800 text-sm mb-1">운영 KPI 기준 — 목표 식단가 직접 설정</div>
-              <div class="text-xs text-green-700">
-                여기서 입력한 값이 <strong>모든 화면의 KPI 비교 기준</strong>이 됩니다.<br>
-                <span class="text-gray-500">• 대시보드 · 발주 입력 · 월별 분석 — 모두 이 값 기준으로 초과/절감 표시</span>
+              <div class="font-bold text-indigo-800 text-sm mb-0.5">식단가 설정 구조 안내</div>
+              <div class="text-xs text-indigo-700 leading-relaxed">
+                아래 4개 구역이 각각 다른 역할을 합니다. 저장 전에 어느 구역을 바꾸는지 확인하세요.<br>
+                <span class="text-indigo-500">A 식수 기준 → B 식재료 기준 → C 운영비 반영 → D 목표 식단가(KPI)</span>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- ① 환자군별 목표 식단가 설정 (직접 입력) -->
-        <div class="mb-5">
-          <h3 class="font-semibold text-gray-700 text-sm mb-2">
-            <i class="fas fa-bullseye text-green-600 mr-1.5"></i>환자군별 목표 식단가 설정
-            <span class="text-xs font-normal text-gray-400 ml-1">(직접 입력 · KPI 고정 기준)</span>
-          </h3>
-          <div class="mb-2 px-2 py-1.5 bg-blue-50 rounded-lg text-xs text-blue-600 border border-blue-100">
-            <i class="fas fa-info-circle mr-1"></i>
-            <strong>환자군(환자식)만</strong> 목표 설정 가능 · 입력한 목표 식단가는 어떠한 계산에도 영향받지 않습니다
+        <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+             A. 식수 기준 설정
+             식단가 계산 시 나누는 기준 (카테고리별 적용 가능)
+             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+        <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">A</span>
+            <h3 class="font-bold text-blue-800 text-sm">식수 기준 설정</h3>
+            <span class="text-xs text-blue-400 font-normal ml-1">식단가를 나누는 기준</span>
           </div>
-          <div id="categoryBudgetList" class="space-y-2">
-            <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
+          <p class="text-xs text-blue-600 mb-2 ml-8">
+            식단가 계산 시 기준이 되는 식수 설정입니다.
+            병원 전체 공통이 아니라 <strong>환자군(카테고리)별로 다르게 적용</strong>할 수 있습니다.<br>
+            <span class="text-blue-400">↳ 어떤 식수(환자식·직원식·보호자식 등)를 포함할지는 아래 환자군 카테고리 탭에서 각 환자군별로 설정합니다.</span>
+          </p>
+          <div class="ml-8 px-3 py-2 bg-white border border-blue-100 rounded-lg text-xs text-gray-600">
+            <i class="fas fa-layer-group text-blue-400 mr-1"></i>
+            환자군 카테고리 탭 → 각 환자군의 <strong>식수 포함 항목</strong> 설정이 이 기준에 해당합니다.<br>
+            <span class="text-gray-400 mt-0.5 block">예: 항암 카테고리 = 환자식 포함 / 직원식 포함 여부를 각각 설정</span>
           </div>
         </div>
 
-        <!-- ② 소모품/카드 제외 식단가 계산 기준 (병원 전체 대시보드 3종 식단가 기준) -->
+        <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+             B. 식재료 기준 설정
+             기본 식단가 계산에 포함될 식재료 기준
+             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+        <div class="mb-4 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="w-6 h-6 rounded-full bg-emerald-500 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">B</span>
+            <h3 class="font-bold text-emerald-800 text-sm">식재료 기준 설정</h3>
+            <span class="text-xs text-emerald-400 font-normal ml-1">기본 식단가 구성 기준</span>
+          </div>
+          <p class="text-xs text-emerald-700 mb-3 ml-8">
+            대표 식단가(식재료비 기준) 계산에 포함될 발주 항목을 결정합니다.<br>
+            <span class="text-emerald-500">↳ 업체관리 탭에서 각 업체의 <strong>비용 구분(식재료비)</strong>으로 설정한 항목이 이 기준에 해당합니다.</span>
+          </p>
+          <div class="ml-8 px-3 py-2 bg-white border border-emerald-100 rounded-lg text-xs text-gray-600">
+            <i class="fas fa-store text-emerald-400 mr-1"></i>
+            업체관리 탭 → 비용 구분 = <strong class="text-emerald-600">식재료비</strong>로 설정된 업체 발주액만 기본 식단가에 반영됩니다.<br>
+            <span class="text-gray-400 mt-0.5 block">소모품·이벤트·법인카드는 식재료비가 아니므로 대표 식단가에서 제외됩니다.</span>
+          </div>
+        </div>
+
+        <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+             C. 운영비 반영 설정
+             소모품·카드·이벤트를 비교 식단가에 반영하는 기준
+             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
         ${(() => {
           const savedKeys = (supplyExcludeCfg?.supply_exclude_keys) || []
           const isDefault = savedKeys.length === 0
@@ -26643,53 +31734,86 @@ async function openHospitalDetail(hospitalId) {
           const chkEvent   = savedKeys.includes('event')
           const chkOther   = savedKeys.includes('other')
           return `
-        <div class="p-4 bg-orange-50 border border-orange-200 rounded-xl">
-          <div class="flex items-center justify-between mb-3">
-            <div>
-              <h3 class="font-bold text-orange-800 text-sm"><i class="fas fa-filter text-orange-600 mr-1.5"></i>② 대시보드 "소모품 제외 식단가" 계산 기준 <span class="text-xs font-normal text-gray-400">(병원 전체 적용)</span></h3>
-              <p class="text-xs text-orange-600 mt-0.5">소모품·카드 제외 식단가 = (전체 총금액 − 아래 선택항목 합계) ÷ 전체 식수<br>
-              <span class="text-gray-400">↳ 위 ①항목(카테고리별 포함 설정)과는 완전히 별개입니다. 대시보드 3종 식단가 표시에만 영향.</span></p>
+        <div class="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-xl">
+          <div class="flex items-center justify-between mb-1">
+            <div class="flex items-center gap-2">
+              <span class="w-6 h-6 rounded-full bg-orange-500 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">C</span>
+              <h3 class="font-bold text-orange-800 text-sm">운영비 반영 설정</h3>
+              <span class="text-xs text-orange-400 font-normal ml-1">병원 전체 KPI 전용 · 대표/운영반영 식단가 기준</span>
             </div>
             ${isDefault
-              ? `<span class="text-xs bg-orange-100 text-orange-600 px-2 py-1 rounded-full border border-orange-300">기본값 적용중 (카드+소모품)</span>`
-              : `<span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300"><i class="fas fa-check mr-1"></i>병원 맞춤 설정</span>`}
+              ? `<span class="text-xs bg-orange-100 text-orange-600 px-2 py-1 rounded-full border border-orange-300">기본값 적용중</span>`
+              : `<span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full border border-green-300"><i class="fas fa-check mr-1"></i>맞춤 설정</span>`}
           </div>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          <p class="text-xs text-orange-700 mb-2 ml-8">
+            소모품·법인카드·이벤트는 <strong>식재료비(기본 식단가)가 아닌 운영비</strong>입니다.<br>
+            아래 항목을 체크하면 <strong>병원 전체 KPI(대표 식단가 / 운영반영 식단가)</strong>에서 해당 금액을 제외합니다.<br>
+            <span class="text-orange-400">↳ 환자군별(항암 등) 카테고리 식단가 계산과는 <b>완전히 별개</b>입니다 — 겹치지 않습니다.</span>
+          </p>
+          <div class="ml-8 mb-2 px-2 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+            <i class="fas fa-lightbulb mr-1 text-amber-500"></i>
+            <b>권장 설정:</b> 법인카드 ✅ · 이벤트 ✅ 체크 → 순수 식재료비 기준 KPI 산출
+          </div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 ml-8">
             <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
               <input type="checkbox" id="sup-excl-card" class="text-orange-500" ${chkCard ? 'checked' : ''}>
               <div>
-                <div class="text-xs font-semibold text-gray-700">법인카드 금액</div>
+                <div class="text-xs font-semibold text-gray-700">법인카드</div>
                 <div class="text-xs text-gray-500">법인카드 지출 합계</div>
               </div>
             </label>
             <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
               <input type="checkbox" id="sup-excl-supply" class="text-orange-500" ${chkSupply ? 'checked' : ''}>
               <div>
-                <div class="text-xs font-semibold text-gray-700">업체발주 소모품</div>
-                <div class="text-xs text-gray-500">카테고리 = 소모품★ 업체</div>
+                <div class="text-xs font-semibold text-gray-700">소모품</div>
+                <div class="text-xs text-gray-500">소모품★ 업체 발주액</div>
               </div>
             </label>
             <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
               <input type="checkbox" id="sup-excl-event" class="text-orange-500" ${chkEvent ? 'checked' : ''}>
               <div>
-                <div class="text-xs font-semibold text-gray-700">이벤트 금액</div>
+                <div class="text-xs font-semibold text-gray-700">이벤트</div>
                 <div class="text-xs text-gray-500">이벤트 업체 발주액</div>
               </div>
             </label>
             <label class="flex items-center gap-2 p-2 bg-white border border-orange-200 rounded-lg cursor-pointer hover:bg-orange-50">
               <input type="checkbox" id="sup-excl-other" class="text-orange-500" ${chkOther ? 'checked' : ''}>
               <div>
-                <div class="text-xs font-semibold text-gray-700">기타 비식재료</div>
+                <div class="text-xs font-semibold text-gray-700">기타</div>
                 <div class="text-xs text-gray-500">기타(other) 업체액</div>
               </div>
             </label>
           </div>
-          <div class="text-xs text-orange-700 bg-orange-100 rounded p-2">
+          <div class="text-xs text-orange-700 bg-orange-100 rounded p-2 ml-8">
             <i class="fas fa-info-circle mr-1"></i>
-            <b>업체발주 소모품</b>은 <b>업체관리 탭에서 카테고리를 "소모품 ★"으로 지정한 업체</b>의 발주금액을 자동 합산해 제외합니다. 소모품 업체 카테고리 미지정 시 체크해도 제외되는 금액이 없습니다.
+            <b>소모품</b>은 업체관리 탭에서 카테고리를 <b>"소모품 ★"</b>으로 지정한 업체의 발주금액을 자동 합산해 제외합니다.
           </div>
         </div>`
         })()}
+
+        <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+             D. 목표 식단가 설정 (KPI 비교 기준)
+             계산식이 아닌 비교용 기준값 직접 입력
+             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+        <div class="mb-5 p-4 bg-green-50 border border-green-200 rounded-xl">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="w-6 h-6 rounded-full bg-green-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">D</span>
+            <h3 class="font-bold text-green-800 text-sm">목표 식단가 설정</h3>
+            <span class="text-xs text-green-500 font-normal ml-1">KPI 비교 기준 · 관리자 직접 입력</span>
+          </div>
+          <p class="text-xs text-green-700 mb-3 ml-8">
+            여기서 입력한 값이 <strong>모든 화면의 KPI 비교 기준</strong>이 됩니다.<br>
+            이 값은 <strong>계산식을 바꾸지 않습니다</strong> — 실제 식단가와 비교해 초과/절감을 표시하는 목표값입니다.<br>
+            <span class="text-green-500">↳ 대시보드 · 발주 입력 · 월별 분석 모두 이 값 기준으로 🔴초과 / 🟢절감 표시</span>
+          </p>
+          <div class="ml-8 mb-2 px-2 py-1.5 bg-blue-50 rounded-lg text-xs text-blue-600 border border-blue-100">
+            <i class="fas fa-info-circle mr-1"></i>
+            <strong>환자군(환자식)만</strong> 목표 설정 가능 · 입력한 목표 식단가는 어떠한 계산에도 영향받지 않습니다
+          </div>
+          <div id="categoryBudgetList" class="space-y-2 ml-8">
+            <div class="text-xs text-gray-400 text-center py-2">카테고리를 먼저 저장하세요</div>
+          </div>
+        </div>
 
         <!-- ③ 직원식 관리 방식 설정 -->
         <div id="staffDietModePanel" class="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
@@ -26879,14 +32003,11 @@ async function openHospitalDetail(hospitalId) {
           <label class="text-sm font-medium text-gray-600">업체명 *</label>
           <input type="text" id="adminVendorName" class="form-input mt-1" placeholder="예: 삼성 웰스토리">
         </div>
-        <!-- ★ 비용유형 안내 배너 (event/supply/utility 선택 시 표시) -->
-        <div id="adminVendorBlockedWarning" class="hidden p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-          <i class="fas fa-exclamation-triangle mr-1"></i>
-          <strong id="adminVendorBlockedMsg"></strong>
-        </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="text-sm font-medium text-gray-600">카테고리</label>
+            <label class="text-sm font-medium text-gray-600">카테고리
+              <span class="text-xs text-gray-400 font-normal ml-1">업체 분류 · 거래명세서 매핑용</span>
+            </label>
             <select id="adminVendorCategory" class="form-input mt-1" onchange="checkAdminVendorCategory(this.value)">
               <option value="major">대기업급식</option>
               <option value="meat">육류</option>
@@ -26895,10 +32016,10 @@ async function openHospitalDetail(hospitalId) {
               <option value="organic">유기농/한살림</option>
               <option value="market">시장/유통</option>
               <option value="delivery">인터넷배송</option>
-              <option value="supply" disabled class="text-gray-400">소모품 ★ (비용유형으로 관리)</option>
+              <option value="supply">소모품/세제 ★</option>
               <option value="card">법인카드</option>
-              <option value="event" disabled class="text-gray-400">이벤트 (비용유형으로 관리)</option>
-              <option value="utility" disabled class="text-gray-400">공과금/인터넷 (비용유형으로 관리)</option>
+              <option value="event">이벤트</option>
+              <option value="utility">공과금/인터넷</option>
               <option value="general">기타</option>
             </select>
           </div>
@@ -26911,6 +32032,70 @@ async function openHospitalDetail(hospitalId) {
               <option value="exempt">면세만</option>
             </select>
           </div>
+        </div>
+        <!-- 카테고리→비용구분 자동연동 안내 -->
+        <div id="adminVendorCostTypeAutoHint" class="hidden px-3 py-2 bg-green-50 border border-green-200 rounded-lg text-xs text-green-700">
+          <i class="fas fa-magic mr-1"></i><span id="adminVendorCostTypeAutoHintText"></span>
+        </div>
+        <!-- ★ 병원별 비용 반영 기준 (vendor_hospital_cost_rules) — 이 병원에서의 식단가 반영 기준 -->
+        <div class="p-3 bg-yellow-50 rounded-xl border border-yellow-200" id="adminVendorHospCostWrap">
+          <label class="text-sm font-semibold text-yellow-800 block mb-1">
+            <i class="fas fa-hospital mr-1"></i>이 병원에서의 비용 반영 기준
+            <span class="text-xs font-normal text-yellow-600 ml-1">식단가 계산에 직접 영향 · 가장 우선 적용</span>
+          </label>
+          <p class="text-xs text-gray-500 mb-2">병원별로 동일 업체를 식재료비 또는 운영비로 다르게 분류할 수 있습니다.</p>
+          <div class="flex gap-3">
+            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors">
+              <input type="radio" name="adminVendorHospCostClass" value="food" class="accent-green-600" checked>
+              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-green-500 inline-block mr-1"></span>
+                <b class="text-green-700">식재료비</b>
+                <span class="text-xs text-green-600 ml-1">→ 식단가 포함</span>
+              </span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors">
+              <input type="radio" name="adminVendorHospCostClass" value="operating" class="accent-red-500">
+              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-red-400 inline-block mr-1"></span>
+                <b class="text-red-700">운영비</b>
+                <span class="text-xs text-red-500 ml-1">→ 식단가 제외</span>
+              </span>
+            </label>
+          </div>
+          <p class="text-xs text-yellow-600 mt-1.5"><i class="fas fa-star mr-1"></i><b>최우선 적용</b>: 이 설정이 있으면 아래 '비용 구분'보다 우선합니다.</p>
+        </div>
+        <!-- ★ 비용 구분 (cost_type_default) — 전체 시스템 KPI 기준 -->
+        <div class="p-3 bg-blue-50 rounded-xl border border-blue-200">
+          <label class="text-sm font-semibold text-blue-800 block mb-1">
+            <i class="fas fa-tags mr-1"></i>비용 구분
+            <span class="text-xs font-normal text-blue-600 ml-1">발주금액 KPI 집계 기준 · 식단가 계산 영향</span>
+          </label>
+          <p class="text-xs text-gray-500 mb-2 ml-0.5">카테고리 선택 시 자동 설정됩니다. 필요 시 직접 변경하세요.</p>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors" id="costTypeLbl-food">
+              <input type="radio" name="adminVendorCostType" value="food" class="accent-green-600" checked>
+              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-green-500 inline-block mr-1"></span>식재료비
+                <span class="text-xs text-green-600 font-semibold">→ 식단가 반영</span>
+              </span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors" id="costTypeLbl-supply">
+              <input type="radio" name="adminVendorCostType" value="supply" class="accent-orange-500">
+              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-orange-400 inline-block mr-1"></span>소모품/세제
+                <span class="text-xs text-orange-500 font-semibold">→ 운영비</span>
+              </span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors" id="costTypeLbl-event">
+              <input type="radio" name="adminVendorCostType" value="event" class="accent-purple-500">
+              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-purple-400 inline-block mr-1"></span>이벤트
+                <span class="text-xs text-purple-500 font-semibold">→ 운영비</span>
+              </span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors" id="costTypeLbl-utility">
+              <input type="radio" name="adminVendorCostType" value="utility" class="accent-gray-500">
+              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-gray-400 inline-block mr-1"></span>공과금/기타
+                <span class="text-xs text-gray-500 font-semibold">→ 운영비</span>
+              </span>
+            </label>
+          </div>
+          <p class="text-xs text-blue-500 mt-1.5"><i class="fas fa-info-circle mr-1"></i><b>식재료비</b>만 식단가 계산에 반영 · 나머지는 운영비로 분류되어 식단가에 미포함</p>
         </div>
         <!-- 법인카드형 업체 설정 -->
         <div class="p-3 bg-purple-50 rounded-xl border border-purple-100">
@@ -27023,18 +32208,38 @@ function renderBudgetVendorRows(vendors, workingDays) {
     </div>`
   }
   const wd = workingDays || 0
+  // 해당 월의 주차 수 계산 (영업일 기준: 근무일수 ÷ 5, 최소 1)
+  const weekCount = wd > 0 ? Math.max(1, Math.round(wd / 5)) : 4
   const initSum = vendors.reduce((s,v) => s + (v.monthly_budget||0), 0)
   return `<div class="space-y-1.5">
     ${vendors.map(v => {
       const mb = v.monthly_budget || 0
-      const dayTarget = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
+      const isWeekly = (v.order_cycle || 'daily') === 'weekly'
+      // 주1회 업체: 월예산 ÷ 주차수 = 주 목표 / 일별 업체: 월예산 ÷ 근무일수 = 일 목표
+      const weekTarget = (mb > 0 && weekCount > 0) ? Math.round(mb / weekCount) : 0
+      const dayTarget  = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
+      const targetLabel = isWeekly
+        ? (weekTarget > 0 ? `<span class="text-xs text-green-600 ml-2 vendor-day-target font-semibold"><i class="fas fa-calendar-week mr-0.5"></i>주 ${weekTarget.toLocaleString('ko-KR')}원</span>` : `<span class="text-xs text-gray-300 ml-2 vendor-day-target"></span>`)
+        : (dayTarget > 0  ? `<span class="text-xs text-blue-500 ml-2 vendor-day-target">일 ${dayTarget.toLocaleString('ko-KR')}원</span>` : `<span class="text-xs text-gray-300 ml-2 vendor-day-target"></span>`)
       return `
-      <div class="flex items-center gap-3 py-2 px-3 bg-white rounded-lg border border-green-100 hover:border-green-300 transition-colors">
+      <div class="flex items-center gap-3 py-2 px-3 bg-white rounded-lg border border-green-100 hover:border-green-300 transition-colors" data-vendor-id="${v.id}" data-order-cycle="${v.order_cycle||'daily'}">
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
         <div class="flex-1 min-w-0">
           <span class="font-medium text-sm text-gray-800">${v.name}</span>
-          <span class="text-xs text-gray-400 ml-2">${getCategoryLabel(v.category)}</span>
-          ${dayTarget > 0 ? `<span class="text-xs text-blue-500 ml-2 vendor-day-target">일 ${dayTarget.toLocaleString('ko-KR')}원</span>` : `<span class="text-xs text-gray-300 ml-2 vendor-day-target"></span>`}
+          ${isWeekly ? `<span class="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold ml-1"><i class="fas fa-calendar-week mr-0.5"></i>주1회</span>` : ''}
+          <span class="text-xs text-gray-400 ml-1">${getCategoryLabel(v.category)}</span>
+          ${targetLabel}
+          ${/* ★ 병원별 비용 반영 기준 인라인 토글 */ (() => {
+            const hcc = v.hospital_cost_class
+            const effectiveCt = v.cost_type_default || VENDOR_CAT_TO_COST_TYPE?.[v.category] || 'food'
+            // 최우선: hospital_cost_class / fallback: cost_type_default → food/operating
+            const isFood = hcc ? hcc === 'food' : effectiveCt === 'food'
+            return `<span class="inline-flex items-center gap-1 ml-2 vendor-cost-class-toggle" title="클릭하여 비용 반영 기준 변경 (${hcc ? '병원별 설정' : '기본값'})">
+              <button onclick="toggleVendorCostClass(${v.id}, '${isFood ? 'operating' : 'food'}')" class="text-xs px-1.5 py-0.5 rounded-full font-semibold border transition-colors ${isFood ? 'bg-green-50 text-green-700 border-green-300 hover:bg-green-100' : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'}">
+                ${hcc ? '<i class="fas fa-star mr-0.5 text-xs"></i>' : ''}${isFood ? '식재료비' : '운영비'}
+              </button>
+            </span>`
+          })()}
         </div>
         <div class="flex items-center gap-1.5">
           <input id="hvb-${v.id}" type="text" inputmode="numeric" class="form-input w-36 text-right text-sm py-1.5 vendor-budget-input comma-input"
@@ -27058,33 +32263,59 @@ function renderBudgetVendorRows(vendors, workingDays) {
   </div>`
 }
 
-// 영업일수 변경 시 업체별 일 목표 실시간 갱신
+// 영업일수 변경 시 업체별 일/주 목표 실시간 갱신
 window.refreshVendorDayTargets = function() {
   const wd = parseInt(document.getElementById('hb-workdays')?.value || '0') || 0
-  // 각 vendor-budget-input의 현재 값으로 일 목표 업데이트
+  const weekCount = wd > 0 ? Math.max(1, Math.round(wd / 5)) : 4
+  // 각 vendor-budget-input의 현재 값으로 일/주 목표 업데이트
   document.querySelectorAll('.vendor-budget-input').forEach(inp => {
     const mb = parseCommaNum(inp.value)
-    const dayTarget = (mb > 0 && wd > 0) ? Math.round(mb / wd) : 0
-    // 같은 행의 일 목표 span 업데이트 (data-vdaytarget 속성 활용)
-    const row = inp.closest('[class*="flex items-center gap-3"]') || inp.parentElement?.parentElement?.parentElement
-    if (row) {
-      let daySpan = row.querySelector('.vendor-day-target')
-      const nameDiv = row.querySelector('.flex-1.min-w-0')
-      if (nameDiv) {
-        daySpan = nameDiv.querySelector('.vendor-day-target')
-        if (!daySpan) {
-          daySpan = document.createElement('span')
-          daySpan.className = 'text-xs text-blue-500 ml-2 vendor-day-target'
-          nameDiv.appendChild(daySpan)
-        }
-        daySpan.textContent = dayTarget > 0 ? `일 목표: ${dayTarget.toLocaleString('ko-KR')}원` : ''
+    const row = inp.closest('[data-vendor-id]') || inp.parentElement?.parentElement?.parentElement
+    const isWeekly = row?.dataset?.orderCycle === 'weekly'
+    const target = isWeekly
+      ? ((mb > 0 && weekCount > 0) ? Math.round(mb / weekCount) : 0)
+      : ((mb > 0 && wd > 0) ? Math.round(mb / wd) : 0)
+    const nameDiv = row?.querySelector('.flex-1.min-w-0')
+    if (nameDiv) {
+      let daySpan = nameDiv.querySelector('.vendor-day-target')
+      if (!daySpan) {
+        daySpan = document.createElement('span')
+        daySpan.className = isWeekly
+          ? 'text-xs text-green-600 ml-2 vendor-day-target font-semibold'
+          : 'text-xs text-blue-500 ml-2 vendor-day-target'
+        nameDiv.appendChild(daySpan)
+      }
+      if (isWeekly) {
+        daySpan.innerHTML = target > 0 ? `<i class="fas fa-calendar-week mr-0.5"></i>주 ${target.toLocaleString('ko-KR')}원` : ''
+      } else {
+        daySpan.textContent = target > 0 ? `일 ${target.toLocaleString('ko-KR')}원` : ''
       }
     }
   })
   syncVendorBudgetTotal()
 }
 
-// 업체별 예산 합산 → 월 총 목표금액 동기화 + 식재료 기본예산 재계산
+// ★ 병원 예산 화면: 업체 비용 반영 기준 클릭 토글
+window.toggleVendorCostClass = async function(vendorId, newClass) {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) return
+  try {
+    const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/vendor-cost-rules/${vendorId}`, { costClass: newClass })
+    if (!res?.success) { showToast('변경 실패', 'error'); return }
+    showToast(`비용 반영 기준이 ${newClass === 'food' ? '식재료비' : '운영비'}로 변경되었습니다`, 'success')
+    // 업체 목록 갱신 (양쪽 탭 동기화)
+    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
+    const wd = parseInt(document.getElementById('hb-workdays')?.value || 0) || 0
+    window._adminHospVendors = updated || []
+    window._adminVendorList = updated || []
+    document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
+    document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [], wd)
+  } catch(e) {
+    showToast('변경 중 오류가 발생했습니다', 'error')
+  }
+}
+
+// 업체별 예산 합산 → 월 총 목표금액 동기화 + 운영비 자동계산 + 식재료 기본예산 재계산
 window.syncVendorBudgetTotal = function(force = false) {
   const inputs = document.querySelectorAll('.vendor-budget-input')
   let sum = 0
@@ -27101,8 +32332,42 @@ window.syncVendorBudgetTotal = function(force = false) {
       totalEl.style.borderColor = '#6366f1'
     }
   }
+  // ── 운영비 항목 자동 재계산 (업체 목표금액 변경 시 실시간 반영) ──
+  syncOperatingBudgetFromVendors()
   // 식재료 기본예산 재계산
   recalcFoodBudget()
+}
+
+// ── 업체 목표금액에서 운영비(이벤트/소모품/법인카드) 자동 집계 및 hidden input sync ──
+window.syncOperatingBudgetFromVendors = function() {
+  // 현재 화면에 렌더된 업체 행들에서 cost_type 파악
+  // vendor-budget-input의 id = "hvb-{vendorId}" → window._adminVendorList에서 cost_type 조회
+  const vendorList = window._adminVendorList || []
+  let eventSum = 0, supplySum = 0, cardSum = 0
+  document.querySelectorAll('.vendor-budget-input').forEach(inp => {
+    const vid = parseInt(inp.id.replace('hvb-', ''))
+    const v = vendorList.find(x => x.id === vid)
+    if (!v) return
+    const mb = parseCommaNum(inp.value) || 0
+    const ct = v.cost_type_default || (VENDOR_CAT_TO_COST_TYPE ? VENDOR_CAT_TO_COST_TYPE[v.category] : null) || 'food'
+    if (ct === 'event') eventSum += mb
+    else if (ct === 'supply') supplySum += mb
+    if (v.is_card_type) cardSum += mb
+  })
+  // hidden inputs 업데이트 (저장 시 사용)
+  const evEl = document.getElementById('hb-event')
+  const suEl = document.getElementById('hb-supply')
+  const caEl = document.getElementById('hb-card')
+  if (evEl) evEl.value = eventSum
+  if (suEl) suEl.value = supplySum
+  if (caEl) caEl.value = cardSum
+  // 자동 표시 업데이트
+  const evDisp = document.getElementById('hb-event-auto-display')
+  const suDisp = document.getElementById('hb-supply-auto-display')
+  const caDisp = document.getElementById('hb-card-auto-display')
+  if (evDisp) evDisp.textContent = eventSum.toLocaleString('ko-KR') + '원'
+  if (suDisp) suDisp.textContent = supplySum.toLocaleString('ko-KR') + '원'
+  if (caDisp) caDisp.textContent = cardSum.toLocaleString('ko-KR') + '원'
 }
 
 // 식재료 기본예산 자동계산: 월 총 목표 - (이벤트 + 소모품 + 법인카드)
@@ -27227,12 +32492,31 @@ function renderAdminVendorRows(vendors) {
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${getCategoryColor(v.category)}"></span>
         <div class="flex-1 min-w-0">
           <div class="font-medium text-sm">${v.name}${v.is_card_type?'<span class="ml-1 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium"><i class="fas fa-credit-card mr-0.5"></i>법인카드</span>':''}${v.order_cycle==='weekly'?'<span class="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-medium"><i class="fas fa-calendar-week mr-0.5"></i>주1회</span>':''}</div>
-          <div class="text-xs text-gray-400">${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)}</div>
+          <div class="text-xs text-gray-400 flex items-center gap-1.5 flex-wrap">
+            <span>${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)}</span>
+            ${(() => {
+              const ct = v.cost_type_default || VENDOR_CAT_TO_COST_TYPE?.[v.category] || 'food'
+              const badge = ct === 'food'
+                ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold text-xs">식재료비</span>'
+                : ct === 'supply' ? '<span class="bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-semibold text-xs">소모품</span>'
+                : ct === 'event'  ? '<span class="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-semibold text-xs">이벤트</span>'
+                : ct === 'utility'? '<span class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full font-semibold text-xs">공과금</span>'
+                : ''
+              // ★ 병원별 비용 반영 기준 배지 (가장 우선 적용)
+              const hcc = v.hospital_cost_class
+              const hospBadge = hcc === 'food'
+                ? '<span class="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full font-semibold text-xs border border-yellow-300"><i class="fas fa-star mr-0.5 text-xs"></i>이 병원 식재료비</span>'
+                : hcc === 'operating'
+                ? '<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-semibold text-xs border border-red-200"><i class="fas fa-star mr-0.5 text-xs"></i>이 병원 운영비</span>'
+                : ''
+              return (hospBadge || badge)
+            })()}
+          </div>
         </div>
         <div class="text-sm text-gray-600 font-medium">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'목표없음'}</div>
         <div class="flex gap-1">
           <button onclick="editAdminVendor(${v.id})"
-            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}" data-ordercycle="${v.order_cycle||'daily'}"
+            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}" data-ordercycle="${v.order_cycle||'daily'}" data-costtypedefault="${v.cost_type_default||''}" data-hospcostclass="${v.hospital_cost_class||''}"
             class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
           <button onclick="deleteAdminVendor(${v.id})"
             class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
@@ -27297,6 +32581,13 @@ function toggleAdminCardSubtype() {
   if (wrap) wrap.classList.toggle('hidden', !isCard)
 }
 
+// ★ 업체 카테고리 → cost_type_default 자동 매핑 (서버와 동일 기준)
+const VENDOR_CAT_TO_COST_TYPE = {
+  major:'food', meat:'food', seafood:'food', fruit:'food',
+  organic:'food', market:'food', delivery:'food', general:'food',
+  supply:'supply', event:'event', utility:'utility', card:'food'
+}
+
 function showAdminAddVendorModal() {
   document.getElementById('adminVendorModalTitle').textContent = '업체 추가'
   document.getElementById('adminVendorId').value = ''
@@ -27308,6 +32599,9 @@ function showAdminAddVendorModal() {
   document.getElementById('adminVendorCardSubtype').value = 'food'
   document.getElementById('adminCardSubtypeWrap').classList.add('hidden')
   document.getElementById('adminOrderCycleDaily').checked = true
+  // 비용구분 초기값: 식재료비
+  const r = document.querySelector('input[name="adminVendorCostType"][value="food"]')
+  if (r) r.checked = true
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
@@ -27320,6 +32614,9 @@ function editAdminVendor(id) {
   const isCard = btn?.dataset.iscard === '1'
   const cardSubtype = btn?.dataset.cardsubtype || 'food'
   const orderCycle = btn?.dataset.ordercycle || 'daily'
+  const costTypeDefault = btn?.dataset.costtypedefault || VENDOR_CAT_TO_COST_TYPE[category] || 'food'
+  // ★ 병원별 비용 반영 기준 (vendor_hospital_cost_rules)
+  const hospCostClass = btn?.dataset.hospcostclass || ''
   document.getElementById('adminVendorModalTitle').textContent = '업체 수정'
   document.getElementById('adminVendorId').value = id
   document.getElementById('adminVendorName').value = name
@@ -27332,23 +32629,36 @@ function editAdminVendor(id) {
   // 발주 주기 라디오 버튼 설정
   const cycleRadio = document.querySelector(`input[name="adminVendorOrderCycle"][value="${orderCycle}"]`)
   if (cycleRadio) cycleRadio.checked = true
+  // 비용구분 라디오 설정 (전역 기준)
+  const costRadio = document.querySelector(`input[name="adminVendorCostType"][value="${costTypeDefault}"]`)
+  if (costRadio) costRadio.checked = true
+  // ★ 병원별 비용 반영 기준 라디오 설정
+  // hospCostClass가 있으면 그 값, 없으면 cost_type_default → food/operating으로 매핑
+  const defaultHospClass = hospCostClass || (costTypeDefault === 'food' ? 'food' : 'operating')
+  const hospCostRadio = document.querySelector(`input[name="adminVendorHospCostClass"][value="${defaultHospClass}"]`)
+  if (hospCostRadio) hospCostRadio.checked = true
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
-// ★ 관리자 vendor 카테고리 선택 시 차단 경고 표시
+// ★ 카테고리 선택 시 비용구분 자동 연동 + 안내 힌트 표시
 function checkAdminVendorCategory(val) {
-  const BLOCKED_MSG = {
-    event: '이벤트/운영비는 업체로 등록할 수 없습니다. 발주 입력 시 cost_type(이벤트)으로 관리하세요.',
-    supply: '소모품비는 업체로 등록할 수 없습니다. 발주 입력 시 cost_type(소모품)으로 관리하세요.',
-    utility: '공과금/인터넷은 업체로 등록할 수 없습니다. 발주 입력 시 cost_type(공과금)으로 관리하세요.',
+  const autoCostType = VENDOR_CAT_TO_COST_TYPE[val] || 'food'
+  const r = document.querySelector(`input[name="adminVendorCostType"][value="${autoCostType}"]`)
+  if (r) r.checked = true
+  // 자동연동 힌트 표시
+  const hintBox = document.getElementById('adminVendorCostTypeAutoHint')
+  const hintText = document.getElementById('adminVendorCostTypeAutoHintText')
+  const CAT_LABEL = {
+    major:'대기업급식', meat:'육류', seafood:'해산물', fruit:'청과',
+    organic:'유기농/한살림', market:'시장/유통', delivery:'인터넷배송',
+    supply:'소모품/세제', card:'법인카드', event:'이벤트', utility:'공과금/인터넷', general:'기타'
   }
-  const warn = document.getElementById('adminVendorBlockedWarning')
-  const msg = document.getElementById('adminVendorBlockedMsg')
-  if (BLOCKED_MSG[val]) {
-    msg.textContent = BLOCKED_MSG[val]
-    warn.classList.remove('hidden')
-  } else {
-    warn.classList.add('hidden')
+  const COST_LABEL = { food:'식재료비', supply:'소모품/세제(운영비)', event:'이벤트(운영비)', utility:'공과금/기타(운영비)' }
+  if (hintBox && hintText) {
+    hintText.textContent = `카테고리 "${CAT_LABEL[val]||val}" → 비용구분이 "${COST_LABEL[autoCostType]||autoCostType}"으로 자동 설정되었습니다`
+    hintBox.classList.remove('hidden')
+    clearTimeout(window._catHintTimer)
+    window._catHintTimer = setTimeout(() => hintBox.classList.add('hidden'), 3000)
   }
 }
 
@@ -27358,6 +32668,7 @@ async function saveAdminVendor() {
   const vid = document.getElementById('adminVendorId').value
   const isCard = document.getElementById('adminVendorIsCard').checked
   const orderCycleEl = document.querySelector('input[name="adminVendorOrderCycle"]:checked')
+  const costTypeEl = document.querySelector('input[name="adminVendorCostType"]:checked')
   const data = {
     name: document.getElementById('adminVendorName').value.trim(),
     category: document.getElementById('adminVendorCategory').value,
@@ -27365,31 +32676,30 @@ async function saveAdminVendor() {
     monthlyBudget: parseCommaNum(document.getElementById('adminVendorBudget').value),
     isCardType: isCard,
     cardSubtype: isCard ? document.getElementById('adminVendorCardSubtype').value : null,
-    orderCycle: orderCycleEl ? orderCycleEl.value : 'daily'
+    orderCycle: orderCycleEl ? orderCycleEl.value : 'daily',
+    costTypeDefault: costTypeEl ? costTypeEl.value : (VENDOR_CAT_TO_COST_TYPE[document.getElementById('adminVendorCategory').value] || 'food')
   }
   if (!data.name) { showToast('업체명을 입력하세요', 'error'); return }
-
-  // ★ 차단 카테고리 사전 검사 (event/supply/utility)
-  const BLOCKED_VENDOR_CATS = ['event', 'supply', 'utility']
-  const BLOCKED_LABELS = {
-    event: '이벤트/운영비는 발주 입력 시 cost_type으로 관리합니다.',
-    supply: '소모품비는 발주 입력 시 cost_type으로 관리합니다.',
-    utility: '공과금/인터넷은 발주 입력 시 cost_type으로 관리합니다.',
-  }
-  if (BLOCKED_VENDOR_CATS.includes(data.category)) {
-    showToast(`'${data.category}' 카테고리로는 업체를 등록할 수 없습니다.\n${BLOCKED_LABELS[data.category] || ''}`, 'error')
-    return
-  }
+  // ★ 병원별 비용 반영 기준 (vendor_hospital_cost_rules)
+  const hospCostClassEl = document.querySelector('input[name="adminVendorHospCostClass"]:checked')
+  const hospCostClass = hospCostClassEl ? hospCostClassEl.value : null
 
   const res = vid
     ? await api('PUT', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`, data)
     : await api('POST', `/api/admin/hospitals/${hospitalId}/vendors`, data)
 
-  if (res?.blocked) {
-    showToast(res.error || '차단된 카테고리입니다.', 'error')
+  if (res?.error && !res?.success) {
+    showToast(res.error || '저장 실패', 'error')
     return
   }
   if (res?.success) {
+    // ★ 병원별 비용 반영 기준 저장 (vendor_hospital_cost_rules)
+    if (hospCostClass && (vid || res?.id)) {
+      const targetVid = vid || res?.id
+      try {
+        await api('PUT', `/api/admin/hospitals/${hospitalId}/vendor-cost-rules/${targetVid}`, { costClass: hospCostClass })
+      } catch(e) { console.warn('[vendor-cost-rules] 저장 실패', e) }
+    }
     document.getElementById('adminVendorModal').classList.add('hidden')
     showToast(vid ? '업체가 수정되었습니다' : '업체가 추가되었습니다', 'success')
     // 새 업체 추가 시 명세서 업체 자동 동기화
@@ -27402,9 +32712,10 @@ async function saveAdminVendor() {
     const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
     const wd = parseInt(document.getElementById('hb-workdays')?.value || 0) || 0
     window._adminHospVendors = updated || []
+    window._adminVendorList = updated || []  // 운영비 자동계산용
     document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
     document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [], wd)
-    // 합계 + 식재료 기본예산 재계산
+    // 합계 + 운영비 자동계산 + 식재료 기본예산 재계산
     syncVendorBudgetTotal()
   } else {
     showToast('저장 실패', 'error')
@@ -27422,6 +32733,7 @@ async function deleteAdminVendor(vid) {
   const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
   const wd = parseInt(document.getElementById('hb-workdays')?.value || 0) || 0
   window._adminHospVendors = updated || []
+  window._adminVendorList = updated || []  // 운영비 자동계산용
   document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
   document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [], wd)
   // 합계 + 식재료 기본예산 재계산
@@ -27611,11 +32923,71 @@ function switchHospTab(tab) {
   if (tab === 'mealpricing' && window._adminHospitalId) {
     loadPatientCategories(window._adminHospitalId)
   }
-  // 예산 탭으로 전환 시 업체별 합계 자동 계산 + 식재료 기본예산 재계산
+  // 예산 탭으로 전환 시 업체별 합계 자동 계산 + 식재료 기본예산 재계산 + 실사용 비교 로드
   if (tab === 'budget') {
     setTimeout(() => { syncVendorBudgetTotal(); recalcFoodBudget() }, 80)
+    // 실사용 비교 데이터 비동기 로드
+    setTimeout(() => loadBudgetUsedComparison(), 200)
   }
   // 업체 탭: 발주 업체 목록은 이미 adminVendorList에 렌더링됨 (loadInvoiceVendors 불필요)
+}
+
+// ★ 예산설정 탭 실사용 비교 로드 (예산 ↔ cost_type별 실사용 1:1 매핑)
+// 기준: 이벤트예산↔cost_type='event', 소모품↔cost_type='supply', 법인카드↔card_expenses
+async function loadBudgetUsedComparison() {
+  const hospitalId = window._adminHospitalId
+  if (!hospitalId) return
+  const yr = App.currentYear, mo = App.currentMonth
+  try {
+    const dash = await api('GET', `/api/dashboard/summary/${yr}/${mo}?hospitalId=${hospitalId}`)
+    const cb = dash?.costBreakdown
+    if (!cb) return
+
+    // ★ settingsFallback 안내: 현재 월 예산이 없어 이전 달 값을 사용 중인 경우
+    const sfb = dash?.summary?.settingsFallback
+    const sfbBanner = document.getElementById('hb-settings-fallback-banner')
+    if (sfbBanner) {
+      if (sfb) {
+        sfbBanner.innerHTML = `<div class="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700"><i class="fas fa-exclamation-triangle text-amber-500"></i><span>${sfb.year}년 ${sfb.month}월 예산 설정이 적용 중입니다. ${mo}월 예산을 직접 입력하고 저장해 주세요.</span></div>`
+        sfbBanner.style.display = 'block'
+      } else {
+        sfbBanner.style.display = 'none'
+      }
+    }
+
+    const fmt2 = (v) => (v||0).toLocaleString('ko-KR') + '원'
+    const pct = (used, budget) => budget > 0 ? `(${Math.round(used/budget*100)}%)` : ''
+    const color = (used, budget) => budget > 0
+      ? used > budget ? 'text-red-600' : used > budget * 0.8 ? 'text-amber-600' : 'text-green-600'
+      : 'text-gray-400'
+
+    // 이벤트
+    const evEl = document.getElementById('hb-event-used')
+    if (evEl) {
+      const u = cb.items.event.used, b = cb.items.event.budget
+      evEl.innerHTML = `<span class="${color(u,b)} font-semibold">실사용 ${fmt2(u)}</span>${b>0?` <span class="text-gray-400">${pct(u,b)}</span>`+` <span class="text-gray-300 text-xs">/ 목표 ${fmt2(b)}</span>`:' <span class="text-gray-400">목표 미설정</span>'}`
+    }
+    // 소모품
+    const suEl = document.getElementById('hb-supply-used')
+    if (suEl) {
+      const u = cb.items.supply.used, b = cb.items.supply.budget
+      suEl.innerHTML = `<span class="${color(u,b)} font-semibold">실사용 ${fmt2(u)}</span>${b>0?` <span class="text-gray-400">${pct(u,b)}</span>`+` <span class="text-gray-300 text-xs">/ 목표 ${fmt2(b)}</span>`:' <span class="text-gray-400">목표 미설정</span>'}`
+    }
+    // 법인카드
+    const caEl = document.getElementById('hb-card-used')
+    if (caEl) {
+      const u = cb.items.card.used, b = cb.items.card.budget
+      caEl.innerHTML = `<span class="${color(u,b)} font-semibold">실사용 ${fmt2(u)}</span>${b>0?` <span class="text-gray-400">${pct(u,b)}</span>`+` <span class="text-gray-300 text-xs">/ 목표 ${fmt2(b)}</span>`:' <span class="text-gray-400">목표 미설정</span>'}`
+    }
+    // 식재료비
+    const fdEl = document.getElementById('hb-food-used')
+    if (fdEl) {
+      const u = cb.food.used, b = cb.food.budget
+      fdEl.innerHTML = `<span class="${color(u,b)} font-semibold">실사용 ${fmt2(u)}</span>${b>0?` <span class="text-gray-400">${pct(u,b)}</span>`+` <span class="text-gray-300 text-xs">/ 목표 ${fmt2(b)}</span>`:''}`
+    }
+  } catch(e) {
+    // 실사용 로드 실패 시 무시
+  }
 }
 
 // 환자군 탭: 식이분류 + 목표금액 동시 저장
@@ -28727,47 +34099,59 @@ function renderCategoryBudgetList(cats, settings, isFallback = false, fallbackYe
             </div>` : ''}
           </div>
           <!-- 저장 버튼 -->
-          <!-- ① 카테고리별 식단가 포함 설정 (이 카테고리의 식단가 계산에만 영향) -->
-          <div class="border border-teal-200 bg-teal-50 rounded-lg p-2 mt-2">
-            <div class="text-xs font-semibold text-teal-700 mb-1"><i class="fas fa-tag mr-1"></i>① 이 카테고리 식단가에 포함할 항목</div>
-            <div class="text-xs text-gray-500 mb-1.5">
-              체크한 항목의 발주금액이 <b>이 카테고리(${cat.category_name}) 식단가에만</b> 포함됩니다.<br>
-              <span class="text-amber-600 font-medium">※ 소모품/이벤트는 최대 1개 카테고리에만 체크 권장 (중복 시 과대계상)</span>
-            </div>
-            <!-- 발주 포함 설정 -->
-            <div class="mb-1">
-              <div class="text-xs text-gray-500 font-medium mb-1">발주 포함</div>
-              <div class="flex flex-wrap gap-3">
-                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input type="checkbox" id="catIncludeSupply-${cat.id}" ${catIncludeSupply ? 'checked' : ''}>
-                  <span class="text-teal-700 font-medium">🗃 소모품 발주 포함</span>
-                </label>
-                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input type="checkbox" id="catIncludeEvent-${cat.id}" ${cat.budget_include_event ? 'checked' : ''}>
-                  <span class="text-orange-600 font-medium">🎉 이벤트 발주 포함</span>
-                </label>
+          <!-- ① 카테고리별 식단가 포함 설정 (고급설정 — 기본 접힘) -->
+          <div class="mt-2">
+            <button type="button"
+              onclick="(function(btn){var p=btn.nextElementSibling;var ic=btn.querySelector('.adv-chev');p.classList.toggle('hidden');ic.classList.toggle('fa-chevron-down');ic.classList.toggle('fa-chevron-up');})(this)"
+              class="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 w-full px-1 py-1 rounded hover:bg-gray-50 transition-colors">
+              <i class="fas fa-cog mr-1 text-gray-400"></i>
+              <span class="font-medium">⚙ 고급 설정</span>
+              <span class="text-gray-300 mx-1">·</span>
+              <span class="text-gray-400">카드·소모품·이벤트 발주 포함 여부 — 일반적으로 변경 불필요</span>
+              <i class="fas fa-chevron-down adv-chev ml-auto text-gray-300"></i>
+            </button>
+            <div class="hidden border border-teal-200 bg-teal-50 rounded-lg p-2 mt-1">
+              <div class="text-xs font-semibold text-teal-700 mb-1"><i class="fas fa-tag mr-1"></i>이 카테고리 식단가에 포함할 항목</div>
+              <div class="text-xs text-gray-500 mb-1.5">
+                체크한 항목의 발주금액이 <b>이 카테고리(${cat.category_name}) 식단가에만</b> 포함됩니다.<br>
+                <span class="text-amber-600 font-medium">※ 소모품/이벤트는 최대 1개 카테고리에만 체크 권장 (중복 시 과대계상)</span><br>
+                <span class="text-teal-600">↳ 병원 전체 KPI(C영역)와 완전히 독립된 설정입니다 — 상호 영향 없음</span>
               </div>
-            </div>
-            <!-- 법인카드 포함 설정 (cost_type별 세분화) -->
-            <div class="mt-1.5">
-              <div class="text-xs text-gray-500 font-medium mb-1">법인카드 포함 <span class="text-gray-400">(cost_type별 분류)</span></div>
-              <div class="flex flex-wrap gap-3">
-                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input type="checkbox" id="catCardFood-${cat.id}" ${(cat.card_food_include || cat.budget_include_card) ? 'checked' : ''}>
-                  <span class="text-blue-700 font-medium">💳 카드-식재료 포함</span>
-                </label>
-                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input type="checkbox" id="catCardSupply-${cat.id}" ${cat.card_supply_include ? 'checked' : ''}>
-                  <span class="text-blue-600 font-medium">💳 카드-소모품 포함</span>
-                </label>
-                <label class="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input type="checkbox" id="catCardEvent-${cat.id}" ${cat.card_event_include ? 'checked' : ''}>
-                  <span class="text-blue-500 font-medium">💳 카드-이벤트 포함</span>
-                </label>
+              <!-- 발주 포함 설정 -->
+              <div class="mb-1">
+                <div class="text-xs text-gray-500 font-medium mb-1">발주 포함</div>
+                <div class="flex flex-wrap gap-3">
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" id="catIncludeSupply-${cat.id}" ${catIncludeSupply ? 'checked' : ''}>
+                    <span class="text-teal-700 font-medium">🗃 소모품 발주 포함</span>
+                  </label>
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" id="catIncludeEvent-${cat.id}" ${cat.budget_include_event ? 'checked' : ''}>
+                    <span class="text-orange-600 font-medium">🎉 이벤트 발주 포함</span>
+                  </label>
+                </div>
+              </div>
+              <!-- 법인카드 포함 설정 (cost_type별 세분화) -->
+              <div class="mt-1.5">
+                <div class="text-xs text-gray-500 font-medium mb-1">법인카드 포함 <span class="text-gray-400">(cost_type별 분류)</span></div>
+                <div class="flex flex-wrap gap-3">
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" id="catCardFood-${cat.id}" ${(cat.card_food_include || cat.budget_include_card) ? 'checked' : ''}>
+                    <span class="text-blue-700 font-medium">💳 카드-식재료 포함</span>
+                  </label>
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" id="catCardSupply-${cat.id}" ${cat.card_supply_include ? 'checked' : ''}>
+                    <span class="text-blue-600 font-medium">💳 카드-소모품 포함</span>
+                  </label>
+                  <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input type="checkbox" id="catCardEvent-${cat.id}" ${cat.card_event_include ? 'checked' : ''}>
+                    <span class="text-blue-500 font-medium">💳 카드-이벤트 포함</span>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
-          <button type="button" onclick="saveCategoryFormula(${cat.id}, ${window._adminHospitalId})"
+          <button type="button" onclick="saveCategoryFormula(${cat.id})"
             class="w-full py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 mt-1">
             <i class="fas fa-save mr-1"></i>현재 식단가 기준 저장
           </button>
@@ -29033,18 +34417,6 @@ function updateWeightedAvgTarget() {
     if (el) el.textContent = roundedWeighted > 0 ? `${roundedWeighted.toLocaleString()}원/식` : '-'
   }
 
-  // 예산설정 탭의 목표 식단가(hb-mealprice) 자동 적용 (현재 식단가 가중평균 자동 반영)
-  const mealPriceEl = document.getElementById('hb-mealprice')
-  if (mealPriceEl && roundedWeighted > 0) {
-    mealPriceEl.value = roundedWeighted.toLocaleString('ko-KR')
-    mealPriceEl.style.background = '#f0fdf4'
-    mealPriceEl.style.borderColor = '#22c55e'
-    clearTimeout(mealPriceEl._resetTimer)
-    mealPriceEl._resetTimer = setTimeout(() => {
-      mealPriceEl.style.background = ''
-      mealPriceEl.style.borderColor = ''
-    }, 2000)
-  }
 }
 
 function addPatientCategoryRow() {
@@ -29170,8 +34542,12 @@ window.toggleFormulaSection = (catId) => {
 
 // ── 현재 식단가 계산 기준 저장
 window.saveCategoryFormula = async (catId, hospitalId) => {
-  const hid = hospitalId || window._adminHospitalId
+  // hospitalId 인자보다 window._adminHospitalId 우선 사용 (렌더링 시점 문제 방지)
+  const hid = window._adminHospitalId || hospitalId
   if (!hid) { showToast('병원 ID를 찾을 수 없습니다', 'error'); return }
+
+  // ★ 목표 식단가 (allocRefPrice) 수집 — 식단가설정 탭에서만 표시되는 입력 필드
+  const refPriceRaw = parseCommaNum(document.getElementById(`allocRefPrice-${catId}`)?.value) || 0
 
   // 체크된 예산 항목 수집
   const budgetChecks = document.querySelectorAll(`.budget-include-cb[data-cat="${catId}"]:checked`)
@@ -29190,6 +34566,7 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
   // 하위호환: budget_include_card = card_food_include
   const includeCard = cardFoodInclude
 
+  // ── formula API 1회 호출: 체크박스 + 목표 식단가 동시 저장 ─────
   const res = await api('PUT', `/api/admin/hospitals/${hid}/patient-categories/${catId}/formula`, {
     budget_include_keys: budgetKeys,
     meals_include_keys: mealsKeys,
@@ -29199,10 +34576,11 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
     card_food_include: cardFoodInclude,
     card_supply_include: cardSupplyInclude,
     card_event_include: cardEventInclude,
+    ref_meal_price: refPriceRaw > 0 ? refPriceRaw : undefined,
   })
 
   if (res?.success) {
-    showToast('현재 식단가 계산 기준 저장 완료', 'success')
+    showToast('식단가 기준 + 목표 식단가 저장 완료', 'success')
     // _adminCatList 업데이트
     const cats = window._adminCatList || []
     const idx = cats.findIndex(c => c.id === catId)
@@ -29212,6 +34590,16 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
       cats[idx].budget_include_supply = includeSupply
       cats[idx].budget_include_card = includeCard
     }
+    // 목표 식단가 저장됐으면 화면 표시값도 갱신
+    if (refPriceRaw > 0) {
+      const priceDisplay = document.querySelector(`#allocRefPrice-${catId}`)
+      if (priceDisplay) priceDisplay.value = refPriceRaw.toLocaleString('ko-KR')
+      // 현재 저장된 값 텍스트 갱신
+      const lockNote = priceDisplay?.closest('.bg-green-50')?.querySelector('.text-gray-400')
+      if (lockNote) {
+        lockNote.innerHTML = `<i class="fas fa-lock mr-1 text-green-500"></i>이 값은 어떠한 계산에도 변경되지 않습니다 <span class="ml-2 font-semibold text-green-700">현재: ${refPriceRaw.toLocaleString()}원</span>`
+      }
+    }
     // 미리보기 표시
     const preview = document.getElementById(`formulaPreview-${catId}`)
     if (preview) {
@@ -29219,11 +34607,13 @@ window.saveCategoryFormula = async (catId, hospitalId) => {
       const mealsLabel = mealsKeys ? mealsKeys.join(', ') + ' 식수' : '전체 식수'
       const supplyLabel = includeSupply ? ' + 소모품' : ''
       const cardLabel = includeCard ? ' + 카드' : ''
-      preview.textContent = `계산식: (${budgetLabel}${supplyLabel}${cardLabel}) ÷ (${mealsLabel})`
+      const priceLabel = refPriceRaw > 0 ? ` | 목표: ${refPriceRaw.toLocaleString()}원/식` : ''
+      preview.textContent = `계산식: (${budgetLabel}${supplyLabel}${cardLabel}) ÷ (${mealsLabel})${priceLabel}`
       preview.classList.remove('hidden')
     }
   } else {
-    showToast('저장 실패', 'error')
+    console.error('[saveCategoryFormula] 실패:', res, { hid, catId })
+    showToast(res?.error ? `저장 실패: ${res.error}` : '저장 실패 (네트워크 오류)', 'error')
   }
 }
 
@@ -29302,7 +34692,6 @@ async function saveHospitalBudget(hospitalId) {
   const body = {
     totalBudget,
     eventBudget,
-    mealPrice: parseCommaNum(document.getElementById('hb-mealprice')?.value),
     foodWasteBudget: parseCommaNum(document.getElementById('hb-waste')?.value),
     workingDays: parseInt(document.getElementById('hb-workdays')?.value)||0,
     supplyBudget,
@@ -29446,7 +34835,10 @@ async function deleteHoliday(date) {
 // ══════════════════════════════════════════════════════════════
 //  보고서 출력 페이지 (관리자 전용)
 // ══════════════════════════════════════════════════════════════
-async function renderReport(selectedHospitalId = null) {
+async function renderReport(selectedHospitalId = null, reportType = null) {
+  // 보고서 유형 기억 (탭 전환 시 유지)
+  if (!reportType) reportType = window._lastReportType || 'monthly'
+  window._lastReportType = reportType
   const content = document.getElementById('pageContent')
 
   // 관리자만 접근 가능
@@ -29460,22 +34852,47 @@ async function renderReport(selectedHospitalId = null) {
     return
   }
 
-  content.innerHTML = `<div class="space-y-3 animate-pulse p-1">
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
-      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
-      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
-      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-12 mb-1 rounded"></div><div class="skeleton h-2 w-20 rounded"></div></div>
+  content.innerHTML = `
+  <!-- [PERF] Page Shell: 보고서 구조 미리 표시 → API 완료 후 실제 내용 채움 -->
+  <div class="space-y-3 p-1">
+    <!-- 상단 컨트롤 바: 병원 선택 + 탭 버튼 위치 확보 -->
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3 animate-pulse">
+      <div class="skeleton h-4 w-24 rounded"></div>
+      <div class="skeleton h-8 w-40 rounded-lg"></div>
+      <div class="flex gap-2 ml-auto">
+        <div class="skeleton h-8 w-20 rounded-lg"></div>
+        <div class="skeleton h-8 w-20 rounded-lg"></div>
+        <div class="skeleton h-8 w-24 rounded-lg"></div>
+      </div>
     </div>
-    <div class="bg-white rounded-2xl p-4 border border-gray-100">
-      <div class="skeleton h-4 w-1/3 rounded mb-3"></div>
-      <div class="skeleton h-3 w-full rounded mb-2"></div>
-      <div class="skeleton h-3 w-4/5 rounded mb-2"></div>
-      <div class="skeleton h-3 w-2/3 rounded"></div>
+    <!-- KPI 요약 카드 4개 (예산/지출/식단가/식수) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 animate-pulse">
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-8 w-20 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-8 w-20 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-8 w-20 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
+      <div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-8 w-20 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>
     </div>
-    <div class="bg-white rounded-2xl p-4 border border-gray-100">
-      <div class="skeleton h-4 w-1/4 rounded mb-3"></div>
-      <div class="skeleton h-32 w-full rounded"></div>
+    <!-- 예산 진행 바 + 업체별 현황 -->
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 animate-pulse">
+      <div class="skeleton h-4 w-32 rounded mb-4"></div>
+      <div class="skeleton h-5 w-full rounded-full mb-3"></div>
+      <div class="grid grid-cols-3 gap-3 mt-4">
+        <div class="skeleton h-10 rounded-lg"></div>
+        <div class="skeleton h-10 rounded-lg"></div>
+        <div class="skeleton h-10 rounded-lg"></div>
+      </div>
+    </div>
+    <!-- 업체별 발주 목록 테이블 -->
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 animate-pulse">
+      <div class="skeleton h-4 w-28 rounded mb-4"></div>
+      <div class="space-y-2">
+        ${Array(4).fill(0).map(() => `<div class="flex items-center gap-3"><div class="skeleton h-4 w-1/4 rounded"></div><div class="skeleton h-4 flex-1 rounded"></div><div class="skeleton h-4 w-24 rounded"></div></div>`).join('')}
+      </div>
+    </div>
+    <!-- 일별 발주 차트 영역 -->
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 animate-pulse">
+      <div class="skeleton h-4 w-36 rounded mb-4"></div>
+      <div class="skeleton h-48 w-full rounded-xl"></div>
     </div>
   </div>`
 
@@ -29498,13 +34915,16 @@ async function renderReport(selectedHospitalId = null) {
   const nextMonth = reportMonth === 12 ? 1 : reportMonth + 1
   const nextYear = reportMonth === 12 ? reportYear + 1 : reportYear
 
-  const [summaryData, annualData, nextSettingsData, cardReportData] = await Promise.all([
+  const [summaryData, annualData, nextSettingsData, cardReportData, eventReportData] = await Promise.all([
     api('GET', `/api/dashboard/summary/${reportYear}/${reportMonth}?hospitalId=${targetHospitalId}`),
     api('GET', `/api/dashboard/annual/${reportYear}?hospitalId=${targetHospitalId}`),
     api('GET', `/api/settings/${nextYear}/${nextMonth}?hospitalId=${targetHospitalId}`),
     targetHospitalId
       ? api('GET', `/api/card-expenses/admin/${targetHospitalId}/${reportYear}/${reportMonth}`)
-      : api('GET', `/api/card-expenses/monthly/${reportYear}/${reportMonth}`)
+      : api('GET', `/api/card-expenses/monthly/${reportYear}/${reportMonth}`),
+    targetHospitalId
+      ? api('GET', `/api/event-expenses/admin/${targetHospitalId}/${reportYear}/${reportMonth}`).catch(() => null)
+      : api('GET', `/api/event-expenses/monthly/${reportYear}/${reportMonth}`).catch(() => null)
   ])
 
   const s = summaryData?.summary || {}
@@ -29525,6 +34945,29 @@ async function renderReport(selectedHospitalId = null) {
     rptCardBySubtypeMap[k].count++
   })
   const rptCardBySubtype = Object.values(rptCardBySubtypeMap)
+
+  // 이벤트 운영비 보고서용 데이터
+  const rptEventExpenses = (eventReportData?.expenses || []).sort((a, b) => (a.expense_date||'').localeCompare(b.expense_date||''))
+  const rptEventTotal = rptEventExpenses.reduce((s, e) => s + (e.amount || 0), 0)
+  const rptEventItemSummary = eventReportData?.itemSummary || []
+  const rptEventPurposeSummary = eventReportData?.purposeSummary || []
+  // ★ 실제 구매 업체별 합계 (row_vendor_id 기준 — 업체 원금 분석용)
+  // rowVendorTotals API 제공 시 우선 사용, 없으면 expenses에서 직접 집계
+  const rptEventVendorList = (() => {
+    if (eventReportData?.rowVendorTotals && eventReportData.rowVendorTotals.length > 0) {
+      return eventReportData.rowVendorTotals.filter(v => v.total > 0).sort((a,b) => b.total - a.total)
+    }
+    const m = {}
+    rptEventExpenses.forEach(e => {
+      const k = e.row_vendor_id || ('txt_' + (e.vendor_name || ''))
+      const name = e.vendor_display_name || e.vendor_name || ''
+      if (!m[k]) m[k] = { vendor_name: name, total: 0, count: 0, items: [] }
+      m[k].total += e.amount || 0
+      m[k].count += 1
+      m[k].items.push(e)
+    })
+    return Object.values(m).filter(v => v.total > 0).sort((a,b) => b.total - a.total)
+  })()
 
   const monthlyUsed = (annualData?.monthly||[])
   const monthlyMeals = (annualData?.mealMonthly||[])
@@ -29612,6 +35055,28 @@ async function renderReport(selectedHospitalId = null) {
   const rptMealCustomFields = summaryData?.mealCustomFields || []
   // rptMealCustomTotals는 위(line 12698)에서 이미 선언됨 (중복 제거)
 
+  // ── 보고서용 식단가 변수 (통일 기준) ──────────────────────────────────
+  const rptCostBreakdown   = summaryData?.costBreakdown || null
+  // ① 대표 식단가: 식재료비(food) 기준 (식단가에 포함된 소모품/이벤트 제외)
+  const rptFoodDietPrice   = rptCostBreakdown?.foodDietPrice || summaryData?.catDietPrices?.[0]?.monthDietPrice || mealPriceForRpt
+  // ② 참고 식단가: 식단가 포함 소모품/이벤트(reference) 합산 기준
+  const rptRefSupply       = rptCostBreakdown?.reference?.supply || 0
+  const rptRefEvent        = rptCostBreakdown?.reference?.event  || 0
+  const rptRefCard         = rptCostBreakdown?.reference?.card   || 0
+  const rptRefUtil         = rptCostBreakdown?.reference?.utility|| 0
+  const rptRefTotal        = rptRefSupply + rptRefEvent + rptRefCard + rptRefUtil
+  const rptRefDietPrice    = rptTotalMealsFromApi > 0
+    ? Math.round((rptCostBreakdown?.food?.used || (s.totalUsed||0)) / rptTotalMealsFromApi)
+    : mealPriceForRpt
+  // ③ 소모품 제외 식단가: (식재료비 - 식단가포함 소모품) / 식수
+  const rptNoSupplyDietPrice = rptTotalMealsFromApi > 0 && rptRefSupply > 0
+    ? Math.round(((rptCostBreakdown?.food?.used || (s.totalUsed||0)) - rptRefSupply) / rptTotalMealsFromApi)
+    : (s.mealPriceNoSupply || rptFoodDietPrice)
+  // ④ 환자 전용 식단가: 카테고리별 식단가 (patientOnlyDietPrice) - 목표가와만 비교
+  const rptPatientDietPrice  = summaryData?.catDietPrices?.[0]?.patientOnlyDietPrice || rptFoodDietPrice
+  // ⑤ 주차별 데이터 (weeklyData)
+  const rptWeeklyData      = summaryData?.weeklyOrders || []
+
   // 카테고리별 식수 (mealCustomTotals에서 전체 커스텀 필드 추출 - cat_ 키 + diet_ 키 포함)
   const rptCatMeals = rptMealCustomFields
     .filter(f => f.unit_type !== 'ea')
@@ -29638,27 +35103,47 @@ async function renderReport(selectedHospitalId = null) {
 
   content.innerHTML = `
   <!-- 보고서 컨트롤 (인쇄 제외) -->
-  <div class="mb-4 flex items-center gap-3 flex-wrap no-print">
-    <select id="reportHospitalSelect" onchange="renderReport(this.value)" class="form-input" style="width:auto;min-width:180px">
-      ${hospitals.map(h => `<option value="${h.id}" ${h.id==selectedHospitalId?'selected':''}>${h.name}</option>`).join('')}
-    </select>
-    <div class="flex items-center gap-2 text-sm text-gray-500">
-      <i class="fas fa-file-pdf text-red-500"></i>
-      <span>${reportYear}년 ${reportMonth}월 월간 보고서</span>
+  <div class="mb-4 no-print" style="background:white;border-radius:12px;border:1px solid #e5e7eb;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+    <!-- Row 1: 병원 선택 + 보고서 유형 탭 -->
+    <div class="flex items-center gap-3 flex-wrap mb-3">
+      <select id="reportHospitalSelect" onchange="renderReport(this.value, window._lastReportType)" class="form-input" style="width:auto;min-width:180px">
+        ${hospitals.map(h => `<option value="${h.id}" ${h.id==selectedHospitalId?'selected':''}>${h.name}</option>`).join('')}
+      </select>
+      <div class="flex items-center gap-2 text-sm text-gray-500">
+        <i class="fas fa-calendar text-blue-400"></i>
+        <span>${reportYear}년 ${reportMonth}월</span>
+      </div>
     </div>
-    <div class="ml-auto flex gap-2 flex-wrap">
-      <button onclick="showPrintPreview()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0">
-        <i class="fas fa-search mr-1"></i>인쇄 미리보기
-      </button>
-      <button onclick="printReportA4()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
-        <i class="fas fa-print mr-1"></i>인쇄하기
-      </button>
-      <button onclick="exportReportPDF('${hospitalName}',${reportYear},${reportMonth})" class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa">
-        <i class="fas fa-file-pdf mr-1"></i>PDF 보고서
-      </button>
-      <button onclick="(function(){const hn='${hospitalName}';const hid=${targetHospitalId||'null'};exportTxAnalysisPPT(hn,${reportYear},${reportMonth},hid==='null'?null:Number(hid))})()" class="btn btn-sm" style="background:#4f46e5;color:#ffffff;border:1px solid #4338ca;font-weight:600;">
-        <i class="fas fa-file-powerpoint mr-1"></i>거래명세서 분석 PPT 보고서
-      </button>
+    <!-- Row 2: 보고서 종류 탭 + 인쇄 버튼 -->
+    <div class="flex items-center gap-2 flex-wrap">
+      <!-- 보고서 종류 탭 -->
+      <div class="flex gap-1" style="background:#f3f4f6;border-radius:8px;padding:3px">
+        <button onclick="renderReport(document.getElementById('reportHospitalSelect')?.value||null,'monthly')"
+          style="padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all .2s;${reportType==='monthly'?'background:#064e3b;color:white;box-shadow:0 1px 3px rgba(0,0,0,.2)':'background:transparent;color:#374151'}">
+          <i class="fas fa-chart-bar mr-1"></i>월간 보고서
+        </button>
+        <button onclick="renderReport(document.getElementById('reportHospitalSelect')?.value||null,'director')"
+          style="padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all .2s;${reportType==='director'?'background:#1e40af;color:white;box-shadow:0 1px 3px rgba(0,0,0,.2)':'background:transparent;color:#374151'}">
+          <i class="fas fa-user-tie mr-1"></i>병원장님 보고서
+        </button>
+        <button onclick="renderReport(document.getElementById('reportHospitalSelect')?.value||null,'analysis')"
+          style="padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all .2s;${reportType==='analysis'?'background:#7c3aed;color:white;box-shadow:0 1px 3px rgba(0,0,0,.2)':'background:transparent;color:#374151'}">
+          <i class="fas fa-users-cog mr-1"></i>인력 운영 분석
+        </button>
+      </div>
+      <!-- 인쇄 버튼 -->
+      <div class="ml-auto flex gap-2">
+        ${reportType==='monthly' ? `
+        <button onclick="showPrintPreview()" class="btn btn-sm" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0">
+          <i class="fas fa-search mr-1"></i>미리보기
+        </button>
+        <button onclick="printReportA4()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
+          <i class="fas fa-print mr-1"></i>인쇄 / PDF 저장
+        </button>` : `
+        <button onclick="window._reportPrintFn && window._reportPrintFn()" class="btn btn-sm" style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe">
+          <i class="fas fa-print mr-1"></i>인쇄 / PDF 저장 (Ctrl+P)
+        </button>`}
+      </div>
     </div>
   </div>
 
@@ -29666,6 +35151,16 @@ async function renderReport(selectedHospitalId = null) {
   <div id="reportBody" style="print-color-adjust:exact">
 
   ${(()=>{
+    // 월간보고서가 아닌 경우 placeholder 렌더링 (데이터 로드 후 교체)
+    if (reportType !== 'monthly') {
+      return `<div id="altReportBody" style="min-height:400px;display:flex;align-items:center;justify-content:center">
+        <div style="text-align:center;color:#6b7280">
+          <i class="fas fa-spinner fa-spin" style="font-size:32px;margin-bottom:12px;display:block"></i>
+          <p style="font-size:14px">보고서 데이터를 불러오는 중...</p>
+        </div>
+      </div>`
+    }
+
     const docNo = `HM-${reportYear}-${String(reportMonth).padStart(2,'0')}-001`
     const rptDate = `${reportYear}년 ${reportMonth}월`
 
@@ -29707,17 +35202,30 @@ async function renderReport(selectedHospitalId = null) {
     const usedAmount  = s.usedAmount||0
     const remainAmount = s.remainAmount||0
     const isOverBudget = remainAmount<0
-    const mealPrice   = mealPriceForRpt||0
+    // ── 식단가 변수 통일 (보고서 내부) ──
+    // DIET_CALC 공통 모듈을 통해 dietPrices 추출 (dashData 기준)
+    const _rptDp = DIET_CALC.extractDietPrices(summaryData)
+    // mealPrice: 대표 식단가 (식재료 기준 = foodDietPrice 우선)
+    const mealPrice   = _rptDp.representative || rptFoodDietPrice || mealPriceForRpt || 0
+    // refDietPrice: 운영반영 식단가 (전체 발주액 기준)
+    const refDietPrice = _rptDp.operating || rptRefDietPrice || mealPrice
+    // noSupplyPrice: 소모품 제외 식단가
+    const noSupplyPrice = rptNoSupplyDietPrice || mealPrice
+    // patientDietPrice: 환자 전용 식단가
+    const patientDietPrice = _rptDp.patient || rptPatientDietPrice || mealPrice
     const targetPrice = s.targetMealPrice||0
     const totalMeals  = s.totalPatients||0
     const daysInMonth = new Date(reportYear,reportMonth,0).getDate()
     const elapsedDays = rptProjection.elapsedDays||0
     const dailyAvg    = rptDepletion.dailyAvgUsed||0
 
+    // 주차별 데이터 (weeklyOrders)
+    const weeklyData  = rptWeeklyData || []
+
     // AI 경고 조건 계산
     const aiWarnings = []
     if(progress>=80) aiWarnings.push({icon:'⚠️',color:'#dc2626',bg:'#fef2f2',text:`예산 집행률 ${progress}% — 초과 위험 구간입니다.`})
-    if(targetPrice>0&&mealPrice>targetPrice) aiWarnings.push({icon:'🍱',color:'#d97706',bg:'#fffbeb',text:`현재 식단가(${fmt(mealPrice)}원)가 목표(${fmt(targetPrice)}원) 초과 중입니다.`})
+    if(targetPrice>0&&mealPrice>targetPrice) aiWarnings.push({icon:'🍱',color:'#d97706',bg:'#fffbeb',text:`대표 식단가(${fmt(mealPrice)}원)가 목표(${fmt(targetPrice)}원) 초과 중입니다.`})
     const topVendorRatio = usedAmount>0&&rptOrders.length>0?Math.round((rptOrders[0].totalAmount||0)/usedAmount*100):0
     if(topVendorRatio>=40) aiWarnings.push({icon:'🏢',color:'#7c3aed',bg:'#faf5ff',text:`${rptOrders[0]?.vendor||''} 발주 집중도 ${topVendorRatio}% — 의존도 위험입니다.`})
     const dailyAmts = rptDailyAll.map(d=>d.amount).filter(v=>v>0)
@@ -29725,11 +35233,47 @@ async function renderReport(selectedHospitalId = null) {
     const spikeDay  = rptDailyAll.find(d=>d.amount>dailyMean*2)
     if(spikeDay) aiWarnings.push({icon:'📈',color:'#dc2626',bg:'#fef2f2',text:`${spikeDay.day}일 발주(${fmtM(spikeDay.amount)}원)가 일평균 대비 급증했습니다.`})
     const prevMeals = rptPrevMonth.totalMeals||0
-    if(prevMeals>0&&totalMeals>0){const chg=Math.abs(totalMeals-prevMeals)/prevMeals*100;if(chg>20)aiWarnings.push({icon:'👥',color:'#2563eb',bg:'#eff6ff',text:`전월 대비 식수 변동률 ${chg.toFixed(1)}% — 이상 급변입니다.`})}
+    const mealCountChange = prevMeals>0&&totalMeals>0 ? ((totalMeals-prevMeals)/prevMeals*100) : 0
+    const mealCountDiff   = totalMeals - prevMeals
+    if(prevMeals>0&&totalMeals>0){const chg=Math.abs(mealCountChange);if(chg>20)aiWarnings.push({icon:'👥',color:'#2563eb',bg:'#eff6ff',text:`전월 대비 식수 변동률 ${chg.toFixed(1)}% — 이상 급변입니다.`})}
     ;(rptAnomalies||[]).forEach(a=>{ if(!aiWarnings.find(w=>w.text.includes(a.message?.substring(0,10)||''))) aiWarnings.push({icon:a.severity==='high'?'🚨':'⚠️',color:a.severity==='high'?'#dc2626':'#d97706',bg:a.severity==='high'?'#fef2f2':'#fffbeb',text:a.message||''}) })
 
-    // 자동 분석 텍스트
-    const autoText = rptAutoAnalysis.length>0?rptAutoAnalysis[0]:(progress>=80?`예산 집행률 ${progress}%로 목표 범위에 도달했습니다.`:`현재 집행률 ${progress}%입니다.`)
+    // TOP3 업체 초과 금액 계산 (예산 대비)
+    const vendorBudgets = (() => {
+      const budgetMap = {}
+      ;(vendorOrders||[]).forEach(v => {
+        const b = v.budget || v.monthly_budget || 0
+        const key = v.vendor_name || v.name || ''
+        budgetMap[key] = b
+      })
+      return budgetMap
+    })()
+    const rptTop3Excess = rptOrders.slice(0,3).map(o => {
+      const b = vendorBudgets[o.vendor] || 0
+      const excess = b > 0 ? (o.totalAmount||0) - b : 0
+      return { ...o, budget: b, excess }
+    }).filter(o => o.excess > 0)
+
+    // 자동 분석 텍스트 (3구조 AI 분석)
+    const autoAnalysisParts = []
+    // ① 식수 영향
+    if(prevMeals>0&&totalMeals>0&&Math.abs(mealCountChange)>5){
+      const dir = mealCountChange>0?'증가':'감소'
+      autoAnalysisParts.push(`전월 대비 식수가 ${Math.abs(mealCountChange).toFixed(1)}% ${dir}(${mealCountDiff>0?'+':''}${fmt(mealCountDiff)}식)하여 발주 금액에 직접적인 영향을 미쳤습니다.`)
+    }
+    // ② 상위 업체 집중도
+    const top3ratio = rptOrders.slice(0,3).reduce((s,o)=>s+(usedAmount>0?(o.totalAmount||0)/usedAmount*100:0),0)
+    if(top3ratio>60){
+      autoAnalysisParts.push(`상위 3개 업체 발주 집중도 ${Math.round(top3ratio)}% — 공급 다변화 검토가 필요합니다.`)
+    }
+    // ③ 참고 비용(이벤트·소모품) 식단가 영향
+    if(rptRefTotal>0&&totalMeals>0){
+      const refPerMeal = Math.round(rptRefTotal/totalMeals)
+      autoAnalysisParts.push(`식단가 포함 운영 성격 비용(소모품·이벤트 등) ${fmtMan(rptRefTotal)}원이 포함되어 있으며 1식당 ${fmt(refPerMeal)}원의 영향을 줍니다.`)
+    }
+    const autoText = autoAnalysisParts.length>0
+      ? autoAnalysisParts.join(' ')
+      : (rptAutoAnalysis.length>0?rptAutoAnalysis[0]:(progress>=80?`예산 집행률 ${progress}%로 목표 범위에 도달했습니다.`:`현재 집행률 ${progress}%입니다.`))
 
     // 공통 섹션 헤더 (PDF 샘플: 진한 다크그린 배경, PAGE 배지, 우상단 병원명/날짜)
     const SH = (pg,title,sub='') => `
@@ -29772,7 +35316,7 @@ async function renderReport(selectedHospitalId = null) {
         ${sub?`<div style="font-size:12px;color:#4b5563;margin-top:6px;font-weight:500">${sub}</div>`:''}
       </div>`
 
-    const totalPages = '14'
+    const totalPages = '15'
 
     // ══ PAGE 1: 표지 (PDF 샘플 스타일: 흰 배경 + 검은 텍스트) ══
     const slide1 = `
@@ -29807,7 +35351,7 @@ async function renderReport(selectedHospitalId = null) {
         ${[
           {label:'TOTAL BUDGET',val:`${fmtMan(totalBudget)}원`,sub:'월 배정 예산'},
           {label:'ACHIEVEMENT',val:`${progress}%`,sub:'예산 집행률'},
-          {label:'MEAL PRICE',val:`${fmt(mealPrice)}원`,sub:'평균 식단가'},
+          {label:'MEAL PRICE',val:`${fmt(mealPrice)}원`,sub:'대표 식단가 (식재료 기준)'},
         ].map((c,i)=>`
           <div style="padding:20px 28px;${i<2?'border-right:1px solid #e5e7eb':''}">
             <div style="font-size:12px;color:#9ca3af;letter-spacing:1.5px;margin-bottom:8px;text-transform:uppercase">${c.label}</div>
@@ -29818,59 +35362,102 @@ async function renderReport(selectedHospitalId = null) {
     </div>`
 
     // ══ PAGE 2: 운영 요약 ══════════════════════════════════════
+    // ★ KPI ③④⑤ 여부 → 동적 레이아웃 (html2canvas 오버플로 방지)
+    const _hasKpiDetail = (_rptDp.noEvent > 0 || _rptDp.noSupplyOnly > 0 || _rptDp.noOperating > 0)
     const slide2 = `
     <div class="report-slide rpt-report-page">
       ${SH(2,'운영 요약','Budget Overview')}
-      <!-- KPI 6개 (PDF 샘플: 3열 2행, 아이콘 우측 상단) -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-bottom:24px;flex-shrink:0">
+      <!-- KPI 6개 — KPI③④⑤ 있을 때 gap/mb 동적 축소 -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:${_hasKpiDetail?'10px':'14px'};margin-bottom:${_hasKpiDetail?'10px':'14px'};flex-shrink:0">
         ${[
           {label:'총 예산',val:`${fmtMan(totalBudget)}원`,sub:'월 배정 예산',col:'#064e3b',bg:'#f0fdf4',icon:'💰'},
           {label:'집행 금액',val:`${fmtMan(usedAmount)}원`,sub:`달성률 ${progress}%`,col:'#1d4ed8',bg:'#eff6ff',icon:'📊'},
           {label:isOverBudget?'초과 금액':'잔여 예산',val:`${fmtMan(Math.abs(remainAmount))}원`,sub:isOverBudget?'⚠ 예산 초과':'정상 범위',col:isOverBudget?'#dc2626':'#16a34a',bg:isOverBudget?'#fef2f2':'#f0fdf4',icon:isOverBudget?'⚠️':'✅'},
-          {label:'현재 식단가',val:`${fmt(mealPrice)}원`,sub:'1식 기준',col:'#7c3aed',bg:'#faf5ff',icon:'🍱'},
+          {label:'대표 식단가',val:`${fmt(mealPrice)}원`,sub:'식재료 기준 (1식)',col:'#7c3aed',bg:'#faf5ff',icon:'🍱'},
           {label:'총 식수',val:`${fmt(totalMeals)}명`,sub:'이번 달 누적',col:'#0891b2',bg:'#ecfeff',icon:'👥'},
           {label:'예산 집행률',val:`${progress}%`,sub:`목표 80~90%`,col:tc(progress),bg:tcBg(progress),icon:'🎯'},
         ].map(c=>KPI(c.label,c.val,c.sub,c.col,c.bg,c.icon)).join('')}
       </div>
-      <!-- Gauge Chart + 상세 -->
-      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:28px;flex:1;min-height:0">
-        <div style="display:flex;flex-direction:column;align-items:center;background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0">
-          <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:6px;width:100%;text-align:center">예산 사용률</div>
-          <div id="rptGaugeChart" style="width:100%;flex:1;min-height:200px"></div>
-          <div style="text-align:center;margin-top:4px">
-            <div style="font-size:12px;color:#4b5563;font-weight:600">목표 범위: 80 ~ 90%</div>
+      <!-- Gauge Chart + 상세 — KPI③④⑤ 있을 때 차트/카드 높이 동적 축소 -->
+      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:${_hasKpiDetail?'14px':'16px'};flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;align-items:center;background:#f8fafc;border-radius:12px;padding:${_hasKpiDetail?'8px':'10px'};border:1px solid #e2e8f0">
+          <div style="font-size:13px;font-weight:700;color:#1f2937;margin-bottom:4px;width:100%;text-align:center">예산 사용률</div>
+          <div id="rptGaugeChart" style="width:100%;flex:1;min-height:${_hasKpiDetail?'120px':'150px'}"></div>
+          <div style="text-align:center;margin-top:2px">
+            <div style="font-size:11px;color:#4b5563;font-weight:600">목표 범위: 80 ~ 90%</div>
           </div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:16px">
-          <div style="background:#f8fafc;border-radius:12px;padding:14px 18px;border:1px solid #e2e8f0;flex:1">
-            <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">예산 집행 현황</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div style="display:flex;flex-direction:column;gap:${_hasKpiDetail?'10px':'16px'}">
+          <div style="background:#f8fafc;border-radius:12px;padding:${_hasKpiDetail?'10px 12px':'14px 18px'};border:1px solid #e2e8f0;flex:1">
+            <div style="font-size:${_hasKpiDetail?'12px':'14px'};font-weight:700;color:#1f2937;margin-bottom:${_hasKpiDetail?'7px':'10px'}">예산 집행 현황</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:${_hasKpiDetail?'8px':'16px'}">
               ${[
                 {label:'일평균 사용액',val:`${fmt(dailyAvg||Math.round(usedAmount/Math.max(elapsedDays,1)))}원`,col:'#d97706'},
                 {label:'경과일 / 총일수',val:`${elapsedDays||'—'}일 / ${daysInMonth}일`,col:'#1f2937'},
                 {label:'전월 사용금액',val:`${fmtMan(rptPrevMonth.totalUsed||0)}원`,col:'#374151'},
                 {label:'전월 대비',val:(()=>{const p=rptPrevMonth.totalUsed||0;if(!p)return'—';const r=(usedAmount-p)/p*100;return (r>0?'+':'')+r.toFixed(1)+'%'})(),col:(rptPrevMonth.totalUsed||0)<usedAmount?'#dc2626':'#16a34a'},
-              ].map(i=>`<div style="background:white;border-radius:10px;padding:12px;border:1px solid #e5e7eb;text-align:center">
-                <div style="font-size:12px;color:#4b5563;font-weight:600;margin-bottom:4px">${i.label}</div>
-                <div style="font-size:16px;font-weight:800;color:${i.col}">${i.val}</div>
+              ].map(i=>`<div style="background:white;border-radius:8px;padding:${_hasKpiDetail?'8px':'12px'};border:1px solid #e5e7eb;text-align:center">
+                <div style="font-size:${_hasKpiDetail?'11px':'12px'};color:#4b5563;font-weight:600;margin-bottom:3px">${i.label}</div>
+                <div style="font-size:${_hasKpiDetail?'14px':'16px'};font-weight:800;color:${i.col}">${i.val}</div>
               </div>`).join('')}
             </div>
           </div>
-          <div style="background:#f8fafc;border-radius:12px;padding:14px 18px;border:1px solid #e2e8f0;flex:1">
-            <div style="font-size:14px;font-weight:700;color:#1f2937;margin-bottom:10px">식수 현황 요약</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div style="background:#f8fafc;border-radius:12px;padding:${_hasKpiDetail?'10px 12px':'14px 18px'};border:1px solid #e2e8f0;flex:1">
+            <div style="font-size:${_hasKpiDetail?'12px':'14px'};font-weight:700;color:#1f2937;margin-bottom:${_hasKpiDetail?'7px':'10px'}">식수 현황 요약</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:${_hasKpiDetail?'8px':'16px'}">
               ${[
                 {label:'직원식',val:`${fmt(s.staffCount||rptSummary.staffCount||0)}명`,col:'#d97706'},
                 {label:'보호자식',val:`${fmt(s.guardianCount||0)}명`,col:'#dc2626'},
                 {label:'환자식(합계)',val:`${fmt(s.normalCount||rptSummary.normalCount||0)}명`,col:'#064e3b'},
                 {label:'일 평균 식수',val:`${Math.round(totalMeals/Math.max(daysInMonth,1)).toLocaleString()}명`,col:'#1f2937'},
-              ].map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:white;border-radius:8px;border:1px solid #e5e7eb">
-                <span style="font-size:13px;color:#374151;font-weight:600">${r.label}</span>
-                <span style="font-size:16px;font-weight:800;color:${r.col}">${r.val}</span>
+              ].map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:${_hasKpiDetail?'7px 10px':'10px 14px'};background:white;border-radius:8px;border:1px solid #e5e7eb">
+                <span style="font-size:${_hasKpiDetail?'12px':'13px'};color:#374151;font-weight:600">${r.label}</span>
+                <span style="font-size:${_hasKpiDetail?'14px':'16px'};font-weight:800;color:${r.col}">${r.val}</span>
               </div>`).join('')}
             </div>
           </div>
         </div>
+      </div>
+      <!-- 식단가 ①②환자 박스 + KPI③④⑤ 통합 (1행 배치로 오버플로 완전 방지) -->
+      <div style="display:grid;grid-template-columns:repeat(${_hasKpiDetail?6:3},1fr);gap:${_hasKpiDetail?'6px':'8px'};margin-top:${_hasKpiDetail?'7px':'8px'};flex-shrink:0">
+        <!-- ① 대표 식단가 -->
+        <div style="background:#f0fdf4;border-radius:9px;padding:${_hasKpiDetail?'7px 9px':'10px 14px'};border-left:4px solid #064e3b">
+          <div style="font-size:${_hasKpiDetail?'9px':'10px'};color:#6b7280;font-weight:600;margin-bottom:2px">① 대표 식단가</div>
+          <div style="font-size:${_hasKpiDetail?'17px':'20px'};font-weight:900;color:#064e3b">${fmt(mealPrice)}<span style="font-size:10px;font-weight:500;color:#6b7280">원/식</span></div>
+          ${targetPrice>0?`<div style="font-size:9px;margin-top:2px;color:${mealPrice>targetPrice?'#dc2626':'#16a34a'};font-weight:600">${mealPrice>targetPrice?'▲목표초과':'✓목표이내'}</div>`:''}
+        </div>
+        <!-- ② 운영반영 -->
+        <div style="background:#fffbeb;border-radius:9px;padding:${_hasKpiDetail?'7px 9px':'10px 14px'};border-left:4px solid #d97706">
+          <div style="font-size:${_hasKpiDetail?'9px':'10px'};color:#6b7280;font-weight:600;margin-bottom:2px">② 운영반영 식단가</div>
+          <div style="font-size:${_hasKpiDetail?'17px':'20px'};font-weight:900;color:#d97706">${fmt(refDietPrice)}<span style="font-size:10px;font-weight:500;color:#6b7280">원/식</span></div>
+          ${rptRefTotal>0?`<div style="font-size:9px;margin-top:2px;color:#92400e;font-weight:500">운영 ${fmtMan(rptRefTotal)}원</div>`:'<div style="font-size:9px;margin-top:2px;color:#9ca3af">운영비없음</div>'}
+        </div>
+        <!-- 환자 전용 -->
+        <div style="background:#fff7ed;border-radius:9px;padding:${_hasKpiDetail?'7px 9px':'10px 14px'};border-left:4px solid #ea580c">
+          <div style="font-size:${_hasKpiDetail?'9px':'10px'};color:#6b7280;font-weight:600;margin-bottom:2px">환자 전용 식단가</div>
+          <div style="font-size:${_hasKpiDetail?'17px':'20px'};font-weight:900;color:#ea580c">${fmt(patientDietPrice)}<span style="font-size:10px;font-weight:500;color:#6b7280">원/식</span></div>
+          ${targetPrice>0?`<div style="font-size:9px;margin-top:2px;color:${patientDietPrice>targetPrice?'#dc2626':'#16a34a'};font-weight:600">${patientDietPrice>targetPrice?'▲목표초과':'✓목표이내'}</div>`:''}
+        </div>
+        ${_hasKpiDetail ? `
+        <!-- ③ 이벤트 제외 -->
+        ${_rptDp.noEvent>0?`<div style="background:#fff7ed;border-radius:8px;padding:7px 9px;border-left:3px solid #ea580c">
+          <div style="font-size:9px;color:#6b7280;margin-bottom:2px"><span style="font-size:8px;font-weight:700;color:#ea580c;background:#fed7aa;padding:1px 4px;border-radius:3px;margin-right:3px">③</span>이벤트 제외</div>
+          <div style="font-size:17px;font-weight:800;color:#ea580c">${fmt(_rptDp.noEvent)}<span style="font-size:9px;color:#9ca3af">원</span></div>
+          <div style="font-size:8px;color:#9ca3af">(전체−이벤트)÷식수</div>
+        </div>`:`<div style="background:#f9fafb;border-radius:8px;padding:7px 9px;border:1px solid #e5e7eb;display:flex;align-items:center;justify-content:center"><span style="font-size:9px;color:#9ca3af">③이벤트없음</span></div>`}
+        <!-- ④ 소모품 제외 -->
+        ${_rptDp.noSupplyOnly>0?`<div style="background:#f0fdf4;border-radius:8px;padding:7px 9px;border-left:3px solid #16a34a">
+          <div style="font-size:9px;color:#6b7280;margin-bottom:2px"><span style="font-size:8px;font-weight:700;color:#16a34a;background:#bbf7d0;padding:1px 4px;border-radius:3px;margin-right:3px">④</span>소모품 제외</div>
+          <div style="font-size:17px;font-weight:800;color:#16a34a">${fmt(_rptDp.noSupplyOnly)}<span style="font-size:9px;color:#9ca3af">원</span></div>
+          <div style="font-size:8px;color:#9ca3af">(전체−소모품)÷식수</div>
+        </div>`:`<div style="background:#f9fafb;border-radius:8px;padding:7px 9px;border:1px solid #e5e7eb;display:flex;align-items:center;justify-content:center"><span style="font-size:9px;color:#9ca3af">④소모품없음</span></div>`}
+        <!-- ⑤ 운영비 제외 -->
+        ${_rptDp.noOperating>0?`<div style="background:#eff6ff;border-radius:8px;padding:7px 9px;border-left:3px solid #2563eb">
+          <div style="font-size:9px;color:#6b7280;margin-bottom:2px"><span style="font-size:8px;font-weight:700;color:#2563eb;background:#bfdbfe;padding:1px 4px;border-radius:3px;margin-right:3px">⑤</span>운영비 제외</div>
+          <div style="font-size:17px;font-weight:800;color:#2563eb">${fmt(_rptDp.noOperating)}<span style="font-size:9px;color:#9ca3af">원</span></div>
+          <div style="font-size:8px;color:#9ca3af">(전체−이벤트−소모품−카드)÷식수</div>
+        </div>`:`<div style="background:#f9fafb;border-radius:8px;padding:7px 9px;border:1px solid #e5e7eb;display:flex;align-items:center;justify-content:center"><span style="font-size:9px;color:#9ca3af">⑤운영비없음</span></div>`}
+        ` : ''}
       </div>
       ${AIBox(
         autoText,
@@ -30024,7 +35611,10 @@ async function renderReport(selectedHospitalId = null) {
     const vendAnalysis = (() => {
       if(!rptOrders||rptOrders.length===0) return '업체별 발주 데이터를 분석합니다.'
       const top3ratio = rptOrders.slice(0,3).reduce((s,o)=>s+(usedAmount>0?(o.totalAmount||0)/usedAmount*100:0),0)
-      return `상위 3개 업체 발주 비중이 ${Math.round(top3ratio)}%입니다. ${rptOrders[0]?.vendor||''}이(가) 가장 높은 비중(${usedAmount>0?Math.round((rptOrders[0]?.totalAmount||0)/usedAmount*100):0}%)을 차지합니다.`
+      const excParts = rptTop3Excess.length>0
+        ? ' 초과 발주: ' + rptTop3Excess.map(o=>`${o.vendor} +${fmtMan(o.excess)}원`).join(', ') + '.'
+        : ''
+      return `상위 3개 업체 발주 비중 ${Math.round(top3ratio)}% — ${rptOrders[0]?.vendor||''}이(가) ${usedAmount>0?Math.round((rptOrders[0]?.totalAmount||0)/usedAmount*100):0}%로 1위입니다.${excParts}`
     })()
     const vendWarn = topVendorRatio>=40?`⚠ ${rptOrders[0]?.vendor||''} 의존도(${topVendorRatio}%)가 높습니다. 발주 분산 검토가 필요합니다.`:null
     const slide5 = `
@@ -30062,14 +35652,22 @@ async function renderReport(selectedHospitalId = null) {
               </div>`
             }).join('')}
           </div>
-          <!-- TOP3 박스 -->
+          <!-- TOP3 박스 (초과 금액 포함) -->
           <div style="background:#f0fdf4;border-radius:8px;padding:10px;border:1px solid #bbf7d0;flex-shrink:0">
-            <div style="font-size:13px;font-weight:700;color:#064e3b;margin-bottom:6px">🏆 TOP 3 업체</div>
+            <div style="font-size:13px;font-weight:700;color:#064e3b;margin-bottom:6px">🏆 TOP 3 업체 발주 현황</div>
             ${(rptOrders||[]).slice(0,3).map((o,i)=>{
               const pct=usedAmount>0?Math.round((o.totalAmount||0)/usedAmount*100):0
-              return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #d1fae5">
-                <span style="font-size:11px;color:#374151">${['🥇','🥈','🥉'][i]} ${o.vendor||'-'}</span>
-                <span style="font-size:13px;font-weight:700;color:#064e3b">${pct}%</span>
+              const bgt=vendorBudgets[o.vendor]||0
+              const exc=bgt>0?(o.totalAmount||0)-bgt:0
+              return `<div style="padding:5px 0;border-bottom:1px solid #d1fae5">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="font-size:12px;color:#374151;font-weight:600">${['🥇','🥈','🥉'][i]} ${o.vendor||'-'}</span>
+                  <span style="font-size:13px;font-weight:700;color:#064e3b">${pct}%</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">
+                  <span style="font-size:10px;color:#6b7280">${fmtMan(o.totalAmount||0)}원</span>
+                  ${exc>0?`<span style="font-size:10px;font-weight:700;color:#dc2626">+${fmtMan(exc)}원 초과</span>`:(bgt>0?`<span style="font-size:10px;color:#16a34a">예산 이내</span>`:'<span style="font-size:10px;color:#9ca3af">예산 미설정</span>')}
+                </div>
               </div>`
             }).join('')}
           </div>
@@ -30111,8 +35709,21 @@ async function renderReport(selectedHospitalId = null) {
       : ''
     const waterAnalysis = totalMeals===0
       ? '식수 데이터를 분석합니다. 식수 입력 후 자동 분석됩니다.'
-      : `이번 달(${reportMonth}월) 총 식수는 ${fmt(totalMeals)}식이며, 일 평균 ${Math.round(totalMeals/daysInMonth).toLocaleString()}식 수준입니다.${p6MealDiffStr ? ' ' + p6MealDiffStr + '.' : ''}`
-    const waterWarn = staffRatio>=70?`⚠ 직원식 비중(${staffRatio}%)이 비정상적으로 높습니다. 환자 식수 데이터를 확인하세요.`:null
+      : (() => {
+          const base = `${reportMonth}월 총 식수 ${fmt(totalMeals)}식, 일 평균 ${Math.round(totalMeals/daysInMonth).toLocaleString()}식.`
+          const mealChg = p6PrevTotalMeals>0
+            ? ` 전달 대비 ${p6MealDiff>0?'+':''}${fmt(p6MealDiff)}식(${p6PrevTotalMeals>0?Math.round(p6MealDiff/p6PrevTotalMeals*100):0}%) ${p6MealDiff>0?'증가':'감소'}.`
+            : ''
+          const costImpact = p6PrevTotalMeals>0&&Math.abs(p6MealDiff)>0&&dailyAvg>0
+            ? ` 식수 변동으로 인한 발주 영향 추정: 약 ${fmtMan(Math.abs(Math.round(p6MealDiff*(usedAmount/Math.max(totalMeals,1)))))}원.`
+            : ''
+          return base + mealChg + costImpact
+        })()
+    const waterWarn = (() => {
+      if(staffRatio>=70) return `⚠ 직원식 비중(${staffRatio}%)이 비정상적으로 높습니다. 환자 식수 데이터를 확인하세요.`
+      if(p6PrevTotalMeals>0&&p6MealDiff>p6PrevTotalMeals*0.3) return `⚠ 전달 대비 식수가 ${Math.round(p6MealDiff/p6PrevTotalMeals*100)}% 급증하여 예산에 직접 영향을 미쳤습니다.`
+      return null
+    })()
     const p6GetColor = (key, name) => {
       if (!key && !name) return '#6b7280'
       if ((key||'').startsWith('diet_preset_staff_') || (name||'').includes('직원')) return '#3b82f6'
@@ -30207,6 +35818,107 @@ async function renderReport(selectedHospitalId = null) {
         </div>
       </div>
       ${AIBox(waterAnalysis, waterWarn, '#064e3b','#f0fdf4')}
+    </div>`
+
+    // ══ PAGE 6-B: 주차별 발주 초과 분석 ══════════════════════════
+    // dailyValues로 주차별 집계 계산
+    const weekAnalysisData = (() => {
+      const weeks = []
+      const firstDay = new Date(reportYear, reportMonth-1, 1).getDay() // 0=일
+      let dayIdx = 0
+      let wkNum = 1
+      // 1주차: 1일 ~ 첫 번째 토요일(6)
+      let wkStart = 1
+      let wkEnd = wkStart + (6 - (firstDay===0?7:firstDay)) // 첫 토요일까지
+      if(wkEnd < wkStart) wkEnd = wkStart
+      while(wkStart <= daysInMonth) {
+        const end = Math.min(wkEnd, daysInMonth)
+        let wTotal = 0
+        for(let d=wkStart; d<=end; d++) wTotal += (dailyValues[d-1]||0)
+        const wDays = end - wkStart + 1
+        const wBudget = totalBudget > 0 ? Math.round(totalBudget / daysInMonth * wDays) : 0
+        const wPct = wBudget > 0 ? Math.round(wTotal/wBudget*100) : 0
+        weeks.push({ wk:wkNum, wkStart, wkEnd:end, wTotal, wBudget, wPct, wDays })
+        wkNum++
+        wkStart = end + 1
+        wkEnd = wkStart + 6
+      }
+      return weeks
+    })()
+    const wkExcessCount = weekAnalysisData.filter(w=>w.wPct>100).length
+    const wkAnalysis = weekAnalysisData.length===0
+      ? '주차별 발주 데이터를 분석합니다.'
+      : `총 ${weekAnalysisData.length}주 중 ${wkExcessCount}주가 예산 초과입니다. 최고 집행률: ${Math.max(...weekAnalysisData.map(w=>w.wPct))}%.`
+    const wkWarn = wkExcessCount >= weekAnalysisData.length*0.5
+      ? `⚠ 절반 이상의 주에서 예산이 초과되고 있습니다. 주차별 발주 패턴 점검이 필요합니다.`
+      : null
+    const slideWeek = `
+    <div class="report-slide rpt-report-page">
+      ${SH('6-B','주차별 발주 초과 분석','Weekly Order Excess')}
+      <!-- 주차별 KPI 카드 -->
+      <div style="display:grid;grid-template-columns:repeat(${Math.min(weekAnalysisData.length,6)},1fr);gap:10px;margin-bottom:18px;flex-shrink:0">
+        ${weekAnalysisData.map(w=>{
+          const col = w.wPct>=110?'#dc2626':w.wPct>=100?'#d97706':'#16a34a'
+          const bg  = w.wPct>=110?'#fef2f2':w.wPct>=100?'#fffbeb':'#f0fdf4'
+          return `<div style="background:${bg};border-radius:10px;padding:12px;border-left:4px solid ${col};text-align:center">
+            <div style="font-size:11px;color:#6b7280;font-weight:600;margin-bottom:4px">${w.wk}주차</div>
+            <div style="font-size:11px;color:#9ca3af;margin-bottom:4px">${w.wkStart}일~${w.wkEnd}일</div>
+            <div style="font-size:22px;font-weight:900;color:${col}">${w.wPct}%</div>
+            <div style="font-size:10px;color:#4b5563;margin-top:4px">${fmtMan(w.wTotal)}원</div>
+            ${w.wBudget>0?`<div style="font-size:9px;color:#9ca3af">예산 ${fmtMan(w.wBudget)}원</div>`:''}
+          </div>`
+        }).join('')}
+      </div>
+      <!-- 주차별 막대 차트 영역 -->
+      <div style="background:#f8fafc;border-radius:12px;padding:14px;border:1px solid #e2e8f0;flex:1;display:flex;flex-direction:column">
+        <div style="font-size:13px;font-weight:700;color:#1f2937;margin-bottom:12px">주차별 예산 대비 집행률 (%)</div>
+        <div style="flex:1;display:flex;align-items:flex-end;gap:8px;padding-bottom:24px;position:relative">
+          <!-- 100% 기준선 -->
+          <div style="position:absolute;left:0;right:0;bottom:${Math.min(Math.round(100/Math.max(...weekAnalysisData.map(w=>w.wPct),120)*100), 80)}%;height:2px;background:#dc2626;opacity:0.5;z-index:1">
+            <span style="position:absolute;right:4px;top:-16px;font-size:9px;color:#dc2626;font-weight:700">100%</span>
+          </div>
+          ${weekAnalysisData.map(w=>{
+            const maxPct = Math.max(...weekAnalysisData.map(w=>w.wPct), 120)
+            const barH = Math.round(w.wPct/maxPct*160)
+            const col = w.wPct>=110?'#dc2626':w.wPct>=100?'#d97706':'#16a34a'
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+              <div style="font-size:11px;font-weight:700;color:${col}">${w.wPct}%</div>
+              <div style="width:100%;height:${barH}px;background:${col};border-radius:4px 4px 0 0;min-height:4px"></div>
+              <div style="font-size:10px;color:#6b7280;text-align:center">${w.wk}주</div>
+            </div>`
+          }).join('')}
+        </div>
+      </div>
+      <!-- 주차별 상세 테이블 -->
+      <div style="margin-top:14px;flex-shrink:0">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:#064e3b;color:white">
+              <th style="padding:6px 10px;text-align:left">주차</th>
+              <th style="padding:6px 8px;text-align:center">기간</th>
+              <th style="padding:6px 8px;text-align:right">발주금액</th>
+              <th style="padding:6px 8px;text-align:right">주차예산</th>
+              <th style="padding:6px 8px;text-align:right">집행률</th>
+              <th style="padding:6px 10px;text-align:right">초과/잔여</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${weekAnalysisData.map((w,i)=>{
+              const excess = w.wBudget > 0 ? w.wTotal - w.wBudget : 0
+              const col = w.wPct>=110?'#dc2626':w.wPct>=100?'#d97706':'#16a34a'
+              return `<tr style="border-bottom:1px solid #f1f5f9;background:${i%2===0?'#fff':'#f9fafb'}">
+                <td style="padding:7px 10px;font-weight:700;color:#374151">${w.wk}주차</td>
+                <td style="padding:7px 8px;text-align:center;color:#6b7280">${reportMonth}/${w.wkStart}~${reportMonth}/${w.wkEnd}</td>
+                <td style="padding:7px 8px;text-align:right;font-weight:700;color:#374151">${fmt(w.wTotal)}</td>
+                <td style="padding:7px 8px;text-align:right;color:#6b7280">${w.wBudget>0?fmt(w.wBudget):'-'}</td>
+                <td style="padding:7px 8px;text-align:right;font-weight:800;color:${col}">${w.wPct}%</td>
+                <td style="padding:7px 10px;text-align:right;font-weight:700;color:${excess>0?'#dc2626':'#16a34a'}">${w.wBudget>0?(excess>0?'+':'')+fmt(excess):'-'}</td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${AIBox(wkAnalysis, wkWarn, '#d97706','#fffbeb')}
     </div>`
 
     // ══ PAGE 7: 월별 식단가 추이 ══════════════════════════════════
@@ -30611,7 +36323,73 @@ async function renderReport(selectedHospitalId = null) {
       )}
     </div>`
 
-    return slide1+slide2+slide3+slide4+slide5+slide6+slide7+slide8+slide9+slide10+slide11+slide12+slide13+slide14
+    // ══ PAGE 15: 이벤트 운영비 상세 내역 ══════════════════════════════════
+    const hasEventData = rptEventTotal > 0
+    const slide15 = hasEventData ? `
+    <div class="report-slide rpt-report-page">
+      ${SH(15,'이벤트 운영비 내역','Event Operation Expenses')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px;flex-shrink:0">
+        <div style="background:#fff7ed;border-radius:12px;padding:14px;border:1px solid #fed7aa">
+          <div style="font-size:11px;color:#ea580c;font-weight:700;margin-bottom:4px">이벤트 운영비 총액</div>
+          <div style="font-size:24px;font-weight:900;color:#c2410c">${fmt(rptEventTotal)}<span style="font-size:12px;font-weight:600;margin-left:2px">원</span></div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:3px">${rptEventExpenses.length}건 지출</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          ${KPI('업체 수',rptEventVendorList.length+'개','이벤트 업체','#ea580c','#fff7ed','🏪')}
+          ${KPI('품목 수',rptEventItemSummary.length+'종','사용 품목','#f97316','#fff7ed','📦')}
+        </div>
+      </div>
+      ${rptEventVendorList.length > 0 ? `
+      <div style="margin-bottom:12px;flex-shrink:0">
+        <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+          <span style="background:#ea580c;color:white;padding:2px 10px;border-radius:10px;font-size:10px">업체별 내역</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto">
+          ${rptEventVendorList.map(v => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#fff7ed;border-radius:8px;border-left:3px solid #ea580c">
+            <span style="font-size:12px;font-weight:600;color:#374151">${v.vendor_name || v.name || ''}</span>
+            <div style="display:flex;gap:10px;align-items:center">
+              <span style="font-size:11px;color:#9ca3af">${v.count}건</span>
+              <span style="font-size:13px;font-weight:700;color:#c2410c">${fmt(v.total)}원</span>
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0">
+        ${rptEventItemSummary.length > 0 ? `
+        <div style="background:#f8fafc;border-radius:10px;padding:12px;border:1px solid #e5e7eb">
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px">사용 품목별 합계</div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            ${rptEventItemSummary.slice(0,6).map(it => `
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px">
+              <span style="color:#4b5563">${it.item_name}</span>
+              <span style="font-weight:700;color:#ea580c">${fmt(it.total)}원</span>
+            </div>`).join('')}
+          </div>
+        </div>` : '<div></div>'}
+        ${rptEventPurposeSummary.length > 0 ? `
+        <div style="background:#f8fafc;border-radius:10px;padding:12px;border:1px solid #e5e7eb">
+          <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px">진행 용도별 건수</div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            ${rptEventPurposeSummary.slice(0,6).map(p => `
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px">
+              <span style="color:#4b5563">${p.purpose}</span>
+              <div style="display:flex;gap:8px">
+                <span style="color:#9ca3af">${p.count}건</span>
+                <span style="font-weight:700;color:#ea580c">${fmt(p.total)}원</span>
+              </div>
+            </div>`).join('')}
+          </div>
+        </div>` : '<div></div>'}
+      </div>
+      ${AIBox(
+        `${reportMonth}월 이벤트 운영비 총액 ${fmt(rptEventTotal)}원 (${rptEventExpenses.length}건). ` +
+        (rptEventItemSummary.length > 0 ? `주요 사용 품목: ${rptEventItemSummary.slice(0,2).map(i=>i.item_name).join(', ')}.` : ''),
+        null, '#ea580c', '#fff7ed'
+      )}
+    </div>` : ''
+
+    return slide1+slide2+slide3+slide4+slide5+slide6+slideWeek+slide7+slide8+slide9+slide10+slide11+slide12+slide13+slide14+(hasEventData?slide15:'')
 
   })()}
 
@@ -30619,7 +36397,8 @@ async function renderReport(selectedHospitalId = null) {
 
   // ── 차트 렌더링 (renderReport 스코프 변수 사용) ──
   // innerHTML 완료 후 DOM이 실제로 그려진 다음에 차트를 그리기 위해 setTimeout 사용
-  setTimeout(() => {
+  // 월간보고서가 아닌 경우 차트 렌더링 건너뜀 (director/analysis는 아래 블록에서 처리)
+  if (reportType === 'monthly') setTimeout(() => {
   // 한 번 더 requestAnimationFrame으로 브라우저 페인트 완료 대기
   requestAnimationFrame(() => {
   try {
@@ -31588,6 +37367,313 @@ async function renderReport(selectedHospitalId = null) {
     })
   }) // requestAnimationFrame
   }, 200) // setTimeout 200ms
+
+  // ── 비-월간 보고서 처리 (director / analysis) ─────────────────────────
+  if (reportType === 'director' || reportType === 'analysis') {
+    // 스케줄 데이터 로드 후 보고서 렌더링
+    ;(async () => {
+      try {
+        const altBody = document.getElementById('altReportBody')
+        if (!altBody) return
+
+        // hospitalId 파라미터 포함하여 스케줄 데이터 로드
+        const qhid = targetHospitalId ? `?hospitalId=${targetHospitalId}` : ''
+        const md = await api('GET', `/api/schedule/${reportYear}/${reportMonth}${qhid}`).catch(() => null)
+        if (!md) {
+          altBody.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626">
+            <i class="fas fa-exclamation-circle" style="font-size:32px;margin-bottom:12px;display:block"></i>
+            <p style="font-size:14px">스케줄 데이터를 불러오지 못했습니다.<br>해당 병원의 ${reportYear}년 ${reportMonth}월 스케줄 데이터를 먼저 입력해주세요.</p>
+          </div>`
+          return
+        }
+
+        // 전역 변수에 저장 (printExecutiveView / printMonthlyAnalysisReport 사용)
+        scheduleMonthData = md
+        scheduleEmployees = md.employees || []
+        scheduleShifts = md.shifts || []
+        scheduleWorkSettings = md.work_settings || md.workSettings || {}
+        scheduleExtSchedMap = md.ext_sched_map || {}
+        if (md.external_workers) scheduleExternalWorkers = md.external_workers
+
+        if (reportType === 'director') {
+          // ── 병원장님 보고서: renderSchedExecutiveView 직접 호출 (data-exec-view 독립) ──
+          // App.currentYear/Month를 보고서 기준으로 임시 설정
+          const _prevYear = App.currentYear, _prevMonth = App.currentMonth
+          App.currentYear = reportYear
+          App.currentMonth = reportMonth
+
+          // renderSchedExecutiveView에 필요한 파라미터 구성
+          const _days   = new Date(reportYear, reportMonth, 0).getDate()
+          const _today5 = new Date().toISOString().slice(0, 10)
+          const _emps   = (md.employees || []).filter(e =>
+            e.is_active !== 0 && (!e.resign_date || e.resign_date >= _today5)
+          )
+          const _shifts = md.shifts || []
+          const _schedMap = md.sched_map || {}
+          const _leaveMap = md.leave_map || {}
+          const _grantedSet    = new Set((md.granted_days    || md.off_grants?.granted_days    || []).map(d => d.date || d))
+          const _substituteSet = new Set((md.substitute_days || md.off_grants?.substitute_days || []).map(d => d.date || d))
+          const _allOffSet     = new Set([..._grantedSet, ..._substituteSet])
+
+          let execHtml = ''
+          try {
+            execHtml = renderSchedExecutiveView({
+              days: _days, emps: _emps, shifts: _shifts,
+              schedMap: _schedMap, leaveMap: _leaveMap,
+              allOffSet: _allOffSet, viewTabsHtml: ''
+            })
+          } catch(err) {
+            console.error('[병원장님 보고서] renderSchedExecutiveView 오류:', err)
+            execHtml = `<div style="padding:20px;color:#b91c1c;background:#fff1f2;border-radius:8px;font-size:13px">렌더링 오류: ${err.message}</div>`
+          }
+
+          // App.currentYear/Month 복원
+          App.currentYear = _prevYear
+          App.currentMonth = _prevMonth
+
+          altBody.innerHTML = `<div style="padding:8px 0">
+            <div style="font-size:12px;color:#1e40af;margin-bottom:10px;padding:8px 14px;background:#eff6ff;border-radius:8px;border:1px solid #bfdbfe;display:flex;align-items:center;gap:8px">
+              <i class="fas fa-print" style="font-size:14px;color:#2563eb"></i>
+              <span><strong>${hospitalName}</strong> ${reportYear}년 ${reportMonth}월 병원장님 보고서 &mdash; 우측 상단 <strong>인쇄 / PDF 저장</strong> 버튼 또는 <strong>Ctrl+P</strong>로 출력하세요.</span>
+            </div>
+            <div id="directorReportContainer" style="pointer-events:none">${execHtml}</div>
+          </div>`
+
+          // 인쇄 함수: 팝업 없이 현재 페이지 Ctrl+P (no-print 요소 숨김)
+          window._reportPrintFn = () => {
+            // 전역 데이터를 보고서 기준으로 임시 설정하여 printExecutiveView가 올바로 동작하도록
+            const _py = App.currentYear, _pm = App.currentMonth
+            App.currentYear = reportYear
+            App.currentMonth = reportMonth
+            scheduleMonthData = md
+            scheduleEmployees = md.employees || []
+            scheduleShifts = md.shifts || []
+            scheduleWorkSettings = md.work_settings || md.workSettings || {}
+            scheduleExtSchedMap = md.ext_sched_map || {}
+            if (md.external_workers) scheduleExternalWorkers = md.external_workers
+            printExecutiveView()
+            // 복원은 printExecutiveView가 팝업으로 처리하므로 불필요
+            App.currentYear = _py
+            App.currentMonth = _pm
+          }
+
+        } else if (reportType === 'analysis') {
+          // ── 인력 운영 분석 보고서: 직접 데이터 기반 렌더링 ──
+          let previewHtml = ''
+          let previewError = null
+          try {
+            previewHtml = _buildAnalysisReportPreviewHtml(md, hospitalName, reportYear, reportMonth)
+          } catch(e) {
+            previewError = e
+            console.error('[인력 분석 보고서] 미리보기 생성 오류:', e)
+          }
+
+          altBody.innerHTML = `<div style="padding:8px 0">
+            <div style="font-size:12px;color:#6b7280;margin-bottom:10px;padding:8px 14px;background:#faf5ff;border-radius:8px;border:1px solid #e9d5ff;display:flex;align-items:center;gap:8px">
+              <i class="fas fa-print" style="font-size:14px;color:#7c3aed"></i>
+              <span><strong>${hospitalName}</strong> ${reportYear}년 ${reportMonth}월 인력 운영 분석 보고서 &mdash; 우측 상단 <strong>인쇄 / PDF 저장</strong> 버튼 또는 <strong>Ctrl+P</strong>로 출력하세요.</span>
+            </div>
+            <div id="analysisReportContainer">
+              ${previewError
+                ? `<div style="padding:16px;background:#faf5ff;border-radius:10px;border:1px solid #ddd6fe;font-size:13px;color:#6b7280;text-align:center">
+                    <i class="fas fa-exclamation-triangle" style="color:#a78bfa;font-size:20px;display:block;margin-bottom:8px"></i>
+                    미리보기를 불러올 수 없습니다. (${previewError.message})<br>
+                    <button onclick="window._reportPrintFn&&window._reportPrintFn()" style="margin-top:10px;padding:8px 18px;background:#7c3aed;color:white;border:none;border-radius:8px;font-size:12px;cursor:pointer">
+                      <i class="fas fa-print mr-1"></i>바로 인쇄 / PDF 저장
+                    </button>
+                  </div>`
+                : previewHtml
+              }
+            </div>
+          </div>`
+
+          // 인쇄 함수: 전역 데이터 세팅 후 printMonthlyAnalysisReport 팝업 호출
+          window._reportPrintFn = () => {
+            const _py = App.currentYear, _pm = App.currentMonth
+            App.currentYear = reportYear
+            App.currentMonth = reportMonth
+            scheduleMonthData = md
+            scheduleEmployees = md.employees || []
+            scheduleShifts = md.shifts || []
+            scheduleWorkSettings = md.work_settings || md.workSettings || {}
+            scheduleExtSchedMap = md.ext_sched_map || {}
+            if (md.external_workers) scheduleExternalWorkers = md.external_workers
+            printMonthlyAnalysisReport()
+            App.currentYear = _py
+            App.currentMonth = _pm
+          }
+        }
+      } catch(e) {
+        console.error('[보고서] 비-월간 보고서 로드 오류:', e)
+        const altBody = document.getElementById('altReportBody')
+        if (altBody) altBody.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626">오류: ${e.message}</div>`
+      }
+    })()
+  }
+}
+
+// ── 인력 운영 분석 보고서 인라인 미리보기 HTML 빌더 ──────────────────────────
+function _buildAnalysisReportPreviewHtml(md, hospitalName, year, month) {
+  const sm         = md?.sched_map || {}
+  const emps       = (md?.employees || scheduleEmployees || [])
+  const extWorkers = (md?.ext_workers || md?.external_workers) || []
+  const extSchedMap= md?.ext_sched_map || scheduleExtSchedMap || {}
+  const holidays   = md?.holidays || []
+  const ws_r       = md?.work_settings || scheduleWorkSettings || {}
+  const days       = new Date(year, month, 0).getDate()
+  const requiredR  = parseInt(ws_r.required_staff_count || '0')
+  const REST_CODES_R = CALC_ENGINE.REST_CODES_SET
+
+  const dailyReport = []
+  for(let d=1; d<=days; d++) {
+    const ds  = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    let regular=0, dispatch=0, parttime=0
+    for(const emp of emps) {
+      if(emp.team === 'nutrition') continue
+      const code = (sm[`${emp.id}_${ds}`] || {}).shift_code || ''
+      if(code && code!=='-' && !REST_CODES_R.has(code)) regular++
+    }
+    for(const w of extWorkers) {
+      const entry = extSchedMap[`${w.id}_${ds}`]
+      if(entry && (entry.shift_type || entry.shift_code)) {
+        if(w.worker_type === 'dispatch') dispatch++
+        else parttime++
+      }
+    }
+    const total = regular + dispatch + parttime
+    let status = '정상', statusColor = '#16a34a'
+    if(requiredR > 0) {
+      const r = total / requiredR
+      if(r < 0.9) { status='부족'; statusColor='#dc2626' }
+      else if(r > 1.1) { status='과다'; statusColor='#2563eb' }
+    }
+    dailyReport.push({ d, ds, regular, dispatch, parttime, total, status, statusColor })
+  }
+
+  const totalDispatchDays = dailyReport.reduce((a,r)=>a+r.dispatch,0)
+  const totalParttimeDays = dailyReport.reduce((a,r)=>a+r.parttime,0)
+  const totalExtDays      = totalDispatchDays + totalParttimeDays
+  const totalAllPersonDays= dailyReport.reduce((a,r)=>a+r.total,0)
+  const extPct = totalAllPersonDays > 0 ? ((totalExtDays/totalAllPersonDays)*100).toFixed(1) : '0'
+  const avgTotal = days > 0 ? (totalAllPersonDays/days).toFixed(1) : '0'
+  const maxTotal = Math.max(...dailyReport.map(r=>r.total), 0)
+  const minTotal = Math.min(...dailyReport.filter(r=>r.total>0).map(r=>r.total), 0)
+  const shortageDays = requiredR > 0 ? dailyReport.filter(r=>r.status==='부족').length : 0
+  const weekCount_r = Math.ceil(days/7)
+  const weeklyExt = Array.from({length:weekCount_r},(_,wk)=>{
+    const wkDays = dailyReport.filter(r=>Math.floor((r.d-1)/7)===wk)
+    return {
+      wk: wk+1,
+      dispatch: wkDays.reduce((a,r)=>a+r.dispatch,0),
+      parttime: wkDays.reduce((a,r)=>a+r.parttime,0),
+      avgTotal: wkDays.length ? (wkDays.reduce((a,r)=>a+r.total,0)/wkDays.length).toFixed(1) : '0'
+    }
+  })
+
+  const DOW = ['일','월','화','수','목','금','토']
+
+  return `<div style="background:white;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;max-width:900px;margin:0 auto">
+    <!-- 헤더 -->
+    <div style="background:#7c3aed;color:white;padding:16px 20px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:11px;opacity:.7;letter-spacing:1px">STAFFING ANALYSIS REPORT</div>
+        <div style="font-size:18px;font-weight:700;margin-top:2px">${hospitalName} 인력 운영 분석</div>
+      </div>
+      <div style="font-size:12px;opacity:.8">${year}년 ${month}월</div>
+    </div>
+    <!-- KPI 요약 -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:16px">
+      <div style="text-align:center;background:#f5f3ff;border-radius:10px;padding:12px">
+        <div style="font-size:22px;font-weight:800;color:#7c3aed">${avgTotal}명</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:2px">일평균 인원</div>
+      </div>
+      <div style="text-align:center;background:#fef2f2;border-radius:10px;padding:12px">
+        <div style="font-size:22px;font-weight:800;color:#dc2626">${shortageDays}일</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:2px">인력 부족일</div>
+      </div>
+      <div style="text-align:center;background:#eff6ff;border-radius:10px;padding:12px">
+        <div style="font-size:22px;font-weight:800;color:#2563eb">${totalExtDays}일</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:2px">외부인력 투입</div>
+      </div>
+      <div style="text-align:center;background:#f0fdf4;border-radius:10px;padding:12px">
+        <div style="font-size:22px;font-weight:800;color:#16a34a">${extPct}%</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:2px">외부인력 의존도</div>
+      </div>
+    </div>
+    <!-- 일별 현황 테이블 -->
+    <div style="padding:0 16px 16px">
+      <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:8px">일별 인력 현황</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#f9fafb">
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">날짜</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">요일</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">정규직</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">파출</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">알바</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">합계</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dailyReport.slice(0,31).map(r => {
+              const dow = new Date(`${year}-${String(month).padStart(2,'0')}-${String(r.d).padStart(2,'0')}`).getDay()
+              const dowStr = DOW[dow]
+              return `<tr style="background:${r.status==='부족'?'#fef2f2':r.status==='과다'?'#eff6ff':'white'}">
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;font-weight:600">${month}/${r.d}</td>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;color:${dow===0?'#dc2626':dow===6?'#2563eb':'#374151'}">${dowStr}</td>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center">${r.regular}</td>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;color:${r.dispatch>0?'#d97706':'#9ca3af'}">${r.dispatch||'-'}</td>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;color:${r.parttime>0?'#7c3aed':'#9ca3af'}">${r.parttime||'-'}</td>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;font-weight:700">${r.total}</td>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;color:${r.statusColor};font-weight:600">${r.status}</td>
+              </tr>`
+            }).join('')}
+          </tbody>
+          <tfoot>
+            <tr style="background:#f3f4f6;font-weight:700">
+              <td colspan="2" style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">합계</td>
+              <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">${dailyReport.reduce((a,r)=>a+r.regular,0)}</td>
+              <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">${totalDispatchDays}</td>
+              <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">${totalParttimeDays}</td>
+              <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">${totalAllPersonDays}</td>
+              <td style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">-</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+    <!-- 주차별 외부인력 -->
+    <div style="padding:0 16px 16px">
+      <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:8px">주차별 외부인력 현황</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#f9fafb">
+              <th style="padding:6px 8px;border:1px solid #e5e7eb">주차</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">평균 인원</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">파출(일)</th>
+              <th style="padding:6px 8px;border:1px solid #e5e7eb;text-align:center">알바(일)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${weeklyExt.map(w=>`<tr>
+              <td style="padding:5px 8px;border:1px solid #e5e7eb;font-weight:600">${w.wk}주차</td>
+              <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center">${w.avgTotal}명</td>
+              <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;color:${w.dispatch>0?'#d97706':'#9ca3af'}">${w.dispatch||'-'}</td>
+              <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;color:${w.parttime>0?'#7c3aed':'#9ca3af'}">${w.parttime||'-'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <!-- 안내 -->
+    <div style="padding:12px 16px;background:#faf5ff;border-top:1px solid #e9d5ff;font-size:11px;color:#6b7280">
+      <i class="fas fa-print text-purple-500 mr-1"></i>
+      위 내용은 미리보기입니다. 정확한 A4 출력은 <strong>인쇄 / PDF 저장 버튼</strong>을 클릭하세요. (팝업 차단 해제 필요)
+    </div>
+  </div>`
 }
 
 // 캔버스를 고화질 PNG DataURL로 변환 (devicePixelRatio 4배 적용)
@@ -31827,11 +37913,15 @@ window.printReportA4 = async function() {
 
   document.body.appendChild(layer)
 
+  // CSS :has() 미지원 브라우저 대응: body에 클래스 추가
+  document.body.classList.add('print-layer-active')
+
   requestAnimationFrame(() => {
     window.print()
     const cleanup = () => {
       const l = document.getElementById('printLayer')
       if (l) l.remove()
+      document.body.classList.remove('print-layer-active')
       window.removeEventListener('afterprint', cleanup)
     }
     window.addEventListener('afterprint', cleanup)
@@ -31934,7 +38024,7 @@ window.showPrintPreview = function() {
       // 인쇄 함수
       window._ppPrintAll = function() {
         const allHtml = (window._ppSlideHtml || []).map((h, i) =>
-          `<div style="page-break-after:${i < (window._ppSlideHtml.length-1) ? 'always' : 'auto'};background:white;">${h}</div>`
+          `<div class="pp-page" style="background:white;">${h}</div>`
         ).join('')
 
         // 팝업 시도
@@ -31944,8 +38034,30 @@ window.showPrintPreview = function() {
         if (pw && !pw.closed) {
           // 팝업 성공 → 새 창에서 인쇄
           pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
-            <style>*{box-sizing:border-box;}body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
-            @media print{@page{margin:0;}body{margin:0;}}</style>
+            <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+            <style>
+              *{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
+              body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;background:white;}
+              .pp-page{background:white;width:100%;page-break-after:always;break-after:page;page-break-inside:avoid;break-inside:avoid;}
+              .pp-page:last-child{page-break-after:avoid;break-after:avoid;}
+              .report-slide{aspect-ratio:unset!important;height:auto!important;overflow:visible!important;border-radius:0!important;border:none!important;box-shadow:none!important;margin:0!important;}
+              /* rpt-report-page: 화면용 padding(60px) 제거 → 인쇄 여백으로 대체 */
+              .rpt-report-page{overflow:visible!important;flex:none!important;height:auto!important;padding:0 14mm 14mm 14mm!important;}
+              /* SH 헤더(배경:#064e3b)가 -60px 음수마진을 쓰는데, 인쇄에선 -14mm로 재조정 */
+              .rpt-report-page > div:first-child[style*="background:#064e3b"]{margin-left:-14mm!important;margin-right:-14mm!important;padding-left:14mm!important;padding-right:14mm!important;}
+              *[style*="overflow:hidden"]{overflow:visible!important;}
+              *[style*="max-height"]{max-height:none!important;}
+              /* flex:1 → 높이 자동으로 */
+              *[style*="flex:1"]{flex:none!important;min-height:auto!important;height:auto!important;}
+              /* 고정높이 프로그레스 바 등은 유지 */
+              *[style*="height:10px"],*[style*="height:8px"],*[style*="height:5px"],*[style*="height:4px"]{flex:none!important;}
+              @media print{
+                @page{size:A4 landscape;margin:8mm 10mm;}
+                .pp-page{page-break-after:always!important;break-after:page!important;page-break-inside:avoid!important;break-inside:avoid!important;}
+                .pp-page:last-child{page-break-after:avoid!important;break-after:avoid!important;}
+                *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
+              }
+            </style>
             </head><body>${allHtml}<script>window.onload=function(){window.print();window.close();}<\/script></body></html>`)
           pw.document.close()
         } else {
@@ -31966,7 +38078,20 @@ window.showPrintPreview = function() {
               <span style="color:#9ca3af;font-size:12px;">팝업이 차단됐습니다 — 이 화면에서 직접 인쇄하세요</span>
             </div>
             <div style="padding:20px;">${allHtml}</div>
-            <style>@media print { #_ppPrintCtrl { display:none!important; } }</style>
+            <style>
+              @media print {
+                #_ppPrintCtrl { display:none!important; }
+                @page{size:A4 landscape;margin:8mm 10mm;}
+                *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
+                .report-slide{aspect-ratio:unset!important;height:auto!important;overflow:visible!important;border-radius:0!important;border:none!important;box-shadow:none!important;margin:0!important;page-break-after:always!important;break-after:page!important;}
+                .report-slide:last-child{page-break-after:avoid!important;break-after:avoid!important;}
+                .rpt-report-page{overflow:visible!important;flex:none!important;height:auto!important;padding:0 14mm 14mm 14mm!important;}
+                .rpt-report-page > div:first-child[style*="background:#064e3b"]{margin-left:-14mm!important;margin-right:-14mm!important;padding-left:14mm!important;padding-right:14mm!important;}
+                *[style*="overflow:hidden"]{overflow:visible!important;}
+                *[style*="max-height"]{max-height:none!important;}
+                *[style*="flex:1"]{flex:none!important;min-height:auto!important;height:auto!important;}
+              }
+            </style>
           `
           document.body.appendChild(layer)
         }
@@ -32000,9 +38125,20 @@ function _renderDomPreviewPage(idx) {
       #ppSlideContainer .rpt-report-page {
         width:100% !important;
         max-width:100% !important;
+        aspect-ratio: unset !important;
         min-height:auto !important;
         height:auto !important;
         overflow:visible !important;
+        border-radius:0 !important;
+        border:none !important;
+        box-shadow:none !important;
+        margin-bottom:0 !important;
+        page-break-after:unset !important;
+        break-after:unset !important;
+      }
+      #ppSlideContainer * {
+        overflow:visible !important;
+        max-height:none !important;
       }
     </style>
     ${htmlList[idx]}
@@ -32723,12 +38859,33 @@ async function exportReportPDF(hospitalName, year, month) {
     else if (progress > 85) lines.push({ icon:'⚠️', cat:'예산', text: `예산의 ${progress.toFixed(1)}%를 사용했습니다. 잔여 예산 관리에 주의가 필요합니다.`, color:'#ea580c' })
     else lines.push({ icon:'✅', cat:'예산', text: `예산 사용률 ${progress.toFixed(1)}%로 안정적으로 운영 중입니다.`, color:'#16a34a' })
 
-    // 식단가
-    if (mp > 0 && target > 0) {
-      const diff = ((mp-target)/target*100)
-      if (diff > 10) lines.push({ icon:'🚨', cat:'식단가', text: `현재 식단가(${fmtW(mp)})가 목표(${fmtW(target)}) 대비 ${diff.toFixed(1)}% 초과 상태입니다. 식재료비 절감 방안 검토가 필요합니다.`, color:'#dc2626' })
-      else if (diff > 0) lines.push({ icon:'⚠️', cat:'식단가', text: `식단가(${fmtW(mp)})가 목표 대비 ${diff.toFixed(1)}% 초과입니다. 지속 모니터링이 필요합니다.`, color:'#ea580c' })
-      else lines.push({ icon:'✅', cat:'식단가', text: `식단가(${fmtW(mp)})가 목표(${fmtW(target)}) 이내로 관리되고 있습니다.`, color:'#16a34a' })
+    // 식단가 (대표 식단가 기준 + 운영비 영향 포함)
+    const dpRpt = DIET_CALC.extractDietPrices(summaryData)
+    const repRpt  = dpRpt.representative || mp
+    const operRpt = dpRpt.operating || mp
+    const opDiffRpt = (repRpt > 0 && operRpt > 0) ? operRpt - repRpt : 0
+    const cbRpt = summaryData?.costBreakdown || null
+    const mealsRpt = data?.totalMeals || 0
+
+    if (repRpt > 0 && target > 0) {
+      const diff = ((repRpt-target)/target*100)
+      if (diff > 10) lines.push({ icon:'🚨', cat:'대표 식단가', text: `대표 식단가(${fmtW(repRpt)})가 목표(${fmtW(target)}) 대비 ${diff.toFixed(1)}% 초과 상태입니다. 식재료비 절감 방안 검토가 필요합니다.`, color:'#dc2626' })
+      else if (diff > 0) lines.push({ icon:'⚠️', cat:'대표 식단가', text: `대표 식단가(${fmtW(repRpt)})가 목표 대비 ${diff.toFixed(1)}% 초과입니다. 지속 모니터링이 필요합니다.`, color:'#ea580c' })
+      else lines.push({ icon:'✅', cat:'대표 식단가', text: `대표 식단가(${fmtW(repRpt)})가 목표(${fmtW(target)}) 이내로 관리되고 있습니다.`, color:'#16a34a' })
+    } else if (repRpt > 0) {
+      // 목표 미설정시도 대표 식단가 표시
+      lines.push({ icon:'📊', cat:'대표 식단가', text: `이번 달 대표 식단가는 ${fmtW(repRpt)}입니다 (식재료비 기준, 운영비 제외).`, color:'#1d4ed8' })
+    }
+
+    // 운영비 영향 설명 (대표 ≠ 운영반영일 때)
+    // ★ items.*.used만 사용 (reference.*는 대표식단가에 이미 포함된 금액 → 원인분해 미사용)
+    if (opDiffRpt !== 0 && repRpt > 0 && operRpt > 0) {
+      const supPMRpt = cbRpt && mealsRpt > 0 ? Math.round((cbRpt.items?.supply?.used||0)/mealsRpt) : 0
+      const evPMRpt  = cbRpt && mealsRpt > 0 ? Math.round((cbRpt.items?.event?.used||0)/mealsRpt) : 0
+      const cardPMRpt= cbRpt && mealsRpt > 0 ? Math.round((cbRpt.items?.card?.used||0)/mealsRpt) : 0
+      const causePartsRpt = [supPMRpt>0?`소모품 +${supPMRpt}원`:'',evPMRpt>0?`이벤트 +${evPMRpt}원`:'',cardPMRpt>0?`법인카드 +${cardPMRpt}원`:''].filter(Boolean)
+      const sign = opDiffRpt > 0 ? '+' : ''
+      lines.push({ icon:'💡', cat:'운영비 영향', text: `운영비 반영으로 대표 식단가(${fmtW(repRpt)}) 대비 ${sign}${Math.abs(Math.round(opDiffRpt)).toLocaleString()}원 ${opDiffRpt>0?'상승':'하락'}하여 운영반영 식단가는 ${fmtW(operRpt)}입니다.${causePartsRpt.length?` 주요 원인: ${causePartsRpt.join(', ')}.`:''}`, color:'#7c3aed' })
     }
 
     // 전월 대비 식단가
@@ -34719,6 +40876,424 @@ window.closeCardExpenseModal = function() {
 }
 
 // ════════════════════════════════════════════════════════════════
+//  이벤트 업체 상세입력 모달 (주황색 테마 #ea580c)
+//  개편: Row별 전체 업체 드롭다운, 진행 용도 제거
+// ════════════════════════════════════════════════════════════════
+window._eventExpenseVendorId = null   // 이벤트 버튼 업체 ID (모달 주체)
+window._eventExpenseDate = null
+window._eventExpenseItems = []
+window._eventExpenseDeletedIds = []
+window._eventAllVendors = []          // 드롭다운용 전체 업체 목록 캐시
+
+window.openEventExpenseModal = async function(vendorId, dateStr) {
+  // [RECOVERY-GUARD] 행사식 비용 서버 API 미비 → 진입 차단
+  if (window.__FEATURE_OFF_EVENT_EXPENSE) {
+    alert('행사식 비용 입력 기능은 현재 준비 중입니다.')
+    return
+  }
+  window._eventExpenseVendorId = vendorId
+  window._eventExpenseDate = dateStr
+  window._eventExpenseDeletedIds = []
+
+  // 기존 모달 제거
+  const existing = document.getElementById('eventExpenseModal')
+  if (existing) existing.remove()
+
+  // 로딩 모달 생성
+  const modal = document.createElement('div')
+  modal.id = 'eventExpenseModal'
+  modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4'
+  modal.innerHTML = '<div class="bg-white rounded-xl shadow-2xl p-8 text-center"><div class="text-gray-500">불러오는 중...</div></div>'
+  document.body.appendChild(modal)
+
+  try {
+    // Authorization 헤더 공통 설정 — App.token 또는 localStorage fallback
+    const tok = App.token || localStorage.getItem('token') || ''
+    const authHeaders = { 'Authorization': 'Bearer ' + tok }
+
+    // 병렬 조회: 이벤트 버튼 업체 정보 + 전체 업체 목록 + 기존 지출 내역
+    const [vendorRes, allVendorRes, expenseRes] = await Promise.all([
+      fetch('/api/vendors', { headers: authHeaders }),
+      fetch('/api/event-expenses/vendors', { headers: authHeaders }),
+      fetch('/api/event-expenses/daily/' + vendorId + '/' + dateStr, { headers: authHeaders })
+    ])
+    const vendorData = await vendorRes.json()
+    const allVendorData = await allVendorRes.json()
+    const data = await expenseRes.json()
+
+    // 이벤트 버튼 업체 (모달 헤더 표시용)
+    // /api/vendors는 배열 직접 반환
+    const vendorList = Array.isArray(vendorData) ? vendorData : (vendorData.vendors || [])
+    const vendor = vendorList.find(v => v.id == vendorId)
+
+    // ★ 전체 업체 목록: /api/event-expenses/vendors 우선, 실패 시 /api/vendors fallback
+    // 주의: /api/vendors는 배열을 직접 반환 (vendorData 자체가 배열)
+    let allVendors = allVendorData.vendors || []
+    if (allVendors.length === 0) {
+      // /api/vendors 응답은 배열 직접 반환
+      const fallbackList = Array.isArray(vendorData) ? vendorData : (vendorData.vendors || [])
+      if (fallbackList.length > 0) {
+        allVendors = fallbackList
+        console.warn('[EventModal] /api/event-expenses/vendors 비어있음 — /api/vendors fallback 사용')
+      }
+    }
+    window._eventAllVendors = allVendors
+
+    // 기존 지출 내역 로드
+    window._eventExpenseItems = (data.items || []).map(it => ({
+      id: it.id,
+      rowVendorId: it.row_vendor_id || null,     // ★ 실제 구매 업체 ID
+      vendorName: it.vendor_display_name || it.vendor_name || '',
+      itemName: it.item_name || '',
+      amount: it.amount || '',
+      memo: it.memo || ''
+    }))
+
+    // 기존 데이터 없으면 빈 row 1개 기본 제공
+    if (window._eventExpenseItems.length === 0) {
+      window._eventExpenseItems = [{
+        id: null,
+        rowVendorId: null,
+        vendorName: '',
+        itemName: '',
+        amount: '',
+        memo: ''
+      }]
+    }
+
+    window._eventExpenseVendorName = vendor ? vendor.name : ''
+    renderEventExpenseModal(modal, vendor, dateStr, window._eventExpenseItems)
+  } catch(e) {
+    modal.innerHTML = '<div class="bg-white rounded-xl shadow-2xl p-8 text-center text-red-500">오류가 발생했습니다.</div>'
+    console.error('openEventExpenseModal error:', e)
+  }
+}
+
+// ── 업체 드롭다운 옵션 HTML 생성 ────────────────────────────────
+function buildVendorOptions(selectedId) {
+  const vendors = window._eventAllVendors || []
+  // 카테고리 한글 레이블
+  const catLabel = { food:'식재료', supply:'소모품', event:'이벤트', card:'카드', major:'주요', general:'일반',
+    meat:'육류', organic:'친환경', fruit:'과일', delivery:'배송', other:'기타', market:'시장', seafood:'수산' }
+  // 카테고리별 그룹핑
+  const groups = {}
+  vendors.forEach(function(v) {
+    const g = catLabel[v.category] || v.category || '기타'
+    if (!groups[g]) groups[g] = []
+    groups[g].push(v)
+  })
+  let html = '<option value="">-- 업체 선택 --</option>'
+  Object.keys(groups).forEach(function(g) {
+    html += '<optgroup label="' + g + '">'
+    groups[g].forEach(function(v) {
+      const sel = (String(v.id) === String(selectedId)) ? ' selected' : ''
+      html += '<option value="' + v.id + '" data-name="' + v.name.replace(/"/g,'&quot;') + '"' + sel + '>' + v.name + '</option>'
+    })
+    html += '</optgroup>'
+  })
+  return html
+}
+
+function renderEventExpenseModal(modal, vendor, dateStr, items) {
+  const vendorName = vendor ? vendor.name : '이벤트 업체'
+  const [y, m, d] = dateStr.split('-')
+  const dateLabel = y + '년 ' + parseInt(m) + '월 ' + parseInt(d) + '일'
+
+  const rowsHtml = items.map((it, idx) => renderEventExpenseRow(it, idx)).join('')
+
+  modal.innerHTML =
+    '<div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">' +
+    // ── 헤더 ──
+    '<div class="sticky top-0 bg-white z-10 px-6 py-4 border-b border-gray-100 flex items-center justify-between">' +
+      '<div>' +
+        '<h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">' +
+          '<span class="inline-flex items-center justify-center w-8 h-8 rounded-full text-white text-sm font-bold" style="background:#ea580c">이</span>' +
+          vendorName + ' 이벤트 지출 입력' +
+        '</h2>' +
+        '<p class="text-sm text-gray-500 mt-0.5">' + dateLabel +
+          '<span class="ml-2 text-xs px-2 py-0.5 rounded" style="background:#fff7ed;color:#c2410c">업체 원금은 별도 유지 · 이 금액은 KPI에서만 차감</span>' +
+        '</p>' +
+      '</div>' +
+      '<button onclick="closeEventExpenseModal()" class="text-gray-400 hover:text-gray-600 text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100">✕</button>' +
+    '</div>' +
+    // ── 테이블 ──
+    '<div class="px-6 py-4">' +
+      '<div class="overflow-x-auto">' +
+        '<table class="w-full text-sm" id="eventExpenseTable">' +
+          '<thead>' +
+            '<tr class="text-xs text-gray-500 border-b border-gray-100">' +
+              '<th class="pb-2 text-left font-medium w-6">#</th>' +
+              '<th class="pb-2 text-left font-medium" style="min-width:140px">구매 업체 <span class="text-orange-600">*</span></th>' +
+              '<th class="pb-2 text-left font-medium" style="min-width:110px">사용 품목 <span class="text-orange-600">*</span></th>' +
+              '<th class="pb-2 text-right font-medium" style="min-width:90px">금액(원) <span class="text-orange-600">*</span></th>' +
+              '<th class="pb-2 text-left font-medium" style="min-width:80px">비고</th>' +
+              '<th class="pb-2 w-6"></th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody id="eventExpenseRows">' + rowsHtml + '</tbody>' +
+        '</table>' +
+      '</div>' +
+      '<button onclick="addEventExpenseRow()" class="mt-3 text-sm flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed hover:bg-orange-50 transition-colors" style="color:#ea580c;border-color:#ea580c">' +
+        '<span class="text-base leading-none">+</span> 업체/품목 추가' +
+      '</button>' +
+    '</div>' +
+    // ── 푸터 ──
+    '<div class="px-6 py-4 border-t border-gray-100 flex items-center justify-between">' +
+      '<div class="text-sm text-gray-600">' +
+        '이벤트 합계: <span id="eventExpenseTotal" class="font-bold text-base" style="color:#ea580c">0원</span>' +
+      '</div>' +
+      '<div class="flex gap-2">' +
+        '<button onclick="closeEventExpenseModal()" class="btn btn-secondary px-4 py-2 text-sm">취소</button>' +
+        '<button onclick="saveEventExpenses()" class="btn text-white px-5 py-2 text-sm font-semibold rounded-lg transition-colors" style="background:#ea580c">저장</button>' +
+      '</div>' +
+    '</div>' +
+    '</div>'
+
+  updateEventExpenseTotal()
+}
+
+// ── Row HTML 렌더링 ──────────────────────────────────────────────
+// 항목: 구매업체(드롭다운) | 사용 품목 | 금액 | 비고 | 삭제
+function renderEventExpenseRow(item, idx) {
+  const escapedItemName = (item.itemName || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;')
+  const escapedMemo = (item.memo || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;')
+  const vendorOptions = buildVendorOptions(item.rowVendorId)
+
+  return '<tr class="event-expense-row border-b border-gray-50" data-idx="' + idx + '">' +
+    // # 번호
+    '<td class="py-2 pr-1 text-gray-400 text-xs">' + (idx + 1) + '</td>' +
+    // 구매 업체 드롭다운
+    '<td class="py-2 pr-2">' +
+      '<select class="ee-vendor-select w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 bg-white" ' +
+        'style="--tw-ring-color:#ea580c;min-width:130px" data-idx="' + idx + '" ' +
+        'onchange="onEeVendorChange(this,' + idx + ')">' +
+        vendorOptions +
+      '</select>' +
+    '</td>' +
+    // 사용 품목
+    '<td class="py-2 pr-2">' +
+      '<input type="text" class="ee-itemName w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1" ' +
+        'style="--tw-ring-color:#ea580c;min-width:100px" value="' + escapedItemName + '" placeholder="사용 품목" data-idx="' + idx + '">' +
+    '</td>' +
+    // 금액
+    '<td class="py-2 pr-2">' +
+      '<input type="text" inputmode="numeric" pattern="[0-9,]*" class="ee-amount w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 text-right" ' +
+        'style="--tw-ring-color:#ea580c;min-width:85px" value="' + (item.amount ? Number(item.amount).toLocaleString() : '') + '" placeholder="0" data-idx="' + idx + '" ' +
+        'oninput="onEeAmountInput(this)">' +
+    '</td>' +
+    // 비고
+    '<td class="py-2 pr-2">' +
+      '<input type="text" class="ee-memo w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1" ' +
+        'style="--tw-ring-color:#ea580c;min-width:75px" value="' + escapedMemo + '" placeholder="비고" data-idx="' + idx + '">' +
+    '</td>' +
+    // 삭제 버튼
+    '<td class="py-2">' +
+      '<button onclick="removeEventExpenseRow(' + idx + ')" class="text-gray-300 hover:text-red-400 w-6 h-6 flex items-center justify-center rounded transition-colors text-lg leading-none">×</button>' +
+    '</td>' +
+    '</tr>'
+}
+
+// ── 업체 드롭다운 변경 핸들러 ────────────────────────────────────
+window.onEeVendorChange = function(sel, idx) {
+  if (!window._eventExpenseItems[idx]) return
+  const opt = sel.options[sel.selectedIndex]
+  window._eventExpenseItems[idx].rowVendorId = sel.value ? Number(sel.value) : null
+  window._eventExpenseItems[idx].vendorName = opt ? (opt.getAttribute('data-name') || '') : ''
+}
+
+// ── 금액 입력 핸들러: 숫자+콤마 포맷 ────────────────────────────
+window.onEeAmountInput = function(input) {
+  const raw = input.value.replace(/,/g, '')
+  const n = parseInt(raw) || 0
+  input.value = n > 0 ? n.toLocaleString() : ''
+  updateEventExpenseTotal()
+}
+
+// ── 합계 실시간 갱신 ─────────────────────────────────────────────
+function updateEventExpenseTotal() {
+  const totalEl = document.getElementById('eventExpenseTotal')
+  if (!totalEl) return
+  const rows = document.querySelectorAll('#eventExpenseRows .event-expense-row')
+  let total = 0
+  rows.forEach(function(row) {
+    const amtEl = row.querySelector('.ee-amount')
+    if (amtEl) total += parseInt((amtEl.value || '').replace(/,/g, '')) || 0
+  })
+  totalEl.textContent = total.toLocaleString() + '원'
+}
+
+// ── DOM → 상태 동기화 ────────────────────────────────────────────
+function syncEventExpenseItemsFromDOM() {
+  const rows = document.querySelectorAll('#eventExpenseRows .event-expense-row')
+  rows.forEach(function(row) {
+    const idx = parseInt(row.getAttribute('data-idx'))
+    if (!window._eventExpenseItems[idx]) return
+    const selEl = row.querySelector('.ee-vendor-select')
+    const itEl  = row.querySelector('.ee-itemName')
+    const amEl  = row.querySelector('.ee-amount')
+    const meEl  = row.querySelector('.ee-memo')
+    if (selEl) {
+      window._eventExpenseItems[idx].rowVendorId = selEl.value ? Number(selEl.value) : null
+      const opt = selEl.options[selEl.selectedIndex]
+      window._eventExpenseItems[idx].vendorName = opt ? (opt.getAttribute('data-name') || '') : ''
+    }
+    if (itEl) window._eventExpenseItems[idx].itemName = itEl.value
+    if (amEl) window._eventExpenseItems[idx].amount = parseInt((amEl.value || '').replace(/,/g, '')) || ''
+    if (meEl) window._eventExpenseItems[idx].memo = meEl.value
+  })
+}
+
+// ── Row 추가 ─────────────────────────────────────────────────────
+window.addEventExpenseRow = function() {
+  syncEventExpenseItemsFromDOM()
+  window._eventExpenseItems.push({
+    id: null, rowVendorId: null, vendorName: '', itemName: '', amount: '', memo: ''
+  })
+  const tbody = document.getElementById('eventExpenseRows')
+  if (!tbody) return
+  const idx = window._eventExpenseItems.length - 1
+  const tr = document.createElement('tr')
+  tr.className = 'event-expense-row border-b border-gray-50'
+  tr.setAttribute('data-idx', String(idx))
+  tr.innerHTML = renderEventExpenseRow(window._eventExpenseItems[idx], idx)
+    .replace(/^<tr[^>]*>/, '').replace(/<\/tr>$/, '')
+  tbody.appendChild(tr)
+  updateEventExpenseTotal()
+  // 새 row 업체 드롭다운에 포커스
+  const newSel = tr.querySelector('.ee-vendor-select')
+  if (newSel) newSel.focus()
+}
+
+// ── Row 삭제 ─────────────────────────────────────────────────────
+window.removeEventExpenseRow = function(idx) {
+  syncEventExpenseItemsFromDOM()
+  const item = window._eventExpenseItems[idx]
+  if (item && item.id) window._eventExpenseDeletedIds.push(item.id)
+  window._eventExpenseItems.splice(idx, 1)
+  // 최소 1개 유지
+  if (window._eventExpenseItems.length === 0) {
+    window._eventExpenseItems = [{ id: null, rowVendorId: null, vendorName: '', itemName: '', amount: '', memo: '' }]
+  }
+  const modal = document.getElementById('eventExpenseModal')
+  if (modal) renderEventExpenseModal(modal, { name: window._eventExpenseVendorName || '' }, window._eventExpenseDate, window._eventExpenseItems)
+}
+
+// ── 저장 ─────────────────────────────────────────────────────────
+window.saveEventExpenses = async function() {
+  syncEventExpenseItemsFromDOM()
+  // 필수: 업체 선택 + 사용 품목 + 금액 > 0
+  const items = window._eventExpenseItems.filter(function(it) {
+    const amt = parseInt(String(it.amount || '').replace(/,/g, '')) || 0
+    return amt > 0 && it.itemName
+  })
+  const deletedIds = window._eventExpenseDeletedIds || []
+
+  // items도 없고 deletedIds도 없으면 입력 없음 경고
+  if (items.length === 0 && deletedIds.length === 0) {
+    showToast('구매 업체, 사용 품목, 금액을 입력해주세요.', 'warning')
+    return
+  }
+  // items가 있을 때만 업체 미선택 경고 (삭제만 하는 경우엔 생략)
+  if (items.length > 0) {
+    const noVendor = items.filter(it => !it.rowVendorId)
+    if (noVendor.length > 0) {
+      showToast('구매 업체를 선택해주세요. (' + noVendor.length + '개 미선택)', 'warning')
+      return
+    }
+  }
+  try {
+    const payload = {
+      vendorId: window._eventExpenseVendorId,
+      date: window._eventExpenseDate,
+      items: items.map(function(it) {
+        return {
+          id: it.id || null,
+          rowVendorId: it.rowVendorId || null,
+          vendorName: it.vendorName || '',
+          itemName: it.itemName,
+          amount: parseInt(String(it.amount || '').replace(/,/g, '')) || 0,
+          memo: it.memo || ''
+        }
+      }),
+      deletedIds: deletedIds
+    }
+    const res = await fetch('/api/event-expenses/save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + (App.token || localStorage.getItem('token') || '')
+      },
+      body: JSON.stringify(payload)
+    })
+    const data = await res.json()
+    if (data.success) {
+      showToast(items.length === 0 ? '삭제되었습니다.' : '저장되었습니다.', 'success')
+      // ── 캐시 맵 갱신 ──
+      if (!window._eventDailyMap) window._eventDailyMap = {}
+      if (!window._eventDailyCountMap) window._eventDailyCountMap = {}
+      const vendorId = window._eventExpenseVendorId
+      const dateStr  = window._eventExpenseDate
+      const key      = vendorId + '_' + dateStr
+      const newTotal = data.dayTotal  || 0          // 서버 집계 금액
+      const newCount = data.itemCount ?? items.length  // 서버 실제 건수 우선
+      window._eventDailyMap[key]      = newTotal
+      window._eventDailyCountMap[key] = newCount
+      // ── 발주 화면 이벤트 버튼 DOM 즉시 갱신 (모달 닫기 전에 실행) ──
+      const evBtns = document.querySelectorAll(
+        `.event-expense-btn[data-vendor="${vendorId}"][data-date="${dateStr}"]`
+      )
+      evBtns.forEach(btn => {
+        const hasData = newTotal > 0
+        btn.style.background  = '#fff7ed'
+        btn.style.borderColor = hasData ? '#ea580c' : '#fed7aa'
+        btn.style.color       = hasData ? '#c2410c' : '#f97316'
+        btn.innerHTML =
+          `<div style="font-size:9px;color:#ea580c;font-weight:600;">이벤트</div>` +
+          (hasData
+            ? `<div style="font-weight:700">${newTotal.toLocaleString()}</div><div style="font-size:9px;color:#c2410c;">${newCount}건</div>`
+            : `<div style="color:#fdba74">+ 상세입력</div>`)
+      })
+      // ── 이벤트 섹션 카드 버튼 (id=ev-btn-VID-DATE 방식) 즉시 갱신 ──
+      const evCardBtn = document.getElementById(`ev-btn-${vendorId}-${dateStr}`)
+      if (evCardBtn) {
+        const hasData = newTotal > 0
+        evCardBtn.style.borderColor = hasData ? '#ea580c' : '#fed7aa'
+        evCardBtn.style.background  = hasData ? '#fff7ed' : '#fffbf5'
+        evCardBtn.style.color       = hasData ? '#c2410c' : '#f97316'
+        evCardBtn.style.fontWeight  = hasData ? '700' : '400'
+        evCardBtn.textContent       = hasData ? `${newTotal.toLocaleString()}원 (${newCount}건)` : '+ 상세입력'
+        // 카드 컨테이너 테두리도 갱신
+        const evCard = document.getElementById(`ev-card-${vendorId}-${dateStr}`)
+        if (evCard) evCard.style.borderColor = hasData ? '#ea580c80' : '#e5e7eb'
+      }
+      // ── 일별 합계 셀 갱신 ──
+      if (typeof updateDayTotal === 'function') updateDayTotal(dateStr)
+      if (typeof updateOrderSidebarTotals === 'function') updateOrderSidebarTotals()
+      // ── 마지막으로 모달 닫기 ──
+      closeEventExpenseModal()
+    } else {
+      showToast('저장 실패', 'error')
+    }
+  } catch(e) {
+    console.error('saveEventExpenses error:', e)
+    showToast('저장 중 오류가 발생했습니다.', 'error')
+  }
+}
+
+window.closeEventExpenseModal = function() {
+  const modal = document.getElementById('eventExpenseModal')
+  if (modal) modal.remove()
+}
+
+// 이벤트 위임: 이벤트 모달 내 입력 변경 → 합계 실시간 업데이트 (fallback)
+document.addEventListener('input', function(e) {
+  if (e.target && e.target.classList && e.target.classList.contains('ee-amount')) {
+    updateEventExpenseTotal()
+  }
+})
+
+
+// ════════════════════════════════════════════════════════════════
 // 지출결의서 페이지
 // ════════════════════════════════════════════════════════════════
 async function renderExpenseDoc() {
@@ -34786,15 +41361,27 @@ async function renderExpenseDoc() {
           <i class="fas fa-plus mr-1"></i>지출 입력
         </button>
         <button onclick="window.print()" class="btn btn-secondary btn-sm">
-          <i class="fas fa-print mr-1"></i>인쇄/PDF
+          <i class="fas fa-print mr-1"></i>인쇄 / PDF 저장
         </button>
-        <button onclick="exportExpenseDocExcel()" class="btn btn-primary btn-sm">
+        <button onclick="exportExpenseDocExcel()" class="btn btn-primary btn-sm no-print">
           <i class="fas fa-file-excel mr-1"></i>엑셀 다운로드
         </button>
       </div>
     </div>
 
     <!-- 지출결의서 본문 -->
+    <style>
+    @media print {
+      .no-print, nav, .bottom-bar, .month-nav, #toastContainer { display:none!important }
+      body { background:white!important; margin:0!important }
+      * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important }
+      #expenseDocBody { display:block!important }
+      .rounded-2xl, .rounded-xl, .rounded-lg { page-break-inside:avoid!important; break-inside:avoid!important }
+      table { page-break-inside:auto!important; width:100%!important }
+      tr { page-break-inside:avoid!important }
+      thead { display:table-header-group!important }
+    }
+    </style>
     <div id="expenseDocBody" style="print-color-adjust:exact">
       <!-- 제목 -->
       <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-4">
@@ -34823,6 +41410,27 @@ async function renderExpenseDoc() {
           </div>
         </div>
 
+        <!-- 법인카드 식단가 포함 여부 안내 -->
+        <div class="mb-3 p-3 rounded-xl border" style="background:#faf5ff;border-color:#ddd6fe">
+          <div class="flex flex-wrap gap-2 items-start">
+            <div>
+              <span class="text-xs font-bold text-purple-700"><i class="fas fa-info-circle mr-1"></i>법인카드 식단가 반영 기준</span>
+              <div class="text-xs text-purple-600 mt-1">
+                • <strong>대표 식단가</strong>: 법인카드 금액 <strong>미포함</strong> (식재료비만 반영)<br>
+                • <strong>운영반영 식단가</strong>: 법인카드 금액 <strong>포함</strong> (전체 발주액 반영)<br>
+                • 법인카드 중 <em>식재료 구분</em>은 식단가에 영향을 줄 수 있습니다
+              </div>
+            </div>
+            <div class="ml-auto text-right">
+              <div class="text-xs text-gray-500">법인카드 목표</div>
+              <div class="text-sm font-bold text-purple-700">${(cardData?.cardBudget || 0).toLocaleString()}원</div>
+              <div class="text-xs ${monthTotal > (cardData?.cardBudget||0) && (cardData?.cardBudget||0) > 0 ? 'text-red-500 font-semibold' : 'text-gray-400'}">
+                ${(cardData?.cardBudget||0) > 0 ? `사용률 ${Math.round(monthTotal/(cardData.cardBudget)*100)}%` : '예산 미설정'}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 구분별 소계 -->
         ${Object.values(bySubtype).length > 0 ? `
         <div class="mb-4">
@@ -34837,7 +41445,7 @@ async function renderExpenseDoc() {
               <span class="text-sm font-bold text-purple-700">${st.total.toLocaleString()}원</span>
             </div>`).join('')}
           </div>
-        </div>` : ''}
+        </div>` : `<div class="mb-4 text-xs text-gray-400 text-center py-2"><i class="fas fa-info-circle mr-1"></i>구분 데이터 없음</div>`}
 
         <!-- 상세 내역 테이블 -->
         <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-list-alt text-purple-400 mr-1"></i>상세 사용 내역</h3>
@@ -34885,10 +41493,20 @@ async function renderExpenseDoc() {
             </tfoot>
           </table>
         </div>` : `
-        <div class="text-center py-8 text-gray-400">
-          <i class="fas fa-credit-card text-3xl mb-3 text-gray-200"></i>
-          <div class="font-semibold">이번 달 지출 내역이 없습니다</div>
-          <div class="text-sm mt-1">+ 지출 입력 버튼으로 새 내역을 추가하세요</div>
+        <div class="text-center py-10 text-gray-400">
+          <i class="fas fa-credit-card" style="font-size:40px;color:#e9d5ff;margin-bottom:12px;display:block"></i>
+          <div class="font-bold text-gray-600 text-base mb-1">이번 달 법인카드 지출 내역이 없습니다</div>
+          <div class="text-sm text-gray-400 mb-4">아직 입력된 지출 내역이 없습니다. 아래 방법으로 추가하실 수 있습니다.</div>
+          <div class="inline-block text-left text-xs text-gray-500 bg-purple-50 border border-purple-100 rounded-xl px-5 py-3 mb-4">
+            <div class="font-bold text-purple-700 mb-2"><i class="fas fa-info-circle mr-1"></i>지출 입력 안내</div>
+            <div class="flex items-start gap-2 mb-1"><span class="font-bold text-purple-500">①</span> 우측 상단 <strong>지출 입력</strong> 버튼을 눌러 건별 입력</div>
+            <div class="flex items-start gap-2 mb-1"><span class="font-bold text-purple-500">②</span> 발주 입력 화면에서 법인카드 업체 발주 시 자동 집계</div>
+            <div class="flex items-start gap-2"><span class="font-bold text-purple-500">③</span> 입력된 내역은 이 보고서에 자동으로 반영됩니다</div>
+          </div>
+          <br>
+          <button onclick="openAddExpenseModal()" class="btn btn-primary btn-sm">
+            <i class="fas fa-plus mr-1"></i>첫 지출 입력하기
+          </button>
         </div>`}
 
         <!-- 결재란 -->
@@ -35053,8 +41671,9 @@ window.exportExpenseDocExcel = async function() {
   }
 
   if (typeof XLSX === 'undefined') {
-    showToast('엑셀 라이브러리 로딩 중입니다. 잠시 후 다시 시도해주세요.', 'error')
-    return
+    showToast('엑셀 라이브러리 로딩 중...', 'info')
+    const ok = await _loadXlsx()
+    if (!ok || typeof XLSX === 'undefined') { showToast('라이브러리 로드 실패. 잠시 후 다시 시도해주세요.', 'error'); return }
   }
 
   const mm = String(month).padStart(2, '0')
@@ -35802,13 +42421,23 @@ function renderCeoKpi(d) {
       targetPrice: v.targetPrice || 0
     }))
 
+  // 대표 식단가 KPI 추출
+  const avgRepPrice  = d.avgRepresentativeMealPrice || d.avgMealPrice || 0
+  const avgOperPrice = d.avgOperatingMealPrice || d.avgMealPrice || 0
+  const avgTargetP   = d.avgTargetMealPrice || 0
+  const opDiffKpi    = (avgRepPrice>0 && avgOperPrice>0) ? avgOperPrice - avgRepPrice : 0
+  const repOverKpi   = avgTargetP>0 && avgRepPrice>0 ? avgRepPrice - avgTargetP : 0
+  const repIsOverKpi = repOverKpi > 0
+  const repIsWarnKpi = !repIsOverKpi && avgRepPrice >= avgTargetP*0.9 && avgTargetP>0
+
   const cards = [
     { icon:'fa-hospital',      color:'#4f46e5', label:'운영 병원',     value:`${d.hospitalCount||0}개`,          sub:'' },
     { icon:'fa-coins',         color:'#0891b2', label:'그룹 총 예산',   value:`${fmtW(d.totalBudget)}원`,        sub:'' },
     { icon:'fa-shopping-cart', color:'#059669', label:'그룹 총 사용',   value:`${fmtW(d.totalUsed)}원`,          sub:'' },
     { icon:'fa-percent',       color: d.avgBudgetPct>=90?'#dc2626':d.avgBudgetPct>=80?'#f59e0b':'#059669',
                                               label:'평균 예산 사용률', value:`${d.avgBudgetPct||0}%`,           sub:'', danger: d.avgBudgetPct>=90, warn: d.avgBudgetPct>=80 },
-    { icon:'fa-utensils',      color:'#7c3aed', label:'평균 식단가',    value:`${fmtKo(d.avgMealPrice)}원`,      sub:'' },
+    { icon:'fa-utensils',      color: repIsOverKpi?'#dc2626':repIsWarnKpi?'#d97706':'#1d4ed8',
+                                              label:'대표 식단가 (★기준)', value:`${fmtKo(avgRepPrice)}원`,    sub: avgTargetP>0?(repIsOverKpi?`목표 +${Math.abs(Math.round(repOverKpi)).toLocaleString()}원 초과`:repIsWarnKpi?`목표 근접`:`목표 내 절감`):'', danger: repIsOverKpi, warn: repIsWarnKpi },
     { icon:'fa-exclamation-triangle', color:'#dc2626', label:'예산 위험 병원', value:`${d.dangerBudgetCount||0}개`, sub:'90% 초과', danger: d.dangerBudgetCount>0 },
     { icon:'fa-chart-line',    color:'#f59e0b', label:'식단가 위험 병원', value:`${d.dangerMealCount||0}개`,     sub:'목표 110%↑', warn: d.dangerMealCount>0 },
     { icon:'fa-clipboard-check', color:'#6b7280', label:'검수 미완료 병원', value:`${d.pendingInspectCount||0}개`, sub:'확인 필요', warn: d.pendingInspectCount>0 }
@@ -35822,10 +42451,61 @@ function renderCeoKpi(d) {
       <div class="min-w-0">
         <div class="text-xs text-gray-500 mb-0.5">${c.label}</div>
         <div class="text-lg font-bold" style="color:${c.color}">${c.value}</div>
-        ${c.sub ? `<div class="text-xs text-gray-400">${c.sub}</div>` : ''}
+        ${c.sub ? `<div class="text-xs" style="color:${c.color};">${c.sub}</div>` : ''}
       </div>
     </div>
   `).join('')
+
+  // 대표 식단가 흐름 요약 배너 (CEO KPI 하단)
+  const dietFlowBannerHtml = (avgRepPrice > 0) ? `
+    <div class="col-span-full mt-1" style="background:linear-gradient(135deg,#eff6ff,#faf5ff);border:1.5px solid #bfdbfe;border-radius:12px;padding:12px 14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <span style="background:#1d4ed8;color:white;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">★ 대표 식단가 흐름</span>
+        <span style="font-size:11px;font-weight:700;color:#1e3a5f">그룹 전체 평균 · 값→이유→판단</span>
+        ${repIsOverKpi ? `<span style="font-size:10px;color:white;background:#dc2626;font-weight:700;padding:2px 8px;border-radius:4px">⚠ 목표 초과</span>` : ''}
+      </div>
+      <div style="display:flex;align-items:stretch;gap:6px;flex-wrap:wrap">
+        <!-- 대표 식단가 (기준, 강조) -->
+        <div style="background:${repIsOverKpi?'#fef2f2':repIsWarnKpi?'#fffbeb':'#eff6ff'};border:2px solid ${repIsOverKpi?'#fca5a5':repIsWarnKpi?'#fde68a':'#93c5fd'};border-radius:10px;padding:8px 12px;flex:1.2;min-width:120px">
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+            <span style="background:${repIsOverKpi?'#dc2626':repIsWarnKpi?'#d97706':'#1d4ed8'};color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px">★ 기준</span>
+            <span style="font-size:10px;font-weight:700;color:${repIsOverKpi?'#dc2626':repIsWarnKpi?'#d97706':'#1d4ed8'}">대표 식단가</span>
+          </div>
+          <div style="font-size:20px;font-weight:900;color:${repIsOverKpi?'#dc2626':repIsWarnKpi?'#d97706':'#1d4ed8'};line-height:1">${fmtKo(avgRepPrice)}<span style="font-size:10px;font-weight:400;color:#6b7280">원/식</span></div>
+          <div style="font-size:9px;color:#64748b;margin-top:3px">식재료비 기준 · 소모품·운영비 제외</div>
+          ${avgTargetP>0?`<div style="margin-top:4px;font-size:10px;font-weight:700;color:${repIsOverKpi?'#dc2626':'#059669'}">
+            ${repIsOverKpi?`▲ 목표 +${Math.abs(Math.round(repOverKpi)).toLocaleString()}원 초과`:repIsWarnKpi?`⚠ 목표 근접`:`✓ ${Math.abs(Math.round(repOverKpi)).toLocaleString()}원 절감`}
+            <span style="font-size:9px;color:#9ca3af;margin-left:3px">목표 ${fmtKo(avgTargetP)}원</span>
+          </div>`:''}
+        </div>
+        ${opDiffKpi !== 0 ? `
+        <!-- 화살표 + 운영비 영향 -->
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:0 3px;flex-shrink:0;opacity:.8">
+          <div style="font-size:14px;color:#94a3b8">→</div>
+          <div style="font-size:10px;font-weight:700;color:${opDiffKpi>0?'#7c3aed':'#059669'};background:${opDiffKpi>0?'#f3e8ff':'#dcfce7'};padding:2px 5px;border-radius:4px">
+            ${opDiffKpi>0?'+':''}${Math.round(opDiffKpi).toLocaleString()}원
+          </div>
+          <div style="font-size:8px;color:#9ca3af;text-align:center;line-height:1.3">운영비<br>영향</div>
+        </div>
+        <!-- 운영반영 식단가 (보조) -->
+        <div style="background:#faf5ff;border:1px solid #ddd6fe;border-radius:10px;padding:8px 12px;flex:1;min-width:110px;opacity:.85">
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+            <span style="color:#7c3aed;border:1px solid #c4b5fd;font-size:8px;font-weight:600;padding:1px 4px;border-radius:3px">참고</span>
+            <span style="font-size:10px;font-weight:600;color:#7c3aed">운영반영</span>
+          </div>
+          <div style="font-size:15px;font-weight:700;color:#7c3aed;line-height:1">${fmtKo(avgOperPrice)}<span style="font-size:9px;font-weight:400;color:#9ca3af">원/식</span></div>
+          <div style="font-size:9px;color:#8b5cf6;margin-top:3px">전체 발주액 ÷ 전체 식수</div>
+        </div>` : ''}
+      </div>
+      <!-- 자동 해석 문장 -->
+      <div style="margin-top:7px;background:#f8fafc;border-left:3px solid ${repIsOverKpi?'#dc2626':repIsWarnKpi?'#d97706':'#3b82f6'};border-radius:0 7px 7px 0;padding:6px 10px;font-size:10px;color:#374151;line-height:1.6">
+        ${opDiffKpi>0?`운영비 반영으로 대표 식단가 대비 <strong>+${Math.round(opDiffKpi).toLocaleString()}원 상승</strong>했습니다. `:''}
+        ${repIsOverKpi?`<span style="color:#dc2626">⚠ 대표 식단가가 목표 대비 <strong>+${Math.abs(Math.round(repOverKpi)).toLocaleString()}원 초과</strong> — 그룹 전체 식재료비 점검이 필요합니다.</span>`:
+          repIsWarnKpi?`<span style="color:#d97706">대표 식단가가 목표에 근접합니다 (여유 ${Math.abs(Math.round(repOverKpi)).toLocaleString()}원) — 모니터링이 필요합니다.</span>`:
+          avgTargetP>0?`<span style="color:#059669">대표 식단가 목표 범위 내 — ${Math.abs(Math.round(repOverKpi)).toLocaleString()}원 절감 운영 중입니다.</span>`:
+          `그룹 전체 평균 대표 식단가입니다. 병원별 카드에서 상세 흐름을 확인하세요.`}
+      </div>
+    </div>` : ''
 
   const catCardsHtml = catItems.length > 0 ? `
     <div class="bg-white rounded-xl border border-gray-100 p-4 col-span-full">
@@ -35848,6 +42528,7 @@ function renderCeoKpi(d) {
   return `
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       ${mainCards}
+      ${dietFlowBannerHtml}
       ${catCardsHtml}
     </div>
   `
@@ -35923,20 +42604,48 @@ function renderCeoHospitalCards(hospitals) {
           </div>
         </div>
 
-        <!-- 식단가 -->
-        <div class="flex items-center justify-between text-xs mb-1">
-          <span class="text-gray-500">전체 식단가</span>
-          <span class="font-bold" style="color:${mpColor}">${fmtKo(h.mealPrice)}원 ${mpPct!==null?`<span class="text-gray-400">(목표${mpPct}%)</span>`:''} <span class="text-gray-400 font-normal">${fmtKo(h.totalMeals)}식</span></span>
+        <!-- 식단가 흐름 구조 (CEO 병원 카드) -->
+        <div class="mb-2">
+          <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+            <span style="background:#1d4ed8;color:white;font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px">★ 기준</span>
+            <span style="font-size:9px;font-weight:700;color:#374151">대표 식단가 흐름</span>
+          </div>
+          ${(() => {
+            const dpC = { representative: h.mealPriceRepresentative||h.mealPrice||0, operating: h.mealPrice||0, patient: 0, totalMeals: h.totalMeals||0 }
+            // CEO API: mealPrice = representative (식재료 기준), operatingMealPrice 별도 필드 있으면 사용
+            if (h.mealPriceRepresentative) { dpC.representative = h.mealPriceRepresentative; dpC.operating = h.mealPrice||0 }
+            return DIET_CALC.dietPriceFlowHtml(dpC, null, {
+              targetPrice: h.targetMealPrice || 0,
+              totalMeals: h.totalMeals || 0,
+              compact: true,
+              showPatient: false,
+              context: 'executive'
+            })
+          })()}
         </div>
         ${catMpHtml ? `<div class="text-xs flex flex-wrap gap-2 mb-1">${catMpHtml}</div>` : ''}
 
-        <!-- 기타 지표 -->
-        <div class="flex gap-3 text-xs text-gray-500 mt-1">
-          <span><i class="fas fa-users mr-0.5"></i>총 ${fmtKo(h.totalMeals)}식</span>
+        <!-- 기타 지표 + 초과 원인 -->
+        <div class="flex gap-3 text-xs text-gray-500 mt-1 flex-wrap">
+          <span><i class="fas fa-users mr-0.5"></i>${fmtKo(h.totalMeals)}식</span>
           <span><i class="fas fa-shopping-cart mr-0.5"></i>오늘 ${fmtMan(h.todayOrder)}원</span>
           ${h.pendingInspections>0?`<span class="text-yellow-600"><i class="fas fa-clipboard mr-0.5"></i>검수${h.pendingInspections}건</span>`:''}
-          ${h.vendorConcentration>=40?`<span class="text-orange-500"><i class="fas fa-store mr-0.5"></i>집중도${h.vendorConcentration}%</span>`:''}
+          ${h.vendorConcentration>=40?`<span class="text-orange-500 font-semibold"><i class="fas fa-store mr-0.5"></i>공급 집중도 ${h.vendorConcentration}%</span>`:''}
         </div>
+        ${(() => {
+          // 초과 원인 요약 (병원장용 판단 문구)
+          const causes = []
+          if (h.mealGrowthPct && Math.abs(h.mealGrowthPct) >= 5)
+            causes.push(`식수 ${h.mealGrowthPct > 0 ? '+' : ''}${h.mealGrowthPct}%`)
+          if (h.vendorConcentration >= 50)
+            causes.push(`공급 집중 ${h.vendorConcentration}%`)
+          if ((h.budgetPct||0) >= 100)
+            causes.push(`예산 초과 ${h.budgetPct}%`)
+          return causes.length > 0 ? `
+            <div style="margin-top:5px;padding:4px 8px;background:#fff7ed;border:1px solid #fed7aa;border-radius:7px;font-size:10px;color:#c2410c">
+              <i class="fas fa-exclamation-circle mr-1"></i>초과 원인: ${causes.join(' · ')}
+            </div>` : ''
+        })()}
         ${alertHtml}
       </div>
     `
@@ -36253,7 +42962,8 @@ function renderExecStaffLabor(d) {
       <div class="text-center text-gray-400 py-8 text-sm">데이터를 불러오는 중...</div>
     </div>`
 
-  const { staffSummary: ss, workSummary: ws, externalSummary: es, laborCost: lc, warnings } = d
+  const { staffSummary: ss, workSummary: ws, externalSummary: es, laborCost: lc, warnings, isCurrentMonth, todayKST } = d
+  const todayLabel = todayKST ? todayKST.slice(5).replace('-','/') : ''
 
   // 인건비 비율 계산
   const totalLC = lc.total || 1
@@ -36343,10 +43053,12 @@ function renderExecStaffLabor(d) {
             <div class="text-center">
               <p class="text-lg font-bold text-amber-600">${fmt(ws.totalOtDays)}</p>
               <p class="text-xs text-gray-500">OT 발생</p>
+              ${isCurrentMonth ? `<p class="text-xs text-amber-500 mt-0.5"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmt(ws.totalOtDaysToday||0)}건</p>` : ''}
             </div>
             <div class="text-center">
               <p class="text-lg font-bold text-amber-600">${fmt(ws.totalOtHours)}<span class="text-xs">h</span></p>
               <p class="text-xs text-gray-500">OT 시간</p>
+              ${isCurrentMonth ? `<p class="text-xs text-amber-500 mt-0.5"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmt(ws.totalOtHoursToday||0)}h</p>` : ''}
             </div>
           </div>
         </div>
@@ -36363,6 +43075,7 @@ function renderExecStaffLabor(d) {
               <div class="text-right">
                 <span class="text-sm font-bold text-orange-700">${fmt(es.dispatchDays)}회</span>
                 <span class="ml-2">${dispatchDiffHtml}</span>
+                ${isCurrentMonth ? `<p class="text-xs text-orange-500 mt-0.5"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmt(es.dispatchDaysToday||0)}회</p>` : ''}
               </div>
             </div>
             <div class="flex items-center justify-between">
@@ -36373,6 +43086,7 @@ function renderExecStaffLabor(d) {
               <div class="text-right">
                 <span class="text-sm font-bold text-yellow-700">${fmt(es.parttimeDays)}회</span>
                 <span class="ml-2">${parttimeDiffHtml}</span>
+                ${isCurrentMonth ? `<p class="text-xs text-yellow-600 mt-0.5"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmt(es.parttimeDaysToday||0)}회</p>` : ''}
               </div>
             </div>
           </div>
@@ -36388,6 +43102,7 @@ function renderExecStaffLabor(d) {
           <p class="text-xs text-indigo-200 mb-1">이번 달 총 인력비</p>
           <p class="text-3xl font-bold">${fmtW(lc.total)}<span class="text-sm font-normal ml-1">원</span></p>
           <p class="text-xs text-indigo-200 mt-1">기본급 + OT + 파출 + 알바 합산</p>
+          ${isCurrentMonth ? `<div class="mt-2 pt-2 border-t border-indigo-400"><p class="text-xs text-indigo-100"><i class="fas fa-clock mr-1"></i>${todayLabel}까지 발생: <span class="font-bold text-white">${fmtW(lc.totalToday)}원</span></p></div>` : ''}
         </div>
 
         <!-- 항목별 내역 -->
@@ -36476,7 +43191,8 @@ function renderDashStaffLabor(d) {
     if (v >= 10000)     return `${Math.round(v/10000)}만`
     return v.toLocaleString()
   }
-  const { staffSummary: ss, workSummary: ws, externalSummary: es, laborCost: lc } = d
+  const { staffSummary: ss, workSummary: ws, externalSummary: es, laborCost: lc, isCurrentMonth, todayKST } = d
+  const todayLabel = todayKST ? todayKST.slice(5).replace('-','/') : ''  // "MM/DD" 형식
 
   return `
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-5">
@@ -36499,18 +43215,21 @@ function renderDashStaffLabor(d) {
         <p class="text-xs text-amber-500 mb-1">초과근무</p>
         <p class="text-xl font-bold text-amber-700">${fmt(ws.otHours)}<span class="text-xs font-normal ml-0.5">h</span></p>
         <p class="text-xs text-amber-400">OT ${fmt(ws.otCount)}건</p>
+        ${isCurrentMonth ? `<p class="text-xs text-amber-600 font-medium mt-1 border-t border-amber-100 pt-1"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmt(ws.otHoursToday)}h · ${fmt(ws.otCountToday)}건</p>` : ''}
       </div>
       <!-- 파출/알바 -->
       <div class="bg-orange-50 rounded-xl p-3 text-center">
         <p class="text-xs text-orange-500 mb-1">외부인력 투입</p>
         <p class="text-xl font-bold text-orange-700">${fmt(es.dispatchDays + es.parttimeDays)}<span class="text-xs font-normal ml-0.5">회</span></p>
         <p class="text-xs text-orange-400">파출 ${fmt(es.dispatchDays)} · 알바 ${fmt(es.parttimeDays)}</p>
+        ${isCurrentMonth ? `<p class="text-xs text-orange-600 font-medium mt-1 border-t border-orange-100 pt-1"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmt((es.dispatchDaysToday||0) + (es.parttimeDaysToday||0))}회</p>` : ''}
       </div>
       <!-- 인건비 -->
       <div class="bg-purple-50 rounded-xl p-3 text-center">
         <p class="text-xs text-purple-500 mb-1">이번 달 인력비</p>
         <p class="text-xl font-bold text-purple-700">${fmtW(lc.total)}<span class="text-xs font-normal ml-0.5">원</span></p>
         <p class="text-xs text-purple-400">파출 ${fmtW(lc.dispatchCost)} · 알바 ${fmtW(lc.parttimeCost)}</p>
+        ${isCurrentMonth ? `<p class="text-xs text-purple-600 font-medium mt-1 border-t border-purple-100 pt-1"><i class="fas fa-clock mr-0.5"></i>${todayLabel}까지 ${fmtW(lc.totalToday)}원</p>` : ''}
       </div>
     </div>
   </div>`
@@ -38839,6 +45558,36 @@ async function txRenderCategoryTab(container) {
   const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
   const hospitalParam = hospitalId ? `?hospital_id=${hospitalId}` : ''
 
+  // [PERF] Skeleton 즉시 표시 → API 완료 후 실제 내용으로 교체
+  container.innerHTML = `
+  <div class="space-y-4 animate-pulse">
+    <!-- 컨트롤 바 skeleton -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+      <div class="flex flex-wrap gap-3 items-end">
+        <div><div class="skeleton h-3 w-16 rounded mb-1"></div><div class="skeleton h-8 w-36 rounded-lg"></div></div>
+        <div><div class="skeleton h-3 w-16 rounded mb-1"></div><div class="skeleton h-8 w-28 rounded-lg"></div></div>
+        <div><div class="skeleton h-3 w-16 rounded mb-1"></div><div class="skeleton h-8 w-28 rounded-lg"></div></div>
+        <div class="skeleton h-8 w-20 rounded-lg"></div>
+      </div>
+    </div>
+    <!-- 요약 KPI 카드 4개 -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      ${Array(4).fill(0).map(() => `<div class="stat-card"><div class="skeleton h-3 w-16 mb-2 rounded"></div><div class="skeleton h-7 w-20 mb-1 rounded"></div><div class="skeleton h-2 w-24 rounded"></div></div>`).join('')}
+    </div>
+    <!-- 카테고리별 테이블 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+      <div class="skeleton h-4 w-32 rounded mb-4"></div>
+      <div class="space-y-2">
+        ${Array(6).fill(0).map(() => `<div class="flex items-center gap-2"><div class="skeleton h-4 w-1/3 rounded"></div><div class="skeleton h-4 flex-1 rounded"></div><div class="skeleton h-4 w-20 rounded"></div><div class="skeleton h-4 w-20 rounded"></div></div>`).join('')}
+      </div>
+    </div>
+    <!-- 차트 영역 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+      <div class="skeleton h-4 w-28 rounded mb-4"></div>
+      <div class="skeleton h-56 w-full rounded-xl"></div>
+    </div>
+  </div>`
+
   // 1) 분석된 업체 목록 로드
   let vendors = []
   try {
@@ -40604,7 +47353,11 @@ window.txExportPeriodReport = async function() {
 
 // 연간 비교 보고서 (년도별 월별 집계 비교)
 async function txExportAnnualCompareReport(vendor, y1, y2, hospName, authH, hAmp) {
-  if (typeof XLSX === 'undefined') { showToast('엑셀 라이브러리가 필요합니다.', 'error'); return }
+  if (typeof XLSX === 'undefined') {
+    showToast('엑셀 라이브러리 로딩 중...', 'info')
+    const ok = await _loadXlsx()
+    if (!ok || typeof XLSX === 'undefined') { showToast('라이브러리 로드 실패. 잠시 후 다시 시도해주세요.', 'error'); return }
+  }
 
   try {
     const [r1, r2] = await Promise.all([
@@ -41603,6 +48356,29 @@ async function txRenderMonthlyTab(container) {
   const authH = { Authorization: `Bearer ${localStorage.getItem('token')}` }
   const hospitalId = TXState.selectedHospitalId || window._adminHospitalId || ''
   const hospitalParam = hospitalId ? `?hospital_id=${hospitalId}` : ''
+
+  // [PERF] Skeleton 즉시 표시 → API 완료 후 실제 내용으로 교체
+  container.innerHTML = `
+  <div class="space-y-4 animate-pulse">
+    <!-- 컨트롤 바 skeleton -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-wrap gap-3 items-end">
+      <div><div class="skeleton h-3 w-16 rounded mb-1"></div><div class="skeleton h-8 w-40 rounded-lg"></div></div>
+      <div><div class="skeleton h-3 w-16 rounded mb-1"></div><div class="skeleton h-8 w-32 rounded-lg"></div></div>
+      <div class="skeleton h-8 w-24 rounded-lg"></div>
+    </div>
+    <!-- 월별 추이 차트 영역 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+      <div class="skeleton h-4 w-36 rounded mb-4"></div>
+      <div class="skeleton h-64 w-full rounded-xl"></div>
+    </div>
+    <!-- 월별 상세 테이블 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+      <div class="skeleton h-4 w-28 rounded mb-4"></div>
+      <div class="space-y-2">
+        ${Array(6).fill(0).map(() => `<div class="flex items-center gap-2"><div class="skeleton h-4 w-20 rounded"></div><div class="skeleton h-4 flex-1 rounded"></div><div class="skeleton h-4 w-24 rounded"></div></div>`).join('')}
+      </div>
+    </div>
+  </div>`
 
   // 업체 목록 로드 (현재 선택된 병원 기준)
   let vendors = []
@@ -44564,6 +51340,74 @@ window.openExecutiveSummaryView = () => {
 }
 
 // ══════════════════════════════════════════════════════════════
+// 월별 스케줄 확정
+// ══════════════════════════════════════════════════════════════
+window._schedulePublishedAt = null  // 현재 월 확정 시각 캐시
+
+// 확정 상태 로드 후 버튼 UI 갱신
+async function loadPublishStatus(year, month) {
+  // admin이 병원을 선택하지 않은 경우 API 호출 생략 (hospitalId 없으면 401 → 로그아웃 방지)
+  if (App.role === 'admin' && !App.currentHospitalId) {
+    window._schedulePublishedAt = null
+    _updatePublishBtn()
+    return
+  }
+  const hq = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+  try {
+    const res = await api('GET', `/api/schedule/publish/${year}/${month}${hq}`)
+    window._schedulePublishedAt = res?.published_at || null
+  } catch(e) {
+    window._schedulePublishedAt = null
+  }
+  _updatePublishBtn()
+}
+
+function _updatePublishBtn() {
+  const btn = document.getElementById('schedPublishBtn')
+  if (!btn) return
+  const pa = window._schedulePublishedAt
+  if (pa) {
+    const dateStr = pa.slice(0,16).replace('T',' ')
+    btn.style.background = '#16a34a'
+    btn.innerHTML = '<i class="fas fa-check-double"></i><span> 확정됨 · '+dateStr+'</span>'
+    btn.title = '재확정 클릭 시 확정 시각 갱신'
+  } else {
+    btn.style.background = '#7c3aed'
+    btn.innerHTML = '<i class="fas fa-check-double"></i><span> 스케줄 확정</span>'
+    btn.title = App.currentYear+'년 '+App.currentMonth+'월 스케줄을 확정하여 직원에게 공개'
+  }
+}
+
+window.publishSchedule = async () => {
+  const year = App.currentYear, month = App.currentMonth
+  const pa = window._schedulePublishedAt
+  const msg = pa
+    ? `${year}년 ${month}월 스케줄을 재확정합니다.\n확정 시각이 갱신되며, 직원은 이후 변경분부터 이력을 보게 됩니다.\n계속하시겠습니까?`
+    : `${year}년 ${month}월 스케줄을 확정합니다.\n확정 이후 변경된 내용만 직원 QR 페이지에 이력으로 표시됩니다.\n계속하시겠습니까?`
+  if (!confirm(msg)) return
+
+  const hq = (App.role === 'admin' && App.currentHospitalId) ? `?hospitalId=${App.currentHospitalId}` : ''
+  const btn = document.getElementById('schedPublishBtn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span> 처리 중...</span>' }
+  try {
+    const res = await api('POST', `/api/schedule/publish/${year}/${month}${hq}`)
+    if (res?.ok) {
+      window._schedulePublishedAt = res.published_at
+      _updatePublishBtn()
+      showToast(`✅ ${year}년 ${month}월 스케줄이 확정되었습니다.`, 'success')
+    } else {
+      showToast('확정 처리 실패: ' + (res?.error || '오류'), 'error')
+      _updatePublishBtn()
+    }
+  } catch(e) {
+    showToast('확정 처리 중 오류가 발생했습니다.', 'error')
+    _updatePublishBtn()
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // QR 코드 공유 관리 모달
 // ══════════════════════════════════════════════════════════════
 window.openQrManageModal = async () => {
@@ -45111,4 +51955,785 @@ window.saveCostSplitOrders = async function() {
   } else {
     showToast('일부 저장 실패', 'error')
   }
+}
+
+// ============================================================
+// KPI 기여도 분석 시스템 (식이 매출 기여 분석)
+// ============================================================
+
+// ─── KPI 입력 페이지 ────────────────────────────────────────────
+async function renderKpiInput() {
+  const content = document.getElementById('pageContent')
+  content.innerHTML = `<div class="flex items-center justify-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div></div>`
+
+  const hospitals = await api('GET', '/api/admin/hospitals')
+  const hospList = hospitals || []
+  if (!hospList.length) {
+    content.innerHTML = `<div class="p-8 text-center text-gray-400">등록된 병원이 없습니다.</div>`
+    return
+  }
+
+  let selHospId = App.currentHospitalId || hospList[0]?.id
+  const now = new Date()
+  let selYear = now.getFullYear()
+  let selMonth = now.getMonth() + 1
+  let selDataType = 'actual'
+
+  async function loadAndRender() {
+    const settings = await api('GET', `/api/kpi/settings?hospitalId=${selHospId}`) || {}
+    const monthRes = await api('GET', `/api/kpi/monthly?hospitalId=${selHospId}&year=${selYear}&month=${selMonth}&data_type=${selDataType}`) || {}
+    const d = monthRes.data || {}
+    renderKpiInputForm(settings, d)
+  }
+
+  function renderKpiInputForm(settings, d) {
+    const hospOptions = hospList.map(h => `<option value="${h.id}" ${h.id==selHospId?'selected':''}>${h.name}</option>`).join('')
+    const yearOpts = [2023,2024,2025,2026].map(y=>`<option value="${y}" ${y==selYear?'selected':''}>${y}년</option>`).join('')
+    const monthOpts = Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m==selMonth?'selected':''}>${m}월</option>`).join('')
+
+    content.innerHTML = `
+<div class="max-w-4xl mx-auto px-4 pb-16">
+  <!-- 헤더 필터 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-6 flex flex-wrap gap-3 items-center">
+    <div class="flex items-center gap-2">
+      <i class="fas fa-hospital text-blue-500"></i>
+      <select id="kpi-hosp-sel" class="form-input text-sm py-1.5">${hospOptions}</select>
+    </div>
+    <div class="flex items-center gap-2">
+      <select id="kpi-year-sel" class="form-input text-sm py-1.5">${yearOpts}</select>
+      <select id="kpi-month-sel" class="form-input text-sm py-1.5">${monthOpts}</select>
+    </div>
+    <div class="flex items-center gap-2 border-l pl-3">
+      <label class="flex items-center gap-1.5 cursor-pointer text-sm">
+        <input type="radio" name="kpi_dtype" value="actual" ${selDataType==='actual'?'checked':''} class="text-blue-500">
+        <span class="text-gray-700">실적 데이터</span>
+      </label>
+      <label class="flex items-center gap-1.5 cursor-pointer text-sm">
+        <input type="radio" name="kpi_dtype" value="baseline" ${selDataType==='baseline'?'checked':''} class="text-amber-500">
+        <span class="text-amber-700 font-medium">도입 전 기준 데이터</span>
+      </label>
+    </div>
+    <button onclick="loadKpiInputPage()" class="ml-auto px-4 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-sm hover:bg-blue-100 transition-colors">
+      <i class="fas fa-sync-alt mr-1"></i>불러오기
+    </button>
+  </div>
+
+  ${selDataType==='baseline' ? `
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700 flex items-start gap-2">
+    <i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>
+    <div><strong>도입 전 기준 데이터</strong>입니다. 리엔에이치 도입 전 실제 수치를 월별로 입력하세요.<br>
+    3개월 이상 입력 시 BEFORE/AFTER 비교에 활용됩니다.</div>
+  </div>` : ''}
+
+  <!-- 입력 폼 -->
+  <form id="kpiForm" class="space-y-5">
+    <!-- ① 유입 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
+        <span class="w-6 h-6 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center font-bold">①</span>
+        <span class="font-bold text-blue-800">유입 (Inbound)</span>
+      </div>
+      <div class="p-5 grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">총 문의 수</label>
+          <input type="number" id="kpi_total_inquiries" value="${d.total_inquiries||0}" min="0" class="form-input w-full" oninput="calcKpiRatio()">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">식이 관련 문의 수</label>
+          <input type="number" id="kpi_diet_inquiries" value="${d.diet_inquiries||0}" min="0" class="form-input w-full" oninput="calcKpiRatio()">
+        </div>
+        <div class="col-span-2">
+          <div class="p-3 bg-blue-50 rounded-lg flex items-center gap-3">
+            <span class="text-xs text-blue-600">식이 문의 비율 (자동계산)</span>
+            <span id="kpi_diet_ratio_display" class="text-lg font-bold text-blue-700">0%</span>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">유입경로: 소개</label>
+          <input type="number" id="kpi_inflow_referral" value="${d.inflow_referral||0}" min="0" class="form-input w-full">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">유입경로: 검색</label>
+          <input type="number" id="kpi_inflow_search" value="${d.inflow_search||0}" min="0" class="form-input w-full">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">유입경로: 기타</label>
+          <input type="number" id="kpi_inflow_other" value="${d.inflow_other||0}" min="0" class="form-input w-full">
+        </div>
+      </div>
+    </div>
+
+    <!-- ② 전환 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 bg-green-50 border-b border-green-100 flex items-center gap-2">
+        <span class="w-6 h-6 rounded-full bg-green-500 text-white text-xs flex items-center justify-center font-bold">②</span>
+        <span class="font-bold text-green-800">전환 (Conversion)</span>
+      </div>
+      <div class="p-5 grid grid-cols-3 gap-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">상담 건수</label>
+          <input type="number" id="kpi_consult_count" value="${d.consult_count||0}" min="0" class="form-input w-full" oninput="calcKpiConversion()">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">초진 환자수</label>
+          <input type="number" id="kpi_new_patient_count" value="${d.new_patient_count||0}" min="0" class="form-input w-full" oninput="calcKpiConversion()">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">입원 환자수</label>
+          <input type="number" id="kpi_admission_count" value="${d.admission_count||0}" min="0" class="form-input w-full" oninput="calcKpiConversion()">
+        </div>
+        <div class="col-span-3 grid grid-cols-2 gap-3">
+          <div class="p-3 bg-green-50 rounded-lg flex items-center justify-between">
+            <span class="text-xs text-green-600">상담→초진 전환율</span>
+            <span id="kpi_consult_new_rate" class="font-bold text-green-700">0%</span>
+          </div>
+          <div class="p-3 bg-green-50 rounded-lg flex items-center justify-between">
+            <span class="text-xs text-green-600">초진→입원 전환율</span>
+            <span id="kpi_new_admission_rate" class="font-bold text-green-700">0%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 유지 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 bg-purple-50 border-b border-purple-100 flex items-center gap-2">
+        <span class="w-6 h-6 rounded-full bg-purple-500 text-white text-xs flex items-center justify-center font-bold">③</span>
+        <span class="font-bold text-purple-800">유지 (Retention)</span>
+      </div>
+      <div class="p-5 grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">재원 환자수</label>
+          <input type="number" id="kpi_inpatient_count" value="${d.inpatient_count||0}" min="0" class="form-input w-full" oninput="calcKpiOccupancy()">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">병상수</label>
+          <input type="number" id="kpi_bed_count" value="${d.bed_count||0}" min="0" class="form-input w-full" oninput="calcKpiOccupancy()">
+        </div>
+        <div class="col-span-2">
+          <div class="p-3 bg-purple-50 rounded-lg flex items-center gap-3">
+            <span class="text-xs text-purple-600">병상 가동률 (자동계산)</span>
+            <span id="kpi_occupancy_display" class="text-lg font-bold text-purple-700">0%</span>
+          </div>
+        </div>
+        <!-- 평균 재원일수 계산 -->
+        <div class="col-span-2 border-t border-purple-50 pt-4">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-bold text-purple-700 bg-purple-100 rounded-full px-2 py-0.5">공식①</span>
+            <span class="text-xs text-gray-600 font-medium">평균 재원일수 계산</span>
+            <span class="text-xs text-gray-400 ml-1">= 총 재원일수 ÷ 퇴원환자수</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">총 재원일수 <span class="text-gray-400">(전체 입원일 합계)</span></label>
+              <input type="number" id="kpi_total_inpatient_days" value="${d._total_inpatient_days||0}" min="0" class="form-input w-full" oninput="calcKpiRetention()" placeholder="예: 1240">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">퇴원환자수 <span class="text-gray-400">(해당 월)</span></label>
+              <input type="number" id="kpi_discharge_count" value="${d._discharge_count||0}" min="0" class="form-input w-full" oninput="calcKpiRetention()" placeholder="예: 85">
+            </div>
+          </div>
+          <div class="mt-2 p-3 bg-purple-50 rounded-lg flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-purple-600">평균 재원일수 (자동계산)</span>
+              <span class="text-xs text-gray-400">총 재원일수 ÷ 퇴원환자수</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span id="kpi_avg_los_display" class="text-lg font-bold text-purple-700">0일</span>
+              <button type="button" onclick="applyKpiLos()" class="text-xs px-2.5 py-1 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors">적용</button>
+            </div>
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <label class="text-xs text-gray-500 shrink-0">또는 직접 입력</label>
+            <input type="number" id="kpi_avg_los" value="${d.avg_length_of_stay||0}" min="0" step="0.1" class="form-input text-sm py-1.5 w-28" oninput="syncKpiLosDisplay()">
+            <span class="text-xs text-gray-400">일 (직접 입력 시 위 계산값 무시)</span>
+          </div>
+        </div>
+
+        <!-- 재입원율 계산 -->
+        <div class="col-span-2 border-t border-purple-50 pt-4">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-bold text-purple-700 bg-purple-100 rounded-full px-2 py-0.5">공식②</span>
+            <span class="text-xs text-gray-600 font-medium">재입원율 계산</span>
+            <span class="text-xs text-gray-400 ml-1">= 재입원 환자수 ÷ 퇴원환자수 × 100</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">재입원 환자수 <span class="text-gray-400">(30일 이내)</span></label>
+              <input type="number" id="kpi_readmit_count" value="${d._readmit_count||0}" min="0" class="form-input w-full" oninput="calcKpiRetention()" placeholder="예: 12">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">퇴원환자수 <span class="text-gray-400">(위와 공유됨)</span></label>
+              <input type="number" id="kpi_discharge_count2" value="${d._discharge_count||0}" min="0" class="form-input w-full bg-gray-50" oninput="syncDischargeCount(); calcKpiRetention()" placeholder="예: 85">
+            </div>
+          </div>
+          <div class="mt-2 p-3 bg-purple-50 rounded-lg flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-purple-600">재입원율 (자동계산)</span>
+              <span class="text-xs text-gray-400">재입원 환자수 ÷ 퇴원환자수 × 100</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span id="kpi_readmission_display" class="text-lg font-bold text-purple-700">0%</span>
+              <button type="button" onclick="applyKpiReadmission()" class="text-xs px-2.5 py-1 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors">적용</button>
+            </div>
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <label class="text-xs text-gray-500 shrink-0">또는 직접 입력</label>
+            <input type="number" id="kpi_readmission_rate" value="${d.readmission_rate||0}" min="0" max="100" step="0.1" class="form-input text-sm py-1.5 w-28" oninput="syncKpiReadmissionDisplay()">
+            <span class="text-xs text-gray-400">% (직접 입력 시 위 계산값 무시)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ④ 식이 영향 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 bg-orange-50 border-b border-orange-100 flex items-center gap-2">
+        <span class="w-6 h-6 rounded-full bg-orange-500 text-white text-xs flex items-center justify-center font-bold">④</span>
+        <span class="font-bold text-orange-800">식이 영향 (Diet Impact)</span>
+      </div>
+      <div class="p-5 grid grid-cols-3 gap-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">식사 만족도 (1~5점)</label>
+          <input type="number" id="kpi_diet_satisfaction" value="${d.diet_satisfaction_score||0}" min="1" max="5" step="0.1" class="form-input w-full">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">식사 클레임 수</label>
+          <input type="number" id="kpi_diet_complaint" value="${d.diet_complaint_count||0}" min="0" class="form-input w-full">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">식사 관련 퇴원 수</label>
+          <input type="number" id="kpi_diet_discharge" value="${d.diet_related_discharge||0}" min="0" class="form-input w-full">
+        </div>
+      </div>
+    </div>
+
+    <!-- ⑤ 비용 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-5 py-3 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+        <span class="w-6 h-6 rounded-full bg-gray-500 text-white text-xs flex items-center justify-center font-bold">⑤</span>
+        <span class="font-bold text-gray-800">비용 (Cost)</span>
+      </div>
+      <div class="p-5 grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">식단가 (원/1식)</label>
+          <input type="number" id="kpi_avg_meal_cost" value="${d.avg_meal_cost||0}" min="0" class="form-input w-full">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">총 식재료비 (원)</label>
+          <input type="number" id="kpi_food_cost_total" value="${d.food_cost_total||0}" min="0" class="form-input w-full">
+        </div>
+      </div>
+    </div>
+
+    <!-- 메모 -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+      <label class="block text-xs text-gray-500 mb-1">메모</label>
+      <textarea id="kpi_memo" rows="2" class="form-input w-full text-sm" placeholder="특이사항 기록">${d.memo||''}</textarea>
+    </div>
+
+    <!-- 저장 버튼 -->
+    <div class="flex gap-3">
+      <button type="button" onclick="saveKpiMonthly()" class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors">
+        <i class="fas fa-save mr-2"></i>저장
+      </button>
+      <button type="button" onclick="deleteKpiMonthly()" class="px-6 py-3 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors text-sm">
+        <i class="fas fa-trash mr-1"></i>삭제
+      </button>
+    </div>
+  </form>
+
+  <!-- 병원별 KPI 설정 (하단) -->
+  <div class="mt-8 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-5 py-3 bg-indigo-50 border-b border-indigo-100 flex items-center gap-2">
+      <i class="fas fa-cog text-indigo-500"></i>
+      <span class="font-bold text-indigo-800">병원 KPI 설정</span>
+      <span class="text-xs text-indigo-500 ml-1">— 매출기여 계산 기준</span>
+    </div>
+    <div class="p-5 grid grid-cols-2 gap-4">
+      <div class="col-span-2">
+        <label class="block text-xs text-gray-500 mb-1">리엔에이치 도입 시작 연월</label>
+        <div class="flex gap-2">
+          <input type="number" id="kpi_adoption_year" value="${settings.adoption_year||''}" placeholder="2025" class="form-input w-28">
+          <span class="self-center text-gray-400">년</span>
+          <input type="number" id="kpi_adoption_month" value="${settings.adoption_month||''}" min="1" max="12" placeholder="1" class="form-input w-20">
+          <span class="self-center text-gray-400">월</span>
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">평균 입원 매출 (1인/월, 원)</label>
+        <input type="number" id="kpi_avg_revenue" value="${settings.avg_admission_revenue||0}" min="0" class="form-input w-full" placeholder="예: 3000000">
+        <p class="text-xs text-gray-400 mt-1">매출기여 추정 = 재원환자 증가수 × 이 값</p>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">BEFORE/AFTER 비교 기간 (개월)</label>
+        <select id="kpi_compare_months" class="form-input w-full">
+          <option value="3" ${(settings.compare_months||3)==3?'selected':''}>3개월</option>
+          <option value="6" ${(settings.compare_months||3)==6?'selected':''}>6개월</option>
+          <option value="12" ${(settings.compare_months||3)==12?'selected':''}>12개월</option>
+        </select>
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs text-gray-500 mb-1">메모</label>
+        <input type="text" id="kpi_settings_note" value="${settings.note||''}" class="form-input w-full" placeholder="기타 설정 메모">
+      </div>
+      <div class="col-span-2">
+        <button onclick="saveKpiSettings()" class="w-full py-2.5 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700 transition-colors text-sm">
+          <i class="fas fa-save mr-2"></i>KPI 설정 저장
+        </button>
+      </div>
+    </div>
+  </div>
+</div>`
+
+    // 자동계산 초기값
+    calcKpiRatio()
+    calcKpiConversion()
+    calcKpiOccupancy()
+    calcKpiRetention()
+  }
+
+  // 이벤트 핸들러
+  window.loadKpiInputPage = async function() {
+    selHospId   = parseInt(document.getElementById('kpi-hosp-sel')?.value) || selHospId
+    selYear     = parseInt(document.getElementById('kpi-year-sel')?.value)  || selYear
+    selMonth    = parseInt(document.getElementById('kpi-month-sel')?.value) || selMonth
+    selDataType = document.querySelector('input[name="kpi_dtype"]:checked')?.value || selDataType
+    await loadAndRender()
+  }
+
+  window.calcKpiRatio = function() {
+    const total = parseFloat(document.getElementById('kpi_total_inquiries')?.value)||0
+    const diet  = parseFloat(document.getElementById('kpi_diet_inquiries')?.value)||0
+    const ratio = total > 0 ? Math.round(diet/total*1000)/10 : 0
+    const el = document.getElementById('kpi_diet_ratio_display')
+    if (el) el.textContent = ratio + '%'
+  }
+  window.calcKpiConversion = function() {
+    const consult = parseFloat(document.getElementById('kpi_consult_count')?.value)||0
+    const newP    = parseFloat(document.getElementById('kpi_new_patient_count')?.value)||0
+    const admit   = parseFloat(document.getElementById('kpi_admission_count')?.value)||0
+    const r1 = consult > 0 ? Math.round(newP/consult*1000)/10 : 0
+    const r2 = newP   > 0 ? Math.round(admit/newP*1000)/10   : 0
+    const e1 = document.getElementById('kpi_consult_new_rate')
+    const e2 = document.getElementById('kpi_new_admission_rate')
+    if (e1) e1.textContent = r1 + '%'
+    if (e2) e2.textContent = r2 + '%'
+  }
+  window.calcKpiOccupancy = function() {
+    const inp = parseFloat(document.getElementById('kpi_inpatient_count')?.value)||0
+    const bed = parseFloat(document.getElementById('kpi_bed_count')?.value)||0
+    const rate = bed > 0 ? Math.round(inp/bed*1000)/10 : 0
+    const el = document.getElementById('kpi_occupancy_display')
+    if (el) el.textContent = rate + '%'
+  }
+
+  // ── 평균 재원일수 / 재입원율 자동계산 ────────────────────────────
+  window.calcKpiRetention = function() {
+    // 공식① 평균 재원일수 = 총 재원일수 ÷ 퇴원환자수
+    const totalDays = parseFloat(document.getElementById('kpi_total_inpatient_days')?.value)||0
+    const discharge = parseFloat(document.getElementById('kpi_discharge_count')?.value)||0
+    const avgLos    = discharge > 0 ? Math.round(totalDays/discharge*10)/10 : 0
+    const losEl     = document.getElementById('kpi_avg_los_display')
+    if (losEl) losEl.textContent = avgLos + '일'
+
+    // 공식② 재입원율 = 재입원 환자수 ÷ 퇴원환자수 × 100
+    const readmit   = parseFloat(document.getElementById('kpi_readmit_count')?.value)||0
+    const discharge2 = parseFloat(document.getElementById('kpi_discharge_count2')?.value)||0
+    const readRate  = discharge2 > 0 ? Math.round(readmit/discharge2*1000)/10 : 0
+    const readEl    = document.getElementById('kpi_readmission_display')
+    if (readEl) readEl.textContent = readRate + '%'
+  }
+
+  // 퇴원환자수 동기화 (discharge_count ↔ discharge_count2)
+  window.syncDischargeCount = function() {
+    const v1 = document.getElementById('kpi_discharge_count')?.value || '0'
+    const v2 = document.getElementById('kpi_discharge_count2')?.value || '0'
+    const el1 = document.getElementById('kpi_discharge_count')
+    const el2 = document.getElementById('kpi_discharge_count2')
+    // 변경된 쪽 기준으로 반대쪽 동기화
+    if (document.activeElement === el2 && el1) el1.value = v2
+    if (document.activeElement === el1 && el2) el2.value = v1
+  }
+
+  // [적용] 버튼: 계산값을 직접입력 필드에 반영
+  window.applyKpiLos = function() {
+    const losEl = document.getElementById('kpi_avg_los_display')
+    const inputEl = document.getElementById('kpi_avg_los')
+    if (!losEl || !inputEl) return
+    const val = parseFloat(losEl.textContent) || 0
+    inputEl.value = val
+    // 반짝임 효과
+    inputEl.style.background = '#ede9fe'
+    setTimeout(() => { inputEl.style.background = '' }, 600)
+  }
+  window.applyKpiReadmission = function() {
+    const readEl  = document.getElementById('kpi_readmission_display')
+    const inputEl = document.getElementById('kpi_readmission_rate')
+    if (!readEl || !inputEl) return
+    const val = parseFloat(readEl.textContent) || 0
+    inputEl.value = val
+    inputEl.style.background = '#ede9fe'
+    setTimeout(() => { inputEl.style.background = '' }, 600)
+  }
+
+  // 직접입력 시 계산 표시 동기화 (역방향)
+  window.syncKpiLosDisplay = function() {
+    const val = parseFloat(document.getElementById('kpi_avg_los')?.value)||0
+    const el  = document.getElementById('kpi_avg_los_display')
+    if (el) el.textContent = val + '일'
+  }
+  window.syncKpiReadmissionDisplay = function() {
+    const val = parseFloat(document.getElementById('kpi_readmission_rate')?.value)||0
+    const el  = document.getElementById('kpi_readmission_display')
+    if (el) el.textContent = val + '%'
+  }
+
+  window.saveKpiMonthly = async function() {
+    const body = {
+      hospital_id: selHospId, year: selYear, month: selMonth,
+      data_type: document.querySelector('input[name="kpi_dtype"]:checked')?.value || 'actual',
+      total_inquiries:     parseFloat(document.getElementById('kpi_total_inquiries')?.value)||0,
+      diet_inquiries:      parseFloat(document.getElementById('kpi_diet_inquiries')?.value)||0,
+      inflow_referral:     parseFloat(document.getElementById('kpi_inflow_referral')?.value)||0,
+      inflow_search:       parseFloat(document.getElementById('kpi_inflow_search')?.value)||0,
+      inflow_other:        parseFloat(document.getElementById('kpi_inflow_other')?.value)||0,
+      consult_count:       parseFloat(document.getElementById('kpi_consult_count')?.value)||0,
+      new_patient_count:   parseFloat(document.getElementById('kpi_new_patient_count')?.value)||0,
+      admission_count:     parseFloat(document.getElementById('kpi_admission_count')?.value)||0,
+      inpatient_count:     parseFloat(document.getElementById('kpi_inpatient_count')?.value)||0,
+      bed_count:           parseFloat(document.getElementById('kpi_bed_count')?.value)||0,
+      avg_length_of_stay:  parseFloat(document.getElementById('kpi_avg_los')?.value)||0,
+      readmission_rate:    parseFloat(document.getElementById('kpi_readmission_rate')?.value)||0,
+      diet_satisfaction_score: parseFloat(document.getElementById('kpi_diet_satisfaction')?.value)||0,
+      diet_complaint_count:    parseFloat(document.getElementById('kpi_diet_complaint')?.value)||0,
+      diet_related_discharge:  parseFloat(document.getElementById('kpi_diet_discharge')?.value)||0,
+      avg_meal_cost:       parseFloat(document.getElementById('kpi_avg_meal_cost')?.value)||0,
+      food_cost_total:     parseFloat(document.getElementById('kpi_food_cost_total')?.value)||0,
+      memo: document.getElementById('kpi_memo')?.value || ''
+    }
+    const res = await api('PUT', '/api/kpi/monthly', body)
+    if (res?.success) showToast(`${selYear}년 ${selMonth}월 KPI 저장 완료`, 'success')
+    else showToast('저장 실패', 'error')
+  }
+
+  window.deleteKpiMonthly = async function() {
+    if (!confirm(`${selYear}년 ${selMonth}월 KPI 데이터를 삭제하시겠습니까?`)) return
+    const res = await api('DELETE', '/api/kpi/monthly', {
+      hospital_id: selHospId, year: selYear, month: selMonth,
+      data_type: document.querySelector('input[name="kpi_dtype"]:checked')?.value || 'actual'
+    })
+    if (res?.success) { showToast('삭제 완료', 'success'); await loadAndRender() }
+    else showToast('삭제 실패', 'error')
+  }
+
+  window.saveKpiSettings = async function() {
+    const body = {
+      hospital_id:           selHospId,
+      avg_admission_revenue: parseFloat(document.getElementById('kpi_avg_revenue')?.value)||0,
+      revenue_calc_method:   'patient_count',
+      avg_daily_revenue:     0,
+      compare_months:        parseInt(document.getElementById('kpi_compare_months')?.value)||3,
+      adoption_year:         parseInt(document.getElementById('kpi_adoption_year')?.value)||null,
+      adoption_month:        parseInt(document.getElementById('kpi_adoption_month')?.value)||null,
+      note:                  document.getElementById('kpi_settings_note')?.value||''
+    }
+    const res = await api('PUT', '/api/kpi/settings', body)
+    if (res?.success) showToast('KPI 설정 저장 완료', 'success')
+    else showToast('저장 실패', 'error')
+  }
+
+  await loadAndRender()
+}
+
+// ─── KPI 기여도 분석 대시보드 ─────────────────────────────────────
+async function renderKpiAnalysis() {
+  const content = document.getElementById('pageContent')
+  content.innerHTML = `<div class="flex items-center justify-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500"></div></div>`
+
+  const hospitals = await api('GET', '/api/admin/hospitals')
+  const hospList = hospitals || []
+  if (!hospList.length) {
+    content.innerHTML = `<div class="p-8 text-center text-gray-400">등록된 병원이 없습니다.</div>`
+    return
+  }
+
+  let selHospId = App.currentHospitalId || hospList[0]?.id
+  let selCompareMonths = 3
+
+  async function loadAnalysis() {
+    const data = await api('GET', `/api/kpi/analysis?hospitalId=${selHospId}&compareMonths=${selCompareMonths}`)
+    renderAnalysisDashboard(data || {})
+  }
+
+  function fmtNum(n) { return (n||0).toLocaleString() }
+  function fmtPct(n) { const v=parseFloat(n)||0; return (v>=0?'+':'')+v+'%' }
+  function fmtDiff(n) { const v=parseFloat(n)||0; return (v>=0?'▲ +':'▼ ')+Math.abs(v) }
+  function changeColor(v) { const n=parseFloat(v); return n>0?'text-emerald-600':n<0?'text-red-500':'text-gray-500' }
+  function changeBg(v) { const n=parseFloat(v); return n>0?'bg-emerald-50 border-emerald-200':n<0?'bg-red-50 border-red-200':'bg-gray-50 border-gray-200' }
+
+  function renderAnalysisDashboard(data) {
+    const { before, after, current, has_before, total_actual,
+            changes, revenue_contribution, revenue_detail,
+            trend, settings, adoption_year, adoption_month, compare_months,
+            before_rows, after_rows } = data
+
+    const hospOptions = hospList.map(h => `<option value="${h.id}" ${h.id==selHospId?'selected':''}>${h.name}</option>`).join('')
+
+    // 표시할 데이터가 전혀 없는 경우
+    const noData = !after && !current && (!trend || trend.length === 0)
+    // 비교 데이터가 없고 현재 수치만 있는 경우
+    const currentOnly = !before && (after || current)
+    // 표시할 "현재" 값 (after 우선, 없으면 current)
+    const displayAfter = after || current
+
+    // 자동 요약 문구 3줄 (BEFORE/AFTER 비교 있을 때만)
+    let summaryLines = []
+    if (changes && has_before) {
+      const dietRatio = changes.inquiry_diet_ratio
+      const inpatient = changes.inpatient_count
+      if (dietRatio && dietRatio.change !== null) summaryLines.push(`식이 문의 비율 ${dietRatio.before}% → ${dietRatio.after}% (${fmtPct(dietRatio.change)})`)
+      if (inpatient && inpatient.change !== null) summaryLines.push(`재원 환자수 ${fmtNum(inpatient.before)}명 → ${fmtNum(inpatient.after)}명 (${fmtDiff(inpatient.diff)}명)`)
+      if (revenue_contribution) summaryLines.push(`추정 매출 기여 ${revenue_contribution >= 0 ? '+' : ''}${fmtNum(revenue_contribution)}원`)
+    }
+
+    content.innerHTML = `
+<div class="max-w-5xl mx-auto px-4 pb-16">
+  <!-- 헤더 필터 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-6 flex flex-wrap gap-3 items-center">
+    <div class="flex items-center gap-2">
+      <i class="fas fa-hospital text-emerald-500"></i>
+      <select id="kpi-an-hosp" class="form-input text-sm py-1.5">${hospOptions}</select>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="text-xs text-gray-500">비교 기간</span>
+      <select id="kpi-an-months" class="form-input text-sm py-1.5">
+        <option value="3" ${selCompareMonths==3?'selected':''}>3개월</option>
+        <option value="6" ${selCompareMonths==6?'selected':''}>6개월</option>
+        <option value="12" ${selCompareMonths==12?'selected':''}>12개월</option>
+      </select>
+    </div>
+    <button onclick="reloadKpiAnalysis()" class="ml-auto px-4 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-sm hover:bg-emerald-100 transition-colors">
+      <i class="fas fa-sync-alt mr-1"></i>분석 실행
+    </button>
+    <button onclick="openKpiReport()" class="px-4 py-1.5 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-700 transition-colors">
+      <i class="fas fa-print mr-1"></i>보고서 출력
+    </button>
+  </div>
+
+  ${adoption_year ? `
+  <div class="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-700 flex items-center gap-2">
+    <i class="fas fa-flag-checkered"></i>
+    <span>리엔에이치 도입 시작: <strong>${adoption_year}년 ${adoption_month}월</strong> | BEFORE/AFTER 각 <strong>${compare_months}개월</strong> 비교</span>
+  </div>` : `
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700 flex items-center gap-2">
+    <i class="fas fa-exclamation-circle"></i>
+    <span>도입 시작 연월이 설정되지 않았습니다. <strong>KPI 입력 → 병원 KPI 설정</strong>에서 도입 시작 연월을 입력하세요.</span>
+  </div>`}
+
+  ${currentOnly ? `
+  <div class="mb-4 p-3 bg-sky-50 border border-sky-200 rounded-xl text-sm text-sky-700 flex items-center gap-2">
+    <i class="fas fa-info-circle"></i>
+    <span>현재 <strong>${total_actual}개월</strong> 데이터가 있습니다. BEFORE 비교를 위해 <strong>도입 전 기준 데이터</strong>를 입력하거나 도입 시작 연월을 설정하면 변화율을 확인할 수 있습니다.</span>
+  </div>` : ''}
+
+  ${noData ? `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+    <i class="fas fa-chart-line text-4xl text-gray-200 mb-4"></i>
+    <p class="text-gray-400 text-lg">아직 데이터가 없습니다</p>
+    <p class="text-gray-300 text-sm mt-2">KPI 입력 페이지에서 월별 데이터를 먼저 입력해주세요</p>
+    <button onclick="navigateTo('kpi-input')" class="mt-6 px-6 py-2.5 bg-blue-600 text-white rounded-xl text-sm hover:bg-blue-700">
+      <i class="fas fa-plus mr-1"></i>KPI 입력하러 가기
+    </button>
+  </div>` : `
+
+  <!-- ★ 자동 요약 3줄 -->
+  ${summaryLines.length ? `
+  <div class="bg-gradient-to-r from-emerald-600 to-teal-600 rounded-2xl p-5 mb-6 text-white shadow-lg">
+    <div class="flex items-center gap-2 mb-3">
+      <i class="fas fa-star text-yellow-300"></i>
+      <span class="font-bold text-lg">리엔에이치 도입 성과 요약</span>
+    </div>
+    <div class="space-y-2">
+      ${summaryLines.map((line,i) => `
+      <div class="flex items-start gap-2">
+        <span class="w-5 h-5 rounded-full bg-white/20 text-xs flex items-center justify-center font-bold flex-shrink-0">${i+1}</span>
+        <span class="text-sm font-medium">${line}</span>
+      </div>`).join('')}
+    </div>
+  </div>` : ''}
+
+  <!-- ★ 매출 기여 카드 (강조) -->
+  ${revenue_contribution ? `
+  <div class="bg-gradient-to-br from-amber-500 to-orange-500 rounded-2xl p-6 mb-6 text-white shadow-lg">
+    <div class="text-sm font-medium opacity-80 mb-1">리엔에이치 도입 후 추정 매출 기여</div>
+    <div class="text-4xl font-black mb-2">${revenue_contribution >= 0 ? '+' : ''}${fmtNum(revenue_contribution)}원</div>
+    <div class="text-sm opacity-70">${revenue_detail}</div>
+    <div class="mt-3 text-xs opacity-60">※ 병원 평균 입원 매출 기준 추정값 (실제 매출과 다를 수 있음)</div>
+  </div>` : `
+  <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-6">
+    <div class="text-sm text-gray-400 text-center"><i class="fas fa-info-circle mr-1"></i>매출 기여 추정을 위해 KPI 설정에서 <strong>평균 입원 매출</strong>을 입력하세요</div>
+  </div>`}
+
+  <!-- KPI 카드 4개 -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    ${[
+      { label: '식이 문의 비율', key: 'inquiry_diet_ratio', unit: '%', icon: 'fa-comment-medical', color: 'blue' },
+      { label: '초진 전환율', key: 'consult_to_new_rate', unit: '%', icon: 'fa-user-plus', color: 'green' },
+      { label: '병상 가동률', key: 'occupancy_rate', unit: '%', icon: 'fa-bed', color: 'purple' },
+      { label: '재원 환자수', key: 'inpatient_count', unit: '명', icon: 'fa-procedures', color: 'orange' }
+    ].map(item => {
+      const ch = changes?.[item.key] || {}
+      const colorMap = { blue: 'text-blue-600 bg-blue-50', green: 'text-green-600 bg-green-50', purple: 'text-purple-600 bg-purple-50', orange: 'text-orange-600 bg-orange-50' }
+      const hasCompare = ch.change !== null && ch.before !== null
+      return `
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-8 h-8 rounded-xl ${colorMap[item.color]} flex items-center justify-center text-sm">
+            <i class="fas ${item.icon}"></i>
+          </span>
+          <span class="text-xs text-gray-500">${item.label}</span>
+        </div>
+        <div class="text-xl font-bold text-gray-800">${fmtNum(ch.after||0)}${item.unit}</div>
+        <div class="mt-1 flex items-center gap-1">
+          ${hasCompare
+            ? `<span class="text-xs text-gray-400">이전: ${fmtNum(ch.before||0)}${item.unit}</span>
+               <span class="text-xs font-bold ${changeColor(ch.change)} ml-1">${fmtPct(ch.change)}</span>`
+            : `<span class="text-xs text-gray-300">비교 데이터 없음</span>`}
+        </div>
+      </div>`
+    }).join('')}
+  </div>
+
+  <!-- 퍼널 시각화 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-6">
+    <h3 class="font-bold text-gray-700 mb-4 flex items-center gap-2">
+      <i class="fas fa-filter text-indigo-500"></i> 유입 → 전환 → 유지 퍼널 (도입 후 평균)
+    </h3>
+    <div class="flex items-center justify-between gap-2 overflow-x-auto pb-2">
+      ${(()=>{
+        const steps = [
+          { label: '문의', val: displayAfter?.total_inquiries||0, color: 'bg-blue-100 text-blue-700 border-blue-200' },
+          { label: '상담', val: displayAfter?.consult_count||0, color: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
+          { label: '초진', val: displayAfter?.new_patient_count||0, color: 'bg-purple-100 text-purple-700 border-purple-200' },
+          { label: '입원', val: displayAfter?.admission_count||0, color: 'bg-pink-100 text-pink-700 border-pink-200' },
+          { label: '재원', val: displayAfter?.inpatient_count||0, color: 'bg-emerald-100 text-emerald-700 border-emerald-200' }
+        ]
+        const max = Math.max(...steps.map(s=>s.val),1)
+        return steps.map((s,i) => {
+          const w = Math.max(Math.round(s.val/max*100),10)
+          const arrow = i < steps.length-1 ? `<div class="text-gray-300 text-xl flex-shrink-0">›</div>` : ''
+          return `
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <div class="text-center">
+              <div class="border-2 ${s.color} rounded-xl px-3 py-2 min-w-16 text-center" style="opacity:${0.4+0.6*s.val/max}">
+                <div class="text-xl font-black">${fmtNum(s.val)}</div>
+                <div class="text-xs font-medium">${s.label}</div>
+              </div>
+            </div>
+            ${arrow}
+          </div>`
+        }).join('')
+      })()}
+    </div>
+  </div>
+
+  <!-- BEFORE / AFTER 비교 테이블 -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-6 overflow-x-auto">
+    <h3 class="font-bold text-gray-700 mb-4 flex items-center gap-2">
+      <i class="fas fa-balance-scale text-gray-500"></i>
+      ${has_before ? 'BEFORE / AFTER 비교' : '현재 수치'}
+      <span class="text-xs text-gray-400 font-normal">
+        ${has_before
+          ? `도입 전 ${before_rows?.length||0}개월 평균 vs 도입 후 ${after_rows?.length||0}개월 평균`
+          : `${(after_rows?.length||0) || (total_actual||0)}개월 데이터 기준`}
+      </span>
+    </h3>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-gray-500 text-xs">
+          <th class="text-left px-3 py-2">지표</th>
+          ${has_before ? `<th class="px-3 py-2 text-right bg-red-50 text-red-600">도입 전 (BEFORE)</th>` : ''}
+          <th class="px-3 py-2 text-right bg-emerald-50 text-emerald-600">${has_before ? '도입 후 (AFTER)' : '현재 수치'}</th>
+          ${has_before ? `<th class="px-3 py-2 text-right">변화율</th>` : ''}
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-50">
+        ${[
+          { label: '식이 문의 비율', key: 'inquiry_diet_ratio', unit: '%' },
+          { label: '총 문의수', key: 'total_inquiries', unit: '건' },
+          { label: '상담→초진 전환율', key: 'consult_to_new_rate', unit: '%' },
+          { label: '초진→입원 전환율', key: 'new_to_admission_rate', unit: '%' },
+          { label: '재원 환자수', key: 'inpatient_count', unit: '명' },
+          { label: '병상 가동률', key: 'occupancy_rate', unit: '%' },
+          { label: '평균 재원일수', key: 'avg_length_of_stay', unit: '일' },
+          { label: '식사 만족도', key: 'diet_satisfaction_score', unit: '점' },
+          { label: '식사 클레임', key: 'diet_complaint_count', unit: '건' },
+          { label: '식단가', key: 'avg_meal_cost', unit: '원' },
+        ].map(row => {
+          const ch = changes?.[row.key] || {}
+          const hasComp = ch.change !== null && ch.before !== null
+          return `<tr class="hover:bg-gray-50">
+            <td class="px-3 py-2 text-gray-700">${row.label}</td>
+            ${has_before ? `<td class="px-3 py-2 text-right text-red-700 bg-red-50/30">${hasComp ? fmtNum(ch.before)+row.unit : '—'}</td>` : ''}
+            <td class="px-3 py-2 text-right text-emerald-700 bg-emerald-50/30">${fmtNum(ch.after||0)}${row.unit}</td>
+            ${has_before ? `<td class="px-3 py-2 text-right font-bold ${changeColor(ch.change)}">${hasComp ? fmtPct(ch.change) : '—'}</td>` : ''}
+          </tr>`
+        }).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 월별 트렌드 차트 -->
+  ${trend?.length >= 1 ? `
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-6">
+    <h3 class="font-bold text-gray-700 mb-4 flex items-center gap-2">
+      <i class="fas fa-chart-line text-teal-500"></i> 월별 추이
+      <span class="text-xs text-gray-400 font-normal">${trend?.length}개월</span>
+    </h3>
+    <canvas id="kpiTrendChart" height="120"></canvas>
+  </div>` : ''}
+
+  `}
+</div>`
+
+    // 트렌드 차트 렌더
+    if (trend?.length >= 1) {
+      setTimeout(() => {
+        const ctx = document.getElementById('kpiTrendChart')
+        if (!ctx) return
+        if (ctx._chart) ctx._chart.destroy()
+        ctx._chart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: trend.map(t => t.label),
+            datasets: [
+              { label: '재원환자수(명)', data: trend.map(t => t.inpatient_count), borderColor: '#10b981', backgroundColor: '#10b98120', yAxisID: 'y', tension: 0.4, borderWidth: 2 },
+              { label: '식이문의비율(%)', data: trend.map(t => t.inquiry_diet_ratio), borderColor: '#3b82f6', backgroundColor: '#3b82f620', yAxisID: 'y1', tension: 0.4, borderWidth: 2, borderDash: [5,3] }
+            ]
+          },
+          options: {
+            responsive: true, interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+            scales: {
+              y:  { type: 'linear', position: 'left',  title: { display: true, text: '환자수(명)' }, beginAtZero: true },
+              y1: { type: 'linear', position: 'right', title: { display: true, text: '비율(%)' }, beginAtZero: true, grid: { drawOnChartArea: false } }
+            }
+          }
+        })
+      }, 100)
+    }
+  }
+
+  window.reloadKpiAnalysis = async function() {
+    selHospId         = parseInt(document.getElementById('kpi-an-hosp')?.value) || selHospId
+    selCompareMonths  = parseInt(document.getElementById('kpi-an-months')?.value) || 3
+    await loadAnalysis()
+  }
+
+  window.openKpiReport = function() {
+    window.open(`/kpi-report?hospitalId=${selHospId}&compareMonths=${selCompareMonths}`, '_blank')
+  }
+
+  await loadAnalysis()
 }
