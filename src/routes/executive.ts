@@ -1,4 +1,11 @@
 import { Hono } from 'hono'
+import {
+  aggregateByCostType, aggregateCardByCostType,
+  ORDERS_BY_COST_TYPE_SQL, CARD_BY_COST_TYPE_SQL,
+  aggregateCustomFieldTotals, collectMealsIncludeKeys, calcUnifiedMeals,
+  RECLASS_TO_OPERATING_SQL, aggregateReclass,
+  calcUnifiedDietPrices, buildCostBreakdown,
+} from '../lib/hospitalCalc'
 
 const executive = new Hono<{ Bindings: { DB: D1Database }; Variables: { user: any } }>()
 
@@ -85,49 +92,37 @@ executive.get('/summary/:year/:month', async (c) => {
        AND strftime('%m', meal_date) = printf('%02d', ?)
        AND custom_data IS NOT NULL AND custom_data != '{}'`
   ).bind(hospitalId, year, month).all<any>()
-  const customFieldTotals: Record<string, number> = {}
-  ;(customFieldsList.results || []).forEach((f: any) => { customFieldTotals[f.field_key] = 0 })
-  ;(mealCustomData.results || []).forEach((row: any) => {
-    try {
-      const cd = JSON.parse(row.custom_data || '{}')
-      ;(customFieldsList.results || []).forEach((f: any) => {
-        const fv = cd[f.field_key] || {}
-        customFieldTotals[f.field_key] = (customFieldTotals[f.field_key]||0) + (fv.bf||0) + (fv.l||0) + (fv.d||0)
-      })
-    } catch(e) {}
-  })
+  // ★ [STEP 1] 식수 일원화 — 영양사(dashboard.ts)와 동일한 공용 엔진 사용
+  const customFieldTotals = aggregateCustomFieldTotals(
+    (customFieldsList.results || []) as any[],
+    (mealCustomData.results || []) as any[]
+  )
   // meals_include_keys 기반으로 포함할 field_key 구성 (dashboard.ts와 동일 로직)
   const patientCatsForExec = await c.env.DB.prepare(
     `SELECT id, category_key, meals_include_keys FROM hospital_patient_categories WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id`
   ).bind(hospitalId).all<any>()
-  const execAllMealsIncludeKeys = new Set<string>()
-  ;(patientCatsForExec.results || []).forEach((cat: any) => {
-    try {
-      const keys: string[] = JSON.parse(cat.meals_include_keys || '[]')
-      keys.forEach((k: string) => execAllMealsIncludeKeys.add(k))
-    } catch(e) {}
-  })
-  const execMealsIncludeFieldKeys = new Set<string>()
+  const execAllMealsIncludeKeys = collectMealsIncludeKeys((patientCatsForExec.results || []) as any[])
+  // diet_categories legacy_field_key 매핑 로드 (dashboard.ts와 동일 — legacy 키 보정)
+  const execDietKeyToLegacy: Record<string, string> = {}
   if (execAllMealsIncludeKeys.size > 0) {
-    ;(customFieldsList.results || []).forEach((f: any) => {
-      const fk: string = f.field_key
-      if (execAllMealsIncludeKeys.has(fk)) { execMealsIncludeFieldKeys.add(fk); return }
-      if (execAllMealsIncludeKeys.has('cat_' + fk)) { execMealsIncludeFieldKeys.add(fk); return }
-      for (const prefix of ['nc_key_', 'th_key_', 'st_key_']) {
-        const dietKey = fk.startsWith('diet_') ? fk.slice('diet_'.length) : fk
-        if (execAllMealsIncludeKeys.has(prefix + dietKey)) { execMealsIncludeFieldKeys.add(fk); return }
-      }
+    const dietCatsList = await c.env.DB.prepare(
+      `SELECT diet_key, legacy_field_key FROM diet_categories WHERE hospital_id = ? AND legacy_field_key IS NOT NULL AND legacy_field_key != 'null'`
+    ).bind(hospitalId).all<any>()
+    ;(dietCatsList.results || []).forEach((dc: any) => {
+      if (dc.diet_key && dc.legacy_field_key) execDietKeyToLegacy[dc.diet_key] = dc.legacy_field_key
     })
   }
-  const execHasIncludeKeys = execAllMealsIncludeKeys.size > 0
-  const mealCustomTotal = (customFieldsList.results || [])
-    .filter((f: any) => {
-      if (f.unit_type === 'ea') return false
-      if (execHasIncludeKeys) return execMealsIncludeFieldKeys.has(f.field_key)
-      return true
-    })
-    .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
-  const totalMeals = (mealStats?.total_staff||0) + (mealStats?.total_guardian||0) + mealCustomTotal
+  const unifiedMeals = calcUnifiedMeals({
+    totalStaff: mealStats?.total_staff || 0,
+    totalGuardian: mealStats?.total_guardian || 0,
+    customFields: (customFieldsList.results || []) as any[],
+    customFieldTotals,
+    allMealsIncludeKeys: execAllMealsIncludeKeys,
+    dietKeyToLegacyFieldKey: execDietKeyToLegacy,
+  })
+  const mealCustomTotal = unifiedMeals.mealCustomTotal
+  const totalMeals = unifiedMeals.totalMeals
+  const totalMealsForPrice = unifiedMeals.totalMealsForPrice
 
   // 6. 법인카드 내역
   const cardExpenses = await c.env.DB.prepare(
@@ -215,82 +210,87 @@ executive.get('/summary/:year/:month', async (c) => {
      GROUP BY hpc.id ORDER BY hpc.sort_order`
   ).bind(hospitalId, year, month, hospitalId).all<any>()
 
-  // 카테고리별 월 식수 집계 (customFieldTotals 기반, meals_include_keys 적용)
-  // buildMealsFromKeys 인라인 구현 (dashboard.ts의 buildMealsFromKeys와 동일)
-  const execBuildMealsFromKeys = (
-    mealsKeys: string[],
-    staffTotal: number,
-    guardianTotal: number,
-    cfTotals: Record<string, number>
-  ): number => {
-    if (!mealsKeys || mealsKeys.length === 0) return 0
-    let total = 0
-    if (mealsKeys.includes('staff')) total += staffTotal
-    if (mealsKeys.some((k: string) => k.startsWith('st_key_'))) {
-      let staffFromCustom = 0
-      mealsKeys.filter((k: string) => k.startsWith('st_key_')).forEach((k: string) => {
-        const dietKey = k.replace('st_key_', '')
-        staffFromCustom += (cfTotals['diet_' + dietKey] || cfTotals[dietKey] || 0)
-      })
-      total += staffFromCustom > 0 ? staffFromCustom : staffTotal
-    }
-    if (mealsKeys.includes('guardian')) total += guardianTotal
-    mealsKeys.filter((k: string) => k.startsWith('cat_')).forEach((k: string) => { total += (cfTotals[k] || 0) })
-    mealsKeys.filter((k: string) => k.startsWith('nc_key_')).forEach((k: string) => {
-      const dietKey = k.replace('nc_key_', '')
-      total += (cfTotals['diet_' + dietKey] || cfTotals[dietKey] || 0)
-    })
-    mealsKeys.filter((k: string) => k.startsWith('th_key_')).forEach((k: string) => {
-      const dietKey = k.replace('th_key_', '')
-      total += (cfTotals['diet_' + dietKey] || cfTotals[dietKey] || 0)
-    })
-    return total
-  }
-  const execStaffTotal    = mealStats?.total_staff    || 0
-  const execGuardianTotal = mealStats?.total_guardian || 0
-  // 카테고리별 월 식수
-  const execCatMealMap: Record<number, number> = {}
-  ;(patientCatsForExec.results || []).forEach((cat: any) => {
-    let mealsKeys: string[] = []
-    try { mealsKeys = JSON.parse(cat.meals_include_keys || '[]') } catch(e) {}
-    execCatMealMap[cat.id] = execBuildMealsFromKeys(mealsKeys, execStaffTotal, execGuardianTotal, customFieldTotals)
-  })
-  // catOrders 결과로 카테고리별 발주금액 맵
-  const execCatAmtMap: Record<number, number> = {}
-  ;(catOrders.results || []).forEach((r: any) => { execCatAmtMap[r.id] = r.total || 0 })
-  // 카테고리 중 식수>0 & 발주금액>0인 것만 formula에 사용
-  const execActiveCats = (patientCatsForExec.results || []).filter((cat: any) => {
-    return (execCatMealMap[cat.id] || 0) > 0 && (execCatAmtMap[cat.id] || 0) > 0
-  })
-  // catStaffIncluded / catGuardianIncluded 체크
-  const execCatStaffIncluded    = execActiveCats.some((cat: any) => {
-    try {
-      const ks: string[] = JSON.parse(cat.meals_include_keys || '[]')
-      return ks.some((k: string) => k.startsWith('st_key_') || k === 'staff')
-    } catch { return false }
-  })
-  const execCatGuardianIncluded = execActiveCats.some((cat: any) => {
-    try {
-      const ks: string[] = JSON.parse(cat.meals_include_keys || '[]')
-      return ks.includes('guardian')
-    } catch { return false }
-  })
-  const execSumCatMeals = execActiveCats.reduce((s: number, cat: any) => s + (execCatMealMap[cat.id] || 0), 0)
-  const execExtraStaff    = execCatStaffIncluded    ? 0 : execStaffTotal
-  const execExtraGuardian = execCatGuardianIncluded ? 0 : execGuardianTotal
-  const execTotalMealsForPrice = execActiveCats.length > 0
-    ? execSumCatMeals + execExtraStaff + execExtraGuardian
-    : totalMeals  // 카테고리 없으면 totalMeals 기반
-  const currentMealPrice = execTotalMealsForPrice > 0 ? Math.round(totalUsed / execTotalMealsForPrice) : 0
+  // ──────────────────────────────────────────────────────────────────
+  // ★ [STEP 2·3·4·5] 식단가/운영비/재분류 일원화 — 영양사(dashboard.ts)와 동일 공용 엔진
+  //   날짜 범위는 dashboard.ts 와 동일하게 BETWEEN(월초~월말) 사용 (strftime 결과와 동치)
+  // ──────────────────────────────────────────────────────────────────
+  const monthPadded = String(parseInt(month)).padStart(2, '0')
+  const lastDayExec = new Date(parseInt(year), parseInt(month), 0).getDate()
+  const execDateStart = `${year}-${monthPadded}-01`
+  const execDateEnd   = `${year}-${monthPadded}-${String(lastDayExec).padStart(2, '0')}`
 
-  // 소모품 발주 합계 (식단가 제외 업체)
-  const supplyTotal = (vendorOrders.results || [])
-    .filter((v: any) => v.category === 'supply')
-    .reduce((s: number, v: any) => s + (v.total_used || 0), 0)
-  // 총 운영원가: 식재료 + 소모품 + 카드
-  const mealPriceOperating = execTotalMealsForPrice > 0
-    ? Math.round((totalUsed + supplyTotal + cardTotal) / execTotalMealsForPrice)
-    : 0
+  // cost_type별 발주/카드 집계 (공용 SQL)
+  const [execOrdersByTypeRaw, execCardByTypeRaw, execReclassRaw] = await Promise.all([
+    c.env.DB.prepare(ORDERS_BY_COST_TYPE_SQL).bind(hospitalId, execDateStart, execDateEnd).all<any>(),
+    c.env.DB.prepare(CARD_BY_COST_TYPE_SQL).bind(hospitalId, execDateStart, execDateEnd).all<any>(),
+    c.env.DB.prepare(RECLASS_TO_OPERATING_SQL).bind(hospitalId, execDateStart, execDateEnd).all<any>(),
+  ])
+  const execOrdersByType = aggregateByCostType(execOrdersByTypeRaw?.results || [])
+  const execCardByType   = aggregateCardByCostType(execCardByTypeRaw?.results || [])
+  const execReclass      = aggregateReclass(execReclassRaw?.results || [])
+  // daily_orders cost_type='card' 합계
+  const execOrdersCardUsed = (execOrdersByTypeRaw?.results || [])
+    .filter((r: any) => r.cost_type === 'card')
+    .reduce((s: number, r: any) => s + (r.total || 0), 0)
+
+  // supply_exclude_keys (병원별 제외 항목; 없으면 기본 ['card','supply'])
+  const execSupplyExcludeCfg = await c.env.DB.prepare(
+    `SELECT supply_exclude_keys FROM hospital_info WHERE hospital_id = ?`
+  ).bind(hospitalId).first<any>()
+  let execSupplyExcludeKeys: string[] = ['card', 'supply']
+  if (execSupplyExcludeCfg?.supply_exclude_keys) {
+    try { execSupplyExcludeKeys = JSON.parse(execSupplyExcludeCfg.supply_exclude_keys) } catch (e) {}
+  }
+
+  // 직원식 식수 (대표/직원제외 식단가용) — dashboard.ts staffMealsForCalc 와 동일 규칙
+  const execHasStCustomKeys = [...execAllMealsIncludeKeys].some((k: string) => k.startsWith('st_key_'))
+  const execStaffFieldKeySet = new Set<string>()
+  if (execHasStCustomKeys) {
+    ;[...execAllMealsIncludeKeys].forEach((k: string) => {
+      if (k.startsWith('st_key_')) {
+        const dietKey = k.replace('st_key_', '')
+        ;(customFieldsList.results || []).forEach((f: any) => {
+          if (f.field_key === 'diet_' + dietKey || f.field_key === dietKey) execStaffFieldKeySet.add(f.field_key)
+        })
+      }
+    })
+  }
+  const execMealCustomStaffTotal = (customFieldsList.results || [])
+    .filter((f: any) => f.unit_type !== 'ea' && execStaffFieldKeySet.has(f.field_key))
+    .reduce((s: number, f: any) => s + (customFieldTotals[f.field_key] || 0), 0)
+  const staffMealsForCalc = execHasStCustomKeys
+    ? (execMealCustomStaffTotal > 0 ? execMealCustomStaffTotal : (mealStats?.total_staff || 0))
+    : (mealStats?.total_staff || 0)
+
+  // ★ [STEP 2·3] 대표/운영반영 식단가 (재분류 반영) — 영양사와 동일 산식
+  const execDietPrices = calcUnifiedDietPrices({
+    totalUsed,
+    ordersByType: execOrdersByType,
+    cardByType: execCardByType,
+    totalMealsForPrice,
+    staffMealsForCalc,
+    supplyExcludeKeys: execSupplyExcludeKeys,
+    reclassToOperating: execReclass.reclassToOperating,
+  })
+  // 대표 식단가 (식재료 기준) = mealPriceNoSupply
+  const currentMealPrice = execDietPrices.mealPriceNoSupply
+  // 운영반영 식단가 (전체 사용금액 ÷ 식수) = mealPriceTotal
+  const mealPriceOperating = execDietPrices.mealPriceTotal
+
+  // ★ [STEP 4·5] 운영비 costBreakdown (식단가 반영 여부와 무관하게 항상 별도 집계)
+  const costBreakdown = buildCostBreakdown({
+    ordersByType: execOrdersByType,
+    cardByType: execCardByType,
+    ordersCardUsed: execOrdersCardUsed,
+    reclass: execReclass,
+    budgets: {
+      total:  settings?.total_budget  || 0,
+      supply: settings?.supply_budget || 0,
+      event:  settings?.event_budget  || 0,
+      card:   settings?.card_budget   || 0,
+    },
+    foodDietPrice: currentMealPrice,
+  })
 
   // 13. 검수 현황 (납품 대비 검수 완료)
   const inspectionStats = await c.env.DB.prepare(
@@ -313,9 +313,11 @@ executive.get('/summary/:year/:month', async (c) => {
       remaining,
       progress,
       targetMealPrice,
-      currentMealPrice,
-      mealPriceOperating,  // 총 운영원가 (식재료+소모품+카드) ÷ 식수
+      currentMealPrice,        // ★ [STEP 2] 대표 식단가 (식재료비 ÷ 식수) — 영양사 mealPriceNoSupply 와 동일
+      mealPriceOperating,      // ★ [STEP 3] 운영반영 식단가 (전체 사용금액 ÷ 식수) — 영양사 mealPriceTotal 과 동일
     },
+    // ★ [STEP 4] 운영비 구조 (식재료비 vs 운영비) — 영양사 costBreakdown 과 동일 구조
+    costBreakdown,
     mealStats: {
       totalMeals,
       customFieldTotals,

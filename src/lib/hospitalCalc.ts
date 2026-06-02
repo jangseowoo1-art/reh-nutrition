@@ -498,3 +498,323 @@ export const CARD_BY_COST_TYPE_TODAY_SQL = `
   FROM card_expenses
   WHERE hospital_id = ? AND expense_date = ?
   GROUP BY cost_type`
+
+// ══════════════════════════════════════════════════════════════════
+// [계산 엔진 일원화] 식수·식단가·운영비·재분류 공용 모듈
+//   영양사(dashboard.ts) 계산 결과를 정답 기준으로,
+//   운영진(executive.ts)·KPI(ceo-dashboard.ts)가 동일 결과를 내도록 공유.
+// ══════════════════════════════════════════════════════════════════
+
+// ──────────────────────────────────────────────────────────────────
+// STEP 1. 식수 일원화 — custom_data 합계 → meals_include_keys 필터 → 총 식수
+// ──────────────────────────────────────────────────────────────────
+
+/** meal_custom_fields 행 (필요한 필드만) */
+export interface MealCustomFieldRow {
+  field_key: string
+  unit_type?: string | null
+}
+
+/**
+ * daily_meals.custom_data 행들을 field_key별 월 합계로 집계.
+ * (bf + l + d 합산)
+ */
+export function aggregateCustomFieldTotals(
+  customFields: MealCustomFieldRow[],
+  mealCustomDataRows: Array<{ custom_data?: string | null }>
+): Record<string, number> {
+  const totals: Record<string, number> = {}
+  customFields.forEach(f => { totals[f.field_key] = 0 })
+  mealCustomDataRows.forEach(row => {
+    try {
+      const cd = JSON.parse(row.custom_data || '{}')
+      customFields.forEach(f => {
+        const fv = cd[f.field_key] || {}
+        totals[f.field_key] = (totals[f.field_key] || 0) + (fv.bf || 0) + (fv.l || 0) + (fv.d || 0)
+      })
+    } catch (e) { /* skip malformed */ }
+  })
+  return totals
+}
+
+/**
+ * hospital_patient_categories.meals_include_keys 들을 합쳐 키 Set 구성.
+ */
+export function collectMealsIncludeKeys(
+  patientCats: Array<{ meals_include_keys?: string | null }>
+): Set<string> {
+  const set = new Set<string>()
+  patientCats.forEach(cat => {
+    try {
+      const keys: string[] = JSON.parse(cat.meals_include_keys || '[]')
+      keys.forEach(k => set.add(k))
+    } catch (e) { /* skip */ }
+  })
+  return set
+}
+
+/**
+ * meals_include_keys(Set) → 실제 합산 대상 field_key Set 구성.
+ * dashboard.ts L383-403 의 매칭 규칙과 동일.
+ *   - cat_{fk} / fk 직접 매칭
+ *   - nc_key_/th_key_/st_key_ 접두사 제거 후 diet_{key} 또는 key 매칭
+ *   - dietKeyToLegacyFieldKey 로 legacy_field_key 역매핑 (옵션)
+ */
+export function buildMealsIncludeFieldKeySet(
+  customFields: MealCustomFieldRow[],
+  allMealsIncludeKeys: Set<string>,
+  dietKeyToLegacyFieldKey: Record<string, string> = {}
+): Set<string> {
+  const result = new Set<string>()
+  if (allMealsIncludeKeys.size === 0) return result
+  customFields.forEach(f => {
+    const fk = f.field_key
+    if (allMealsIncludeKeys.has(fk)) { result.add(fk); return }
+    if (allMealsIncludeKeys.has('cat_' + fk)) { result.add(fk); return }
+    for (const prefix of ['nc_key_', 'th_key_', 'st_key_']) {
+      const dietKey = fk.startsWith('diet_') ? fk.slice('diet_'.length) : fk
+      if (allMealsIncludeKeys.has(prefix + dietKey)) { result.add(fk); return }
+      for (const [dk, lfk] of Object.entries(dietKeyToLegacyFieldKey)) {
+        if (lfk === fk && allMealsIncludeKeys.has(prefix + dk)) { result.add(fk); return }
+      }
+    }
+  })
+  return result
+}
+
+/** 식수 일원화 입력 */
+export interface UnifiedMealsInput {
+  totalStaff: number          // mealStats.total_staff
+  totalGuardian: number       // mealStats.total_guardian
+  customFields: MealCustomFieldRow[]
+  customFieldTotals: Record<string, number>
+  allMealsIncludeKeys: Set<string>
+  dietKeyToLegacyFieldKey?: Record<string, string>
+}
+
+/** 식수 일원화 결과 */
+export interface UnifiedMealsResult {
+  totalMeals: number          // 직원 + 보호자 + 커스텀(ea 제외)
+  totalMealsForPrice: number  // 식단가 계산용 (현재 totalMeals 와 동일)
+  mealCustomTotal: number
+  mealsIncludeFieldKeys: Set<string>
+}
+
+/**
+ * 영양사(dashboard.ts) L353-511 과 동일 규칙의 총 식수 계산.
+ *   totalMeals = total_staff + total_guardian + mealCustomTotal
+ *   mealCustomTotal = (ea 제외) ∩ (meals_include_keys 있으면 해당 키만) 커스텀 필드 합
+ */
+export function calcUnifiedMeals(input: UnifiedMealsInput): UnifiedMealsResult {
+  const {
+    totalStaff, totalGuardian, customFields, customFieldTotals,
+    allMealsIncludeKeys, dietKeyToLegacyFieldKey = {},
+  } = input
+
+  const hasIncludeKeys = allMealsIncludeKeys.size > 0
+  const mealsIncludeFieldKeys = buildMealsIncludeFieldKeySet(
+    customFields, allMealsIncludeKeys, dietKeyToLegacyFieldKey
+  )
+
+  const mealCustomTotal = customFields
+    .filter(f => {
+      if (f.unit_type === 'ea') return false
+      if (hasIncludeKeys) return mealsIncludeFieldKeys.has(f.field_key)
+      return true
+    })
+    .reduce((s, f) => s + (customFieldTotals[f.field_key] || 0), 0)
+
+  const totalMeals = (totalStaff || 0) + (totalGuardian || 0) + mealCustomTotal
+  return {
+    totalMeals,
+    totalMealsForPrice: totalMeals,
+    mealCustomTotal,
+    mealsIncludeFieldKeys,
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// STEP 5. 식단가 반영 로직 통합 — cost_type_default 끌어올림(food → 운영비)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 운영비로 재분류할 식재료 발주 집계 SQL.
+ *   cost_type='food' 로 발주됐으나 업체 비용구분(cost_type_default)이
+ *   운영비성(supply/event/card/utility) 인 발주만 대상.
+ *   (food → 운영비 끌어올림만, 강등 없음. daily_orders 원본 무변경)
+ */
+export const RECLASS_TO_OPERATING_SQL = `
+  SELECT d.vendor_id AS vendorId, v.name AS vendorName, v.category AS category,
+         v.cost_type_default AS vdef,
+         COALESCE(SUM(d.total_amount), 0) AS used
+  FROM daily_orders d
+  JOIN vendors v ON d.vendor_id = v.id
+  WHERE d.hospital_id = ?
+    AND d.order_date BETWEEN ? AND ?
+    AND d.cost_type = 'food'
+    AND v.cost_type_default IN ('supply','event','card','utility')
+  GROUP BY d.vendor_id, v.name, v.category, v.cost_type_default
+  HAVING used > 0
+  ORDER BY used DESC`
+
+export interface ReclassVendor {
+  vendorId: number
+  vendorName: string
+  category: string
+  vdef: string
+  used: number
+}
+
+export interface ReclassResult {
+  reclassSupply: number
+  reclassEvent: number
+  reclassCard: number
+  reclassUtility: number
+  reclassToOperating: number     // 합계 (대표 식단가 분자에서 제외 + costBreakdown food→operating 이동)
+  reclassVendors: ReclassVendor[]
+}
+
+/** RECLASS_TO_OPERATING_SQL 결과 행들을 cost_type_default별 합계로 집계 */
+export function aggregateReclass(rows: any[]): ReclassResult {
+  const reclassVendors: ReclassVendor[] = (rows || []).map((r: any) => ({
+    vendorId: r.vendorId, vendorName: r.vendorName, category: r.category,
+    vdef: r.vdef, used: r.used || 0,
+  }))
+  let reclassSupply = 0, reclassEvent = 0, reclassCard = 0, reclassUtility = 0
+  reclassVendors.forEach(r => {
+    if (r.vdef === 'supply') reclassSupply += r.used
+    else if (r.vdef === 'event') reclassEvent += r.used
+    else if (r.vdef === 'card') reclassCard += r.used
+    else if (r.vdef === 'utility') reclassUtility += r.used
+  })
+  return {
+    reclassSupply, reclassEvent, reclassCard, reclassUtility,
+    reclassToOperating: reclassSupply + reclassEvent + reclassCard + reclassUtility,
+    reclassVendors,
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// STEP 2·3. 대표/운영반영 식단가 일원화 (재분류 반영 포함)
+// ──────────────────────────────────────────────────────────────────
+
+export interface UnifiedDietPriceInput {
+  totalUsed: number                    // 전체 발주 합계 (daily_orders)
+  ordersByType: OrderAmountByCostType  // cost_type별 발주
+  cardByType: CardAmountByCostType     // 카드 cost_type별
+  totalMealsForPrice: number
+  staffMealsForCalc: number
+  supplyExcludeKeys: string[]
+  reclassToOperating: number           // STEP 5 재분류 합계
+}
+
+export interface UnifiedDietPriceResult {
+  mealPriceTotal: number       // 운영반영 식단가 = totalUsed ÷ 식수
+  mealPriceNoStaff: number
+  mealPriceNoSupply: number    // 대표 식단가 = (totalUsed − supplyCardUsed − reclass) ÷ 식수
+  supplyCardUsed: number       // supplyExcludeKeys 기준 제외 금액 (재분류 제외)
+  effSupplyCardUsed: number    // supplyCardUsed + reclassToOperating
+}
+
+/**
+ * 영양사(dashboard.ts) L599-617 과 동일한 대표/운영반영 식단가 계산.
+ *   - 운영반영(mealPriceTotal) = totalUsed ÷ 식수  (재분류 영향 없음)
+ *   - 대표(mealPriceNoSupply)  = (totalUsed − supplyCardUsed − reclassToOperating) ÷ 식수
+ */
+export function calcUnifiedDietPrices(input: UnifiedDietPriceInput): UnifiedDietPriceResult {
+  const {
+    totalUsed, ordersByType, cardByType, totalMealsForPrice,
+    staffMealsForCalc, supplyExcludeKeys, reclassToOperating,
+  } = input
+
+  const overall = calcOverallDietPrices({
+    totalUsed, ordersByType, cardByType,
+    totalMealsForPrice, staffMealsForCalc, supplyExcludeKeys,
+  })
+  const effSupplyCardUsed = overall.supplyCardUsed + reclassToOperating
+  const mealPriceNoSupply = totalMealsForPrice > 0
+    ? Math.round((totalUsed - effSupplyCardUsed) / totalMealsForPrice) : 0
+
+  return {
+    mealPriceTotal: overall.mealPriceTotal,
+    mealPriceNoStaff: overall.mealPriceNoStaff,
+    mealPriceNoSupply,
+    supplyCardUsed: overall.supplyCardUsed,
+    effSupplyCardUsed,
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// STEP 4. 운영비 일원화 — costBreakdown (식재료비 vs 운영비)
+// ──────────────────────────────────────────────────────────────────
+
+export interface CostBreakdownInput {
+  ordersByType: OrderAmountByCostType  // cost_type별 발주
+  cardByType: CardAmountByCostType     // card_expenses cost_type별
+  ordersCardUsed: number               // daily_orders cost_type='card' 합계
+  reclass: ReclassResult
+  budgets?: {
+    total?: number
+    supply?: number
+    event?: number
+    card?: number
+  }
+  foodDietPrice: number                // 대표 식단가 (mealPriceNoSupply)
+}
+
+export interface CostBreakdownResult {
+  food: { used: number; budget: number; ratio: number | null }
+  operating: { used: number; budget: number; ratio: number | null }
+  items: {
+    supply: { used: number; budget: number }
+    event: { used: number; budget: number }
+    card: { used: number; budget: number }
+    utility: { used: number }
+    other: { used: number; vendors: Array<{ vendorId: number; vendorName: string; category: string; used: number }> }
+  }
+  foodDietPrice: number
+  foodVendorIds: number[]
+}
+
+/**
+ * 영양사(dashboard.ts) L1403-1457 과 동일한 costBreakdown 구성.
+ *   운영비 = (cost_type 운영비) + (카드 cost_type) + 재분류분
+ *   식재료비 = cost_type='food' − 재분류
+ */
+export function buildCostBreakdown(input: CostBreakdownInput): CostBreakdownResult {
+  const { ordersByType, cardByType, ordersCardUsed, reclass, budgets = {}, foodDietPrice } = input
+
+  const cbSupplyUsed  = (ordersByType.supply  || 0) + (cardByType.supply || 0) + reclass.reclassSupply
+  const cbEventUsed   = (ordersByType.event   || 0) + (cardByType.event  || 0) + reclass.reclassEvent
+  const cbUtilityUsed = (ordersByType.utility || 0) + reclass.reclassUtility
+  const cbCardUsed    = ordersCardUsed + (cardByType.total || 0) + reclass.reclassCard
+  const cbOperatingUsed = cbSupplyUsed + cbEventUsed + cbUtilityUsed + cbCardUsed
+  const cbFoodUsed = Math.max(0, (ordersByType.food || 0) - reclass.reclassToOperating)
+
+  const cbSupplyBudget = budgets.supply || 0
+  const cbEventBudget  = budgets.event  || 0
+  const cbCardBudget   = budgets.card   || 0
+  const cbOperatingBudget = cbSupplyBudget + cbEventBudget + cbCardBudget
+  const cbFoodBudget = Math.max(0, (budgets.total || 0) - cbOperatingBudget)
+
+  const _ratio = (used: number, budget: number) =>
+    budget > 0 ? parseFloat(((used / budget) * 100).toFixed(1)) : null
+
+  const cbOtherVendors = reclass.reclassVendors.map(r => ({
+    vendorId: r.vendorId, vendorName: r.vendorName, category: r.category, used: r.used || 0,
+  }))
+
+  return {
+    food:      { used: cbFoodUsed, budget: cbFoodBudget, ratio: _ratio(cbFoodUsed, cbFoodBudget) },
+    operating: { used: cbOperatingUsed, budget: cbOperatingBudget, ratio: _ratio(cbOperatingUsed, cbOperatingBudget) },
+    items: {
+      supply:  { used: cbSupplyUsed,  budget: cbSupplyBudget },
+      event:   { used: cbEventUsed,   budget: cbEventBudget  },
+      card:    { used: cbCardUsed,    budget: cbCardBudget   },
+      utility: { used: cbUtilityUsed },
+      other:   { used: reclass.reclassToOperating, vendors: cbOtherVendors },
+    },
+    foodDietPrice: foodDietPrice || 0,
+    foodVendorIds: [],
+  }
+}

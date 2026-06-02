@@ -3,6 +3,88 @@ import { Hono } from 'hono'
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
 
+// ★ [계산 엔진 일원화] 대표 식단가(식재료비 ÷ 식수) 분자 = 식재료비 산출용 헬퍼
+//   영양사/운영진과 동일 기준:
+//     식재료비 = cost_type='food' 발주 합 − 운영비 재분류(food지만 업체 비용구분이 운영비성)
+//   supplyExcludeKeys 의 supply/event/utility/card 도 대표 식단가 분자에서 제외(영양사 mealPriceNoSupply 동일).
+//   반환: hospital_id → 식재료비(대표 식단가 분자)
+async function buildFoodCostMap(
+  db: D1Database, hids: number[], start: string, end: string
+): Promise<Record<number, number>> {
+  if (hids.length === 0) return {}
+  const ph = hids.map(() => '?').join(',')
+
+  // 1) cost_type별 발주 합 (병원별)
+  const ordR = await db.prepare(
+    `SELECT hospital_id, cost_type, COALESCE(SUM(total_amount),0) AS amt
+     FROM daily_orders WHERE order_date BETWEEN ? AND ? AND hospital_id IN (${ph})
+     GROUP BY hospital_id, cost_type`
+  ).bind(start, end, ...hids).all()
+  const ordersByType: Record<number, Record<string, number>> = {}
+  ;(ordR.results as any[]).forEach((r: any) => {
+    if (!ordersByType[r.hospital_id]) ordersByType[r.hospital_id] = {}
+    ordersByType[r.hospital_id][r.cost_type] = r.amt || 0
+  })
+
+  // 2) card_expenses cost_type별 합 (병원별)
+  const cardR = await db.prepare(
+    `SELECT hospital_id, cost_type, COALESCE(SUM(amount),0) AS amt
+     FROM card_expenses WHERE expense_date BETWEEN ? AND ? AND hospital_id IN (${ph})
+     GROUP BY hospital_id, cost_type`
+  ).bind(start, end, ...hids).all().catch(() => ({ results: [] }))
+  const cardByType: Record<number, Record<string, number>> = {}
+  ;(cardR.results as any[]).forEach((r: any) => {
+    if (!cardByType[r.hospital_id]) cardByType[r.hospital_id] = {}
+    cardByType[r.hospital_id][r.cost_type] = r.amt || 0
+  })
+
+  // 3) 운영비 재분류 (food 발주인데 업체 비용구분이 운영비성) — 병원별 vdef 합
+  const reclR = await db.prepare(
+    `SELECT d.hospital_id, v.cost_type_default AS vdef, COALESCE(SUM(d.total_amount),0) AS amt
+     FROM daily_orders d JOIN vendors v ON d.vendor_id=v.id
+     WHERE d.hospital_id IN (${ph}) AND d.order_date BETWEEN ? AND ?
+       AND d.cost_type='food' AND v.cost_type_default IN ('supply','event','card','utility')
+     GROUP BY d.hospital_id, v.cost_type_default`
+  ).bind(...hids, start, end).all().catch(() => ({ results: [] }))
+  const reclassByHosp: Record<number, Record<string, number>> = {}
+  ;(reclR.results as any[]).forEach((r: any) => {
+    if (!reclassByHosp[r.hospital_id]) reclassByHosp[r.hospital_id] = {}
+    reclassByHosp[r.hospital_id][r.vdef] = r.amt || 0
+  })
+
+  // 4) supply_exclude_keys (병원별; 없으면 기본 ['card','supply'])
+  const hiR = await db.prepare(
+    `SELECT hospital_id, supply_exclude_keys FROM hospital_info WHERE hospital_id IN (${ph})`
+  ).bind(...hids).all().catch(() => ({ results: [] }))
+  const excludeByHosp: Record<number, string[]> = {}
+  ;(hiR.results as any[]).forEach((r: any) => {
+    let keys: string[] = ['card', 'supply']
+    if (r.supply_exclude_keys) { try { keys = JSON.parse(r.supply_exclude_keys) } catch (e) {} }
+    excludeByHosp[r.hospital_id] = keys
+  })
+
+  // 5) 병원별 식재료비(대표 식단가 분자) 계산
+  //    영양사 mealPriceNoSupply 분자 = totalUsed − supplyCardUsed − reclassToOperating
+  //    여기서 totalUsed = 전체 발주, supplyCardUsed = supplyExcludeKeys 기준 (소모품/이벤트/공과금/카드)
+  const foodCostMap: Record<number, number> = {}
+  hids.forEach(hid => {
+    const ord = ordersByType[hid] || {}
+    const card = cardByType[hid] || {}
+    const recl = reclassByHosp[hid] || {}
+    const ex = excludeByHosp[hid] || ['card', 'supply']
+    const totalUsed = Object.values(ord).reduce((s: number, v: number) => s + v, 0)
+    const supplyUsed  = ex.includes('supply')  ? (ord['supply']  || 0) : 0
+    const eventUsed   = ex.includes('event')   ? (ord['event']   || 0) : 0
+    const utilityUsed = ex.includes('utility') ? (ord['utility'] || 0) : 0
+    const cardExcluded = ex.includes('card')
+      ? Object.values(card).reduce((s: number, v: number) => s + v, 0) : 0
+    const supplyCardUsed = supplyUsed + eventUsed + utilityUsed + cardExcluded
+    const reclassToOperating = (recl['supply'] || 0) + (recl['event'] || 0) + (recl['card'] || 0) + (recl['utility'] || 0)
+    foodCostMap[hid] = totalUsed - supplyCardUsed - reclassToOperating
+  })
+  return foodCostMap
+}
+
 // ─── 공통 헬퍼 ───────────────────────────────────────────────
 function ym(year: number, month: number) {
   return `${year}-${String(month).padStart(2, '0')}`
@@ -268,14 +350,18 @@ app.get('/kpi/:year/:month', async (c) => {
   ;(inspR.results as any[]).forEach((r: any) => { inspCountMap[r.hospital_id] = r.cnt || 0 })
   const pendingInspectCount = Object.values(inspCountMap).filter(v => v > 0).length
 
+  // ★ [일원화] 대표 식단가 분자 = 식재료비(병원별) — 영양사/운영진과 동일 기준
+  const foodCostMap = await buildFoodCostMap(c.env.DB, hids, start, end)
+
   // 집계
   let totalBudget = 0, totalUsed = 0
   let budgetPctSum = 0, budgetPctCnt = 0
   let mealPriceSum = 0, mealPriceCnt = 0
   let dangerBudgetCount = 0, dangerMealCount = 0
-  // [옵션A] 대표식단가(avgMealPrice) 를 영양사/운영진과 동일하게 totalUsed ÷ totalMeals 기준으로 산출하기 위한
-  //          전체 병원 식수 합계. (기존 카테고리별 단순평균은 mealPriceByCategory 보조지표로만 유지)
+  // [일원화] 대표 식단가(avgMealPrice) = 식재료비 합 ÷ 식수 합 (영양사 mealPriceNoSupply / 운영진 currentMealPrice 와 동일 기준)
+  //          기존 카테고리별 단순평균은 mealPriceByCategory 보조지표로만 유지
   let kpiTotalMeals = 0
+  let kpiTotalFoodCost = 0   // 병원별 식재료비 누적 (대표 식단가 분자)
 
   // KPI용 카테고리별 전체 합산 (모든 병원)
   const kpiCatMeals: Record<string, number> = {}
@@ -309,8 +395,9 @@ app.get('/kpi/:year/:month', async (c) => {
       kpiCatOrds[cat.category_key]  += o
     })
 
-    // [옵션A] 영양사/운영진과 동일한 totalUsed÷totalMeals 산출을 위해 병원별 식수 누적
+    // [일원화] 병원별 식수 + 식재료비 누적 (대표 식단가 = 식재료비합 ÷ 식수합)
     kpiTotalMeals += totalMeals
+    kpiTotalFoodCost += (foodCostMap[hid] || 0)
 
     if (budget > 0) {
       const pct = used / budget * 100
@@ -359,10 +446,13 @@ app.get('/kpi/:year/:month', async (c) => {
     hospitalCount:    hids.length,
     totalBudget,      totalUsed,
     avgBudgetPct:     budgetPctCnt > 0 ? Math.round(budgetPctSum / budgetPctCnt) : 0,
-    // [옵션A] 대표식단가 = totalUsed ÷ totalMeals (영양사/운영진/DB 실측과 동일 기준)
-    //          예) 아미나 2026-05: 55,803,781 ÷ 6,633 = 8,413
-    //              무이재 2026-05: 100,335,471 ÷ 13,238 = 7,579
-    avgMealPrice:     kpiTotalMeals > 0 ? Math.round(totalUsed / kpiTotalMeals) : 0,
+    // ★ [일원화] 대표 식단가 = 식재료비 합 ÷ 식수 합 (영양사/운영진/DB 실측과 완전 동일 기준)
+    //   식재료비 = cost_type='food' − 운영비재분류 − supplyExcludeKeys(소모품/이벤트/공과금/카드)
+    //   예) 아미나 2026-05: 48,503,949 ÷ 6,633 = 7,313
+    //       무이재 2026-05: 99,949,471 ÷ 13,238 = 7,550
+    avgMealPrice:     kpiTotalMeals > 0 ? Math.round(kpiTotalFoodCost / kpiTotalMeals) : 0,
+    // 운영반영 식단가 = 전체 사용금액 ÷ 식수 (별도 지표, 8,413 / 7,579)
+    avgMealPriceOperating: kpiTotalMeals > 0 ? Math.round(totalUsed / kpiTotalMeals) : 0,
     dangerBudgetCount, dangerMealCount, pendingInspectCount,
     mealPriceByCategory  // 보조지표: 카테고리별 평균/목표 식단가 (현행 유지)
   })
