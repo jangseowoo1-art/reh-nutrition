@@ -469,11 +469,16 @@ executive.get('/staff-labor/:year/:month', async (c) => {
   ;(laborCostRows.results || []).forEach((r: any) => { costMap[r.cost_type] = r.unit_price || 0 })
 
   // shift_type → cost_type 매핑
+  // [BUGFIX] DB 실측 결과 external_schedules.shift_type 값은 full_9h / full_12h 형식으로 저장되며
+  //          기존 '9h' / '12h' 키와 매칭되지 않아 dispatch full_9h(65회)/full_12h(53회)가 0원 처리되던 문제 수정.
+  //          기존 '9h'/'12h' 키는 하위호환을 위해 유지하고 full_9h/full_12h 키를 additive 로 추가함.
   const shiftToCostType: Record<string, string> = {
     morning:   'dispatch_morning',
     afternoon: 'dispatch_afternoon',
     '9h':      'dispatch_9h',
     '12h':     'dispatch_12h',
+    full_9h:   'dispatch_9h',   // BUGFIX: 실제 DB 저장값
+    full_12h:  'dispatch_12h',  // BUGFIX: 실제 DB 저장값
   }
   const partTimeToCostType: Record<string, string> = {
     morning:   'parttime_morning',
@@ -483,6 +488,8 @@ executive.get('/staff-labor/:year/:month', async (c) => {
     // P7: 시급제 알바 매핑 추가 (labor_cost_settings.parttime_hourly 존재하나 매핑 누락되어 0원 계산되던 문제 보완)
     // 기존 morning/afternoon/9h/12h 키는 그대로 유지 — 추가만 함(additive)
     hourly:    'parttime_hourly',
+    full_9h:   'parttime_9h',   // BUGFIX: dispatch 와 동일하게 full_ 접두 실제 저장값 대응
+    full_12h:  'parttime_12h',  // BUGFIX: dispatch 와 동일하게 full_ 접두 실제 저장값 대응
   }
 
   // ── 5. 파출/알바 인건비 계산 ─────────────────────────────────
