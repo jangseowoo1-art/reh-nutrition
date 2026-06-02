@@ -2288,13 +2288,16 @@ async function renderDashboard() {
     <div class="flex-1 h-px bg-gray-100"></div>
   </div>
 
-  ${(budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined || cb) ? `
+  ${(budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined || cb || (data.mealPriceTotal||0) > 0) ? `
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-2">
 
     <!-- ★ 1-1. 대표 식단가 (식재료 기준) — 메인 KPI -->
-    ${cb ? (() => {
-      const fUsed2 = cb.food?.used || 0
-      const foodDPMain = cb.foodDietPrice || 0
+    ${(() => {
+      // BUGFIX: dashboard summary API는 costBreakdown(cb)을 반환하지 않으므로
+      //   cb.foodDietPrice가 없을 때 API의 mealPriceTotal(대표식단가=totalUsed÷totalMeals,
+      //   운영진/KPI와 동일 기준)로 폴백한다. 이전에는 cb가 없으면 무조건 "- 원/식" 표시됨.
+      const fUsed2 = cb?.food?.used || 0
+      const foodDPMain = (cb?.foodDietPrice || 0) || (data.mealPriceTotal || 0)
       const tgtP2 = effectiveTargetPrice
       const stateColor2 = foodDPMain > 0 && tgtP2 > 0
         ? (foodDPMain > tgtP2 * 1.1 ? '#b91c1c' : foodDPMain > tgtP2 ? '#dc2626' : foodDPMain > tgtP2 * 0.9 ? '#d97706' : '#16a34a')
@@ -2326,14 +2329,7 @@ async function renderDashboard() {
         </div>
         ${priceDiffMain !== null ? `<div class="text-xs mt-1 font-semibold" style="color:${stateColor2}">${priceDiffMain > 0 ? '▲ +'+fmt(priceDiffMain)+'원 초과' : '▼ '+fmt(Math.abs(priceDiffMain))+'원 절감'}</div>` : ''}
       </div>`
-    })() : `<div class="bg-white rounded-2xl shadow-sm border-2 border-indigo-200 p-4">
-        <div class="flex items-center gap-2 mb-2">
-          <div class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center"><i class="fas fa-utensils text-indigo-400 text-sm"></i></div>
-          <div><span class="text-xs font-bold text-gray-700">대표 식단가</span><div class="text-xs text-gray-400">식재료비 ÷ 기준 식수</div></div>
-        </div>
-        <div class="text-2xl font-black text-gray-400 mb-1">-<span class="text-sm font-normal ml-1">원/식</span></div>
-        <div class="text-xs text-gray-400 mt-1">비용구조 데이터 없음</div>
-      </div>`}
+    })()}
 
     <!-- 2.3 예산 소진 예상일 -->
     <div class="bg-white rounded-2xl shadow-sm border ${budgetDepl.budgetDepletionStatus==='exceeded'?'border-red-300':budgetDepl.budgetDepletionStatus==='warning'?'border-yellow-300':'border-gray-100'} p-4">

@@ -1945,8 +1945,18 @@ dashboard.get('/staff-labor/:year/:month', async (c) => {
        AND strftime('%m', es.work_date) = printf('%02d', ?)`
   ).bind(hospitalId, String(y), m).all<any>()
 
-  const dispatchShiftMap: Record<string, string> = { morning:'dispatch_morning', afternoon:'dispatch_afternoon', '9h':'dispatch_9h', '12h':'dispatch_12h' }
-  const partShiftMap:     Record<string, string> = { morning:'parttime_morning',  afternoon:'parttime_afternoon',  '9h':'parttime_9h',  '12h':'parttime_12h' }
+  // BUGFIX: DB 실제 저장값은 full_9h/full_12h (구 키 '9h'/'12h'는 미사용 dead key).
+  //         executive.ts P1 수정과 동일하게 full_9h/full_12h 매핑 추가 (additive).
+  const dispatchShiftMap: Record<string, string> = {
+    morning:'dispatch_morning', afternoon:'dispatch_afternoon',
+    '9h':'dispatch_9h', '12h':'dispatch_12h',
+    full_9h:'dispatch_9h', full_12h:'dispatch_12h',   // BUGFIX
+  }
+  const partShiftMap:     Record<string, string> = {
+    morning:'parttime_morning',  afternoon:'parttime_afternoon',
+    '9h':'parttime_9h',  '12h':'parttime_12h',
+    full_9h:'parttime_9h', full_12h:'parttime_12h',   // BUGFIX
+  }
 
   let dispatchCost = 0, parttimeCost = 0
   ;(extCostRows.results || []).forEach((e: any) => {
