@@ -1366,12 +1366,18 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 // ── 병원별 업체 목록 (관리자용) ───────────────────────────────
 adminRouter.get('/hospitals/:id/vendors', async (c) => {
   const id = c.req.param('id')
+  // ★ 모달 재오픈 시 선택값 유지를 위해 cost_type_default / order_cycle 및
+  //   병원별 비용 반영 기준(vendor_hospital_cost_rules.cost_class)을 함께 반환
   const vendors = await c.env.DB.prepare(`
-    SELECT id, name, category, tax_type, monthly_budget, sort_order,
-           COALESCE(is_card_type, 0) as is_card_type, card_subtype
-    FROM vendors
-    WHERE hospital_id=? AND is_active=1
-    ORDER BY sort_order, id
+    SELECT v.id, v.name, v.category, v.tax_type, v.monthly_budget, v.sort_order,
+           COALESCE(v.is_card_type, 0) as is_card_type, v.card_subtype,
+           v.order_cycle, v.cost_type_default,
+           r.cost_class AS hospital_cost_class
+    FROM vendors v
+    LEFT JOIN vendor_hospital_cost_rules r
+      ON r.hospital_id = v.hospital_id AND r.vendor_id = v.id
+    WHERE v.hospital_id=? AND v.is_active=1
+    ORDER BY v.sort_order, v.id
   `).bind(id).all<any>()
   return c.json(vendors.results || [])
 })
@@ -1379,7 +1385,7 @@ adminRouter.get('/hospitals/:id/vendors', async (c) => {
 // ── 병원별 업체 추가 (관리자용) ───────────────────────────────
 adminRouter.post('/hospitals/:id/vendors', async (c) => {
   const hospitalId = c.req.param('id')
-  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle } = await c.req.json()
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle, costTypeDefault } = await c.req.json()
   if (!name?.trim()) return c.json({ error: '업체명을 입력하세요' }, 400)
 
   // ★ vendor로 등록 불가한 비용유형 카테고리 차단 (event/supply/utility)
@@ -1392,14 +1398,15 @@ adminRouter.post('/hospitals/:id/vendors', async (c) => {
     }, 400)
   }
 
-  await c.env.DB.prepare(`
-    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active, is_card_type, card_subtype, order_cycle)
-    VALUES (?,?,?,?,?,?,1,?,?,?)
+  const insRes = await c.env.DB.prepare(`
+    INSERT INTO vendors (hospital_id, name, category, tax_type, monthly_budget, sort_order, is_active, is_card_type, card_subtype, order_cycle, cost_type_default)
+    VALUES (?,?,?,?,?,?,1,?,?,?,?)
   `).bind(
     hospitalId, name.trim(), category||'general',
     taxType||'mixed', monthlyBudget||0, sortOrder||99,
     isCardType ? 1 : 0, cardSubtype || null,
-    orderCycle || 'daily'
+    orderCycle || 'daily',
+    costTypeDefault || null
   ).run()
   // ── 발주 업체 등록 시 거래명세서 업체도 자동 생성 (미설정 상태로) ──
   const norm = name.trim().replace(/\s+/g, '')
@@ -1408,7 +1415,7 @@ adminRouter.post('/hospitals/:id/vendors', async (c) => {
       (hospital_id, vendor_name, vendor_name_norm, test_status)
     VALUES (?, ?, ?, 'untested')
   `).bind(hospitalId, name.trim(), norm).run()
-  return c.json({ success: true })
+  return c.json({ success: true, id: insRes?.meta?.last_row_id })
 })
 
 // ── 업체 순서 일괄 변경 (반드시 :vid 라우트보다 위에 있어야 함) ───
@@ -1427,7 +1434,7 @@ adminRouter.put('/hospitals/:id/vendors/reorder', async (c) => {
 // ── 병원별 업체 수정 (관리자용) ───────────────────────────────
 adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
-  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle } = await c.req.json()
+  const { name, category, taxType, monthlyBudget, sortOrder, isCardType, cardSubtype, orderCycle, costTypeDefault } = await c.req.json()
 
   // ★ 수정 시에도 차단 카테고리로 변경 불가 (기존 event/supply 데이터는 마이그레이션 제외)
   // 기존 레코드의 category를 먼저 확인
@@ -1443,15 +1450,18 @@ adminRouter.put('/hospitals/:id/vendors/:vid', async (c) => {
     }, 400)
   }
 
+  // costTypeDefault가 명시적으로 전달된 경우에만 갱신 (기존 값 보존을 위해 COALESCE 사용)
   await c.env.DB.prepare(`
     UPDATE vendors SET name=?, category=?, tax_type=?, monthly_budget=?, sort_order=?,
-                       is_card_type=?, card_subtype=?, order_cycle=?
+                       is_card_type=?, card_subtype=?, order_cycle=?,
+                       cost_type_default=COALESCE(?, cost_type_default)
     WHERE id=? AND hospital_id=?
   `).bind(
     name, category||'general', taxType||'mixed',
     monthlyBudget||0, sortOrder||99,
     isCardType ? 1 : 0, cardSubtype || null,
     orderCycle || 'daily',
+    (costTypeDefault === undefined ? null : costTypeDefault),
     vid, hospitalId
   ).run()
   return c.json({ success: true })
@@ -1475,6 +1485,34 @@ adminRouter.delete('/hospitals/:id/vendors/:vid', async (c) => {
     `).bind(hospitalId, norm).run()
   }
   return c.json({ success: true })
+})
+
+// ── 병원별 비용 반영 기준 조회 (vendor_hospital_cost_rules) ──────
+// 업체 단위로 "이 병원에서의 비용 반영 기준"(food/operating)을 조회
+adminRouter.get('/hospitals/:id/vendor-cost-rules/:vid', async (c) => {
+  const { id: hospitalId, vid } = c.req.param()
+  const row = await c.env.DB.prepare(
+    `SELECT cost_class FROM vendor_hospital_cost_rules WHERE hospital_id=? AND vendor_id=?`
+  ).bind(hospitalId, vid).first<any>()
+  return c.json({ costClass: row?.cost_class || null })
+})
+
+// ── 병원별 비용 반영 기준 저장 (vendor_hospital_cost_rules) UPSERT ──
+// UNIQUE(hospital_id, vendor_id) 제약 → ON CONFLICT로 갱신
+adminRouter.put('/hospitals/:id/vendor-cost-rules/:vid', async (c) => {
+  const { id: hospitalId, vid } = c.req.param()
+  const { costClass } = await c.req.json()
+  const valid = ['food', 'operating']
+  if (!costClass || !valid.includes(costClass)) {
+    return c.json({ error: `costClass는 ${valid.join('/')} 중 하나여야 합니다` }, 400)
+  }
+  await c.env.DB.prepare(`
+    INSERT INTO vendor_hospital_cost_rules (hospital_id, vendor_id, cost_class, created_at, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(hospital_id, vendor_id)
+    DO UPDATE SET cost_class=excluded.cost_class, updated_at=CURRENT_TIMESTAMP
+  `).bind(hospitalId, vid, costClass).run()
+  return c.json({ success: true, costClass })
 })
 
 // ── 공휴일 목록 ───────────────────────────────────────────────
