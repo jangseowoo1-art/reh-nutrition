@@ -376,7 +376,7 @@ const DIET_CALC = (() => {
     return `<div style="display:flex;gap:8px;flex-wrap:wrap">
       ${card('대표 식단가', rep, repDiff, '#1d4ed8', '식재료비 기준 (소모품·운영비 제외)')}
       ${card('운영반영 식단가', oper, operDiff, '#7c3aed', '전체 발주액 기준 (운영비 포함)')}
-      ${card('환자 식단가', pat, patDiff, '#059669', '환자군 전용 기준')}
+      ${card('환자군 식단가', pat, patDiff, '#059669', '환자군 식수 기준 (해당 환자군 전용)')}
     </div>`
   }
 
@@ -595,8 +595,8 @@ const DIET_CALC = (() => {
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
           <div>
             <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">
-              <span style="background:#16a34a;color:white;font-size:8px;font-weight:700;padding:2px 6px;border-radius:4px">환자 전용</span>
-              <span style="font-size:10px;font-weight:700;color:#166534">환자 식단가</span>
+              <span style="background:#16a34a;color:white;font-size:8px;font-weight:700;padding:2px 6px;border-radius:4px">환자군 전용</span>
+              <span style="font-size:10px;font-weight:700;color:#166534">환자군 식단가</span>
               <span style="font-size:9px;color:#6b7280">· 대표 식단가와 별도 집계</span>
             </div>
             <div style="font-size:${compact?'16px':'19px'};font-weight:800;color:#16a34a;line-height:1">
@@ -612,7 +612,7 @@ const DIET_CALC = (() => {
           </div>` : ''}
         </div>
         <div style="margin-top:5px;font-size:9px;color:#166534;background:#dcfce7;border-radius:5px;padding:3px 7px;line-height:1.4">
-          환자 식단가는 환자군 식수만으로 계산 — 직원·보호자 식수 제외. 대표 식단가(전체 기준)와 다를 수 있습니다.
+          환자군 식단가는 환자군 식수만으로 계산 — 직원·보호자 식수 제외. 대표 식단가(전체 기준)와 다를 수 있습니다.
         </div>
       </div>` : ''
 
@@ -2288,17 +2288,27 @@ async function renderDashboard() {
     <div class="flex-1 h-px bg-gray-100"></div>
   </div>
 
-  ${(budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined || cb || (data.mealPriceTotal||0) > 0) ? `
+  ${(budgetDepl.budgetDepletionDate || anomalies.length > 0 || orderAppr.diffRatio !== undefined || cb || (data.mealPriceNoSupply||0) > 0 || (data.mealPriceTotal||0) > 0) ? `
   <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-2">
 
-    <!-- ★ 1-1. 대표 식단가 (식재료 기준) — 메인 KPI -->
+    <!-- ★ 1-1. 대표 식단가 (식재료 기준 = mealPriceNoSupply) — 메인 KPI -->
     ${(() => {
-      // BUGFIX: dashboard summary API는 costBreakdown(cb)을 반환하지 않으므로
-      //   cb.foodDietPrice가 없을 때 API의 mealPriceTotal(대표식단가=totalUsed÷totalMeals,
-      //   운영진/KPI와 동일 기준)로 폴백한다. 이전에는 cb가 없으면 무조건 "- 원/식" 표시됨.
-      const fUsed2 = cb?.food?.used || 0
-      const foodDPMain = (cb?.foodDietPrice || 0) || (data.mealPriceTotal || 0)
+      // ── 식단가 정의 (확정) ─────────────────────────────────────
+      //   대표 식단가     = 식재료 기준(운영비성 항목 제외)  = mealPriceNoSupply (예: 아미나 7,475)
+      //   운영반영 식단가 = 운영비 포함(전체 발주액 ÷ 식수) = mealPriceTotal    (예: 아미나 8,413)
+      //   환자군 식단가   = 환자군 발주액 ÷ 환자군 식수      = catDietPrices[].patientOnlyDietPrice
+      // 대표 식단가는 반드시 mealPriceNoSupply 기준으로 표시한다.
+      //   (cb.foodDietPrice가 있으면 그것을 우선, 없으면 mealPriceNoSupply 폴백)
+      const repMain  = (cb?.foodDietPrice || 0) || (data.mealPriceNoSupply || 0) || (data.mealPriceTotal || 0)
+      const operMain = data.mealPriceTotal || 0   // 운영반영 식단가
+      const operDiff = (repMain > 0 && operMain > 0) ? (operMain - repMain) : 0  // 차이(+면 운영비로 상승)
+      const foodDPMain = repMain
       const tgtP2 = effectiveTargetPrice
+      // 반영된 운영비 항목 라벨 (supplyExcludeKeys → 한글)
+      const opKeyLabel = { card:'법인카드', supply:'소모품', event:'행사비', utility:'공과금', other:'기타' }
+      const opKeys = Array.isArray(data.supplyExcludeKeys) ? data.supplyExcludeKeys : []
+      const opItems = opKeys.map(k => opKeyLabel[k] || k).filter(Boolean)
+      const opItemsStr = opItems.length ? opItems.join(', ') : '없음'
       const stateColor2 = foodDPMain > 0 && tgtP2 > 0
         ? (foodDPMain > tgtP2 * 1.1 ? '#b91c1c' : foodDPMain > tgtP2 ? '#dc2626' : foodDPMain > tgtP2 * 0.9 ? '#d97706' : '#16a34a')
         : '#374151'
@@ -2319,7 +2329,7 @@ async function renderDashboard() {
           </div>
           <div>
             <span class="text-xs font-bold text-gray-700">대표 식단가</span>
-            <div class="text-xs text-gray-400">식재료비 ÷ 기준 식수</div>
+            <div class="text-xs text-gray-400">식재료비 ÷ 기준 식수 (운영비 제외)</div>
           </div>
         </div>
         <div class="text-2xl font-black mb-1" style="color:${stateColor2}">${foodDPMain > 0 ? fmt(foodDPMain) : '-'}<span class="text-sm font-normal text-gray-400 ml-1">원/식</span></div>
@@ -2328,6 +2338,18 @@ async function renderDashboard() {
           <span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:${stateColor2}18;color:${stateColor2}">${stateLabel2}</span>
         </div>
         ${priceDiffMain !== null ? `<div class="text-xs mt-1 font-semibold" style="color:${stateColor2}">${priceDiffMain > 0 ? '▲ +'+fmt(priceDiffMain)+'원 초과' : '▼ '+fmt(Math.abs(priceDiffMain))+'원 절감'}</div>` : ''}
+        ${operMain > 0 ? `
+        <div class="mt-2 pt-2" style="border-top:1px dashed #e5e7eb">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-500">운영반영 식단가</span>
+            <span class="font-bold" style="color:#7c3aed">${fmt(operMain)}<span class="font-normal text-gray-400">원/식</span></span>
+          </div>
+          ${operDiff !== 0 ? `<div class="flex items-center justify-between text-xs mt-0.5">
+            <span class="text-gray-400">대표 대비 차이</span>
+            <span class="font-semibold" style="color:${operDiff>0?'#7c3aed':'#059669'}">${operDiff>0?'+':''}${fmt(operDiff)}원</span>
+          </div>` : ''}
+          <div class="text-xs text-gray-400 mt-0.5">반영 운영비: <span class="text-gray-500 font-medium">${opItemsStr}</span></div>
+        </div>` : ''}
       </div>`
     })()}
 
