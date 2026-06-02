@@ -1,28 +1,30 @@
 -- ════════════════════════════════════════════════════════════════
 -- 0065_partial_leave_columns.sql
--- 부분연차/반차 입력 기능(작업 C) 지원용 컬럼 추가
+-- 부분연차/반차 입력 기능(작업 C) 지원용 인덱스 보강
 --
 -- 대상 테이블: employee_leave_history
---   기존 컬럼(실측): id, hospital_id, employee_id, year, month,
---                    leave_date, leave_subtype, note, created_at
---   → 부분연차/반차 저장에 필요한 4개 컬럼이 없어 ADD COLUMN 으로 추가.
 --
--- ⚠️ 안전 규칙 준수:
---   - ADD COLUMN 만 사용 (DROP/DELETE/UPDATE/RESET 없음)
+-- ⚠️ 중요 — 컬럼 추가는 이 마이그레이션에서 수행하지 않습니다.
+--   실측 결과(2026-06-02 --remote PRAGMA 확인):
+--     로컬/프로덕션 D1 모두 아래 4개 컬럼이 이미 존재합니다.
+--       - leave_hours    (REAL)  : 사용 시간 (예: 4)
+--       - standard_hours (REAL)  : 해당 날짜 근무조 기준시간 (예: 8)
+--       - leave_ratio    (REAL)  : 차감 비율/일수 (leave_hours / standard_hours, 예: 0.5)
+--       - leave_period   (TEXT)  : 'am' | 'pm' (오전/오후 반차 구분)
+--   프로덕션에는 위 컬럼이 과거 경로로 이미 추가되어 있었고,
+--   d1_migrations 기준 0065 는 프로덕션에 아직 미적용 상태였습니다.
+--   SQLite 는 `ADD COLUMN IF NOT EXISTS` 를 지원하지 않으므로,
+--   plain `ADD COLUMN` 을 프로덕션에 적용하면 중복 컬럼 오류로
+--   마이그레이션 전체가 실패합니다.
+--   → 따라서 이 마이그레이션에서는 ADD COLUMN 을 제거하고,
+--     양쪽 모두 미존재인 부분 UNIQUE 인덱스만 IF NOT EXISTS 로 생성합니다.
+--
+-- ✅ 안전 규칙 준수:
+--   - ADD COLUMN / DROP / DELETE / UPDATE / RESET / SEED 없음
+--   - 운영 데이터 미수정
 --   - daily_orders / daily_meals / daily_schedules 미변경
 --   - 기존 종일 연차 동작(shift_code='연')에 영향 없음
---
--- 추가 컬럼:
---   leave_hours    : 사용 시간 (예: 4) — REAL
---   leave_ratio    : 차감 비율/일수 (leave_hours / standard_hours, 예: 0.5) — REAL
---   leave_period   : 'am' | 'pm' (오전/오후 반차 구분) — TEXT
---   standard_hours : 해당 날짜 근무조 기준시간 (예: 8) — REAL
 -- ════════════════════════════════════════════════════════════════
-
-ALTER TABLE employee_leave_history ADD COLUMN leave_hours REAL DEFAULT 0;
-ALTER TABLE employee_leave_history ADD COLUMN leave_ratio REAL DEFAULT 0;
-ALTER TABLE employee_leave_history ADD COLUMN leave_period TEXT DEFAULT NULL;
-ALTER TABLE employee_leave_history ADD COLUMN standard_hours REAL DEFAULT 8;
 
 -- 부분연차 UPSERT 키: (hospital_id, employee_id, leave_date, leave_period)
 -- 동일 (직원, 날짜, 오전/오후) 재입력 시 update 되도록 부분 UNIQUE 인덱스 추가.
