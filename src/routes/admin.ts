@@ -1366,18 +1366,16 @@ adminRouter.get('/dashboard/:year/:month', async (c) => {
 // ── 병원별 업체 목록 (관리자용) ───────────────────────────────
 adminRouter.get('/hospitals/:id/vendors', async (c) => {
   const id = c.req.param('id')
-  // ★ 모달 재오픈 시 선택값 유지를 위해 cost_type_default / order_cycle 및
-  //   병원별 비용 반영 기준(vendor_hospital_cost_rules.cost_class)을 함께 반환
+  // ★ 업체별 식단가 반영은 cost_type_default 단일 기준으로 통일 (옵션 A-2).
+  //   모달 재오픈 시 선택값 유지를 위해 cost_type_default / order_cycle 함께 반환.
+  //   (구 vendor_hospital_cost_rules.cost_class 는 더 이상 UI/계산에서 사용하지 않음)
   const vendors = await c.env.DB.prepare(`
-    SELECT v.id, v.name, v.category, v.tax_type, v.monthly_budget, v.sort_order,
-           COALESCE(v.is_card_type, 0) as is_card_type, v.card_subtype,
-           v.order_cycle, v.cost_type_default,
-           r.cost_class AS hospital_cost_class
-    FROM vendors v
-    LEFT JOIN vendor_hospital_cost_rules r
-      ON r.hospital_id = v.hospital_id AND r.vendor_id = v.id
-    WHERE v.hospital_id=? AND v.is_active=1
-    ORDER BY v.sort_order, v.id
+    SELECT id, name, category, tax_type, monthly_budget, sort_order,
+           COALESCE(is_card_type, 0) as is_card_type, card_subtype,
+           order_cycle, cost_type_default
+    FROM vendors
+    WHERE hospital_id=? AND is_active=1
+    ORDER BY sort_order, id
   `).bind(id).all<any>()
   return c.json(vendors.results || [])
 })
@@ -1487,8 +1485,10 @@ adminRouter.delete('/hospitals/:id/vendors/:vid', async (c) => {
   return c.json({ success: true })
 })
 
-// ── 병원별 비용 반영 기준 조회 (vendor_hospital_cost_rules) ──────
-// 업체 단위로 "이 병원에서의 비용 반영 기준"(food/operating)을 조회
+// ── 병원별 비용 반영 기준 (vendor_hospital_cost_rules) ──────────────
+// [DEPRECATED] 옵션 A-2로 업체 식단가 반영은 cost_type_default 단일 기준으로 통일됨.
+// UI(업체 수정 모달)에서 더 이상 호출하지 않으나, 기존 데이터 보존 및 외부 호출 호환을 위해 라우트는 유지.
+// 계산(dashboard/orders)에는 영향을 주지 않음.
 adminRouter.get('/hospitals/:id/vendor-cost-rules/:vid', async (c) => {
   const { id: hospitalId, vid } = c.req.param()
   const row = await c.env.DB.prepare(

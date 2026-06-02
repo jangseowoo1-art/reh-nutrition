@@ -32076,38 +32076,13 @@ async function openHospitalDetail(hospitalId) {
         <div id="adminVendorCostTypeAutoHint" class="hidden px-3 py-2 bg-green-50 border border-green-200 rounded-lg text-xs text-green-700">
           <i class="fas fa-magic mr-1"></i><span id="adminVendorCostTypeAutoHintText"></span>
         </div>
-        <!-- ★ 병원별 비용 반영 기준 (vendor_hospital_cost_rules) — 이 병원에서의 식단가 반영 기준 -->
-        <div class="p-3 bg-yellow-50 rounded-xl border border-yellow-200" id="adminVendorHospCostWrap">
-          <label class="text-sm font-semibold text-yellow-800 block mb-1">
-            <i class="fas fa-hospital mr-1"></i>이 병원에서의 비용 반영 기준
-            <span class="text-xs font-normal text-yellow-600 ml-1">식단가 계산에 직접 영향 · 가장 우선 적용</span>
-          </label>
-          <p class="text-xs text-gray-500 mb-2">병원별로 동일 업체를 식재료비 또는 운영비로 다르게 분류할 수 있습니다.</p>
-          <div class="flex gap-3">
-            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors">
-              <input type="radio" name="adminVendorHospCostClass" value="food" class="accent-green-600" checked>
-              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-green-500 inline-block mr-1"></span>
-                <b class="text-green-700">식재료비</b>
-                <span class="text-xs text-green-600 ml-1">→ 식단가 포함</span>
-              </span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors">
-              <input type="radio" name="adminVendorHospCostClass" value="operating" class="accent-red-500">
-              <span class="text-sm"><span class="w-2 h-2 rounded-full bg-red-400 inline-block mr-1"></span>
-                <b class="text-red-700">운영비</b>
-                <span class="text-xs text-red-500 ml-1">→ 식단가 제외</span>
-              </span>
-            </label>
-          </div>
-          <p class="text-xs text-yellow-600 mt-1.5"><i class="fas fa-star mr-1"></i><b>최우선 적용</b>: 이 설정이 있으면 아래 '비용 구분'보다 우선합니다.</p>
-        </div>
-        <!-- ★ 비용 구분 (cost_type_default) — 전체 시스템 KPI 기준 -->
+        <!-- ★ 비용 구분 (cost_type_default) — 업체별 식단가 반영 단일 기준 -->
         <div class="p-3 bg-blue-50 rounded-xl border border-blue-200">
           <label class="text-sm font-semibold text-blue-800 block mb-1">
             <i class="fas fa-tags mr-1"></i>비용 구분
-            <span class="text-xs font-normal text-blue-600 ml-1">발주금액 KPI 집계 기준 · 식단가 계산 영향</span>
+            <span class="text-xs font-normal text-blue-600 ml-1">업체별 식단가 반영 단일 기준 · 신규 발주부터 적용</span>
           </label>
-          <p class="text-xs text-gray-500 mb-2 ml-0.5">카테고리 선택 시 자동 설정됩니다. 필요 시 직접 변경하세요.</p>
+          <p class="text-xs text-gray-500 mb-2 ml-0.5">카테고리 선택 시 자동 설정됩니다. 필요 시 직접 변경하세요. <b class="text-blue-700">식재료비</b>만 식단가에 반영됩니다.</p>
           <div class="grid grid-cols-2 gap-2">
             <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg border border-transparent hover:bg-white transition-colors" id="costTypeLbl-food">
               <input type="radio" name="adminVendorCostType" value="food" class="accent-green-600" checked>
@@ -32268,15 +32243,13 @@ function renderBudgetVendorRows(vendors, workingDays) {
           ${isWeekly ? `<span class="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold ml-1"><i class="fas fa-calendar-week mr-0.5"></i>주1회</span>` : ''}
           <span class="text-xs text-gray-400 ml-1">${getCategoryLabel(v.category)}</span>
           ${targetLabel}
-          ${/* ★ 병원별 비용 반영 기준 인라인 토글 */ (() => {
-            const hcc = v.hospital_cost_class
-            const effectiveCt = v.cost_type_default || VENDOR_CAT_TO_COST_TYPE?.[v.category] || 'food'
-            // 최우선: hospital_cost_class / fallback: cost_type_default → food/operating
-            const isFood = hcc ? hcc === 'food' : effectiveCt === 'food'
-            return `<span class="inline-flex items-center gap-1 ml-2 vendor-cost-class-toggle" title="클릭하여 비용 반영 기준 변경 (${hcc ? '병원별 설정' : '기본값'})">
-              <button onclick="toggleVendorCostClass(${v.id}, '${isFood ? 'operating' : 'food'}')" class="text-xs px-1.5 py-0.5 rounded-full font-semibold border transition-colors ${isFood ? 'bg-green-50 text-green-700 border-green-300 hover:bg-green-100' : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'}">
-                ${hcc ? '<i class="fas fa-star mr-0.5 text-xs"></i>' : ''}${isFood ? '식재료비' : '운영비'}
-              </button>
+          ${/* ★ 비용 구분 배지 (cost_type_default 단일 기준, 읽기 전용) */ (() => {
+            const ct = v.cost_type_default || VENDOR_CAT_TO_COST_TYPE?.[v.category] || 'food'
+            const isFood = ct === 'food'
+            return `<span class="inline-flex items-center gap-1 ml-2" title="비용 구분: 식재료비만 식단가에 반영 (업체 수정에서 변경)">
+              <span class="text-xs px-1.5 py-0.5 rounded-full font-semibold border ${isFood ? 'bg-green-50 text-green-700 border-green-300' : 'bg-orange-50 text-orange-700 border-orange-200'}">
+                ${isFood ? '식재료비' : '운영비'}
+              </span>
             </span>`
           })()}
         </div>
@@ -32332,26 +32305,6 @@ window.refreshVendorDayTargets = function() {
     }
   })
   syncVendorBudgetTotal()
-}
-
-// ★ 병원 예산 화면: 업체 비용 반영 기준 클릭 토글
-window.toggleVendorCostClass = async function(vendorId, newClass) {
-  const hospitalId = window._adminHospitalId
-  if (!hospitalId) return
-  try {
-    const res = await api('PUT', `/api/admin/hospitals/${hospitalId}/vendor-cost-rules/${vendorId}`, { costClass: newClass })
-    if (!res?.success) { showToast('변경 실패', 'error'); return }
-    showToast(`비용 반영 기준이 ${newClass === 'food' ? '식재료비' : '운영비'}로 변경되었습니다`, 'success')
-    // 업체 목록 갱신 (양쪽 탭 동기화)
-    const updated = await api('GET', `/api/admin/hospitals/${hospitalId}/vendors`)
-    const wd = parseInt(document.getElementById('hb-workdays')?.value || 0) || 0
-    window._adminHospVendors = updated || []
-    window._adminVendorList = updated || []
-    document.getElementById('adminVendorList').innerHTML = renderAdminVendorRows(updated || [])
-    document.getElementById('hospBudgetVendors').innerHTML = renderBudgetVendorRows(updated || [], wd)
-  } catch(e) {
-    showToast('변경 중 오류가 발생했습니다', 'error')
-  }
 }
 
 // 업체별 예산 합산 → 월 총 목표금액 동기화 + 운영비 자동계산 + 식재료 기본예산 재계산
@@ -32534,6 +32487,7 @@ function renderAdminVendorRows(vendors) {
           <div class="text-xs text-gray-400 flex items-center gap-1.5 flex-wrap">
             <span>${getCategoryLabel(v.category)} · ${getTaxTypeLabel(v.tax_type)}</span>
             ${(() => {
+              // ★ 비용 구분(cost_type_default) 단일 기준 배지 — 식재료비만 식단가에 반영
               const ct = v.cost_type_default || VENDOR_CAT_TO_COST_TYPE?.[v.category] || 'food'
               const badge = ct === 'food'
                 ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold text-xs">식재료비</span>'
@@ -32541,21 +32495,14 @@ function renderAdminVendorRows(vendors) {
                 : ct === 'event'  ? '<span class="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-semibold text-xs">이벤트</span>'
                 : ct === 'utility'? '<span class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full font-semibold text-xs">공과금</span>'
                 : ''
-              // ★ 병원별 비용 반영 기준 배지 (가장 우선 적용)
-              const hcc = v.hospital_cost_class
-              const hospBadge = hcc === 'food'
-                ? '<span class="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full font-semibold text-xs border border-yellow-300"><i class="fas fa-star mr-0.5 text-xs"></i>이 병원 식재료비</span>'
-                : hcc === 'operating'
-                ? '<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-semibold text-xs border border-red-200"><i class="fas fa-star mr-0.5 text-xs"></i>이 병원 운영비</span>'
-                : ''
-              return (hospBadge || badge)
+              return badge
             })()}
           </div>
         </div>
         <div class="text-sm text-gray-600 font-medium">${v.monthly_budget>0?fmtMan(v.monthly_budget)+'원':'목표없음'}</div>
         <div class="flex gap-1">
           <button onclick="editAdminVendor(${v.id})"
-            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}" data-ordercycle="${v.order_cycle||'daily'}" data-costtypedefault="${v.cost_type_default||''}" data-hospcostclass="${v.hospital_cost_class||''}"
+            data-name="${v.name.replace(/"/g,'&quot;')}" data-cat="${v.category}" data-tax="${v.tax_type}" data-budget="${v.monthly_budget}" data-iscard="${v.is_card_type||0}" data-cardsubtype="${v.card_subtype||'food'}" data-ordercycle="${v.order_cycle||'daily'}" data-costtypedefault="${v.cost_type_default||''}"
             class="btn btn-secondary btn-sm px-2"><i class="fas fa-edit text-xs"></i></button>
           <button onclick="deleteAdminVendor(${v.id})"
             class="btn btn-danger btn-sm px-2"><i class="fas fa-trash text-xs"></i></button>
@@ -32654,8 +32601,6 @@ function editAdminVendor(id) {
   const cardSubtype = btn?.dataset.cardsubtype || 'food'
   const orderCycle = btn?.dataset.ordercycle || 'daily'
   const costTypeDefault = btn?.dataset.costtypedefault || VENDOR_CAT_TO_COST_TYPE[category] || 'food'
-  // ★ 병원별 비용 반영 기준 (vendor_hospital_cost_rules)
-  const hospCostClass = btn?.dataset.hospcostclass || ''
   document.getElementById('adminVendorModalTitle').textContent = '업체 수정'
   document.getElementById('adminVendorId').value = id
   document.getElementById('adminVendorName').value = name
@@ -32668,14 +32613,9 @@ function editAdminVendor(id) {
   // 발주 주기 라디오 버튼 설정
   const cycleRadio = document.querySelector(`input[name="adminVendorOrderCycle"][value="${orderCycle}"]`)
   if (cycleRadio) cycleRadio.checked = true
-  // 비용구분 라디오 설정 (전역 기준)
+  // 비용구분 라디오 설정 (cost_type_default 단일 기준)
   const costRadio = document.querySelector(`input[name="adminVendorCostType"][value="${costTypeDefault}"]`)
   if (costRadio) costRadio.checked = true
-  // ★ 병원별 비용 반영 기준 라디오 설정
-  // hospCostClass가 있으면 그 값, 없으면 cost_type_default → food/operating으로 매핑
-  const defaultHospClass = hospCostClass || (costTypeDefault === 'food' ? 'food' : 'operating')
-  const hospCostRadio = document.querySelector(`input[name="adminVendorHospCostClass"][value="${defaultHospClass}"]`)
-  if (hospCostRadio) hospCostRadio.checked = true
   document.getElementById('adminVendorModal').classList.remove('hidden')
 }
 
@@ -32719,9 +32659,6 @@ async function saveAdminVendor() {
     costTypeDefault: costTypeEl ? costTypeEl.value : (VENDOR_CAT_TO_COST_TYPE[document.getElementById('adminVendorCategory').value] || 'food')
   }
   if (!data.name) { showToast('업체명을 입력하세요', 'error'); return }
-  // ★ 병원별 비용 반영 기준 (vendor_hospital_cost_rules)
-  const hospCostClassEl = document.querySelector('input[name="adminVendorHospCostClass"]:checked')
-  const hospCostClass = hospCostClassEl ? hospCostClassEl.value : null
 
   const res = vid
     ? await api('PUT', `/api/admin/hospitals/${hospitalId}/vendors/${vid}`, data)
@@ -32732,13 +32669,6 @@ async function saveAdminVendor() {
     return
   }
   if (res?.success) {
-    // ★ 병원별 비용 반영 기준 저장 (vendor_hospital_cost_rules)
-    if (hospCostClass && (vid || res?.id)) {
-      const targetVid = vid || res?.id
-      try {
-        await api('PUT', `/api/admin/hospitals/${hospitalId}/vendor-cost-rules/${targetVid}`, { costClass: hospCostClass })
-      } catch(e) { console.warn('[vendor-cost-rules] 저장 실패', e) }
-    }
     document.getElementById('adminVendorModal').classList.add('hidden')
     showToast(vid ? '업체가 수정되었습니다' : '업체가 추가되었습니다', 'success')
     // 새 업체 추가 시 명세서 업체 자동 동기화
