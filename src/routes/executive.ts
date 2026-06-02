@@ -480,6 +480,9 @@ executive.get('/staff-labor/:year/:month', async (c) => {
     afternoon: 'parttime_afternoon',
     '9h':      'parttime_9h',
     '12h':     'parttime_12h',
+    // P7: 시급제 알바 매핑 추가 (labor_cost_settings.parttime_hourly 존재하나 매핑 누락되어 0원 계산되던 문제 보완)
+    // 기존 morning/afternoon/9h/12h 키는 그대로 유지 — 추가만 함(additive)
+    hourly:    'parttime_hourly',
   }
 
   // ── 5. 파출/알바 인건비 계산 ─────────────────────────────────

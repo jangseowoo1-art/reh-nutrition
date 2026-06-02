@@ -1337,7 +1337,16 @@ dashboard.get('/summary/:year/:month', async (c) => {
     settings,
     vendors: vendors.results,
     dailyOrders: dailyOrders.results,
-    mealStats,
+    // mealStats: 기존 고정 컬럼(total_staff/total_patient/total_guardian/total_noncovered/days_entered)을
+    // 모두 보존하면서, custom_data 기반 식수를 반영한 totalMeals/customFieldTotals/daysEntered를 추가(additive).
+    // 운영진(executive.ts) mealStats 형식과 동일 기준으로 totalMeals 제공.
+    mealStats: {
+      ...mealStats,
+      totalMeals,                 // 직원 + 보호자 + 커스텀(환자군, ea 제외) = 운영진 totalMeals와 동일 기준
+      customFieldTotals,          // 커스텀 필드별 월 합계 (환자군 등 custom_data 기반)
+      mealCustomFields: customFieldsList.results || [],
+      daysEntered: mealStats?.days_entered || 0,
+    },
     mealCustomFields: customFieldsList.results || [],
     mealCustomTotals: customFieldTotals,
     // 식수 분류별 상세 breakdown (이번달 + 전달 + 증감) - 보고서/운영진 페이지용
