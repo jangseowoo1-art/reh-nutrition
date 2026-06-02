@@ -1708,6 +1708,163 @@ schedule.get('/team-public/:token', async (c) => {
   })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 부분연차 / 반차 (작업 C) — partial-leave
+//   ⚠️ /:year/:month 보다 반드시 먼저 등록 (그렇지 않으면 'partial-leave'가
+//      year 파라미터로 잡혀 가로채짐)
+//   - employee_leave_history 에 (leave_period, leave_hours, leave_ratio,
+//     standard_hours) 컬럼을 사용해 저장.
+//   - UPSERT 키: (hospital_id, employee_id, leave_date, leave_period)
+//   - 저장 후 recalcAnnualUsedDays() 로 used_days 재집계 → 잔여연차 반영.
+// ════════════════════════════════════════════════════════════════
+
+// 해당 날짜 직원 근무조/기준시간 조회 (모달의 standard_hours 표시용 보조 API)
+//   GET /api/schedule/employee-shift-on-date?hospitalId=&employeeId=&date=
+//   응답: { shift: { shift_name, standard_hours } | null }
+schedule.get('/employee-shift-on-date', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
+  const employeeId = parseInt(c.req.query('employeeId') || '0')
+  const date = c.req.query('date') || ''
+  if (!employeeId || !date) return c.json({ shift: null })
+
+  // 권한: 영양사는 본인 병원만
+  if (!isAdmin(user) && hospitalId !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  // 해당 날짜 스케줄에서 shift_code 조회
+  const sched = await c.env.DB.prepare(
+    `SELECT shift_code, shift_id FROM daily_schedules
+     WHERE hospital_id=? AND employee_id=? AND work_date=?`
+  ).bind(hospitalId, employeeId, date).first<any>()
+
+  if (!sched || !sched.shift_code) return c.json({ shift: null })
+
+  // 근무조 정보 조회 (shift_id 우선, 없으면 shift_code)
+  let shiftRow: any = null
+  if (sched.shift_id) {
+    shiftRow = await c.env.DB.prepare(
+      `SELECT * FROM schedule_shifts WHERE id=? AND hospital_id=?`
+    ).bind(sched.shift_id, hospitalId).first<any>()
+  }
+  if (!shiftRow) {
+    shiftRow = await c.env.DB.prepare(
+      `SELECT * FROM schedule_shifts WHERE hospital_id=? AND shift_code=? AND is_active=1`
+    ).bind(hospitalId, sched.shift_code).first<any>()
+  }
+  if (!shiftRow) return c.json({ shift: null })
+
+  // standard_hours: start/end 시각으로 계산(8h 이상 근무 시 휴게 1h 제외), 없으면 8 기본
+  let standardHours = 8
+  if (shiftRow.start_time && shiftRow.end_time) {
+    let mins = timeToMinutes(shiftRow.end_time) - timeToMinutes(shiftRow.start_time)
+    if (mins < 0) mins += 24 * 60 // 야간 교대 보정
+    let hrs = mins / 60
+    if (hrs >= 8) hrs -= 1 // 8시간 이상 근무 시 휴게 1시간 제외(법정)
+    if (hrs > 0) standardHours = Math.round(hrs * 100) / 100
+  }
+
+  return c.json({
+    shift: {
+      shift_name: shiftRow.shift_name || shiftRow.shift_code,
+      shift_code: shiftRow.shift_code,
+      standard_hours: standardHours,
+    }
+  })
+})
+
+// 해당 날짜 부분연차/반차 이력 조회
+//   GET /api/schedule/partial-leave/history?hospitalId=&employeeId=&date=
+//   응답: { history: [ { leave_hours, leave_ratio, leave_period, ... } ] }
+schedule.get('/partial-leave/history', async (c) => {
+  const user = c.get('user')
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  if (!hospitalId) return c.json({ error: 'Unauthorized' }, 401)
+  const employeeId = parseInt(c.req.query('employeeId') || '0')
+  const date = c.req.query('date') || ''
+  if (!employeeId || !date) return c.json({ history: [] })
+
+  if (!isAdmin(user) && hospitalId !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, leave_date, leave_period, leave_hours, leave_ratio,
+            standard_hours, leave_subtype, note, created_at
+     FROM employee_leave_history
+     WHERE hospital_id=? AND employee_id=? AND leave_date=? AND leave_period IS NOT NULL
+     ORDER BY CASE leave_period WHEN 'am' THEN 0 WHEN 'pm' THEN 1 ELSE 2 END, id`
+  ).bind(hospitalId, employeeId, date).all<any>()
+
+  return c.json({ history: rows.results || [] })
+})
+
+// 부분연차/반차 저장 (UPSERT — 부분 UNIQUE 인덱스라 수동 UPSERT)
+//   POST /api/schedule/partial-leave
+//   body: { hospitalId, employeeId, date, leaveHours, standardHours,
+//           leavePeriod('am'|'pm'), leaveRatio, leaveSubtype, note }
+//   응답: { updated: true(수정) | false(신규) }
+schedule.post('/partial-leave', async (c) => {
+  const user = c.get('user')
+  const body = await c.req.json().catch(() => ({}))
+  const {
+    hospitalId: bodyHospId, employeeId, date,
+    leaveHours, standardHours, leavePeriod, leaveRatio, note,
+  } = body
+
+  // 병원 권한 결정 (admin은 body hospitalId, 영양사는 본인 병원)
+  const hospitalId = isAdmin(user) && bodyHospId ? parseInt(String(bodyHospId)) : user.hospitalId
+  if (!hospitalId) return c.json({ error: '권한이 없습니다.' }, 401)
+  if (!employeeId) return c.json({ error: '직원을 선택해주세요.' }, 400)
+  if (!date) return c.json({ error: '날짜를 선택해주세요.' }, 400)
+  if (leavePeriod !== 'am' && leavePeriod !== 'pm') {
+    return c.json({ error: '오전/오후를 선택해주세요.' }, 400)
+  }
+
+  // 직원 병원 일치 확인
+  const emp = await c.env.DB.prepare(`SELECT hospital_id FROM employees WHERE id=?`).bind(employeeId).first<any>()
+  if (!emp) return c.json({ error: '직원을 찾을 수 없습니다.' }, 404)
+  if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) return c.json({ error: '권한 없음' }, 403)
+  const hid = emp.hospital_id
+
+  const ratio = typeof leaveRatio === 'number' ? leaveRatio : parseFloat(leaveRatio) || 0
+  const hours = typeof leaveHours === 'number' ? leaveHours : parseFloat(leaveHours) || 0
+  const stdHours = typeof standardHours === 'number' ? standardHours : parseFloat(standardHours) || 8
+  // 기존 집계(half_am/half_pm) 호환을 위해 period 기준 subtype 부여
+  const subtype = leavePeriod === 'am' ? 'half_am' : 'half_pm'
+  const d = new Date(date)
+  const year = d.getFullYear()
+  const month = d.getMonth() + 1
+
+  // 기존 동일 (직원,날짜,오전/오후) 행 존재 여부 → updated 분기 + 수동 UPSERT
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM employee_leave_history
+     WHERE hospital_id=? AND employee_id=? AND leave_date=? AND leave_period=?`
+  ).bind(hid, employeeId, date, leavePeriod).first<any>()
+
+  if (existing) {
+    await c.env.DB.prepare(
+      `UPDATE employee_leave_history
+       SET leave_subtype=?, leave_hours=?, leave_ratio=?, standard_hours=?,
+           year=?, month=?, note=?
+       WHERE id=?`
+    ).bind(subtype, hours, ratio, stdHours, year, month, note || '', existing.id).run()
+  } else {
+    await c.env.DB.prepare(
+      `INSERT INTO employee_leave_history
+         (hospital_id, employee_id, year, month, leave_date, leave_subtype,
+          leave_period, leave_hours, leave_ratio, standard_hours, note)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      hid, employeeId, year, month, date, subtype,
+      leavePeriod, hours, ratio, stdHours, note || ''
+    ).run()
+  }
+
+  // used_days 재집계 → 잔여연차 반영
+  await recalcAnnualUsedDays(c.env.DB, hid, employeeId, year)
+
+  return c.json({ updated: !!existing })
+})
+
 // 월별 스케줄 조회 (직위 포함, 정렬: 팀→직위순→입사일→이름)
 schedule.get('/:year/:month', async (c) => {
   const user = c.get('user')
@@ -1801,6 +1958,7 @@ schedule.get('/:year/:month', async (c) => {
   // ── 스케줄 기반 연차 사용일 보정 ──────────────────────────────
   // employee_leaves에 행이 없거나 used_days가 실제와 다를 경우
   // schedMap에서 직접 '연' 코드를 카운트하여 leaveMap에 주입
+  // ⚠️ 작업 C: 종일 연차 COUNT 에 더해 부분연차/반차 ratio 합산도 반영
   const annualUsedFromSched: Record<number, number> = {}
   for (const key of Object.keys(schedMap)) {
     const s = schedMap[key]
@@ -1809,15 +1967,33 @@ schedule.get('/:year/:month', async (c) => {
       annualUsedFromSched[empId] = (annualUsedFromSched[empId] || 0) + 1
     }
   }
-  for (const [empIdStr, schedUsed] of Object.entries(annualUsedFromSched)) {
-    const empId = Number(empIdStr)
+
+  // 부분연차/반차 ratio 합산 (해당 연도 employee_leave_history.leave_ratio)
+  const partialUsedRows = await c.env.DB.prepare(
+    `SELECT employee_id, COALESCE(SUM(leave_ratio), 0) as ratio_sum
+     FROM employee_leave_history
+     WHERE hospital_id=? AND year=? AND leave_period IS NOT NULL
+     GROUP BY employee_id`
+  ).bind(hospitalId, parseInt(year)).all<any>()
+  const partialUsedByEmp: Record<number, number> = {}
+  for (const r of (partialUsedRows.results || [])) {
+    partialUsedByEmp[Number(r.employee_id)] = r.ratio_sum || 0
+  }
+
+  // 종일 연차 + 부분연차 합산하여 보정 대상 직원 집합 구성
+  const correctedEmpIds = new Set<number>([
+    ...Object.keys(annualUsedFromSched).map(Number),
+    ...Object.keys(partialUsedByEmp).map(Number),
+  ])
+  for (const empId of correctedEmpIds) {
+    const schedUsed = (annualUsedFromSched[empId] || 0) + (partialUsedByEmp[empId] || 0)
     if (!leaveMap[empId]) {
       // employee_leaves 행 자체가 없는 직원 → 사용일만 주입
       leaveMap[empId] = { annual: { total: null, used: schedUsed, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null } }
     } else if (!leaveMap[empId].annual) {
       leaveMap[empId].annual = { total: null, used: schedUsed, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null }
     } else {
-      // DB의 used_days와 스케줄 카운트가 다를 경우 스케줄 기준으로 보정
+      // DB의 used_days와 (스케줄 카운트 + 부분연차 ratio)가 다를 경우 보정
       if (leaveMap[empId].annual.used !== schedUsed) {
         leaveMap[empId].annual.used = schedUsed
       }
@@ -1841,6 +2017,51 @@ schedule.get('/:year/:month', async (c) => {
     ext_sched_map:    extSchedMap
   })
 })
+
+// ════════════════════════════════════════════════════════════════
+// 헬퍼: 연차 사용일수(used_days) 재집계
+//   used_days = (종일 연차 shift_code='연' COUNT)  ← 기존 동작 그대로 유지
+//             + (부분연차/반차 leave_ratio 합산: employee_leave_history)
+//
+// ⚠️ 작업 C 영향도 대응:
+//   - 기존엔 종일 연차만 1일씩 카운트하여 반차(0.5)/부분연차(ratio)가 used_days에 미반영.
+//   - 이 헬퍼는 employee_leave_history 에 저장된 부분연차/반차 ratio 를 추가 합산한다.
+//   - 종일 연차 카운트 방식(=COUNT)은 변경하지 않는다(기존 동작 보존, 추가 합산만 수행).
+// ════════════════════════════════════════════════════════════════
+async function recalcAnnualUsedDays(
+  db: D1Database,
+  hospitalId: number,
+  employeeId: number,
+  year: number
+): Promise<number> {
+  // 1) 종일 연차: daily_schedules.shift_code='연' COUNT (기존 로직 보존)
+  const annualCount = await db.prepare(
+    `SELECT COUNT(*) as cnt FROM daily_schedules
+     WHERE hospital_id=? AND employee_id=? AND shift_code='연'
+       AND work_date LIKE ?`
+  ).bind(hospitalId, employeeId, `${year}-%`).first<any>()
+  const usedAnnualFull = annualCount?.cnt ?? 0
+
+  // 2) 부분연차/반차: employee_leave_history.leave_ratio 합산 (leave_period 있는 행)
+  const partialSum = await db.prepare(
+    `SELECT COALESCE(SUM(leave_ratio), 0) as ratio_sum
+     FROM employee_leave_history
+     WHERE hospital_id=? AND employee_id=? AND year=?
+       AND leave_period IS NOT NULL`
+  ).bind(hospitalId, employeeId, year).first<any>()
+  const usedPartial = partialSum?.ratio_sum ?? 0
+
+  // 3) 합산값을 employee_leaves.used_days 에 UPSERT
+  const usedTotal = usedAnnualFull + usedPartial
+  await db.prepare(
+    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
+     VALUES (?, ?, ?, 'annual', 0, ?, '')
+     ON CONFLICT (hospital_id, employee_id, year, leave_type)
+     DO UPDATE SET used_days=excluded.used_days, updated_at=CURRENT_TIMESTAMP`
+  ).bind(hospitalId, employeeId, year, usedTotal).run()
+
+  return usedTotal
+}
 
 // ════════════════════════════════════════════════════════════════
 // 헬퍼: 스케줄 저장 시 근무시간 자동 계산 후 DB 업서트
@@ -1920,21 +2141,9 @@ async function upsertScheduleWithCalc(
 
   // ── 연차 사용일수 자동 재집계 ──────────────────────────────
   // 스케줄 저장/삭제 시마다 해당 직원의 해당 연도 연차 used_days를 실제 스케줄 기준으로 재계산
-  const workYear = workDate.substring(0, 4)
-  const annualCount = await db.prepare(
-    `SELECT COUNT(*) as cnt FROM daily_schedules
-     WHERE hospital_id=? AND employee_id=? AND shift_code='연'
-       AND work_date LIKE ?`
-  ).bind(hospitalId, employeeId, `${workYear}-%`).first<any>()
-  const usedAnnual = annualCount?.cnt ?? 0
-
-  // employee_leaves에 annual 행이 있으면 used_days 업데이트, 없으면 자동 생성 (UPSERT)
-  await db.prepare(
-    `INSERT INTO employee_leaves (hospital_id, employee_id, year, leave_type, total_days, used_days, note)
-     VALUES (?, ?, ?, 'annual', 0, ?, '')
-     ON CONFLICT (hospital_id, employee_id, year, leave_type)
-     DO UPDATE SET used_days=excluded.used_days, updated_at=CURRENT_TIMESTAMP`
-  ).bind(hospitalId, employeeId, parseInt(workYear), usedAnnual).run()
+  // (종일 연차 COUNT + 부분연차/반차 ratio 합산) — 공통 헬퍼 사용
+  const workYear = parseInt(workDate.substring(0, 4))
+  await recalcAnnualUsedDays(db, hospitalId, employeeId, workYear)
 }
 
 // 스케줄 저장 (upsert)
