@@ -1367,6 +1367,36 @@ dashboard.get('/summary/:year/:month', async (c) => {
   const _ratio = (used: number, budget: number) =>
     budget > 0 ? parseFloat(((used / budget) * 100).toFixed(1)) : null
 
+  // ★ "식재료비 포함 발주 → 운영비 분리" (참고 표시용)
+  //   발주는 cost_type='food'(식재료비)로 집계되어 있으나, 해당 업체의 비용 구분(cost_type_default)이
+  //   운영비성(supply/event/card/utility)인 경우 → 어떤 업체가 그러한지 업체별로 분리 표시한다.
+  //   ※ 참고 표시 전용: food.used / operating.used / 식단가 등 어떤 합계·계산도 변경하지 않는다 (읽기 전용).
+  let cbOtherVendors: Array<{ vendorId: number; vendorName: string; category: string; used: number }> = []
+  try {
+    const otherRaw = await c.env.DB.prepare(`
+      SELECT d.vendor_id AS vendorId, v.name AS vendorName, v.category AS category,
+             COALESCE(SUM(d.total_amount), 0) AS used
+      FROM daily_orders d
+      JOIN vendors v ON d.vendor_id = v.id
+      WHERE d.hospital_id = ?
+        AND d.order_date BETWEEN ? AND ?
+        AND d.cost_type = 'food'
+        AND v.cost_type_default IN ('supply','event','card','utility')
+      GROUP BY d.vendor_id, v.name, v.category
+      HAVING used > 0
+      ORDER BY used DESC
+    `).bind(hospitalId, dateStart, dateEnd).all<any>()
+    cbOtherVendors = (otherRaw?.results || []).map((r: any) => ({
+      vendorId: r.vendorId,
+      vendorName: r.vendorName,
+      category: r.category,
+      used: r.used || 0,
+    }))
+  } catch (e) {
+    cbOtherVendors = []
+  }
+  const cbOtherUsed = cbOtherVendors.reduce((s, v) => s + (v.used || 0), 0)
+
   const costBreakdown = {
     food: {
       used: cbFoodUsed,
@@ -1383,7 +1413,8 @@ dashboard.get('/summary/:year/:month', async (c) => {
       event:   { used: cbEventUsed,   budget: cbEventBudget  },
       card:    { used: cbCardUsed,    budget: cbCardBudget   },
       utility: { used: cbUtilityUsed },
-      other:   { used: 0, vendors: [] as any[] },
+      // 식재료비(food)로 집계됐으나 업체 비용구분이 운영비성인 발주 — 참고 분리 표시 (합계 미반영)
+      other:   { used: cbOtherUsed, vendors: cbOtherVendors },
     },
     // 식재료 기준 식단가 (운영비 제외) — 기존 mealPriceNoSupply 그대로, 계산 변동 없음
     foodDietPrice: mealPriceNoSupply || 0,
