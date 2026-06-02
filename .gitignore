@@ -33,3 +33,11 @@ lerna-debug.log*
 .DS_Store
 shot_h1.png
 shot_h2.png
+
+# 진단/검증용 임시 스크립트 및 스크린샷
+prod_nutri.cjs
+diag*.cjs
+d3.cjs
+shot*.cjs
+prod_*.png
+local_*.png
