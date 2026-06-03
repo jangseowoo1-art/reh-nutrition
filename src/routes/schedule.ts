@@ -4119,7 +4119,7 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
 
   const paddedMonth = String(month).padStart(2,'0')
 
-  const [schedRows, leaveRow, otSettings] = await Promise.all([
+  const [schedRows, leaveRow, otSettings, holidayRows] = await Promise.all([
     c.env.DB.prepare(
       `SELECT s.*, sh.start_time, sh.end_time, sh.shift_name
        FROM daily_schedules s
@@ -4135,10 +4135,17 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
 
     c.env.DB.prepare(
       `SELECT * FROM employee_ot_settings WHERE hospital_id=? AND employee_id=?`
-    ).bind(emp.hospital_id, empId).first<any>()
+    ).bind(emp.hospital_id, empId).first<any>(),
+
+    // ★ STEP5: 공휴일 로드 — labor-cost-report / 병원장 staff-labor 와 isHoliday 판정 통일
+    c.env.DB.prepare(
+      `SELECT holiday_date FROM holidays WHERE holiday_date LIKE ?`
+    ).bind(`${year}-${paddedMonth}-%`).all<any>()
   ])
 
   const scheds = schedRows.results || []
+  // ★ STEP5: 공휴일 집합 (to-일 + 공휴일) — 4개 화면 동일 기준 사용
+  const holidaySet = new Set((holidayRows.results || []).map((h: any) => h.holiday_date))
   const REST_CODES = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
 
   // 일별 집계
@@ -4156,8 +4163,10 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
 
   for (const s of scheds) {
     const d = new Date(s.work_date)
-    const dow = DAYS_KR[d.getDay()]
-    const isHoliday = ['토','일'].includes(dow)
+    const dowNum = d.getDay()
+    const dow = DAYS_KR[dowNum]
+    // ★ STEP5: 토/일 + 공휴일 통일 판정 (labor-cost-report / 병원장 staff-labor 와 동일)
+    const isHoliday = dowNum === 0 || dowNum === 6 || holidaySet.has(s.work_date)
     // ★ SSOT: 저장된 실제 컬럼값 기준 (basic/ot/night/holiday) — 공통 헬퍼 사용
     const { basicHours, otHours, nightHours, holidayHours } = aggregateAllowanceHours(s, isHoliday)
     // workHours = 실제 기본근무시간(basic_work_hours), 이전 8h 고정 제거
