@@ -2268,6 +2268,10 @@ async function upsertScheduleWithCalc(
   note: string | null
 ) {
   const REST_CODES = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
+  // 외부인력성/특수 코드: 정식 근무조(schedule_shifts) 자동 연결 대상에서 제외
+  //   - 오전/오후/9H/12H 등은 추후 외부인력 DB 구조 작업에서 별도 정리
+  //   - OT 는 사용자 수동 입력(시간) 구조이므로 시간대 자동계산 대상 아님
+  const EXCLUDE_SHIFT_AUTOLINK = new Set(['오전','오후','9H','12H','full_9h','full_12h','OT'])
 
   // shiftId가 있을 때 근무시간 자동 계산
   let basicWorkHours = 0
@@ -2276,11 +2280,27 @@ async function upsertScheduleWithCalc(
   let weeklyHolidayPay = 0
   let calcOtHours = overtimeHours
   let calcIsNight = isNightWork
+  let resolvedShiftId = shiftId  // ★ STEP1: shift_code로 자동 결정된 shift_id를 저장
 
-  if (shiftId && !leaveType && !REST_CODES.has(shiftCode)) {
+  // ── ★ STEP 1: shift_code → shift_id 자동 연결 ──────────────────
+  // 신규/수정 저장 시 shiftId가 전달되지 않은(null) 일반 근무코드는,
+  // 해당 병원의 정식 근무조(schedule_shifts)에서 동일 shift_code를 찾아 shift_id를 자동 연결한다.
+  //   - 휴무/휴가(REST_CODES) 제외
+  //   - 외부인력성/OT 코드(EXCLUDE_SHIFT_AUTOLINK) 제외
+  //   - 매칭 실패 시 shift_id=null 유지(기존 동작 보존)
+  // (hospital_id, shift_code) 는 유니크하므로 1:1 매핑 보장.
+  if (!resolvedShiftId && shiftCode && !leaveType
+      && !REST_CODES.has(shiftCode) && !EXCLUDE_SHIFT_AUTOLINK.has(shiftCode)) {
+    const matched = await db.prepare(
+      `SELECT id FROM schedule_shifts WHERE hospital_id=? AND shift_code=? AND is_active=1`
+    ).bind(hospitalId, shiftCode).first<any>()
+    if (matched?.id) resolvedShiftId = matched.id
+  }
+
+  if (resolvedShiftId && !leaveType && !REST_CODES.has(shiftCode)) {
     const shift = await db.prepare(
       `SELECT start_time, end_time FROM schedule_shifts WHERE id=?`
-    ).bind(shiftId).first<any>()
+    ).bind(resolvedShiftId).first<any>()
 
     if (shift?.start_time && shift?.end_time) {
       // 공휴일 목록 로드 (해당 월)
@@ -2318,7 +2338,7 @@ async function upsertScheduleWithCalc(
        weekly_holiday_pay=excluded.weekly_holiday_pay,
        updated_at=CURRENT_TIMESTAMP`
   ).bind(
-    hospitalId, employeeId, workDate, shiftCode || '', shiftId,
+    hospitalId, employeeId, workDate, shiftCode || '', resolvedShiftId,
     leaveType || null, isOvertime ? 1 : 0, calcOtHours, isTempStaff ? 1 : 0,
     calcIsNight ? 1 : 0, tempType || null, tempHours || 0, note || null,
     basicWorkHours, nightWorkHours, holidayWorkHours, weeklyHolidayPay
