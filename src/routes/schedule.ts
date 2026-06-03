@@ -738,6 +738,126 @@ schedule.get('/leaves/all', async (c) => {
 })
 
 // ════════════════════════════════════════════════════════════════
+// ★ Single Source of Truth: 연차/반차 통합 잔여 API (정식 라우트)
+//   GET /api/schedule/leave-balance/all?year=&hospitalId=
+//   - 기존엔 라우트가 없어 /:year/:month 로 잘못 매칭되던 기술부채를 해소.
+//   - employee_leaves(연차/월차 본원장) + employee_leave_history(반차/부분연차)를
+//     하나의 응답으로 합쳐 제공. 모든 화면(인사카드/연차관리/운영관리/병원장)이
+//     동일한 계산 기준을 쓰도록 단일 진입점화.
+//   - 핵심 원칙: used_days 는 서버 recalcAnnualUsedDays() 가 이미
+//     [종일연차 COUNT + 반차 leave_ratio 합] 을 합산해 저장한 SSOT 값.
+//     → 반차를 다시 더하지 않는다(이중 차감 방지). half_* 는 표시 참고용.
+//   ⚠️ 반드시 /:year/:month 보다 먼저 등록되어야 함 (위치 보존)
+// ════════════════════════════════════════════════════════════════
+schedule.get('/leave-balance/all', async (c) => {
+  const user = c.get('user')
+  const year = parseInt(String(c.req.query('year') || new Date().getFullYear()))
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+
+  // 병원 휴가 차감 방식 (halfday | hourly) — hospital_work_settings
+  const unitRow = await c.env.DB.prepare(
+    `SELECT setting_value FROM hospital_work_settings
+     WHERE hospital_id=? AND setting_key='leave_unit_type'`
+  ).bind(hospitalId).first<any>()
+  const leaveUnitType = unitRow?.setting_value || 'halfday'
+
+  // 1) 직원 + 연차/월차 본원장 (employee_leaves)
+  const empRows = await c.env.DB.prepare(
+    `SELECT e.id as employee_id, e.name as emp_name, e.team, e.hire_date,
+            p.name as position_name
+     FROM employees e
+     LEFT JOIN employee_positions p ON e.position_id = p.id
+     WHERE e.hospital_id=? AND e.is_active=1
+     ORDER BY e.team, p.sort_order, e.hire_date, e.name`
+  ).bind(hospitalId).all<any>()
+
+  const leaveRows = await c.env.DB.prepare(
+    `SELECT employee_id, leave_type, total_days, used_days, initial_used_days,
+            carried_over_days, allowance_paid, allowance_paid_at
+     FROM employee_leaves WHERE hospital_id=? AND year=?`
+  ).bind(hospitalId, year).all<any>()
+  const annualByEmp: Record<number, any> = {}
+  const monthlyByEmp: Record<number, any> = {}
+  for (const l of (leaveRows.results || [])) {
+    if (l.leave_type === 'monthly') monthlyByEmp[l.employee_id] = l
+    else annualByEmp[l.employee_id] = l
+  }
+
+  // 2) 반차/부분연차 이력 (employee_leave_history) — 표시 참고용 집계
+  const histRows = await c.env.DB.prepare(
+    `SELECT employee_id,
+            COALESCE(SUM(leave_ratio), 0) as half_used_days,
+            SUM(CASE WHEN leave_period='am' THEN 1 ELSE 0 END) as half_am_cnt,
+            SUM(CASE WHEN leave_period='pm' THEN 1 ELSE 0 END) as half_pm_cnt,
+            COALESCE(SUM(CASE WHEN leave_period='am' THEN leave_hours ELSE 0 END), 0) as partial_am_hours,
+            COALESCE(SUM(CASE WHEN leave_period='pm' THEN leave_hours ELSE 0 END), 0) as partial_pm_hours
+     FROM employee_leave_history
+     WHERE hospital_id=? AND year=?
+     GROUP BY employee_id`
+  ).bind(hospitalId, year).all<any>()
+  const histByEmp: Record<number, any> = {}
+  for (const h of (histRows.results || [])) histByEmp[h.employee_id] = h
+
+  // 3) 직원별 통합 응답 빌드
+  const result = (empRows.results || []).map((e: any) => {
+    const a = annualByEmp[e.employee_id]
+    const m = monthlyByEmp[e.employee_id]
+    const h = histByEmp[e.employee_id]
+    const halfUsed = h ? Number(h.half_used_days) || 0 : 0
+    const halfAm   = h ? Number(h.half_am_cnt)    || 0 : 0
+    const halfPm   = h ? Number(h.half_pm_cnt)    || 0 : 0
+
+    // annual: used_days = SSOT(종일연차+반차 이미 포함). 잔여 = total + carried − used
+    const aTotal   = a ? (a.total_days || 0) : 0
+    const aUsed    = a ? (a.used_days  || 0) : 0   // ★ 반차 이미 포함
+    const aCarried = a ? (a.allowance_paid ? 0 : (a.carried_over_days || 0)) : 0
+    const aRemain  = Math.max(0, aTotal + aCarried - aUsed)
+
+    const mTotal   = m ? (m.total_days || 0) : 0
+    const mUsed    = m ? (m.used_days  || 0) : 0
+    const mRemain  = Math.max(0, mTotal - mUsed)
+
+    return {
+      employee_id: e.employee_id,
+      emp_name: e.emp_name,
+      team: e.team,
+      hire_date: e.hire_date,
+      position_name: e.position_name,
+      leave_unit_type: leaveUnitType,
+      annual: a ? {
+        granted_days:  aTotal,            // total_days 가 부여량 역할
+        manual_adjust: 0,
+        carried_over:  aCarried,
+        used_days:     aUsed,             // ★ SSOT: 종일연차+반차 합산값
+        prior_used:    a.initial_used_days || 0,  // 참고용(차감 안함)
+        remain_days:   aRemain,
+        allowance_paid:    a.allowance_paid ? 1 : 0,
+        allowance_paid_at: a.allowance_paid_at || '',
+        // 반차 표시 참고용
+        half_used_days: halfUsed,
+        hist_half_am:   halfAm,
+        hist_half_pm:   halfPm,
+        partial_am_cnt: halfAm,
+        partial_pm_cnt: halfPm,
+        partial_am_hours: h ? Number(h.partial_am_hours) || 0 : 0,
+        partial_pm_hours: h ? Number(h.partial_pm_hours) || 0 : 0,
+        partial_total:  halfUsed,
+      } : null,
+      monthly: m ? {
+        total_days:  mTotal,
+        used_days:   mUsed,               // ★ SSOT
+        prior_used:  m.initial_used_days || 0,
+        remain_days: mRemain,
+        hist_half_am: halfAm,
+        hist_half_pm: halfPm,
+      } : null,
+    }
+  })
+
+  return c.json(result)
+})
+
+// ════════════════════════════════════════════════════════════════
 // 월차(月次) 관리 — 1년 미만 근무자 자동 월별 유급휴가
 // ════════════════════════════════════════════════════════════════
 

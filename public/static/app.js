@@ -60,12 +60,13 @@ const CALC_ENGINE = (() => {
 
     const _rawTotal = src?.total ?? src?.total_days ?? null
     const total    = (_rawTotal !== null && _rawTotal > 0) ? _rawTotal : null  // 0 = 미부여 → null 처리
-    const usedRaw  = src?.used  ?? src?.used_days  ?? 0
+    // ★ used_days는 서버 recalcAnnualUsedDays()가 이미 [종일연차 + 반차(leave_ratio 합)]를
+    //   합산해 저장하는 Single Source 값. 따라서 여기서 반차를 다시 더하면 이중 차감이 됨.
+    //   잔여 = total + carried − used_days  (initial_used_days는 차감 안함)
+    const used     = src?.used  ?? src?.used_days  ?? 0
     const carried  = (src?.allowance_paid) ? 0 : (src?.carried_over_days ?? 0)
-    // ★ STEP 3: 반차(employee_leave_history) 합산 — half_used_days(0.5×건수)를 총 사용일에 포함
-    //   연차 1일 + 반차 0.5일 = 총 사용 1.5일. 운영 데이터 수정 없이 조회 합산.
+    // half: 표시(참고)용으로만 노출 — 차감 계산에는 사용하지 않음
     const half     = Number(src?.half_used_days ?? empLeave?.half_used_days ?? 0) || 0
-    const used     = usedRaw + half
     const effective = total !== null ? total + carried : null
     const remain    = effective !== null ? effective - used : null
 
@@ -20725,14 +20726,16 @@ function renderLeavesTab() {
       aAllowancePaid   = lv.allowance_paid   ? true : false
       aAllowancePaidAt = lv.allowance_paid_at || ''
     }
-    // ★ STEP 3: 반차(employee_leave_history) 합산 — /leaves/all이 내려주는 half_used_days(0.5×건수)
+    // ★ 반차 건수(표시 참고용) — /leaves/all이 내려주는 half_used_days/cnt
+    //   ⚠️ aUsed(used_days)는 서버 recalcAnnualUsedDays()가 이미 [종일연차 + 반차]를
+    //      합산한 Single Source 값이므로, 여기서 반차를 다시 더하면 이중 차감이 됨.
     const aHalfUsed = (lv && lv.half_used_days != null) ? (Number(lv.half_used_days) || 0)
                     : (bal?.annual?.half_used_days != null ? Number(bal.annual.half_used_days) || 0 : 0)
     const aTotal  = aGranted + aManual + aCarried
     // ★ STEP 2: initial_used_days(aPrior) 중복 차감 제거 — CALC_ENGINE.calcAnnualRemain과 통일
-    //   정책: 잔여연차 = 총 부여연차 + 이월 − (실제 사용연차 + 반차) (initial_used_days 직접 차감 안함)
-    //   송경민: 30 + 0 − (2 + 1) = 27일  (연차 2일 + 반차 0.5×2건 = 1일)
-    const aUsedTotal = aUsed + aHalfUsed
+    //   정책: 잔여연차 = 총 부여연차 + 이월 − 실제 사용연차(used_days, 반차 이미 포함)
+    //   송경민: 30 + 0 − 2.5 = 27.5일  (종일연차 1일 + 반차 0.5×3건 = 1.5일 → used_days=2.5)
+    const aUsedTotal = aUsed
     const aRemain = Math.max(0, aTotal - aUsedTotal)
 
     // ★ 반차 정보: /leaves/all이 내려주는 half_am_cnt/half_pm_cnt(employee_leave_history 기준) 우선
@@ -20743,20 +20746,16 @@ function renderLeavesTab() {
     const halfPmCnt  = (lv?.half_pm_cnt != null ? Number(lv.half_pm_cnt) || 0 : 0)
                      || (under1Y ? (bal?.monthly?.hist_half_pm || 0) : (bal?.annual?.hist_half_pm || 0))
                      || bal?.annual?.hist_half_pm || 0
-    // 사용된 반차 일수 합계: lv.half_used_days(서버 SUM) 우선, 없으면 건수×0.5
+    // 사용된 반차 일수 합계(표시 참고용): lv.half_used_days(서버 SUM) 우선, 없으면 건수×0.5
     const halfUsed   = aHalfUsed > 0 ? aHalfUsed : (halfAmCnt + halfPmCnt) * 0.5
 
-    // ★ 총계 — 단일 기준으로 통합 (STEP 2: initial_used_days 차감 제거, STEP 3: 반차 포함)
-    // under1Y: 월차 — bal.monthly.used_days(서버 반차 포함값) 우선, 없으면(lv만) mUsed + 반차
-    // 1년 이상: 연차 사용 + 반차 (aUsedTotal = aUsed + aHalfUsed)
-    //   ※ aPrior(initial_used_days)는 총 사용일에서도 제외
-    //   송경민: 연차 2 + 반차 1.0 = 총사용 3일, 잔여 27일
-    const mServerIncludesHalf = !!(bal?.monthly) // bal.monthly.used_days는 서버가 반차 포함시켜 내려줌
-    const mUsedTotal = mServerIncludesHalf ? mUsed : (mUsed + halfUsed)
-    const totalUsed   = under1Y ? mUsedTotal : aUsedTotal
-    const totalRemain = under1Y
-      ? (mServerIncludesHalf ? mRemain : Math.max(0, mTotal - mUsedTotal))
-      : aRemain
+    // ★ 총계 — 단일 기준으로 통합 (Single Source: used_days가 종일연차+반차 모두 포함)
+    //   under1Y: 월차 used_days(서버 반차 포함값) 그대로
+    //   1년 이상: 연차 used_days(반차 포함값) 그대로 → 반차 재합산 금지(이중 차감 방지)
+    //   ※ initial_used_days(aPrior)는 총 사용일에서도 제외
+    //   송경민: 종일연차 1 + 반차 1.5 = used_days 2.5 → 총사용 2.5일, 잔여 27.5일
+    const totalUsed   = under1Y ? mUsed : aUsedTotal
+    const totalRemain = under1Y ? mRemain : aRemain
 
     // D-day
     let ddayNum = null, ddayLabel = ''
@@ -43324,10 +43323,15 @@ function renderExecStaffLabor(d) {
         <!-- 근무 현황 -->
         <div class="bg-gray-50 rounded-xl p-3 mb-4">
           <p class="text-xs font-semibold text-gray-600 mb-2">📋 이번 달 근무 현황</p>
-          <div class="grid grid-cols-3 gap-2">
+          <div class="grid grid-cols-4 gap-2">
             <div class="text-center">
               <p class="text-lg font-bold text-gray-800">${fmt(ws.totalWorkDays)}</p>
               <p class="text-xs text-gray-500">총 출근 일수</p>
+            </div>
+            <div class="text-center">
+              <p class="text-lg font-bold text-teal-600">${fmt(ws.totalLeaveDays)}<span class="text-xs">일</span></p>
+              <p class="text-xs text-gray-500">총 휴가 사용</p>
+              <p class="text-[10px] text-gray-400 mt-0.5">연차·반차 등 포함</p>
             </div>
             <div class="text-center">
               <p class="text-lg font-bold text-amber-600">${fmt(ws.totalOtDays)}</p>
