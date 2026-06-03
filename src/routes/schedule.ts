@@ -3830,6 +3830,11 @@ schedule.get('/analysis/:year/:month', async (c) => {
   const emps   = empRows.results   || []
   const minStaff = minStaffRows.results || []
 
+  // ★ SSOT 휴무 코드 (schedule.ts/executive.ts와 100% 동일 9코드)
+  //   연·휴·경조 등은 아래 분기에서 개별 카운트하므로, 여기서는
+  //   기존 명시 분기에 없던 병가·반차·대체·대휴·공가·무급을 휴무로 정정한다.
+  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
+
   // 날짜별 집계
   const dateMap: Record<string, {
     work: number, rest: number, annual: number, halfAM: number, halfPM: number,
@@ -3849,6 +3854,7 @@ schedule.get('/analysis/:year/:month', async (c) => {
     else if (code === '오전') { dateMap[d].halfAM++; dateMap[d].rest++ }
     else if (code === '오후') { dateMap[d].halfPM++; dateMap[d].rest++ }
     else if (code === '경조') { dateMap[d].event++;  dateMap[d].rest++ }
+    else if (REST_CODES.has(code)) dateMap[d].rest++  // ★ 병가·반차·대체·대휴·공가·무급 → 휴무 통일
     else if (code === 'OT')   { dateMap[d].ot++;     dateMap[d].work++; dateMap[d].byPosition[pos]++ }
     else if (s.is_temp_staff)  { dateMap[d].tempStaff++; dateMap[d].work++; dateMap[d].byPosition[pos]++ }
     else if (code && code !== '-') { dateMap[d].work++;  dateMap[d].byPosition[pos]++ }
@@ -3873,6 +3879,7 @@ schedule.get('/analysis/:year/:month', async (c) => {
     else if (code === '오전') { monthly.totalHalfAM++; monthly.totalRest++ }
     else if (code === '오후') { monthly.totalHalfPM++; monthly.totalRest++ }
     else if (code === '경조') { monthly.totalEvent++; monthly.totalRest++ }
+    else if (REST_CODES.has(code)) monthly.totalRest++  // ★ 병가·반차·대체·대휴·공가·무급 → 휴무 통일
     else if (code === 'OT')   { monthly.totalOT++;    monthly.totalWork++ }
     else if (s.is_temp_staff)  { monthly.totalTempStaff++; monthly.totalWork++ }
     else if (code && code !== '-') monthly.totalWork++

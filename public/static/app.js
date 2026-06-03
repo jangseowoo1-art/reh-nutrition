@@ -29,10 +29,12 @@ const CALC_ENGINE = (() => {
 
   // ─────────────────────────────────────────────
   //  1. REST_CODES_SET  (휴무로 분류되는 shift 코드 집합)
-  //     기준: 연·휴·경조·병가 → 근무일수에서 제외
+  //     ★ 서버 SSOT(schedule.ts / executive.ts)와 100% 동일 9코드:
+  //        연·휴·경조·병가·반차·대체·대휴·공가·무급 → 근무일수에서 제외
+  //     기준 화면(직원통계·병원장)과 전 화면 휴무 판정 통일.
   //     ※ '-' 는 미입력(공란)으로 별도 처리 — 이 Set에 포함하지 않음
   // ─────────────────────────────────────────────
-  const REST_CODES_SET = new Set(['연', '휴', '경조', '병가'])
+  const REST_CODES_SET = new Set(['연', '휴', '경조', '병가', '반차', '대체', '대휴', '공가', '무급'])
 
   // ─────────────────────────────────────────────
   //  2. calcAnnualRemain(empLeave)
@@ -22414,7 +22416,7 @@ function renderAnalysisTabSimple(ad, year, month) {
 
   // ── 직원별 이달 근무 요약 (sched_map 기반) ───────────────────
   const sm   = scheduleMonthData?.sched_map || {}
-  const REST_CODES_S = new Set([...CALC_ENGINE.REST_CODES_SET, '반차','대체','오전','오후']) // ✅ CALC_ENGINE + 확장
+  const REST_CODES_S = new Set([...CALC_ENGINE.REST_CODES_SET, '오전','오후']) // ✅ SSOT 9코드(반차/대체/대휴/공가/무급 포함) + 오전/오후
   const ANNUAL_CODES = new Set(['연'])
   const _today3 = new Date().toISOString().slice(0, 10)
   const empsForSummary = (scheduleEmployees || []).filter(e =>
