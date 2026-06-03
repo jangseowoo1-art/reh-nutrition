@@ -19262,9 +19262,9 @@ function renderMonthlyScheduleTab() {
         <div class="flex gap-2 flex-wrap items-center">
           <!-- 근무코드 버튼: 3그룹 분리 (근무조 / 휴무·휴가 / 외부인력) -->
           <div class="flex flex-wrap items-stretch gap-2" id="schedQuickCodeBtns">
-            <!-- ① 근무조 그룹 (병원별 schedule_shifts DB 기반 동적) -->
+            <!-- ① 근무조 그룹 (병원별 schedule_shifts DB 기반 동적) + OT(연장근무) -->
             <div class="flex flex-col gap-1 px-2 py-1 rounded-lg" style="background:#f0fdf4;border:1.5px solid #bbf7d0">
-              <span class="text-[10px] font-bold tracking-wide" style="color:#15803d"><i class="fas fa-briefcase" style="margin-right:3px"></i>근무조</span>
+              <span class="text-[10px] font-bold tracking-wide" style="color:#15803d"><i class="fas fa-briefcase" style="margin-right:3px"></i>근무조 · OT</span>
               <div class="flex gap-1 flex-wrap items-center">
                 ${shifts.length === 0
                   ? '<span class="text-[10px] text-gray-400 italic px-1">등록된 근무조 없음</span>'
@@ -19274,6 +19274,11 @@ function renderMonthlyScheduleTab() {
                     style="background:${s.color}22;color:${s.color};border:1.5px solid ${s.color}55"
                     title="${s.shift_name} ${s.start_time||''}~${s.end_time||''} — 클릭하면 선택 셀에 적용">${s.shift_code}</button>
                 `).join('')}
+                <span style="width:1px;height:20px;background:#bbf7d0;margin:0 1px;display:inline-block;vertical-align:middle" title="OT 구분선"></span>
+                <button onclick="openOtModalFromSchedule()"
+                  class="inline-flex items-center justify-center px-2 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                  style="background:#ecfdf5;color:#047857;border:1.5px solid #6ee7b7"
+                  title="OT(연장근무) 입력 — 선택한 셀의 근무에 연장근무 시간을 추가합니다"><i class="fas fa-clock" style="margin-right:3px"></i>OT</button>
               </div>
             </div>
 
@@ -19497,6 +19502,7 @@ function renderMonthlyScheduleTab() {
             function renderEmpRowInGroup(emp, empIdx, grp) {
               const rowBg = empIdx % 2 === 0 ? 'white' : grp.headerBg
               let workDayCount = 0, annualUsed = 0, leaveUsed = 0, totalOtHours = 0
+              const otDetailList = []  // [{date:'MM/DD', hours:n}] — 우측 OT 컬럼 툴팁용
               const REST_CODES2 = CALC_ENGINE.REST_CODES_SET // ✅ CALC_ENGINE
               const ws2 = scheduleWorkSettings || {}
               const maxConsec2 = parseInt(ws2.consecutive_max_days || '6')
@@ -19577,10 +19583,15 @@ function renderMonthlyScheduleTab() {
                 if (code && code !== '-') { spanStyle2 = getShiftStyle(code); spanText2 = code }
                 else { spanStyle2 = 'background:#f9fafb;color:#d1d5db'; spanText2 = '·' }
                 const otH2 = sched?.overtime_hours || 0
-                if (otH2 > 0) totalOtHours += otH2
+                if (otH2 > 0) {
+                  totalOtHours += otH2
+                  // dateStr 형식: 'YYYY-MM-DD' → 'MM/DD'
+                  const _md = (dateStr || '').slice(5).replace('-', '/')
+                  otDetailList.push({ date: _md, hours: otH2 })
+                }
                 const isNightW2 = sched?.is_night_work || false
                 const isTempS2 = sched?.is_temp_staff || false
-                const extraIcon2 = otH2>0 ? `<div style="font-size:8px;color:#059669;line-height:1;margin-top:1px">OT${otH2}h</div>`
+                const extraIcon2 = otH2>0 ? `<div class="ot-badge" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#ecfdf5;color:#047857;border:1px solid #6ee7b7">OT ${otH2}H</div>`
                   : isTempS2 ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
                   : isNightW2 ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
 
@@ -19724,9 +19735,12 @@ function renderMonthlyScheduleTab() {
                     return `<div style="font-size:10px;color:#d1d5db">-</div>`
                   })()}
                 </td>
-                <td id="ot-hours-${emp.id}" style="padding:3px 2px;text-align:center;background:#faf5ff;border-left:1px solid #e9d5ff;min-width:28px">
+                <td id="ot-hours-${emp.id}" style="padding:3px 2px;text-align:center;background:#faf5ff;border-left:1px solid #e9d5ff;min-width:28px"
                   ${totalOtHours > 0
-                    ? `<div style="font-size:11px;font-weight:700;color:#7c3aed">${totalOtHours}h</div><div style="font-size:8px;color:#7c3aed;opacity:.7">OT</div>`
+                    ? `title="${otDetailList.map(o => `${o.date} OT ${o.hours}H`).join('\n')}\n────────\n총 ${totalOtHours}H"`
+                    : ''}>
+                  ${totalOtHours > 0
+                    ? `<div style="font-size:11px;font-weight:700;color:#7c3aed;cursor:help">${totalOtHours}H</div><div style="font-size:8px;color:#7c3aed;opacity:.7">OT</div>`
                     : `<div style="font-size:10px;color:#d1d5db">-</div>`
                   }
                 </td>
@@ -21235,6 +21249,82 @@ function renderPartialLeaveModal() {
       </button>`
   ).join('')
   return `
+  <!-- ===== OT(연장근무) 입력 모달 [A단계] ===== -->
+  <div id="otInputModal" class="hidden modal-overlay" style="z-index:1030">
+    <div class="modal-box max-w-sm p-0 overflow-hidden">
+      <!-- 헤더 -->
+      <div class="px-6 py-4 flex items-center justify-between" style="background:#047857;color:#fff">
+        <h3 class="font-bold text-lg">
+          <i class="fas fa-clock mr-2"></i>OT(연장근무) 입력
+        </h3>
+        <button onclick="closeOtModal()"
+          class="text-white/70 hover:text-white text-xl leading-none">&times;</button>
+      </div>
+      <div class="p-6 space-y-4">
+        <!-- 날짜 / 직원명 / 현재 근무조 -->
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="rounded-lg p-2" style="background:#f0fdf4">
+            <div class="text-xs text-gray-500 mb-1"><i class="fas fa-calendar-day text-emerald-600 mr-1"></i>날짜</div>
+            <div id="otModalDate" class="text-sm font-bold text-gray-800">-</div>
+          </div>
+          <div class="rounded-lg p-2" style="background:#f0fdf4">
+            <div class="text-xs text-gray-500 mb-1"><i class="fas fa-user text-emerald-600 mr-1"></i>직원명</div>
+            <div id="otModalEmp" class="text-sm font-bold text-gray-800">-</div>
+          </div>
+          <div class="rounded-lg p-2" style="background:#f0fdf4">
+            <div class="text-xs text-gray-500 mb-1"><i class="fas fa-briefcase text-emerald-600 mr-1"></i>근무조</div>
+            <div id="otModalShift" class="text-sm font-bold text-gray-800">-</div>
+          </div>
+        </div>
+
+        <!-- 근무 코드 경고 (비근무/휴무일 때) -->
+        <div id="otModalWarning" class="hidden text-xs px-3 py-2 rounded-lg"
+          style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d"></div>
+
+        <!-- OT 시간 선택 (프리셋 칩) -->
+        <div>
+          <label class="text-sm font-semibold text-gray-700 block mb-2">
+            <i class="fas fa-stopwatch text-emerald-600 mr-1"></i>OT 시간 선택
+          </label>
+          <div id="otHourChips" class="flex gap-2 mb-2"></div>
+        </div>
+
+        <!-- 직접입력 -->
+        <div>
+          <label class="text-sm font-semibold text-gray-700 block mb-1">
+            <i class="fas fa-keyboard text-emerald-600 mr-1"></i>직접입력 (시간)
+          </label>
+          <input type="number" id="otCustomHours" min="0" max="24" step="0.5"
+            class="form-input w-full" placeholder="예: 2 또는 1.5"
+            oninput="onOtCustomInput()">
+          <p class="text-xs text-gray-400 mt-1">0.5시간 단위 입력 가능 · 0 입력 시 OT 제거</p>
+        </div>
+
+        <!-- 비고 -->
+        <div>
+          <label class="text-sm font-semibold text-gray-700 block mb-1">
+            <i class="fas fa-pen text-emerald-600 mr-1"></i>비고
+          </label>
+          <textarea id="otNote" rows="2" class="form-input w-full"
+            placeholder="OT 사유 등 (선택)"></textarea>
+        </div>
+
+        <!-- 저장 / 취소 -->
+        <div class="flex gap-3 pt-1">
+          <button type="button" onclick="closeOtModal()"
+            class="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-gray-500 text-sm font-semibold hover:bg-gray-50 transition-all">
+            <i class="fas fa-times mr-1"></i>취소
+          </button>
+          <button type="button" onclick="saveOtInput()"
+            class="flex-1 py-2.5 rounded-xl text-white text-sm font-semibold transition-all hover:opacity-90"
+            style="background:#047857">
+            <i class="fas fa-save mr-1"></i>저장
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="partialLeaveModal" class="hidden modal-overlay" style="z-index:1020">
     <div class="modal-box max-w-sm p-0 overflow-hidden">
       <!-- 헤더 -->
@@ -21364,6 +21454,153 @@ window.openHalfLeaveModalFromSchedule = () => {
   window._partialLeaveDefaultDate   = autoDate
   window._partialLeaveDefaultPeriod = 'am'
   openPartialLeaveModal(autoEmpId, autoEmpName)
+}
+
+// ════════════════════════════════════════════════════════════════
+// OT(연장근무) 입력 모달 — A단계 (DB 변경 없음, daily_schedules.overtime_hours/note 사용)
+// ════════════════════════════════════════════════════════════════
+let _otSelectedHours = 0  // 현재 선택된 OT 시간
+
+// 스케줄 상단 OT 버튼 → 선택 셀에서 직원/날짜 자동 감지 후 모달 열기
+window.openOtModalFromSchedule = () => {
+  if (!_selectedCells || _selectedCells.size === 0) {
+    showToast('OT를 입력할 셀을 먼저 선택하세요', 'error')
+    return
+  }
+  if (_selectedCells.size > 1) {
+    showToast('OT 입력은 한 번에 한 셀만 가능합니다 (단일 셀 선택)', 'error')
+    return
+  }
+  const key = Array.from(_selectedCells)[0]  // empId_date
+  const parts = key.split('_')
+  const empId = parseInt(parts[0])
+  const dateStr = parts.slice(1).join('_')
+  openOtModal(empId, dateStr)
+}
+
+// OT 입력 모달 열기 (empId, dateStr 기준)
+window.openOtModal = (empId, dateStr) => {
+  const modal = document.getElementById('otInputModal')
+  if (!modal) return
+
+  const emp = (scheduleEmployees || []).find(e => e.id === empId || e.id === Number(empId))
+  const empName = emp?.name || '-'
+
+  // 현재 셀 데이터 (근무조, 기존 OT, 비고)
+  const sched = scheduleMonthData?.sched_map?.[`${empId}_${dateStr}`] || {}
+  const currentCode = sched.shift_code || '-'
+  const existingOt  = sched.overtime_hours || 0
+  const existingNote = sched.note || ''
+
+  modal.dataset.empId   = empId
+  modal.dataset.dateStr = dateStr
+  modal.dataset.prevCode = currentCode
+
+  document.getElementById('otModalDate').textContent  = dateStr
+  document.getElementById('otModalEmp').textContent   = empName
+  document.getElementById('otModalShift').textContent = (currentCode && currentCode !== '-') ? currentCode + '조' : '(근무조 미지정)'
+
+  // 근무조 경고 — 비근무/휴무 코드면 OT 입력 비권장 안내
+  const restCodes = new Set(['휴','연','반차','대휴','공가','병가','경조','무급','-',''])
+  const warnEl = document.getElementById('otModalWarning')
+  if (warnEl) {
+    if (restCodes.has(currentCode)) {
+      warnEl.textContent = '⚠️ 이 셀은 근무 코드가 아닙니다. OT는 근무일에 입력하는 것을 권장합니다.'
+      warnEl.classList.remove('hidden')
+    } else {
+      warnEl.classList.add('hidden')
+    }
+  }
+
+  // 기존 OT 값 세팅
+  _otSelectedHours = existingOt
+  document.getElementById('otCustomHours').value = existingOt > 0 ? existingOt : ''
+  document.getElementById('otNote').value = existingNote
+  _renderOtHourChips(existingOt)
+
+  modal.classList.remove('hidden')
+}
+
+// OT 시간 칩 렌더링 (선택 상태 반영)
+function _renderOtHourChips(selected) {
+  const presets = [1, 2, 3, 4]
+  const container = document.getElementById('otHourChips')
+  if (!container) return
+  container.innerHTML = presets.map(h => {
+    const active = Number(selected) === h
+    return `<button type="button" onclick="selectOtHours(${h})"
+      class="ot-chip px-4 py-2 rounded-lg text-sm font-bold border transition-all ${active?'ring-2 ring-offset-1 ring-emerald-400':''}"
+      style="background:${active?'#10b981':'#ecfdf5'};color:${active?'#fff':'#047857'};border-color:#6ee7b7">${h}H</button>`
+  }).join('')
+}
+
+// OT 프리셋 시간 선택
+window.selectOtHours = (h) => {
+  _otSelectedHours = h
+  document.getElementById('otCustomHours').value = h
+  _renderOtHourChips(h)
+}
+
+// 직접입력 변경 시 칩 선택 해제
+window.onOtCustomInput = () => {
+  const v = parseFloat(document.getElementById('otCustomHours').value || '0')
+  _otSelectedHours = v
+  _renderOtHourChips(v)
+}
+
+// OT 모달 닫기
+window.closeOtModal = () => {
+  const modal = document.getElementById('otInputModal')
+  if (modal) modal.classList.add('hidden')
+}
+
+// OT 저장 — 기존 POST /api/schedule/save 사용, shift_code 유지 + overtimeHours/note 갱신
+window.saveOtInput = async () => {
+  const modal = document.getElementById('otInputModal')
+  if (!modal) return
+  const empId   = parseInt(modal.dataset.empId)
+  const dateStr = modal.dataset.dateStr
+  const prevCode = modal.dataset.prevCode || '-'
+  const otHours = parseFloat(document.getElementById('otCustomHours').value || '0')
+  const note    = document.getElementById('otNote').value || ''
+
+  if (isNaN(otHours) || otHours < 0) {
+    showToast('OT 시간을 올바르게 입력하세요', 'error')
+    return
+  }
+  if (otHours > 24) {
+    showToast('OT 시간은 24시간을 초과할 수 없습니다', 'error')
+    return
+  }
+
+  // 기존 셀 데이터 (근무조/야간/임시직 유지)
+  const sched = scheduleMonthData?.sched_map?.[`${empId}_${dateStr}`] || {}
+  const shiftCode = (prevCode && prevCode !== '-') ? prevCode : (sched.shift_code || '')
+
+  showToast('OT 저장 중...', 'info')
+  const res = await api('POST', '/api/schedule/save', {
+    employeeId: empId,
+    workDate: dateStr,
+    shiftCode: shiftCode || '-',
+    shiftId: sched.shift_id || null,
+    isOvertime: otHours > 0,
+    overtimeHours: otHours,
+    isNightWork: !!(sched.is_night_work),
+    isTempStaff: !!(sched.is_temp_staff),
+    tempType: sched.temp_type || null,
+    tempHours: sched.temp_hours || 0,
+    note
+  }).catch(() => null)
+
+  if (res?.success === false || res === null) {
+    showToast('OT 저장 실패', 'error')
+    return
+  }
+
+  showToast(otHours > 0 ? `OT ${otHours}H 저장 완료` : 'OT 제거 완료', 'success')
+  closeOtModal()
+  // 그리드 전체 재조회 (셀 표시·우측 합계·툴팁 모두 자동 갱신)
+  await reloadScheduleMonth()
 }
 
 // 직원 드롭다운 변경 시 날짜 이력 갱신

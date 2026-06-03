@@ -1884,9 +1884,9 @@ schedule.get('/:year/:month', async (c) => {
   const [schedRows, shiftRows, holidayRows, leaveRows, subRows, extWorkerRows, extSchedRows] = await Promise.all([
     // 해당 월 스케줄
     c.env.DB.prepare(
-      `SELECT s.employee_id, s.work_date, s.shift_code, s.leave_type,
+      `SELECT s.employee_id, s.work_date, s.shift_code, s.shift_id, s.leave_type,
               s.is_overtime, s.overtime_hours, s.is_night_work,
-              s.is_temp_staff, s.temp_type, s.temp_hours,
+              s.is_temp_staff, s.temp_type, s.temp_hours, s.note,
               sh.shift_name, sh.start_time, sh.end_time, sh.color as shift_color
        FROM daily_schedules s
        LEFT JOIN schedule_shifts sh ON s.shift_id = sh.id
