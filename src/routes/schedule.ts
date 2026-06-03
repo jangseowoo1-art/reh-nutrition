@@ -2058,9 +2058,10 @@ schedule.get('/:year/:month', async (c) => {
       `SELECT holiday_date, name as holiday_name FROM holidays WHERE holiday_date LIKE ?`
     ).bind(`${year}-${paddedMonth}-%`).all<any>(),
 
-    // 연차·휴가 정보 (해당 연도)
+    // 연차·휴가 정보 (해당 연도) — ★ initial_used_days 포함(잔여 계산에서 차감)
     c.env.DB.prepare(
-      `SELECT employee_id, leave_type, total_days, used_days, carried_over_days, allowance_paid, allowance_paid_at
+      `SELECT employee_id, leave_type, total_days, used_days, initial_used_days,
+              carried_over_days, allowance_paid, allowance_paid_at
        FROM employee_leaves
        WHERE hospital_id = ? AND year = ?`
     ).bind(hospitalId, year).all<any>(),
@@ -2130,6 +2131,9 @@ schedule.get('/:year/:month', async (c) => {
     leaveMap[l.employee_id][l.leave_type] = {
       total: l.total_days > 0 ? l.total_days : null,  // 0 = 미부여 → null 처리
       used: l.used_days,
+      // ★ initial_used_days = 도입 전 기사용 연차 → CALC_ENGINE.calcAnnualRemain에서 차감
+      initial_used_days: l.initial_used_days ?? 0,
+      prior_used: l.initial_used_days ?? 0,
       carried_over_days: l.carried_over_days ?? 0,
       allowance_paid: l.allowance_paid ?? 0,
       allowance_paid_at: l.allowance_paid_at ?? null
@@ -2170,9 +2174,9 @@ schedule.get('/:year/:month', async (c) => {
     const schedUsed = (annualUsedFromSched[empId] || 0) + (partialUsedByEmp[empId] || 0)
     if (!leaveMap[empId]) {
       // employee_leaves 행 자체가 없는 직원 → 사용일만 주입
-      leaveMap[empId] = { annual: { total: null, used: schedUsed, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null } }
+      leaveMap[empId] = { annual: { total: null, used: schedUsed, initial_used_days: 0, prior_used: 0, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null } }
     } else if (!leaveMap[empId].annual) {
-      leaveMap[empId].annual = { total: null, used: schedUsed, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null }
+      leaveMap[empId].annual = { total: null, used: schedUsed, initial_used_days: 0, prior_used: 0, carried_over_days: 0, allowance_paid: 0, allowance_paid_at: null }
     } else {
       // DB의 used_days와 (스케줄 카운트 + 부분연차 ratio)가 다를 경우 보정
       if (leaveMap[empId].annual.used !== schedUsed) {
