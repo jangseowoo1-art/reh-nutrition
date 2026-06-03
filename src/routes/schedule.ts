@@ -41,7 +41,8 @@ interface WorkHourCalc {
  */
 function calcWorkHours(
   startTime: string, endTime: string,
-  workDate: string, holidays: Set<string>
+  workDate: string, holidays: Set<string>,
+  otAutoEnabled: boolean = true   // ★ OT 정책: false면 자동 OT 미생성(정규 근무조). 야간/휴일은 무관하게 항상 계산.
 ): WorkHourCalc {
   if (!startTime || !endTime) {
     return { basicHours:8, otHours:0, nightHours:0, isHolidayWork:false, holidayHours:0 }
@@ -55,7 +56,9 @@ function calcWorkHours(
   const breakMin = totalMin >= 480 ? 60 : totalMin >= 240 ? 30 : 0  // 8h이상→1h, 4h이상→30min
   const workMin  = totalMin - breakMin
   const basicH   = workMin / 60
-  const otH      = Math.max(0, basicH - 8)
+  // ★ OT 정책: 자동생성 OFF(정규 근무조)면 0. ON이면 기존대로 8h 초과분.
+  //   (수동 OT 우선 로직은 호출부 upsertScheduleWithCalc 에서 처리)
+  const otH      = otAutoEnabled ? Math.max(0, basicH - 8) : 0
 
   // 야간 구간 계산 (22:00=1320분, 06:00+24h=1800분)
   const nightStart = 22 * 60        // 1320
@@ -236,7 +239,10 @@ schedule.get('/shifts', async (c) => {
 
 schedule.post('/shifts', async (c) => {
   const user = c.get('user')
-  const { shiftCode, shiftName, startTime, endTime, color, team, hospitalId: bodyHospId } = await c.req.json()
+  // ★ standardHours / halfType / otAutoEnabled 수신 (이전 버전은 구조분해 누락으로 미저장 버그)
+  const { shiftCode, shiftName, startTime, endTime, color, team,
+          standardHours, halfType, otAutoEnabled,
+          hospitalId: bodyHospId } = await c.req.json()
   const hid = isAdmin(user) && bodyHospId ? bodyHospId : user.hospitalId
   if (!shiftCode || !shiftName) return c.json({ error: '코드와 이름은 필수입니다' }, 400)
 
@@ -244,32 +250,52 @@ schedule.post('/shifts', async (c) => {
     `SELECT COALESCE(MAX(sort_order), 0) as max_order FROM schedule_shifts WHERE hospital_id = ?`
   ).bind(hid).first<any>()
 
+  // OT 자동생성: 명시되면 그 값, 미명시면 기본 ON(1) — 신규 근무조는 안전하게 ON
+  const otEnabled = (otAutoEnabled === false || otAutoEnabled === 0) ? 0 : 1
+  const stdH = (standardHours !== undefined && standardHours !== null) ? standardHours : 8
+  const hType = halfType || null
+
   await c.env.DB.prepare(
-    `INSERT INTO schedule_shifts (hospital_id, shift_code, shift_name, start_time, end_time, color, team, sort_order)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO schedule_shifts (hospital_id, shift_code, shift_name, start_time, end_time, color, team, sort_order, standard_hours, half_type, ot_auto_enabled, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
      ON CONFLICT(hospital_id, shift_code) DO UPDATE SET
        shift_name=excluded.shift_name, start_time=excluded.start_time,
-       end_time=excluded.end_time, color=excluded.color, team=excluded.team`
+       end_time=excluded.end_time, color=excluded.color, team=excluded.team,
+       standard_hours=excluded.standard_hours, half_type=excluded.half_type,
+       ot_auto_enabled=excluded.ot_auto_enabled, is_active=1`
   ).bind(hid, shiftCode, shiftName, startTime || '09:00', endTime || '18:00',
-    color || '#3B82F6', team || null, (maxRow?.max_order || 0) + 10).run()
+    color || '#3B82F6', team || null, (maxRow?.max_order || 0) + 10,
+    stdH, hType, otEnabled).run()
   return c.json({ success: true })
 })
 
 schedule.put('/shifts/:id', async (c) => {
   const user = c.get('user')
-  const { shiftCode, shiftName, startTime, endTime, color, team, sortOrder } = await c.req.json()
+  // ★ standardHours / halfType / otAutoEnabled 수신 (미저장 버그 수정)
+  const { shiftCode, shiftName, startTime, endTime, color, team, sortOrder,
+          standardHours, halfType, otAutoEnabled } = await c.req.json()
   const hid = user.hospitalId
   const check = await c.env.DB.prepare(
     `SELECT * FROM schedule_shifts WHERE id = ? AND (hospital_id = ? OR ? = 1)`
   ).bind(c.req.param('id'), hid, isAdmin(user) ? 1 : 0).first<any>()
   if (!check) return c.json({ error: '권한이 없거나 존재하지 않는 근무조입니다' }, 403)
 
+  // ★ 기존값 보존 fallback: 전달되지 않은(undefined) 항목은 기존 DB 값 유지 → NULL/초기화 방지
+  //   (특히 무이재 의원 half_type 등 기존 데이터 보존)
+  const _otEnabled = (otAutoEnabled === undefined)
+    ? (check.ot_auto_enabled ?? 1)
+    : ((otAutoEnabled === false || otAutoEnabled === 0) ? 0 : 1)
+  const _stdH  = (standardHours === undefined || standardHours === null) ? (check.standard_hours ?? 8) : standardHours
+  const _hType = (halfType === undefined) ? (check.half_type ?? null) : (halfType || null)
+
   await c.env.DB.prepare(
-    `UPDATE schedule_shifts SET shift_code=?, shift_name=?, start_time=?, end_time=?, color=?, team=?, sort_order=?
+    `UPDATE schedule_shifts SET shift_code=?, shift_name=?, start_time=?, end_time=?, color=?, team=?, sort_order=?,
+       standard_hours=?, half_type=?, ot_auto_enabled=?
      WHERE id=?`
   ).bind(shiftCode ?? check.shift_code, shiftName ?? check.shift_name,
     startTime ?? check.start_time, endTime ?? check.end_time,
     color ?? check.color, team ?? check.team, sortOrder ?? check.sort_order,
+    _stdH, _hType, _otEnabled,
     c.req.param('id')).run()
   return c.json({ success: true })
 })
@@ -2337,7 +2363,7 @@ async function upsertScheduleWithCalc(
 
   if (resolvedShiftId && !leaveType && !REST_CODES.has(shiftCode)) {
     const shift = await db.prepare(
-      `SELECT start_time, end_time FROM schedule_shifts WHERE id=?`
+      `SELECT start_time, end_time, ot_auto_enabled FROM schedule_shifts WHERE id=?`
     ).bind(resolvedShiftId).first<any>()
 
     if (shift?.start_time && shift?.end_time) {
@@ -2348,12 +2374,18 @@ async function upsertScheduleWithCalc(
       ).bind(`${yearMonth}-%`).all<any>()
       const holidaySet = new Set((holidays.results || []).map((h: any) => h.holiday_date))
 
-      const calc = calcWorkHours(shift.start_time, shift.end_time, workDate, holidaySet as Set<string>)
+      // ★ OT 정책: ot_auto_enabled=0 인 정규 근무조는 자동 OT 미생성.
+      //   컬럼이 NULL/미정의면 기본 ON(1) 으로 간주(현행 동작 보존 → 회귀 0).
+      const otAutoEnabled = shift.ot_auto_enabled === null || shift.ot_auto_enabled === undefined
+        ? true : shift.ot_auto_enabled !== 0
+
+      const calc = calcWorkHours(shift.start_time, shift.end_time, workDate, holidaySet as Set<string>, otAutoEnabled)
       basicWorkHours    = calc.basicHours
+      // 수동 OT 우선: overtimeHours 가 명시되면 그대로, 아니면 정책 반영된 자동 OT
       calcOtHours       = overtimeHours > 0 ? overtimeHours : calc.otHours
-      nightWorkHours    = calc.nightHours
+      nightWorkHours    = calc.nightHours       // ★ 야간: 정책과 무관하게 항상 계산·유지
       calcIsNight       = calc.nightHours > 0 || isNightWork
-      holidayWorkHours  = calc.holidayHours
+      holidayWorkHours  = calc.holidayHours     // ★ 휴일: 정책과 무관하게 항상 계산·유지
     }
   }
 
@@ -4037,7 +4069,8 @@ schedule.put('/employees/:id/leaves', async (c) => {
 // ════════════════════════════════════════════════════════════════
 schedule.post('/copy-week', async (c) => {
   const user = c.get('user')
-  const hospitalId = getHospitalId(user, undefined)
+  // admin은 ?hospitalId= 로 대상 병원 지정 가능(영양사는 본인 병원 고정)
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
   const { fromStartDate, toStartDate } = await c.req.json()
   // fromStartDate: 복사 원본 주 월요일 (YYYY-MM-DD)
   // toStartDate: 붙여넣을 주 월요일 (YYYY-MM-DD)
@@ -4064,6 +4097,10 @@ schedule.post('/copy-week', async (c) => {
   }
 
   // 대상 주에 붙여넣기
+  // ★ OT 정책 통일: copy-week 도 다른 입력 경로(save/save-batch)와 동일하게
+  //   upsertScheduleWithCalc() 단일 엔진을 경유한다.
+  //   → 근무시간/야간/휴일/OT 정책이 대상 날짜 기준으로 재계산되어 정합성 보장.
+  //   → 원본의 수동 OT(overtime_hours>0)는 그대로 전달되어 수동 우선 보존.
   const to = new Date(toStartDate)
   let count = 0
   for (let i = 0; i < 7; i++) {
@@ -4075,22 +4112,13 @@ schedule.post('/copy-week', async (c) => {
     for (const empId of empKeys) {
       const src = srcMap[`${empId}_${dow}`]
       if (!src) continue
-      await c.env.DB.prepare(
-        `INSERT INTO daily_schedules (hospital_id, employee_id, work_date, shift_code, shift_id, leave_type, is_overtime, overtime_hours, is_temp_staff, temp_type, temp_hours, is_night_work, note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(hospital_id, employee_id, work_date) DO UPDATE SET
-           shift_code=excluded.shift_code, shift_id=excluded.shift_id,
-           leave_type=excluded.leave_type, is_overtime=excluded.is_overtime,
-           overtime_hours=excluded.overtime_hours, is_temp_staff=excluded.is_temp_staff,
-           temp_type=excluded.temp_type, temp_hours=excluded.temp_hours,
-           is_night_work=excluded.is_night_work, note=excluded.note,
-           updated_at=CURRENT_TIMESTAMP`
-      ).bind(
-        hospitalId, empId, targetDate, src.shift_code||'', src.shift_id||null,
-        src.leave_type||null, src.is_overtime||0, src.overtime_hours||0,
-        src.is_temp_staff||0, src.temp_type||null, src.temp_hours||0,
-        src.is_night_work||0, src.note||null
-      ).run()
+      await upsertScheduleWithCalc(
+        c.env.DB, hospitalId, empId as number, targetDate,
+        src.shift_code || '', src.shift_id || null, src.leave_type || null,
+        !!src.is_overtime, src.overtime_hours || 0,
+        !!src.is_temp_staff, !!src.is_night_work, src.temp_type || null, src.temp_hours || 0,
+        src.note || null
+      )
       count++
     }
   }

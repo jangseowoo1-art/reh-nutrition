@@ -16801,6 +16801,7 @@ function renderShiftsTab() {
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">대상팀</th>
             <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500">색상</th>
             ${shiftTabIsHourly ? `<th class="px-4 py-3 text-center text-xs font-semibold text-violet-600">기준시간<div class="text-[10px] font-normal text-gray-400">부분연차용</div></th>` : ''}
+            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500">OT 자동생성</th>
             ${isAdm ? `<th class="px-4 py-3 text-center text-xs font-semibold text-gray-500">관리</th>` : ''}
           </tr>
         </thead>
@@ -16833,6 +16834,11 @@ function renderShiftsTab() {
                 ${s.standard_hours ?? 8}h
               </span>
             </td>` : ''}
+            <td class="px-4 py-3 text-center">
+              ${(s.ot_auto_enabled === 0)
+                ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200"><i class="fas fa-circle-check" style="font-size:10px"></i>정규조 (OFF)</span>'
+                : '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-700 text-xs font-semibold border border-amber-200"><i class="fas fa-bolt" style="font-size:10px"></i>자동 (ON)</span>'}
+            </td>
             ${isAdm ? `<td class="px-4 py-3">
               <div class="flex items-center justify-center gap-1">
                 <button onclick="openShiftModal(${s.id})"
@@ -20559,7 +20565,17 @@ function renderShiftModal() {
             </div>
             <p class="text-xs text-gray-400 mt-0.5">부분연차 차감 기준 (8 또는 12)</p>
           </div>
-          <div></div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">
+              OT 자동생성
+              <span class="text-xs text-gray-400 ml-1">(근무조 정책)</span>
+            </label>
+            <select id="sm_ot_auto_enabled" class="form-input mt-1">
+              <option value="1">사용 (일반 근무조)</option>
+              <option value="0">사용 안 함 (정규 근무조)</option>
+            </select>
+            <p class="text-xs text-gray-400 mt-0.5">정규 근무조는 근무시간이 길어도 자동 OT 미생성<br>(야간/휴일 시간은 계속 계산)</p>
+          </div>
         </div>
         <div>
           <label class="text-sm font-medium text-gray-700">색상</label>
@@ -28876,6 +28892,7 @@ window.openShiftModal = (shiftId) => {
     document.getElementById('sm_half_type').value = s.half_type || ''
     document.getElementById('sm_color').value = s.color
     document.getElementById('sm_standard_hours').value = s.standard_hours ?? 8
+    document.getElementById('sm_ot_auto_enabled').value = String((s.ot_auto_enabled === 0) ? 0 : 1)
   } else {
     document.getElementById('shiftModalTitle').textContent = '추가'
     document.getElementById('sm_id').value = ''
@@ -28887,6 +28904,7 @@ window.openShiftModal = (shiftId) => {
     document.getElementById('sm_half_type').value = ''
     document.getElementById('sm_color').value = '#3B82F6'
     document.getElementById('sm_standard_hours').value = 8
+    document.getElementById('sm_ot_auto_enabled').value = '1'
   }
   document.getElementById('shiftModal').classList.remove('hidden')
 }
@@ -28901,7 +28919,8 @@ window.saveShift = async () => {
     team: document.getElementById('sm_team').value || null,
     halfType: document.getElementById('sm_half_type').value || null,
     color: document.getElementById('sm_color').value,
-    standardHours: parseFloat(document.getElementById('sm_standard_hours').value) || 8
+    standardHours: parseFloat(document.getElementById('sm_standard_hours').value) || 8,
+    otAutoEnabled: document.getElementById('sm_ot_auto_enabled').value === '0' ? 0 : 1
   }
   // admin은 현재 선택된 병원의 hospitalId를 body에 포함 (서버에서 admin의 user.hospitalId가 null일 수 있음)
   if (App.role === 'admin' && App.currentHospitalId) {
