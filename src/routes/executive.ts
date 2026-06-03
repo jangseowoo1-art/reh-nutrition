@@ -9,6 +9,18 @@ import {
 
 const executive = new Hono<{ Bindings: { DB: D1Database }; Variables: { user: any } }>()
 
+// ── 휴무/비근무(REST) 코드 통일 기준 ──────────────────────────────
+// [P1 FIX] daily_schedules.shift_code 는 단축형('연','대휴' 등)으로 저장됨.
+//          기존 병원장 집계는 '연차'(긴 형식)만 찾아 연차가 누락되고,
+//          '연'·'대휴'가 근무일로 잘못 카운트되던 문제를 영양사 REST_CODES 기준으로 통일.
+//   - 휴무/비근무 전체: 휴/연/경조/병가/반차/대체/대휴/공가/무급
+//   - 연차성(leave_days 집계 대상): 연/경조/병가/반차/공가  (대휴·대체·휴는 일반 휴무로 분류)
+const REST_CODES = ['휴', '연', '경조', '병가', '반차', '대체', '대휴', '공가', '무급']
+const LEAVE_CODES = ['연', '경조', '병가', '반차', '공가']
+// SQL IN 절용 문자열 ('휴','연',...)
+const REST_CODES_SQL  = REST_CODES.map(c => `'${c}'`).join(',')
+const LEAVE_CODES_SQL = LEAVE_CODES.map(c => `'${c}'`).join(',')
+
 // ── 운영진 권한 체크 미들웨어 ─────────────────────────────────────
 executive.use('/*', async (c, next) => {
   const user = c.get('user')
@@ -423,8 +435,10 @@ executive.get('/staff-labor/:year/:month', async (c) => {
             COUNT(*) as total_days,
             SUM(CASE WHEN ds.is_overtime = 1 THEN 1 ELSE 0 END) as ot_days,
             SUM(COALESCE(ds.overtime_hours, 0)) as ot_hours,
-            SUM(CASE WHEN ds.shift_code IN ('연차','반차','병가','경조','공가') THEN 1 ELSE 0 END) as leave_days,
-            SUM(CASE WHEN ds.shift_code NOT IN ('연차','반차','병가','경조','공가','휴','무급') THEN 1 ELSE 0 END) as work_days
+            SUM(CASE WHEN ds.leave_type IS NOT NULL AND ds.leave_type != '' THEN 1
+                     WHEN ds.shift_code IN (${LEAVE_CODES_SQL}) THEN 1 ELSE 0 END) as leave_days,
+            SUM(CASE WHEN (ds.leave_type IS NULL OR ds.leave_type = '')
+                          AND ds.shift_code NOT IN (${REST_CODES_SQL}) THEN 1 ELSE 0 END) as work_days
      FROM daily_schedules ds
      WHERE ds.hospital_id = ?
        AND strftime('%Y', ds.work_date) = ?
@@ -618,7 +632,8 @@ executive.get('/staff-labor/:year/:month', async (c) => {
   ).bind(`${y}-${String(m).padStart(2,'0')}-%`).all<any>()
   const holidaySet2 = new Set((holidayRows2.results || []).map((h: any) => h.holiday_date))
 
-  const REST_CODES2 = new Set(['휴','연','경조','병가','반차','대체'])
+  // [P1 FIX] 상단 REST_CODES 와 동일 기준으로 통일 ('대휴','공가' 추가)
+  const REST_CODES2 = new Set(REST_CODES)
 
   type EmpAllowance = {
     empId: number; empName: string; baseSalary: number; salaryType: string
@@ -902,7 +917,8 @@ executive.get('/export/labor/:year/:month', async (c) => {
   // 직원별 근무일수 / OT일수
   const schedRows = await c.env.DB.prepare(
     `SELECT ds.employee_id,
-            SUM(CASE WHEN ds.shift_code NOT IN ('연차','반차','병가','경조','공가','휴','무급') THEN 1 ELSE 0 END) as work_days,
+            SUM(CASE WHEN (ds.leave_type IS NULL OR ds.leave_type = '')
+                          AND ds.shift_code NOT IN (${REST_CODES_SQL}) THEN 1 ELSE 0 END) as work_days,
             SUM(CASE WHEN ds.is_overtime = 1 THEN 1 ELSE 0 END) as ot_days
      FROM daily_schedules ds
      WHERE ds.hospital_id = ?
