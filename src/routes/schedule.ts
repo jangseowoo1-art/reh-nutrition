@@ -807,15 +807,20 @@ schedule.get('/leave-balance/all', async (c) => {
     const halfAm   = h ? Number(h.half_am_cnt)    || 0 : 0
     const halfPm   = h ? Number(h.half_pm_cnt)    || 0 : 0
 
-    // annual: used_days = SSOT(종일연차+반차 이미 포함). 잔여 = total + carried − used
+    // annual: used_days = SSOT(종일연차+반차 이미 포함).
+    // ★ 확정 정책: 잔여 = total + carried − initial_used_days − used_days
+    //   initial_used_days = 프로그램 도입 전 기사용 연차 → 반드시 차감
+    //   송경민: 30 + 0 − 26 − 2.5 = 1.5일
     const aTotal   = a ? (a.total_days || 0) : 0
-    const aUsed    = a ? (a.used_days  || 0) : 0   // ★ 반차 이미 포함
+    const aUsed    = a ? (a.used_days  || 0) : 0   // ★ 반차 이미 포함(이중 차감 금지)
     const aCarried = a ? (a.allowance_paid ? 0 : (a.carried_over_days || 0)) : 0
-    const aRemain  = Math.max(0, aTotal + aCarried - aUsed)
+    const aPrior   = a ? (a.initial_used_days || 0) : 0
+    const aRemain  = Math.max(0, aTotal + aCarried - aPrior - aUsed)
 
     const mTotal   = m ? (m.total_days || 0) : 0
     const mUsed    = m ? (m.used_days  || 0) : 0
-    const mRemain  = Math.max(0, mTotal - mUsed)
+    const mPrior   = m ? (m.initial_used_days || 0) : 0
+    const mRemain  = Math.max(0, mTotal - mPrior - mUsed)
 
     return {
       employee_id: e.employee_id,
@@ -829,7 +834,7 @@ schedule.get('/leave-balance/all', async (c) => {
         manual_adjust: 0,
         carried_over:  aCarried,
         used_days:     aUsed,             // ★ SSOT: 종일연차+반차 합산값
-        prior_used:    a.initial_used_days || 0,  // 참고용(차감 안함)
+        prior_used:    a.initial_used_days || 0,  // ★ 도입 전 기사용 연차 → 잔여에서 차감됨
         remain_days:   aRemain,
         allowance_paid:    a.allowance_paid ? 1 : 0,
         allowance_paid_at: a.allowance_paid_at || '',
@@ -2087,6 +2092,35 @@ schedule.get('/:year/:month', async (c) => {
   for (const s of (schedRows.results || [])) {
     const key = `${s.employee_id}_${s.work_date}`
     schedMap[key] = s
+  }
+
+  // ── ★ 반차/부분연차 배지 주입 ───────────────────────────────────
+  // employee_leave_history(해당 월) 를 날짜별/period별로 읽어
+  // schedMap[empId_date].partial_am / partial_pm 객체를 주입한다.
+  // 프론트(app.js 월간 셀)는 sched.partial_am.hours / partial_pm.hours 로 배지를 그림.
+  //   - halfday: '오전반차'/'오후반차' 텍스트
+  //   - hourly : '전반 Nh'/'후반 Nh'
+  // ⚠️ 표시 전용. used_days/잔여 계산은 건드리지 않음(SSOT recalcAnnualUsedDays 유지).
+  const histDateRows = await c.env.DB.prepare(
+    `SELECT employee_id, leave_date, leave_subtype, leave_period,
+            leave_ratio, leave_hours, standard_hours
+     FROM employee_leave_history
+     WHERE hospital_id = ? AND year = ?
+       AND CAST(month AS INTEGER) = CAST(? AS INTEGER)
+       AND leave_period IS NOT NULL`
+  ).bind(hospitalId, parseInt(year), parseInt(month)).all<any>()
+  for (const h of (histDateRows.results || [])) {
+    const key = `${h.employee_id}_${h.leave_date}`
+    if (!schedMap[key]) schedMap[key] = {}   // 근무코드 없는 날짜에도 배지 표시
+    const badge = {
+      hours:          Number(h.leave_hours)    || 0,
+      ratio:          Number(h.leave_ratio)    || 0,
+      standard_hours: Number(h.standard_hours) || 0,
+      subtype:        h.leave_subtype || '',
+      period:         h.leave_period,
+    }
+    if (h.leave_period === 'am')      schedMap[key].partial_am = badge
+    else if (h.leave_period === 'pm') schedMap[key].partial_pm = badge
   }
 
   // leaveMap: { empId: { annual: {total, used, carried_over_days, allowance_paid}, ... } }

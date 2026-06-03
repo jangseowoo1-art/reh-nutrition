@@ -61,16 +61,19 @@ const CALC_ENGINE = (() => {
     const _rawTotal = src?.total ?? src?.total_days ?? null
     const total    = (_rawTotal !== null && _rawTotal > 0) ? _rawTotal : null  // 0 = 미부여 → null 처리
     // ★ used_days는 서버 recalcAnnualUsedDays()가 이미 [종일연차 + 반차(leave_ratio 합)]를
-    //   합산해 저장하는 Single Source 값. 따라서 여기서 반차를 다시 더하면 이중 차감이 됨.
-    //   잔여 = total + carried − used_days  (initial_used_days는 차감 안함)
+    //   합산해 저장하는 Single Source 값. 반차(half)를 다시 더하면 이중 차감이므로 금지.
     const used     = src?.used  ?? src?.used_days  ?? 0
     const carried  = (src?.allowance_paid) ? 0 : (src?.carried_over_days ?? 0)
+    // ★ initial_used_days = 프로그램 도입 전 기사용 연차 → 잔여에서 반드시 차감 (확정 정책)
+    //   /leaves/all → initial_used_days, /leave-balance/all → prior_used
+    const prior    = Number(src?.prior_used ?? src?.initial_used_days ?? 0) || 0
     // half: 표시(참고)용으로만 노출 — 차감 계산에는 사용하지 않음
     const half     = Number(src?.half_used_days ?? empLeave?.half_used_days ?? 0) || 0
     const effective = total !== null ? total + carried : null
-    const remain    = effective !== null ? effective - used : null
+    // 잔여 = total + carried − initial_used_days − used_days
+    const remain    = effective !== null ? Math.max(0, effective - prior - used) : null
 
-    return { total, effective, used, remain, carried, half }
+    return { total, effective, used, remain, carried, prior, half }
   }
 
   // ─────────────────────────────────────────────
@@ -20732,11 +20735,12 @@ function renderLeavesTab() {
     const aHalfUsed = (lv && lv.half_used_days != null) ? (Number(lv.half_used_days) || 0)
                     : (bal?.annual?.half_used_days != null ? Number(bal.annual.half_used_days) || 0 : 0)
     const aTotal  = aGranted + aManual + aCarried
-    // ★ STEP 2: initial_used_days(aPrior) 중복 차감 제거 — CALC_ENGINE.calcAnnualRemain과 통일
-    //   정책: 잔여연차 = 총 부여연차 + 이월 − 실제 사용연차(used_days, 반차 이미 포함)
-    //   송경민: 30 + 0 − 2.5 = 27.5일  (종일연차 1일 + 반차 0.5×3건 = 1.5일 → used_days=2.5)
+    // ★ 확정 정책: 잔여연차 = total + carried − initial_used_days − used_days
+    //   - initial_used_days(aPrior) = 프로그램 도입 전 기사용 연차 → 차감
+    //   - used_days(aUsed)는 [종일연차 + 반차] 합산 SSOT → 반차(aHalfUsed) 재차감 금지
+    //   송경민: 30 + 0 − 26 − 2.5 = 1.5일
     const aUsedTotal = aUsed
-    const aRemain = Math.max(0, aTotal - aUsedTotal)
+    const aRemain = Math.max(0, aTotal - aPrior - aUsedTotal)
 
     // ★ 반차 정보: /leaves/all이 내려주는 half_am_cnt/half_pm_cnt(employee_leave_history 기준) 우선
     //   (구버전 leave-balance 응답의 hist_half_am/pm은 fallback)
@@ -20753,7 +20757,8 @@ function renderLeavesTab() {
     //   under1Y: 월차 used_days(서버 반차 포함값) 그대로
     //   1년 이상: 연차 used_days(반차 포함값) 그대로 → 반차 재합산 금지(이중 차감 방지)
     //   ※ initial_used_days(aPrior)는 총 사용일에서도 제외
-    //   송경민: 종일연차 1 + 반차 1.5 = used_days 2.5 → 총사용 2.5일, 잔여 27.5일
+    //   송경민: 종일연차 1 + 반차 1.5 = used_days 2.5 → 총사용 2.5일
+    //   잔여 = total 30 + carried 0 − initial 26 − used 2.5 = 1.5일
     const totalUsed   = under1Y ? mUsed : aUsedTotal
     const totalRemain = under1Y ? mRemain : aRemain
 
