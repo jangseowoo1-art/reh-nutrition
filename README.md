@@ -108,9 +108,21 @@ pm2 start ecosystem.config.cjs
 pm2 logs hospital-meal --nostream
 ```
 
+## 근무 스케줄 — OT(연장근무) 입력 [A단계]
+- **OT 입력 모달**: 스케줄 화면 상단 `근무조 · OT` 그룹의 **OT 버튼** 클릭 → 선택한 셀(단일)에 대해 OT 입력 모달 표시
+  - 모달 내용: 날짜 / 직원명 / 현재 근무조 / OT 시간 선택(1H·2H·3H·4H 프리셋 + 직접입력) / 비고 / 저장 / 취소
+  - 저장: 기존 `POST /api/schedule/save` 사용, `overtimeHours` → `daily_schedules.overtime_hours` 저장 (기존 근무조·비고 보존)
+- **셀 표시**: 근무조 코드 아래에 `OT 2H` 배지 표시 (반차 표시와 동일 방식)
+- **우측 OT 컬럼**: 직원별 월 OT 총 시간(`{n}H`) 표시 + 마우스 오버 시 날짜별 OT 내역 툴팁(예: `05/15 OT 2H … 총 2H`)
+- **DB 구조 변경 없음**: 기존 컬럼(`is_overtime`, `overtime_hours`, `note`)만 사용
+- **반영 화면**: 스케줄 관리 / labor-cost-report(otHours) / 병원장 staff-labor(SUMMARY·DETAIL otHours)
+- **영향 없음**: 식단가 엔진 / 외부인력 엔진 / daily_orders / daily_meals (검증 완료)
+- **다음 단계**: B단계(OT/야간/휴일 수당 활성화 정책) · C단계(공휴일/대체휴일 세분화) 별도 진행 예정
+
 ## 배포
-- **플랫폼**: Cloudflare Pages (로컬 개발: wrangler pages dev)
+- **플랫폼**: Cloudflare Pages (프로덕션: https://reh-nutrition.pages.dev)
 - **빌드**: Vite + Hono TypeScript
-- **상태**: ✅ 로컬 서비스 운영 중
-- **최종 업데이트**: 2026-03-23
+- **상태**: ✅ 운영 중
+- **캐시 태그**: 20260603-ot-input
+- **최종 업데이트**: 2026-06-03 (A단계 OT 입력 기능)
 # Auto deploy test Sun Apr 12 17:04:05 UTC 2026
