@@ -2075,6 +2075,7 @@ schedule.get('/:year/:month', async (c) => {
     c.env.DB.prepare(
       `SELECT s.employee_id, s.work_date, s.shift_code, s.shift_id, s.leave_type,
               s.is_overtime, s.overtime_hours, s.is_night_work,
+              s.basic_work_hours, s.night_work_hours, s.holiday_work_hours,
               s.is_temp_staff, s.temp_type, s.temp_hours, s.note,
               sh.shift_name, sh.start_time, sh.end_time, sh.color as shift_color
        FROM daily_schedules s

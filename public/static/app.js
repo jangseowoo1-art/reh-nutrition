@@ -18047,7 +18047,13 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
         const sp = (code && code !== '-')
           ? '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + (CW-2) + 'px;height:18px;border-radius:3px;font-size:9px;font-weight:700;overflow:hidden;' + getDesignShiftStyle(code) + '" title="' + code + '">' + code + '</span>'
           : '<span style="color:#d1d5db;font-size:9px">·</span>'
-        const otBadge = otH > 0 ? '<div style="font-size:7px;color:#059669;line-height:1;margin-top:1px">OT' + otH + 'h</div>' : ''
+        // STEP6: 디자인(컴팩트) 뷰 — 좁은 셀 특성상 소형 텍스트로 OT/야간/휴일 표시 (표시 전용)
+        const nightHd   = sched.night_work_hours   || 0
+        const holidayHd = sched.holiday_work_hours || 0
+        const otBadge     = otH > 0       ? '<div style="font-size:7px;color:#059669;line-height:1;margin-top:1px">OT' + otH + 'h</div>' : ''
+        const nightBadgeD = nightHd > 0   ? '<div style="font-size:7px;color:#6d28d9;line-height:1;margin-top:1px">야' + nightHd + 'h</div>' : ''
+        const holidayBadgeD = holidayHd > 0 ? '<div style="font-size:7px;color:#b91c1c;line-height:1;margin-top:1px">휴' + holidayHd + 'h</div>' : ''
+        const extraD = otBadge + nightBadgeD + holidayBadgeD
         return '<td style="padding:1px 0;text-align:center;width:' + CW + 'px;min-width:' + CW + 'px;max-width:' + CW + 'px;overflow:hidden;' + cellBg + 'border-left:1px solid ' + borderCol + ';cursor:pointer;position:relative;user-select:none"' +
           ' onclick="schedCellClick(event,' + emp.id + ',\'' + ds + '\',this)"' +
           ' ondblclick="schedCellDblClick(event,' + emp.id + ',\'' + ds + '\',this)"' +
@@ -18056,7 +18062,7 @@ function renderSchedDesignMode({ days, emps, shifts, schedMap, leaveMap, allOffS
           ' onmouseup="schedDragEnd(event)"' +
           ' oncontextmenu="event.preventDefault();openSchedDetailModal(' + emp.id + ',\'' + ds + '\',\'' + emp.name.replace(/'/g,'') + '\',this)"' +
           ' data-shift="' + code + '" data-ot="' + otH + '" data-empid="' + emp.id + '" data-date="' + ds + '">' +
-          '<div style="display:inline-flex;flex-direction:column;align-items:center">' + sp + otBadge + '</div></td>'
+          '<div style="display:inline-flex;flex-direction:column;align-items:center">' + sp + extraD + '</div></td>'
       }).join('')
 
       let workDays = 0, leaveDays = 0
@@ -19599,9 +19605,25 @@ function renderMonthlyScheduleTab() {
                 }
                 const isNightW2 = sched?.is_night_work || false
                 const isTempS2 = sched?.is_temp_staff || false
-                const extraIcon2 = otH2>0 ? `<div class="ot-badge" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#ecfdf5;color:#047857;border:1px solid #6ee7b7">OT ${otH2}H</div>`
-                  : isTempS2 ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>`
-                  : isNightW2 ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
+                // ── STEP6: OT / 야간 / 휴일 배지 (각각 독립 표시, 표시 전용 — 계산식·수당정책 무변경) ──
+                //   기준: overtime_hours>0 → OT nH / night_work_hours>0 → 야간 nH / holiday_work_hours>0 → 휴일 nH
+                const nightH2   = sched?.night_work_hours   || 0
+                const holidayH2 = sched?.holiday_work_hours || 0
+                const otBadge2 = otH2 > 0
+                  ? `<div class="ot-badge" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#ecfdf5;color:#047857;border:1px solid #6ee7b7">OT ${otH2}H</div>`
+                  : ''
+                const nightBadge2 = nightH2 > 0
+                  ? `<div class="night-badge" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd">야간 ${nightH2}H</div>`
+                  : ''
+                const holidayBadge2 = holidayH2 > 0
+                  ? `<div class="holiday-badge" style="font-size:8px;font-weight:700;line-height:1.2;margin-top:1px;border-radius:3px;padding:1px 3px;text-align:center;white-space:nowrap;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca">휴일 ${holidayH2}H</div>`
+                  : ''
+                // 시간 컬럼이 아직 없는 기존 데이터(미연동) 대비: night 시간 0 이지만 is_night_work=1 인 경우만 텍스트 야간 표기
+                const nightFallback2 = (nightH2 === 0 && isNightW2)
+                  ? `<div style="font-size:7px;color:#7c3aed;line-height:1;margin-top:1px">야간</div>` : ''
+                const tempBadge2 = (otH2 === 0 && nightH2 === 0 && holidayH2 === 0 && isTempS2)
+                  ? `<div style="font-size:7px;color:#ea580c;line-height:1;margin-top:1px">${sched?.temp_type==='parttime'?'알바':'파출'}</div>` : ''
+                const extraIcon2 = otBadge2 + nightBadge2 + holidayBadge2 + nightFallback2 + tempBadge2
 
                 // 퇴사 이후 날짜 셀은 편집 불가 처리
                 if (isAfterResign) {
@@ -19621,6 +19643,7 @@ function renderMonthlyScheduleTab() {
                   onmouseup="schedDragEnd(event)"
                   oncontextmenu="event.preventDefault();openSchedDetailModal(${emp.id},'${dateStr}','${emp.name.replace(/'/g,'')}',this)"
                   data-shift="${code}" data-ot="${otH2}" data-night="${isNightW2?1:0}"
+                  data-nighth="${nightH2}" data-holidayh="${holidayH2}"
                   data-temp="${isTempS2?1:0}" data-temptype="${sched?.temp_type||''}"
                   data-temphours="${sched?.temp_hours||0}"
                   data-empid="${emp.id}" data-date="${dateStr}">
