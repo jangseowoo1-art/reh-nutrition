@@ -2082,7 +2082,7 @@ async function upsertScheduleWithCalc(
   tempHours: number,
   note: string | null
 ) {
-  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체'])
+  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
 
   // shiftId가 있을 때 근무시간 자동 계산
   let basicWorkHours = 0
@@ -3875,7 +3875,7 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
   ])
 
   const scheds = schedRows.results || []
-  const REST_CODES = new Set(['휴','연','경조','병가'])
+  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
 
   // 일별 집계
   const dailyMap: Record<string, {
@@ -4088,7 +4088,7 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
   const costMap: Record<string, number> = {}
   ;(laborCosts.results||[]).forEach((c2: any) => { costMap[c2.cost_type] = c2.unit_price })
 
-  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체'])
+  const REST_CODES = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
 
   // ─── 직원별 집계 ────────────────────────────────────────────
   type EmpStat = {

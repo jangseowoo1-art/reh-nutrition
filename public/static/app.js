@@ -19140,9 +19140,11 @@ function renderMonthlyScheduleTab() {
   shifts.forEach(s => { shiftColorMap[s.shift_code] = s.color })
 
   // 기본 근무 코드 + 등록된 근무조 코드
-  // 시스템 고정 코드: 연, 휴, 경조, OT (법적/운영상 고정 의미)
-  // 오전/오후는 병원별 설정(schedule_shifts)에서 관리 — 여기서 제거
-  const defaultCodes = ['연','휴','경조','OT','-']
+  // 휴무/휴가 공통 8코드: 휴, 연, 반차, 대휴, 공가, 병가, 경조, 무급
+  // (서버 REST_CODES와 동기화 — 근무일에서 제외되는 비근무 코드)
+  // OT는 유효 입력 코드로 유지 (버튼 그룹에는 미표시)
+  const restLeaveCodes = ['휴','연','반차','대휴','공가','병가','경조','무급']
+  const defaultCodes = [...restLeaveCodes, 'OT', '-']
   const shiftCodes = shifts.map(s => s.shift_code)
   const ALL_CODES = [...shiftCodes, ...defaultCodes]
   window._schedAllCodes = ALL_CODES  // 전역 참조 (onclick 이스케이프 문제 방지)
@@ -19164,6 +19166,12 @@ function renderMonthlyScheduleTab() {
       '휴':   'background:#fee2e2;color:#b91c1c',
       '경조': 'background:#fce7f3;color:#9d174d',
       'OT':   'background:#ecfdf5;color:#065f46',
+      // 휴무/휴가 공통 코드 (REST_CODES 8코드)
+      '반차': 'background:#ede9fe;color:#7c3aed',
+      '대휴': 'background:#e0f2fe;color:#0369a1',
+      '공가': 'background:#dcfce7;color:#15803d',
+      '병가': 'background:#ffe4e6;color:#be123c',
+      '무급': 'background:#f1f5f9;color:#475569',
       // 반차 — schedule_shifts half_type 기반 (호환용 색상 유지)
       '오전': 'background:#ede9fe;color:#6d28d9',
       '오후': 'background:#dbeafe;color:#1d4ed8',
@@ -19252,80 +19260,78 @@ function renderMonthlyScheduleTab() {
           <p class="text-xs text-gray-400 mt-0.5">클릭: 셀선택 &nbsp;|&nbsp; <span class="font-medium text-indigo-500">선택 후 바로 타이핑: 직접입력</span> &nbsp;|&nbsp; <span class="font-medium text-blue-400">방향키: 셀이동</span> &nbsp;|&nbsp; <span class="font-medium text-emerald-600">드래그: 자동채우기</span> &nbsp;|&nbsp; Ctrl+클릭: 개별추가 &nbsp;|&nbsp; <span class="font-medium text-blue-500">Ctrl+C/V: 복사/붙여넣기(계속)</span> &nbsp;|&nbsp; Del: 삭제 &nbsp;|&nbsp; <span class="font-medium text-amber-600">Ctrl+Z/Y: 실행취소/재실행</span> &nbsp;|&nbsp; 우클릭: 상세</p>
         </div>
         <div class="flex gap-2 flex-wrap items-center">
-          <!-- 근무코드 버튼 (직원 + 파출/알바, 클릭하면 선택된 셀에 즉시 적용) -->
-          <div class="flex gap-1 flex-wrap items-center" id="schedQuickCodeBtns">
-            ${shifts.map(s => `
-              <button onclick="applyCodeInstant('${s.shift_code}')"
-                class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
-                style="background:${s.color}22;color:${s.color};border:1.5px solid ${s.color}55"
-                title="${s.shift_name} ${s.start_time||''}~${s.end_time||''} — 클릭하면 선택 셀에 적용">${s.shift_code}</button>
-            `).join('')}
-            ${defaultCodes.filter(c=>c!=='-').map(c => {
-              const st = getShiftStyle(c)
-              const colMap = {'연':'#92400e','휴':'#b91c1c','경조':'#9d174d','OT':'#065f46'}
-              const col = colMap[c] || '#374151'
-              return `<button onclick="applyCodeInstant('${c}')"
-                class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
-                style="${st};border:1.5px solid ${col}44"
-                title="${c} — 클릭하면 선택 셀에 적용">${c}</button>`
-            }).join('')}
-            ${(() => {
-              // ── 반차 버튼 섹션: [반차] 단일 버튼으로 통합 ──
-              // 전반/후반 개별 버튼 완전 제거 → 반차 모달로 진입
-              const EXT_CODES = new Set(['오전','오후'])
-              const halfShifts = shifts.filter(s =>
-                (s.half_type === 'half_am' || s.half_type === 'half_pm') &&
-                !EXT_CODES.has(s.shift_code)
-              )
-              // [반차] 버튼은 항상 표시 (halfday / hourly / half_type 근무조 유무 관계없이)
-              const showHalfBtn = true
-              const halfBtnsHtml = showHalfBtn
-                ? '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle" title="반차 구분선"></span>' +
-                  `<button onclick="openHalfLeaveModalFromSchedule()"
-                    class="inline-flex items-center justify-center px-3 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
-                    style="background:#7c3aed22;color:#7c3aed;border:1.5px solid #7c3aed55"
-                    title="반차 입력 — 클릭하면 반차 입력 모달이 열립니다">반차</button>`
-                : ''
+          <!-- 근무코드 버튼: 3그룹 분리 (근무조 / 휴무·휴가 / 외부인력) -->
+          <div class="flex flex-wrap items-stretch gap-2" id="schedQuickCodeBtns">
+            <!-- ① 근무조 그룹 (병원별 schedule_shifts DB 기반 동적) -->
+            <div class="flex flex-col gap-1 px-2 py-1 rounded-lg" style="background:#f0fdf4;border:1.5px solid #bbf7d0">
+              <span class="text-[10px] font-bold tracking-wide" style="color:#15803d"><i class="fas fa-briefcase" style="margin-right:3px"></i>근무조</span>
+              <div class="flex gap-1 flex-wrap items-center">
+                ${shifts.length === 0
+                  ? '<span class="text-[10px] text-gray-400 italic px-1">등록된 근무조 없음</span>'
+                  : shifts.map(s => `
+                  <button onclick="applyCodeInstant('${s.shift_code}')"
+                    class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                    style="background:${s.color}22;color:${s.color};border:1.5px solid ${s.color}55"
+                    title="${s.shift_name} ${s.start_time||''}~${s.end_time||''} — 클릭하면 선택 셀에 적용">${s.shift_code}</button>
+                `).join('')}
+              </div>
+            </div>
 
-              // ── 파출/알바 근무조 버튼 (extShiftConfig 기반) ──
-              // 기본값: 오전, 오후, 9H, 12H 모두 표시
-              try {
-                const extCfgRaw = localStorage.getItem('extShiftConfig')
-                const extCfg = extCfgRaw ? JSON.parse(extCfgRaw) : []
-                const active = extCfg.filter(c => c.enabled !== false)
-                if (active.length === 0) {
-                  // 기본값: 오전/오후/9H/12H 모두 표시 (파출/알바 전용)
-                  const defaults = [
-                    {key:'morning',  label:'오전', bg:'#fff7ed', color:'#c2410c'},
-                    {key:'afternoon',label:'오후', bg:'#fef3c7', color:'#b45309'},
-                    {key:'full_9h',  label:'9H',  bg:'#ffedd5', color:'#ea580c'},
-                    {key:'full_12h', label:'12H', bg:'#fee2e2', color:'#dc2626'},
-                  ]
-                  const extBtnsHtml = '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle" title="파출/알바 구분선"></span>' +
-                    defaults.map(d =>
-                      `<button onclick="extApplyCodeInstant('${d.key}')"
-                        data-extkey="${d.key}"
+            <!-- ② 휴무/휴가 그룹 (공통 8코드: 휴,연,반차,대휴,공가,병가,경조,무급) -->
+            <div class="flex flex-col gap-1 px-2 py-1 rounded-lg" style="background:#fef2f2;border:1.5px solid #fecaca">
+              <span class="text-[10px] font-bold tracking-wide" style="color:#b91c1c"><i class="fas fa-calendar-minus" style="margin-right:3px"></i>휴무·휴가</span>
+              <div class="flex gap-1 flex-wrap items-center">
+                ${restLeaveCodes.map(c => {
+                  // 반차는 모달로 진입 (전반/후반 시간 입력), 나머지는 즉시 적용
+                  const st = getShiftStyle(c)
+                  if (c === '반차') {
+                    return `<button onclick="openHalfLeaveModalFromSchedule()"
+                      class="inline-flex items-center justify-center w-9 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                      style="${st}"
+                      title="반차 입력 — 클릭하면 반차 입력 모달이 열립니다">반차</button>`
+                  }
+                  return `<button onclick="applyCodeInstant('${c}')"
+                    class="inline-flex items-center justify-center w-8 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
+                    style="${st}"
+                    title="${c} — 클릭하면 선택 셀에 적용 (근무일 제외)">${c}</button>`
+                }).join('')}
+              </div>
+            </div>
+
+            <!-- ③ 외부인력 그룹 (extShiftConfig localStorage 기반 — 현행 유지) -->
+            <div class="flex flex-col gap-1 px-2 py-1 rounded-lg" style="background:#fff7ed;border:1.5px solid #fed7aa">
+              <span class="text-[10px] font-bold tracking-wide" style="color:#c2410c"><i class="fas fa-user-clock" style="margin-right:3px"></i>외부인력</span>
+              <div class="flex gap-1 flex-wrap items-center">
+                ${(() => {
+                  // 외부인력(파출/알바) 근무조 버튼 — 기본값: 오전, 오후, 9H, 12H
+                  try {
+                    const extCfgRaw = localStorage.getItem('extShiftConfig')
+                    const extCfg = extCfgRaw ? JSON.parse(extCfgRaw) : []
+                    const active = extCfg.filter(c => c.enabled !== false)
+                    const renderBtn = (key, label, bg, color) =>
+                      `<button onclick="extApplyCodeInstant('${key}')"
+                        data-extkey="${key}"
                         class="inline-flex items-center justify-center px-2 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
-                        style="background:${d.bg};color:${d.color};border:1.5px solid ${d.color}55"
-                        title="${d.label} (파출/알바) — 클릭하면 파출/알바 셀에 적용">${d.label}</button>`
-                    ).join('')
-                  return halfBtnsHtml + extBtnsHtml
-                }
-                const extBtnsHtml = '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px;display:inline-block;vertical-align:middle" title="파출/알바 구분선"></span>' +
-                  active.map(d => {
+                        style="background:${bg};color:${color};border:1.5px solid ${color}55"
+                        title="${label} (외부인력) — 클릭하면 외부인력 셀에 적용">${label}</button>`
+                    if (active.length === 0) {
+                      const defaults = [
+                        {key:'morning',  label:'오전', bg:'#fff7ed', color:'#c2410c'},
+                        {key:'afternoon',label:'오후', bg:'#fef3c7', color:'#b45309'},
+                        {key:'full_9h',  label:'9H',  bg:'#ffedd5', color:'#ea580c'},
+                        {key:'full_12h', label:'12H', bg:'#fee2e2', color:'#dc2626'},
+                      ]
+                      return defaults.map(d => renderBtn(d.key, d.label, d.bg, d.color)).join('')
+                    }
                     const colorMap = {morning:'#c2410c',afternoon:'#b45309',full_9h:'#ea580c',full_12h:'#dc2626'}
                     const bgMap    = {morning:'#fff7ed',afternoon:'#fef3c7',full_9h:'#ffedd5',full_12h:'#fee2e2'}
-                    const col = colorMap[d.key] || '#374151'
-                    const bg  = bgMap[d.key] || '#f9fafb'
-                    return `<button onclick="extApplyCodeInstant('${d.key}')"
-                      data-extkey="${d.key}"
-                      class="inline-flex items-center justify-center px-2 h-7 rounded text-xs font-bold cursor-pointer transition-all hover:scale-110 hover:shadow-md active:scale-95"
-                      style="background:${bg};color:${col};border:1.5px solid ${col}55"
-                      title="${d.label||d.key} (파출/알바) — 클릭하면 파출/알바 셀에 적용">${d.label||d.key}</button>`
-                  }).join('')
-                return halfBtnsHtml + extBtnsHtml
-              } catch(e) { return halfBtnsHtml }
-            })()}
+                    return active.map(d => renderBtn(d.key, d.label||d.key, bgMap[d.key]||'#f9fafb', colorMap[d.key]||'#374151')).join('')
+                  } catch(e) {
+                    return '<span class="text-[10px] text-gray-400 italic px-1">외부인력 코드 없음</span>'
+                  }
+                })()}
+              </div>
+            </div>
           </div>
           <!-- QR 공유 관리 버튼 -->
           <button onclick="openQrManageModal()" style="padding:5px 10px;background:#166534;color:white;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap" title="직원별 QR 코드 생성 및 관리">
