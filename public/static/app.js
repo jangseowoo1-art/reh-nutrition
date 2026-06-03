@@ -52,7 +52,7 @@ const CALC_ENGINE = (() => {
   //         carried:   이월 연차 일수
   // ─────────────────────────────────────────────
   function calcAnnualRemain(empLeave) {
-    if (!empLeave) return { total: null, effective: null, used: 0, remain: null, carried: 0 }
+    if (!empLeave) return { total: null, effective: null, used: 0, remain: null, carried: 0, half: 0 }
 
     // 구조 A: leaveMap[empId].annual
     const hasNested = empLeave.annual !== undefined
@@ -60,12 +60,16 @@ const CALC_ENGINE = (() => {
 
     const _rawTotal = src?.total ?? src?.total_days ?? null
     const total    = (_rawTotal !== null && _rawTotal > 0) ? _rawTotal : null  // 0 = 미부여 → null 처리
-    const used     = src?.used  ?? src?.used_days  ?? 0
+    const usedRaw  = src?.used  ?? src?.used_days  ?? 0
     const carried  = (src?.allowance_paid) ? 0 : (src?.carried_over_days ?? 0)
+    // ★ STEP 3: 반차(employee_leave_history) 합산 — half_used_days(0.5×건수)를 총 사용일에 포함
+    //   연차 1일 + 반차 0.5일 = 총 사용 1.5일. 운영 데이터 수정 없이 조회 합산.
+    const half     = Number(src?.half_used_days ?? empLeave?.half_used_days ?? 0) || 0
+    const used     = usedRaw + half
     const effective = total !== null ? total + carried : null
     const remain    = effective !== null ? effective - used : null
 
-    return { total, effective, used, remain, carried }
+    return { total, effective, used, remain, carried, half }
   }
 
   // ─────────────────────────────────────────────
@@ -20633,13 +20637,30 @@ function renderLeavesTab() {
   const mlByEmp = {}
   for (const m of mlData) mlByEmp[m.employee_id] = m
 
-  const activeEmps = emps.filter(e => e.is_active !== 0 && e.hire_date)
+  // ★ STEP 1: 입사일(hire_date) 비어있어도 연차관리 화면에 표시 (정우준/정백만 누락 방지)
+  //   - 모든 화면 직원 수 일치 목표 (인사카드/연차관리/운영관리/병원장 = 15명)
+  //   - hire_date 없으면 자동연차 계산 불가 → 행에 상태 라벨 표시
+  const _today = new Date().toISOString().slice(0, 10)
+  const activeEmps = emps.filter(e => e.is_active !== 0 && (!e.resign_date || e.resign_date >= _today))
   const cookEmps   = activeEmps.filter(e => e.team === 'cook' || !e.team)
   const nutriEmps  = activeEmps.filter(e => e.team === 'nutrition')
   const maxDays    = parseInt(scheduleWorkSettings?.monthly_leave_max_days || '11')
 
   // ── 직원별 계산 ─────────────────────────────────────────────
   function calcEmpLeave(emp) {
+    // ★ STEP 1: 입사일 미입력 직원 → 자동연차 계산 불가 (NaN 방지)
+    const hasHire = !!(emp.hire_date && String(emp.hire_date).trim())
+    if (!hasHire) {
+      return {
+        noHireDate: true,
+        under1Y: false, tenureStr: '-', months: 0,
+        mTotal: 0, mUsed: 0, mPrior: 0, mRemain: 0,
+        aGranted: 0, aManual: 0, aCarried: 0, aUsed: 0, aPrior: 0, aTotal: 0, aRemain: 0,
+        aAllowancePaid: false, aAllowancePaidAt: '',
+        halfAmCnt: 0, halfPmCnt: 0, halfUsed: 0,
+        totalUsed: 0, totalRemain: 0, ddayNum: null, ddayLabel: ''
+      }
+    }
     const diffMs  = now.getTime() - new Date(emp.hire_date).getTime()
     const under1Y = diffMs < msPerYear
     const months  = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24 * 30.44)))
@@ -20704,22 +20725,38 @@ function renderLeavesTab() {
       aAllowancePaid   = lv.allowance_paid   ? true : false
       aAllowancePaidAt = lv.allowance_paid_at || ''
     }
+    // ★ STEP 3: 반차(employee_leave_history) 합산 — /leaves/all이 내려주는 half_used_days(0.5×건수)
+    const aHalfUsed = (lv && lv.half_used_days != null) ? (Number(lv.half_used_days) || 0)
+                    : (bal?.annual?.half_used_days != null ? Number(bal.annual.half_used_days) || 0 : 0)
     const aTotal  = aGranted + aManual + aCarried
-    const aRemain = Math.max(0, aTotal - aUsed - aPrior)
+    // ★ STEP 2: initial_used_days(aPrior) 중복 차감 제거 — CALC_ENGINE.calcAnnualRemain과 통일
+    //   정책: 잔여연차 = 총 부여연차 + 이월 − (실제 사용연차 + 반차) (initial_used_days 직접 차감 안함)
+    //   송경민: 30 + 0 − (2 + 1) = 27일  (연차 2일 + 반차 0.5×2건 = 1일)
+    const aUsedTotal = aUsed + aHalfUsed
+    const aRemain = Math.max(0, aTotal - aUsedTotal)
 
-    // ★ 반차 정보: under1Y이면 monthly에서, 아니면 annual에서 가져옴
-    // API가 monthly/annual 양쪽에 hist_half_am/pm을 모두 포함시켜서 내려줌
-    const halfAmCnt  = (under1Y ? (bal?.monthly?.hist_half_am || 0) : (bal?.annual?.hist_half_am || 0))
+    // ★ 반차 정보: /leaves/all이 내려주는 half_am_cnt/half_pm_cnt(employee_leave_history 기준) 우선
+    //   (구버전 leave-balance 응답의 hist_half_am/pm은 fallback)
+    const halfAmCnt  = (lv?.half_am_cnt != null ? Number(lv.half_am_cnt) || 0 : 0)
+                     || (under1Y ? (bal?.monthly?.hist_half_am || 0) : (bal?.annual?.hist_half_am || 0))
                      || bal?.annual?.hist_half_am || 0
-    const halfPmCnt  = (under1Y ? (bal?.monthly?.hist_half_pm || 0) : (bal?.annual?.hist_half_pm || 0))
+    const halfPmCnt  = (lv?.half_pm_cnt != null ? Number(lv.half_pm_cnt) || 0 : 0)
+                     || (under1Y ? (bal?.monthly?.hist_half_pm || 0) : (bal?.annual?.hist_half_pm || 0))
                      || bal?.annual?.hist_half_pm || 0
-    const halfUsed   = (halfAmCnt + halfPmCnt) * 0.5  // 사용된 반차 일수 합계
+    // 사용된 반차 일수 합계: lv.half_used_days(서버 SUM) 우선, 없으면 건수×0.5
+    const halfUsed   = aHalfUsed > 0 ? aHalfUsed : (halfAmCnt + halfPmCnt) * 0.5
 
-    // ★ 총계 — 단일 기준으로 통합
-    // under1Y: 월차 사용 + 반차 (mUsed에 이미 반차 포함되어 있으므로 그대로 사용)
-    // 1년 이상: 연차 사용 (aUsed에 이미 반차 포함)
-    const totalUsed   = under1Y ? (mUsed + mPrior) : (aUsed + aPrior)
-    const totalRemain = under1Y ? mRemain : aRemain
+    // ★ 총계 — 단일 기준으로 통합 (STEP 2: initial_used_days 차감 제거, STEP 3: 반차 포함)
+    // under1Y: 월차 — bal.monthly.used_days(서버 반차 포함값) 우선, 없으면(lv만) mUsed + 반차
+    // 1년 이상: 연차 사용 + 반차 (aUsedTotal = aUsed + aHalfUsed)
+    //   ※ aPrior(initial_used_days)는 총 사용일에서도 제외
+    //   송경민: 연차 2 + 반차 1.0 = 총사용 3일, 잔여 27일
+    const mServerIncludesHalf = !!(bal?.monthly) // bal.monthly.used_days는 서버가 반차 포함시켜 내려줌
+    const mUsedTotal = mServerIncludesHalf ? mUsed : (mUsed + halfUsed)
+    const totalUsed   = under1Y ? mUsedTotal : aUsedTotal
+    const totalRemain = under1Y
+      ? (mServerIncludesHalf ? mRemain : Math.max(0, mTotal - mUsedTotal))
+      : aRemain
 
     // D-day
     let ddayNum = null, ddayLabel = ''
@@ -20762,6 +20799,36 @@ function renderLeavesTab() {
   function renderRow(emp) {
     const c       = calcEmpLeave(emp)
     const nameEsc = emp.name.replace(/'/g, "\\'")
+
+    // ★ STEP 1: 입사일 미입력 직원 — 자동연차 계산 불가, 상태 라벨만 표시
+    if (c.noHireDate) {
+      return `<tr class="border-b bg-amber-50/40 hover:bg-amber-50/70 transition-colors cursor-pointer" onclick="openLeaveDetailModal(${emp.id},'${nameEsc}')" title="인사카드에서 입사일을 입력하면 연차가 자동 계산됩니다">
+        <td class="px-4 py-3">
+          <div class="font-semibold text-gray-800 text-sm">${emp.name}</div>
+          <div class="text-xs text-gray-400">${emp.position_name || emp.position || ''}</div>
+        </td>
+        <td class="px-3 py-3 text-center">
+          <span class="text-xs font-semibold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+            <i class="fas fa-exclamation-triangle mr-1"></i>입사일 미입력
+          </span>
+        </td>
+        <td colspan="6" class="px-3 py-3 text-center">
+          <div class="text-xs text-gray-500 leading-relaxed">
+            <span class="text-gray-400">자동연차 계산 불가</span>
+            <span class="mx-1 text-gray-300">·</span>
+            <span class="text-blue-500 font-medium">인사카드에서 입사일 입력 필요</span>
+          </div>
+        </td>
+        <td class="px-3 py-3 text-center" onclick="event.stopPropagation()">
+          ${isAdm
+            ? `<button onclick="switchScheduleTab('employees')"
+                 class="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors whitespace-nowrap">
+                 <i class="fas fa-id-card mr-1"></i>인사카드
+               </button>`
+            : `<span class="text-gray-300 text-xs">-</span>`}
+        </td>
+      </tr>`
+    }
 
     // ① 생성 월차: under1Y → 월차 총 생성일수, 1년이상 → '소진'
     const genMonthlyCell = c.under1Y

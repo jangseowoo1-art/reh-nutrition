@@ -707,7 +707,34 @@ schedule.get('/leaves/all', async (c) => {
      ORDER BY e.team, p.sort_order, e.hire_date, e.name`
   ).bind(hospitalId, year).all<any>()
 
-  return c.json(rows.results || [])
+  // ★ STEP 3: 반차(employee_leave_history) 합계를 직원별로 집계하여 함께 반환
+  //   - 운영 데이터 직접 수정 없이, 조회 시점에 0.5일 단위 반차를 합산
+  //   - half_used_days: 연차 차감용 반차 일수 합계 (leave_ratio 합, 보통 0.5×건수)
+  //   - half_am_cnt / half_pm_cnt: 오전/오후 반차 건수 (참고용)
+  const histRows = await c.env.DB.prepare(
+    `SELECT employee_id,
+            COALESCE(SUM(leave_ratio), 0) as half_used_days,
+            SUM(CASE WHEN leave_period = 'am' THEN 1 ELSE 0 END) as half_am_cnt,
+            SUM(CASE WHEN leave_period = 'pm' THEN 1 ELSE 0 END) as half_pm_cnt
+     FROM employee_leave_history
+     WHERE hospital_id = ? AND year = ?
+     GROUP BY employee_id`
+  ).bind(hospitalId, parseInt(String(year))).all<any>()
+
+  const histByEmp: Record<number, any> = {}
+  for (const h of (histRows.results || [])) histByEmp[h.employee_id] = h
+
+  const enriched = (rows.results || []).map((r: any) => {
+    const h = histByEmp[r.employee_id]
+    return {
+      ...r,
+      half_used_days: h ? Number(h.half_used_days) || 0 : 0,
+      half_am_cnt:    h ? Number(h.half_am_cnt)    || 0 : 0,
+      half_pm_cnt:    h ? Number(h.half_pm_cnt)    || 0 : 0,
+    }
+  })
+
+  return c.json(enriched)
 })
 
 // ════════════════════════════════════════════════════════════════

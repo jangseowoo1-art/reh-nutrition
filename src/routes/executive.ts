@@ -451,7 +451,20 @@ executive.get('/staff-labor/:year/:month', async (c) => {
   const totalWorkDays  = (schedRows.results || []).reduce((s: number, r: any) => s + (r.work_days || 0), 0)
   const totalOtDays    = (schedRows.results || []).reduce((s: number, r: any) => s + (r.ot_days   || 0), 0)
   const totalOtHours   = (schedRows.results || []).reduce((s: number, r: any) => s + (r.ot_hours  || 0), 0)
-  const totalLeaveDays = (schedRows.results || []).reduce((s: number, r: any) => s + (r.leave_days|| 0), 0)
+  const totalLeaveDaysSched = (schedRows.results || []).reduce((s: number, r: any) => s + (r.leave_days|| 0), 0)
+
+  // ★ STEP 3: 반차(employee_leave_history) 0.5일 단위를 총 사용일에 포함
+  //   - 병원장 페이지는 반차 건수 별도 표기 없이 총 연차 사용일에 합산만 함
+  //   - 운영 데이터 직접 수정 없이 조회 시점 합산
+  const halfRows = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(leave_ratio), 0) as half_days
+     FROM employee_leave_history
+     WHERE hospital_id = ?
+       AND strftime('%Y', leave_date) = ?
+       AND strftime('%m', leave_date) = printf('%02d', ?)`
+  ).bind(hospitalId, String(y), m).all<any>()
+  const totalHalfDays = Number(halfRows.results?.[0]?.half_days || 0)
+  const totalLeaveDays = totalLeaveDaysSched + totalHalfDays
 
   // 출근한 직원 수 (이번 달 1회 이상 출근)
   const activeEmpCount = (schedRows.results || []).filter((r: any) => (r.work_days || 0) > 0).length
