@@ -2389,17 +2389,33 @@ schedule.post('/save-batch', async (c) => {
     const emp = empCache[employeeId]
     if (!isAdmin(user) && emp.hospital_id !== user.hospitalId) continue
 
-    // 변경 전 기존 코드 조회 (변경 이력용)
+    // 변경 전 기존 행 조회 (변경 이력용 + ★ OT/야간/임시직 보존용)
+    // ⚠️ 셀 코드 페인트(save-batch)는 보통 shiftCode만 전달한다.
+    //    이때 OT/야간/임시직/note 필드가 item에 없으면(undefined) 기존 DB 값을 보존해야 한다.
+    //    (보존하지 않으면 근무조 변경 시 기존 OT 시간이 0으로 덮어써지는 데이터 손실 발생)
     const oldRow2 = await c.env.DB.prepare(
-      `SELECT shift_code FROM daily_schedules WHERE hospital_id=? AND employee_id=? AND work_date=?`
+      `SELECT shift_code, shift_id, leave_type, is_overtime, overtime_hours,
+              is_temp_staff, is_night_work, temp_type, temp_hours, note
+       FROM daily_schedules WHERE hospital_id=? AND employee_id=? AND work_date=?`
     ).bind(emp.hospital_id, employeeId, workDate).first<any>()
     const oldCode = oldRow2?.shift_code ?? null
 
+    // item에 필드가 명시되지 않은 경우(undefined) → 기존 DB 값 fallback
+    const _shiftId    = (shiftId    !== undefined) ? (shiftId || null)    : (oldRow2?.shift_id ?? null)
+    const _leaveType  = (leaveType  !== undefined) ? leaveType            : (oldRow2?.leave_type ?? null)
+    const _isOvertime = (isOvertime !== undefined) ? !!isOvertime         : !!(oldRow2?.is_overtime)
+    const _otHours    = (overtimeHours !== undefined) ? (overtimeHours||0): (oldRow2?.overtime_hours ?? 0)
+    const _isTemp     = (isTempStaff !== undefined) ? !!isTempStaff       : !!(oldRow2?.is_temp_staff)
+    const _isNight    = (isNightWork !== undefined) ? !!isNightWork       : !!(oldRow2?.is_night_work)
+    const _tempType   = (tempType   !== undefined) ? (tempType || null)   : (oldRow2?.temp_type ?? null)
+    const _tempHours  = (tempHours  !== undefined) ? (tempHours || 0)     : (oldRow2?.temp_hours ?? 0)
+    const _note       = (note       !== undefined) ? (note || null)       : (oldRow2?.note ?? null)
+
     await upsertScheduleWithCalc(
       c.env.DB, emp.hospital_id, employeeId, workDate,
-      shiftCode, shiftId || null, leaveType,
-      !!isOvertime, overtimeHours || 0,
-      !!isTempStaff, !!isNightWork, tempType || null, tempHours || 0, note || null
+      shiftCode, _shiftId, _leaveType,
+      _isOvertime, _otHours,
+      _isTemp, _isNight, _tempType, _tempHours, _note
     )
 
     // 변경 이력 기록 (내용 변경 시)
@@ -3778,6 +3794,12 @@ schedule.get('/analysis/:year/:month', async (c) => {
     else if (code === 'OT')   { dateMap[d].ot++;     dateMap[d].work++; dateMap[d].byPosition[pos]++ }
     else if (s.is_temp_staff)  { dateMap[d].tempStaff++; dateMap[d].work++; dateMap[d].byPosition[pos]++ }
     else if (code && code !== '-') { dateMap[d].work++;  dateMap[d].byPosition[pos]++ }
+
+    // ★ OT는 별도 'OT' 코드가 아니라 일반 근무조 위에 overtime_hours로 저장된다.
+    //   날짜별 OT 시간을 반영해 운영분석 일별/주별 OT가 0으로 누락되지 않게 함.
+    if ((s.overtime_hours || 0) > 0 && code !== 'OT') {
+      dateMap[d].ot += s.overtime_hours
+    }
   }
 
   // 월 전체 집계
