@@ -6,6 +6,8 @@ import {
   RECLASS_TO_OPERATING_SQL, aggregateReclass,
   calcUnifiedDietPrices, buildCostBreakdown,
 } from '../lib/hospitalCalc'
+// ★ SSOT: OT/야간/휴일 시간 집계 공통 헬퍼 (STEP 5) — schedule.ts와 동일 기준 사용
+import { aggregateAllowanceHours } from './schedule'
 
 const executive = new Hono<{ Bindings: { DB: D1Database }; Variables: { user: any } }>()
 
@@ -689,10 +691,9 @@ executive.get('/staff-labor/:year/:month', async (c) => {
     const dow = new Date(s.work_date).getDay()
     const isHoliday = dow === 0 || dow === 6 || holidaySet2.has(s.work_date)
 
-    const basicH   = s.basic_work_hours   > 0 ? s.basic_work_hours   : 8
-    const otH      = s.overtime_hours     > 0 ? s.overtime_hours      : 0
-    const nightH   = s.night_work_hours   > 0 ? s.night_work_hours    : (s.is_night_work ? 2 : 0)
-    const holidayH = s.holiday_work_hours > 0 ? s.holiday_work_hours  : (isHoliday ? basicH : 0)
+    // ★ SSOT: 공통 헬퍼로 OT/야간/휴일 시간 산출 (기존 산출식과 동일 → 회귀 없음)
+    const { basicHours: basicH, otHours: otH, nightHours: nightH, holidayHours: holidayH } =
+      aggregateAllowanceHours(s, isHoliday)
 
     rec.workDays++
     rec.basicHours    += basicH

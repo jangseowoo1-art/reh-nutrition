@@ -116,6 +116,43 @@ function calcWeeklyHolidayPay(dailyMap: Record<string, number>, year: number, mo
 }
 
 // ════════════════════════════════════════════════════════════════
+// ★ SSOT: OT/야간/휴일 시간 집계 공통 헬퍼 (STEP 5)
+// ════════════════════════════════════════════════════════════════
+/**
+ * daily_schedules 단일 행 → 근무시간 4종(기본/OT/야간/휴일)을 단일 기준으로 산출.
+ *
+ * 산출 기준(저장된 실제 컬럼값 우선):
+ *   - basicHours   : basic_work_hours  > 0 이면 그 값, 아니면 8h fallback
+ *   - otHours      : overtime_hours    (없으면 0)
+ *   - nightHours   : night_work_hours  > 0 이면 그 값, 아니면 (is_night_work=1 → 2h 안전망, 아니면 0)
+ *   - holidayHours : holiday_work_hours> 0 이면 그 값, 아니면 (휴일이면 basicHours, 아니면 0)
+ *
+ * ⚠️ 시간 데이터 정합성 전용. 수당 금액(배율·시급)은 호출부에서 별도 처리한다.
+ *    인건비 리포트/병원장 staff-labor가 기존에 쓰던 산출식과 동일하게 맞춤 → 회귀 없음.
+ *    is_night_work=2h, isHoliday→basicHours fallback 은 STEP1+2 이전 미연동 데이터 보호용 안전망이며,
+ *    shift_id 연동 후 신규 데이터에서는 night_work_hours/holiday_work_hours 실제값이 그대로 사용된다.
+ *
+ * @param s        daily_schedules 행 (basic_work_hours/overtime_hours/night_work_hours/holiday_work_hours/is_night_work)
+ * @param isHoliday 해당 날짜가 토/일/공휴일인지 (호출부에서 판정해 전달)
+ */
+export function aggregateAllowanceHours(
+  s: {
+    basic_work_hours?: number | null
+    overtime_hours?: number | null
+    night_work_hours?: number | null
+    holiday_work_hours?: number | null
+    is_night_work?: number | null
+  },
+  isHoliday: boolean
+): { basicHours: number; otHours: number; nightHours: number; holidayHours: number } {
+  const basicHours   = (s.basic_work_hours   ?? 0) > 0 ? (s.basic_work_hours as number)   : 8
+  const otHours      = (s.overtime_hours     ?? 0) > 0 ? (s.overtime_hours as number)     : 0
+  const nightHours   = (s.night_work_hours   ?? 0) > 0 ? (s.night_work_hours as number)   : (s.is_night_work ? 2 : 0)
+  const holidayHours = (s.holiday_work_hours ?? 0) > 0 ? (s.holiday_work_hours as number) : (isHoliday ? basicHours : 0)
+  return { basicHours, otHours, nightHours, holidayHours }
+}
+
+// ════════════════════════════════════════════════════════════════
 // 직위(포지션) 관리
 // ════════════════════════════════════════════════════════════════
 
@@ -4107,7 +4144,7 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
   // 일별 집계
   const dailyMap: Record<string, {
     date: string, dow: string, code: string,
-    workHours: number, otHours: number, isNight: boolean,
+    workHours: number, otHours: number, nightHours: number, holidayHours: number, isNight: boolean,
     isHoliday: boolean, isTempStaff: boolean, tempType: string|null, tempHours: number,
     otCost: number, nightCost: number
   }> = {}
@@ -4121,19 +4158,20 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
     const d = new Date(s.work_date)
     const dow = DAYS_KR[d.getDay()]
     const isHoliday = ['토','일'].includes(dow)
-    const workHours = s.overtime_hours > 0
-      ? (s.shift_id ? 8 : 8) // 기본 근무시간 (추후 shift별로 계산 가능)
-      : 0
-    const otHours  = s.overtime_hours || 0
+    // ★ SSOT: 저장된 실제 컬럼값 기준 (basic/ot/night/holiday) — 공통 헬퍼 사용
+    const { basicHours, otHours, nightHours, holidayHours } = aggregateAllowanceHours(s, isHoliday)
+    // workHours = 실제 기본근무시간(basic_work_hours), 이전 8h 고정 제거
+    const workHours = basicHours
     const otCost   = hourlyWage > 0 ? Math.round(otHours * hourlyWage * otRate) : 0
-    const nightCost= (s.is_night_work && hourlyWage > 0)
-      ? Math.round(workHours * hourlyWage * nightRate) : 0
+    // 야간수당: 실제 night_work_hours 기준 (이전: workHours(8h고정) × rate)
+    const nightCost= (nightHours > 0 && hourlyWage > 0)
+      ? Math.round(nightHours * hourlyWage * nightRate) : 0
 
     dailyMap[s.work_date] = {
       date: s.work_date, dow,
       code: s.shift_code || '',
-      workHours, otHours,
-      isNight: !!s.is_night_work,
+      workHours, otHours, nightHours, holidayHours,
+      isNight: nightHours > 0 || !!s.is_night_work,
       isHoliday,
       isTempStaff: !!s.is_temp_staff,
       tempType: s.temp_type || null,
@@ -4181,9 +4219,10 @@ schedule.get('/employees/:id/stats/:year/:month', async (c) => {
     if (code === '연') monthly.annualDays++
     else if (code && !REST_CODES.has(code)) {
       monthly.workDays++
-      monthly.totalBasicHours += v.workHours || 8
-      if (v.isHoliday) { monthly.holidayWork++; monthly.holidayHours += v.workHours || 8 }
-      if (v.isNight) { monthly.nightDays++; monthly.nightHours += 2 } // 야간 대략 2h
+      // ★ SSOT: 실제 컬럼값 기준 (이전: workHours 8h고정, nightHours +=2 추정값 → 제거)
+      monthly.totalBasicHours += v.workHours          // basic_work_hours 실제값
+      if (v.isHoliday) { monthly.holidayWork++; monthly.holidayHours += v.holidayHours } // holiday_work_hours 실제값
+      if (v.isNight)   { monthly.nightDays++;   monthly.nightHours   += v.nightHours }   // night_work_hours 실제값
       monthly.otHours        += v.otHours
       monthly.totalOtCost    += v.otCost
       monthly.totalNightCost += v.nightCost
@@ -4368,11 +4407,9 @@ schedule.get('/labor-cost-report/:year/:month', async (c) => {
     const dow = new Date(s.work_date).getDay()
     const isHoliday = dow === 0 || dow === 6 || holidaySet.has(s.work_date)
 
-    // basic_work_hours가 저장돼 있으면 활용, 없으면 기본 8h
-    const basicH   = s.basic_work_hours   > 0 ? s.basic_work_hours   : 8
-    const otH      = s.overtime_hours     > 0 ? s.overtime_hours      : 0
-    const nightH   = s.night_work_hours   > 0 ? s.night_work_hours    : (s.is_night_work ? 2 : 0)
-    const holidayH = s.holiday_work_hours > 0 ? s.holiday_work_hours  : (isHoliday ? basicH : 0)
+    // ★ SSOT: 공통 헬퍼로 OT/야간/휴일 시간 산출 (기존 산출식과 동일 → 회귀 없음)
+    const { basicHours: basicH, otHours: otH, nightHours: nightH, holidayHours: holidayH } =
+      aggregateAllowanceHours(s, isHoliday)
 
     rec.workDays++
     rec.basicHours    += basicH
