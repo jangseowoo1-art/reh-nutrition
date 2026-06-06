@@ -12,6 +12,7 @@ import settingsRoute from './routes/settings'
 import scheduleRoute from './routes/schedule'
 import adminRoute from './routes/admin'
 import cardExpensesRoute from './routes/card_expenses'
+import eventExpensesRoute from './routes/event_expenses'
 import ceoDashboardRoute from './routes/ceo-dashboard'
 import transactionRoute from './routes/transaction'
 import executiveRoute from './routes/executive'
@@ -60,6 +61,7 @@ app.route('/api/vendors', vendorsRoute)
 app.route('/api/settings', settingsRoute)
 app.route('/api/schedule', scheduleRoute)
 app.route('/api/card-expenses', cardExpensesRoute)
+app.route('/api/event-expenses', eventExpensesRoute)
 app.route('/api/ceo-dashboard', ceoDashboardRoute)
 app.route('/api/transaction', transactionRoute)
 app.route('/api/executive', executiveRoute)
@@ -367,7 +369,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260603-ot-policy"></script>
+<script src="/static/app.js?v=20260606-event-expense"></script>
 </body>
 </html>`
 }
