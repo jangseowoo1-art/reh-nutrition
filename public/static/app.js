@@ -27659,8 +27659,9 @@ window._extHandleKeydown = (e) => {
   const tag = document.activeElement?.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false
   if (e.ctrlKey || e.metaKey) {
-    if (e.key === 'c' || e.key === 'C') { e.preventDefault(); extCopyCells(); return true }
-    if (e.key === 'v' || e.key === 'V') { e.preventDefault(); extPasteCells(); return true }
+    // ★ STEP3: e.code 병행 판정 (한글 IME 대응) — UI 복사/붙여넣기 동작만, 계산엔진 미접촉
+    if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') { e.preventDefault(); extCopyCells(); return true }
+    if (e.key === 'v' || e.key === 'V' || e.code === 'KeyV') { e.preventDefault(); extPasteCells(); return true }
     // Z/Y undo/redo는 전역 keydown 핸들러(document.addEventListener)에서 처리
     return false
   }
@@ -27668,7 +27669,7 @@ window._extHandleKeydown = (e) => {
   if (e.key === 'ArrowLeft')  { e.preventDefault(); _extMoveSelection('left');  return true }
   if (e.key === 'ArrowDown')  { e.preventDefault(); _extMoveSelection('down');  return true }
   if (e.key === 'ArrowUp')    { e.preventDefault(); _extMoveSelection('up');    return true }
-  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); extDeleteCells(); return true }
+  if (e.key === 'Delete' || e.key === 'Backspace' || e.code === 'Delete' || e.code === 'Backspace') { e.preventDefault(); extDeleteCells(); return true }
   if (e.key === 'Escape') { _extClearSelection(); return true }
   // 직접 타이핑
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
@@ -29021,19 +29022,20 @@ window.deleteShift = async (id, name) => {
   const s = document.createElement('style')
   s.id = 'sched-cell-styles'
   s.textContent = `
-    /* 선택된 셀 - 엑셀 파란 테두리 */
+    /* 선택된 셀 - 엑셀 파란 테두리 (★ STEP4: 강조 강화 — 3px + 글로우) */
     td.sched-cell-selected {
-      outline: 2px solid #1d6bf3 !important;
-      outline-offset: -2px !important;
-      background-color: rgba(29,107,243,0.08) !important;
+      outline: 3px solid #1d4ed8 !important;
+      outline-offset: -3px !important;
+      background-color: rgba(29,107,243,0.18) !important;
+      box-shadow: inset 0 0 0 1px #fff, 0 0 0 1px rgba(29,107,243,0.35) !important;
       position: relative !important;
       z-index: 5 !important;
     }
-    /* 범위 내 셀 (드래그/Shift 선택) */
+    /* 범위 내 셀 (드래그/Shift 선택) (★ STEP4: 강조 강화) */
     td.sched-cell-inrange {
-      outline: 1px solid #1d6bf3 !important;
-      outline-offset: -1px !important;
-      background-color: rgba(29,107,243,0.12) !important;
+      outline: 2px solid #2563eb !important;
+      outline-offset: -2px !important;
+      background-color: rgba(29,107,243,0.22) !important;
       position: relative !important;
       z-index: 4 !important;
     }
@@ -29043,10 +29045,15 @@ window.deleteShift = async (id, name) => {
       outline-offset: -1px !important;
       background-color: rgba(5,150,105,0.1) !important;
     }
-    /* 복사된 셀 (점선 테두리) */
+    /* 복사된 셀 (점선 테두리 + 깜빡임 애니메이션 — 엑셀 marching ants 효과) */
     td.sched-cell-copied {
-      outline: 2px dashed #1d6bf3 !important;
+      outline: 2px dashed #1d4ed8 !important;
       outline-offset: -2px !important;
+      animation: schedCopyBlink 0.9s linear infinite !important;
+    }
+    @keyframes schedCopyBlink {
+      0%, 100% { outline-color: #1d4ed8 !important; }
+      50%      { outline-color: #93c5fd !important; }
     }
     /* 채우기 핸들 (오른쪽 하단 작은 사각형) */
     .sched-fill-handle {
@@ -29084,6 +29091,31 @@ let _multiCode     = null        // 툴바 일괄 적용 코드
 // ── 셀 DOM 조회 헬퍼 ──────────────────────────────────────────
 function _getCellEl(empId, date) {
   return document.querySelector(`td[data-empid="${empId}"][data-date="${date}"]`)
+}
+
+// ★ STEP4: 선택 셀 개수 독립 배지 (툴바 ON/OFF 무관, 설계/편집 뷰 공통)
+//   화면 우하단 고정. 선택 셀이 있을 때만 표시. 복사 버퍼 개수도 함께 안내.
+function _updateSelCountBadge() {
+  let badge = document.getElementById('schedSelCountBadge')
+  const n = (typeof _selectedCells !== 'undefined') ? _selectedCells.size : 0
+  if (n === 0) { if (badge) badge.style.display = 'none'; return }
+  if (!badge) {
+    badge = document.createElement('div')
+    badge.id = 'schedSelCountBadge'
+    badge.style.cssText = [
+      'position:fixed', 'right:16px', 'bottom:16px', 'z-index:9999',
+      'background:#1d4ed8', 'color:#fff', 'font-size:12px', 'font-weight:800',
+      'padding:7px 13px', 'border-radius:18px',
+      'box-shadow:0 3px 10px rgba(29,78,216,0.4)', 'pointer-events:none',
+      'font-family:system-ui,-apple-system,sans-serif', 'white-space:nowrap',
+      'transition:opacity .12s'
+    ].join(';')
+    document.body.appendChild(badge)
+  }
+  const copied = (typeof _copiedCellData !== 'undefined' && _copiedCellData?.entries?.length) || 0
+  badge.innerHTML = '선택 셀 : ' + n + '개'
+    + (copied ? ' <span style="opacity:.85;font-weight:600">· 복사됨 ' + copied + '개</span>' : '')
+  badge.style.display = 'block'
 }
 function _parseKey(key) {
   const parts = key.split('_')
@@ -29148,6 +29180,7 @@ function applyRangeStyle() {
     el.style.outline = ''
     el.style.zIndex = ''
   })
+  try { _updateSelCountBadge() } catch(e) {}   // ★ STEP4: 선택 개수 배지 갱신
   const keys = Array.from(_selectedCells)
   if (keys.length === 0) return
   if (keys.length === 1) {
@@ -29311,6 +29344,7 @@ window.clearMultiSelection = () => {
   _multiCode = null
   const bar = document.getElementById('multiSelectBar')
   if (bar) bar.classList.add('hidden')
+  try { _updateSelCountBadge() } catch(e) {}   // ★ STEP4: 선택 해제 시 배지 숨김
   // 툴바 버튼을 직원 모드로 복원
   if (typeof _extSyncToolbarButtons === 'function') _extSyncToolbarButtons(false)
 }
@@ -29322,6 +29356,7 @@ function _clearCopyBuffer() {
     el.classList.remove('sched-cell-copied')
     el.style.outline = ''
   })
+  try { _updateSelCountBadge() } catch(e) {}   // ★ STEP4: 복사 해제 시 배지 갱신
 }
 
 window.applyMultiSelect = () => {
@@ -29805,7 +29840,8 @@ window.schedCopyCells = () => {
 
   // 시각 피드백
   const n = entries.length
-  showToast(`${n}개 셀 복사됨${singleCode ? ` [${singleCode}]` : ''} · 붙여넣을 셀 선택 후 Ctrl+V`, 'info')
+  try { _updateSelCountBadge() } catch(e) {}   // ★ STEP4: 배지에 "복사됨 N개" 반영
+  showToast(`${n}개 셀 복사됨${singleCode ? ` [${singleCode}]` : ''} · 붙여넣을 셀 선택 후 Ctrl+V`, 'success')
 }
 
 // ────────────────────────────────────────────────────────────
@@ -30039,11 +30075,24 @@ window.schedDragEnd = (event) => {
 // ────────────────────────────────────────────────────────────
 let _copiedCellData = null   // { code, rows: [ [code,...], ... ] } 복사 버퍼
 
+// ★ 우선순위4 최종(STEP3): 한글 IME 상태에서 e.key가 'c'/'v'/'z'가 아닌
+//   한글 자모('ㅊ','ㅍ','ㅈ' 등)나 'Process'로 들어와 단축키가 무시되는 현상 방지.
+//   물리 키(e.code: 'KeyC' 등)를 병행 판정하여 IME 상태와 무관하게 동작 보장.
+//   _isKey(e, 'c', 'KeyC') === (e.key === 'c' || e.key === 'C' || e.code === 'KeyC')
+function _isKey(e, keyChar, codeName) {
+  if (!e) return false
+  const k = e.key
+  if (k === keyChar || (k && k.toLowerCase && k.toLowerCase() === keyChar)) return true
+  if (codeName && e.code === codeName) return true
+  return false
+}
+
 document.addEventListener('keydown', (e) => {
   const inInput = e.target.matches('input,textarea,select') && !e.target.classList.contains('ext-inline-select')
 
   // ── 1순위: Ctrl+Z — 항상 최우선 처리 (타임스탬프 기반, 선택 여부 무관) ──
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+  // ★ STEP3: e.code('KeyZ') 병행 판정 (한글 IME 대응)
+  if ((e.ctrlKey || e.metaKey) && _isKey(e, 'z', 'KeyZ') && !e.shiftKey) {
     // 스케줄 탭이 아니면 무시
     if (scheduleTab !== 'schedule') return
     e.preventDefault(); e.stopPropagation()
@@ -30064,7 +30113,8 @@ document.addEventListener('keydown', (e) => {
   }
 
   // ── Ctrl+Y / Ctrl+Shift+Z — Redo (타임스탬프 기반) ──
-  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+  // ★ STEP3: e.code('KeyY'/'KeyZ') 병행 판정 (한글 IME 대응)
+  if ((e.ctrlKey || e.metaKey) && (_isKey(e, 'y', 'KeyY') || (_isKey(e, 'z', 'KeyZ') && e.shiftKey))) {
     if (scheduleTab !== 'schedule') return
     e.preventDefault(); e.stopPropagation()
     const extRedoStack  = window._extRedoStack  || []
@@ -30094,6 +30144,7 @@ document.addEventListener('keydown', (e) => {
       _copiedCellData = null
       document.querySelectorAll('td.sched-cell-copied').forEach(el => el.classList.remove('sched-cell-copied'))
     }
+    try { _updateSelCountBadge() } catch(e) {}   // ★ STEP4: ESC 후 배지 갱신
     if (_extSelectedCells?.size > 0) { _extClearSelection(); return }
     if (_selectedCells.size > 0) { clearMultiSelection(); return }
   }
@@ -30110,12 +30161,13 @@ document.addEventListener('keydown', (e) => {
   if (inInput) return
 
   // ── 외부인력 앵커/복사버퍼가 있으면 Ctrl+C/V 처리 ────────
-  if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+  // ★ STEP3: e.code('KeyC'/'KeyV') 병행 판정 (한글 IME 대응)
+  if ((e.ctrlKey || e.metaKey) && _isKey(e, 'c', 'KeyC')) {
     if (_extSelectedCells?.size > 0) { e.preventDefault(); extCopyCells(); return }
     if (_selectedCells.size > 0) { e.preventDefault(); schedCopyCells() }
     return
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+  if ((e.ctrlKey || e.metaKey) && _isKey(e, 'v', 'KeyV')) {
     // 외부인력 복사버퍼가 있고 앵커/선택이 있으면 외부인력 붙여넣기
     if (_extCopiedData?.entries?.length && (_extSelectedCells?.size > 0 || _extAnchorKey)) {
       e.preventDefault(); extPasteCells(); return
@@ -30169,7 +30221,8 @@ document.addEventListener('keydown', (e) => {
   }
 
   // ── Delete / Backspace : 선택 셀 초기화 ──────────────────
-  if (e.key === 'Delete' || e.key === 'Backspace') {
+  // ★ STEP3: e.code('Delete'/'Backspace') 병행 판정 (일관성)
+  if (e.key === 'Delete' || e.key === 'Backspace' || e.code === 'Delete' || e.code === 'Backspace') {
     e.preventDefault(); schedDeleteCells(); return
   }
 

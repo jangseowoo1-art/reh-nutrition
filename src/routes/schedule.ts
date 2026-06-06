@@ -1876,25 +1876,24 @@ schedule.get('/public/:token', async (c) => {
   `).bind(tokenRow.hospital_id).all<any>()
 
   // ★ 우선순위3 STEP3: 변경 이력 — 조회 월(work_date) 기준만 표시 (기존: 절대 30일 버그 수정)
-  // ★ 우선순위4 STEP2: 확정(published_at) 이후 변경분만 표시.
-  //   - 미확정 월 → 빈 배열 (변경이력 비표시)
-  //   - 확정 월   → changed_at >= published_at 만 표시 (확정 전 최초 입력 이력 숨김)
-  //   ※ changed_at("YYYY-MM-DD HH:MM:SS")와 published_at(ISO "...T...Z") 형식이 달라
-  //     SQLite datetime()으로 양쪽 정규화 후 비교 (이중 안전장치: INSERT 게이트와 별개)
-  const pubAt = await getPublishedAt(c.env.DB, tokenRow.hospital_id, year, month)
-  let changeLog: { results: any[] }
-  if (pubAt) {
-    changeLog = await c.env.DB.prepare(`
-      SELECT work_date, old_shift_code, new_shift_code, changed_at
-      FROM schedule_change_log
-      WHERE employee_id=? AND work_date >= ? AND work_date <= ?
-        AND datetime(changed_at) >= datetime(?)
-      ORDER BY changed_at DESC, work_date DESC
-      LIMIT 50
-    `).bind(tokenRow.employee_id, fromDate, toDate, pubAt).all<any>()
-  } else {
-    changeLog = { results: [] }
-  }
+  // ★ 우선순위4 최종(STEP1): 정책을 published_at 시각 기준 → "실제 코드 변경 기준"으로 변경.
+  //   사용자 실무 목적: "최초 입력 이력은 숨기되, 실제 조정 이력은 관리".
+  //   - 기존(published_at 기준): "변경→즉시 확정" 시 변경이 확정보다 수 초 먼저 기록되어
+  //     실제 조정이 누락되고, 확정 후의 최초 입력만 표시되는 정반대 동작이 발생함.
+  //   - 신규(코드 변경 기준): published_at 시각에 의존하지 않고 변경의 "성격"으로 판정.
+  //   [표시] old_shift_code 가 실제 코드(NULL/빈칸/'-' 아님)이고 old != new  → 실제 조정 이력
+  //   [숨김] old_shift_code 가 NULL/''/'-'                                    → 최초 입력 이력
+  const changeLog = await c.env.DB.prepare(`
+    SELECT work_date, old_shift_code, new_shift_code, changed_at
+    FROM schedule_change_log
+    WHERE employee_id=? AND work_date >= ? AND work_date <= ?
+      AND old_shift_code IS NOT NULL
+      AND old_shift_code <> ''
+      AND old_shift_code <> '-'
+      AND old_shift_code <> new_shift_code
+    ORDER BY changed_at DESC, work_date DESC
+    LIMIT 50
+  `).bind(tokenRow.employee_id, fromDate, toDate).all<any>()
 
   // ★ 우선순위3 STEP3: 남은 연차 조회 (employee_leaves annual — SSOT calcAnnualRemain 동일 기준)
   //   remain = total_days + carried_over_days(allowance_paid 시 0) − initial_used_days − used_days
