@@ -2134,6 +2134,63 @@ schedule.post('/partial-leave', async (c) => {
   return c.json({ updated: !!existing })
 })
 
+// ════════════════════════════════════════════════════════════════
+// 스케줄 확정(publish) — 우선순위4 STEP1
+// ⚠️ 라우트 우선순위: 반드시 '/:year/:month' 보다 먼저 등록해야 함.
+//    (그렇지 않으면 'publish'가 :year 로 흡수되어 500 발생)
+// ════════════════════════════════════════════════════════════════
+
+// 확정 상태 조회 → { published_at: string|null, published_by: number|null }
+schedule.get('/publish/:year/:month', async (c) => {
+  const user = c.get('user')
+  if (!user) return c.json({ error: '인증 필요' }, 401)
+  const year = parseInt(c.req.param('year'))
+  const month = parseInt(c.req.param('month'))
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  if (!hospitalId) return c.json({ error: 'hospitalId 필요' }, 400)
+
+  const row = await c.env.DB.prepare(
+    `SELECT published_at, published_by FROM schedule_publish
+     WHERE hospital_id = ? AND year = ? AND month = ?`
+  ).bind(hospitalId, year, month).first<any>()
+
+  return c.json({
+    published_at: row?.published_at || null,
+    published_by: row?.published_by || null,
+  })
+})
+
+// 스케줄 확정/재확정 (upsert) → { ok, published_at, published_by }
+// 권한: admin(운영자) / hospital(영양사) 만 가능. executive 등은 조회만.
+schedule.post('/publish/:year/:month', async (c) => {
+  const user = c.get('user')
+  if (!user) return c.json({ error: '인증 필요' }, 401)
+  // 확정 권한: 운영자(admin) 또는 영양사(hospital)
+  if (!isNutritionist(user)) return c.json({ error: '확정 권한 없음' }, 403)
+
+  const year = parseInt(c.req.param('year'))
+  const month = parseInt(c.req.param('month'))
+  const hospitalId = getHospitalId(user, c.req.query('hospitalId'))
+  if (!hospitalId) return c.json({ error: 'hospitalId 필요' }, 400)
+  if (!year || !month || month < 1 || month > 12) {
+    return c.json({ error: '잘못된 연/월' }, 400)
+  }
+
+  const nowIso = new Date().toISOString()
+  const publishedBy = (user as any).userId ?? (user as any).id ?? null
+
+  // UNIQUE(hospital_id, year, month) 기준 upsert — 재확정 시 시각 갱신
+  await c.env.DB.prepare(
+    `INSERT INTO schedule_publish (hospital_id, year, month, published_at, published_by)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(hospital_id, year, month)
+     DO UPDATE SET published_at = excluded.published_at,
+                   published_by = excluded.published_by`
+  ).bind(hospitalId, year, month, nowIso, publishedBy).run()
+
+  return c.json({ ok: true, published_at: nowIso, published_by: publishedBy })
+})
+
 // 월별 스케줄 조회 (직위 포함, 정렬: 팀→직위순→입사일→이름)
 schedule.get('/:year/:month', async (c) => {
   const user = c.get('user')
