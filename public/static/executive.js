@@ -2283,6 +2283,30 @@ function renderExecStaffLaborSection(d) {
           </div>
         </div>
 
+        <!-- ★ 우선순위3 STEP2: 야간근무 현황 -->
+        <div style="background:#eef2ff;border-radius:12px;padding:12px">
+          <p style="font-size:11px;font-weight:600;color:#4f46e5;margin-bottom:8px">🌙 야간근무 현황</p>
+          <div style="display:flex;gap:16px">
+            ${[['야간 총시간', Math.round((ws.totalNightHours||0)*10)/10, 'h'], ['발생 직원', ws.nightEmpCount||0, '명']].map(([l,v,u]) => `
+              <div style="text-align:center;flex:1">
+                <p style="font-size:18px;font-weight:700;color:#4338ca">${fmtN(v)}<span style="font-size:11px;font-weight:400">${u}</span></p>
+                <p style="font-size:11px;color:#9ca3af">${l}</p>
+              </div>`).join('')}
+          </div>
+        </div>
+
+        <!-- ★ 우선순위3 STEP2: 휴일근무 현황 -->
+        <div style="background:#fef2f2;border-radius:12px;padding:12px">
+          <p style="font-size:11px;font-weight:600;color:#dc2626;margin-bottom:8px">📅 휴일근무 현황</p>
+          <div style="display:flex;gap:16px">
+            ${[['휴일 총시간', Math.round((ws.totalHolidayHours||0)*10)/10, 'h'], ['발생 직원', ws.holidayEmpCount||0, '명']].map(([l,v,u]) => `
+              <div style="text-align:center;flex:1">
+                <p style="font-size:18px;font-weight:700;color:#b91c1c">${fmtN(v)}<span style="font-size:11px;font-weight:400">${u}</span></p>
+                <p style="font-size:11px;color:#9ca3af">${l}</p>
+              </div>`).join('')}
+          </div>
+        </div>
+
         <!-- 외부인력 -->
         <div style="background:#fff7ed;border-radius:12px;padding:12px">
           <p style="font-size:11px;font-weight:600;color:#ea580c;margin-bottom:8px">🔄 외부인력 투입 현황</p>
@@ -2367,6 +2391,46 @@ function renderExecStaffLaborSection(d) {
       </div>
     </div>
   </div>
+
+  <!-- ★ 우선순위3 STEP2: OT / 야간 / 휴일 TOP 직원 리스트 -->
+  ${(() => {
+    const byEmp = d.byEmployee || []
+    if (byEmp.length === 0) return ''
+    const mkTop = (key) => [...byEmp].filter(r => (r[key]||0) > 0).sort((a,b)=>(b[key]||0)-(a[key]||0)).slice(0,5)
+    const otTop      = mkTop('otHours')
+    const nightTop   = mkTop('nightHours')
+    const holidayTop = mkTop('holidayHours')
+    if (otTop.length === 0 && nightTop.length === 0 && holidayTop.length === 0) return ''
+    const medal = i => ['🥇','🥈','🥉'][i] || `${i+1}.`
+    const col = (title, icon, color, bg, list, key) => `
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <i class="fas ${icon}" style="color:${color}"></i>
+          <span style="font-size:12px;font-weight:700;color:#1f2937">${title} TOP</span>
+        </div>
+        ${list.length === 0
+          ? `<p style="font-size:11px;color:#9ca3af;padding:8px 0">발생 직원 없음</p>`
+          : list.map((r, i) => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:8px;background:${bg};margin-bottom:4px">
+            <span style="font-size:12px;color:#374151"><span style="margin-right:5px">${medal(i)}</span>${r.empName || ''}</span>
+            <span style="font-size:12px;font-weight:700;color:${color}">${Math.round((r[key]||0)*10)/10}h</span>
+          </div>`).join('')}
+      </div>`
+    return `
+  <div class="exec-card overflow-hidden" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid #f3f4f6">
+      <h3 style="font-weight:700;font-size:14px;color:#1f2937;display:flex;align-items:center;gap:8px">
+        <i class="fas fa-trophy" style="color:#f59e0b"></i>OT · 야간 · 휴일 TOP 직원
+      </h3>
+      <p style="font-size:11px;color:#9ca3af;margin-top:2px">발생 시간 기준 상위 5명</p>
+    </div>
+    <div style="padding:16px;display:flex;gap:16px;flex-wrap:wrap">
+      ${col('OT', 'fa-clock', '#d97706', '#fffbeb', otTop, 'otHours')}
+      ${col('야간', 'fa-moon', '#4f46e5', '#eef2ff', nightTop, 'nightHours')}
+      ${col('휴일', 'fa-calendar-day', '#dc2626', '#fef2f2', holidayTop, 'holidayHours')}
+    </div>
+  </div>`
+  })()}
 
   <!-- 직원별 추가수당 명세 -->
   ${(() => {

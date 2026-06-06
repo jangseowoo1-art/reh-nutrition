@@ -369,7 +369,7 @@ function getAppShell(): string {
   <div id="mobileNavItems" class="flex justify-around items-center h-full px-1"></div>
 </nav>
 
-<script src="/static/app.js?v=20260606-event-expense"></script>
+<script src="/static/app.js?v=20260606-priority3"></script>
 </body>
 </html>`
 }
@@ -474,7 +474,7 @@ function getExecutiveShell(): string {
   <div id="execContent" class="hidden space-y-6"></div>
 </main>
 
-<script src="/static/executive.js?v=20260601-analysissplit"></script>
+<script src="/static/executive.js?v=20260606-priority3"></script>
 </body>
 </html>`
 }
@@ -525,7 +525,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .spinner{width:40px;height:40px;border:4px solid #d1fae5;border-top-color:#166534;border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .error-box{margin:20px;padding:20px;background:#fff1f2;border-radius:12px;text-align:center;color:#b91c1c;}
-.change-log{background:white;margin:0 0 80px;border-top:4px solid #f0fdf4;}
+.info-card{background:white;margin:12px 16px 0;border-radius:14px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);border:1px solid #f3f4f6;}
+.info-card .ic-title{font-size:13px;font-weight:700;color:#166534;display:flex;align-items:center;gap:7px;margin-bottom:10px;}
+.health-row{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px;margin-bottom:10px;}
+.health-badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:99px;}
+.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.info-mini{background:#f9fafb;border-radius:10px;padding:9px 6px;text-align:center;}
+.info-mini .v{font-size:17px;font-weight:800;}
+.info-mini .l{font-size:9.5px;color:#6b7280;margin-top:2px;}
+.change-log{background:white;margin:12px 16px 80px;border-radius:14px;border:1px solid #f3f4f6;overflow:hidden;}
 .change-log-header{padding:12px 16px;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;border-bottom:1px solid #f3f4f6;}
 .change-log-header span{font-size:13px;font-weight:700;color:#374151;flex:1;}
 .change-log-body{padding:0 16px 12px;}
@@ -562,8 +570,45 @@ function style(code, shifts) {
 }
 
 function render(d) {
-  const {employee:emp, hospital, year, month, schedMap, workDays, codeCount, shifts, totalDays, changeLog} = d
+  const {employee:emp, hospital, year, month, schedMap, workDays, codeCount, shifts, totalDays, changeLog, stats} = d
   const td = new Date(), todayStr = td.getFullYear()+'-'+String(td.getMonth()+1).padStart(2,'0')+'-'+String(td.getDate()).padStart(2,'0')
+
+  // ★ 우선순위3 STEP3: 개인정보 카드 (보건증/연차/OT·야간·휴일/근무·휴무일수)
+  const st2 = stats || {}
+  const HC = {
+    normal:   { label:'정상',     bg:'#dcfce7', fg:'#15803d', row:'#f0fdf4', icon:'fa-circle-check' },
+    warning:  { label:'주의',     bg:'#fef9c3', fg:'#a16207', row:'#fefce8', icon:'fa-triangle-exclamation' },
+    imminent: { label:'만료 임박', bg:'#ffedd5', fg:'#c2410c', row:'#fff7ed', icon:'fa-clock' },
+    expired:  { label:'만료 위험', bg:'#fee2e2', fg:'#b91c1c', row:'#fef2f2', icon:'fa-circle-xmark' },
+    none:     { label:'미등록',   bg:'#f3f4f6', fg:'#6b7280', row:'#f9fafb', icon:'fa-circle-question' },
+  }
+  const hc = HC[st2.healthCertStatus || 'none'] || HC.none
+  const hcExpireTxt = st2.healthCertExpire
+    ? st2.healthCertExpire + (st2.healthCertDaysLeft != null
+        ? (st2.healthCertDaysLeft < 0 ? ' (' + Math.abs(st2.healthCertDaysLeft) + '일 경과)' : ' (' + st2.healthCertDaysLeft + '일 남음)')
+        : '')
+    : '미등록'
+  const annTxt = (st2.annualRemain != null) ? st2.annualRemain + '일' : '-'
+  const infoCard =
+    '<div class="info-card">'+
+      '<div class="ic-title"><i class="fas fa-id-card"></i> 내 정보 · '+year+'년 '+month+'월</div>'+
+      '<div class="health-row" style="background:'+hc.row+'">'+
+        '<div style="display:flex;align-items:center;gap:8px">'+
+          '<i class="fas '+hc.icon+'" style="color:'+hc.fg+';font-size:14px"></i>'+
+          '<div><div style="font-size:11px;color:#6b7280">보건증 만료일</div>'+
+          '<div style="font-size:13px;font-weight:700;color:#374151">'+hcExpireTxt+'</div></div>'+
+        '</div>'+
+        '<span class="health-badge" style="background:'+hc.bg+';color:'+hc.fg+'">'+hc.label+'</span>'+
+      '</div>'+
+      '<div class="info-grid">'+
+        '<div class="info-mini"><div class="v" style="color:#166534">'+(st2.workDays!=null?st2.workDays:workDays)+'</div><div class="l">근무일수</div></div>'+
+        '<div class="info-mini"><div class="v" style="color:#b91c1c">'+(st2.restDays||0)+'</div><div class="l">휴무일수</div></div>'+
+        '<div class="info-mini"><div class="v" style="color:#a16207">'+annTxt+'</div><div class="l">남은 연차</div></div>'+
+        '<div class="info-mini"><div class="v" style="color:#d97706">'+(st2.otHours||0)+'<span style="font-size:10px">h</span></div><div class="l">OT 시간</div></div>'+
+        '<div class="info-mini"><div class="v" style="color:#4338ca">'+(st2.nightHours||0)+'<span style="font-size:10px">h</span></div><div class="l">야간 시간</div></div>'+
+        '<div class="info-mini"><div class="v" style="color:#dc2626">'+(st2.holidayHours||0)+'<span style="font-size:10px">h</span></div><div class="l">휴일 시간</div></div>'+
+      '</div>'+
+    '</div>'
 
   // 페이지 타이틀 업데이트
   document.title = emp.name + ' 님의 근무표 | ' + hospital.name
@@ -610,7 +655,7 @@ function render(d) {
     changeHtml = '<div class="change-log">'+
       '<div class="change-log-header" onclick="toggleChangeLog(this)">'+
       '<i class="fas fa-history" style="color:#166534;font-size:13px"></i>'+
-      '<span>최근 스케줄 변경 이력 ('+logs.length+'건)</span>'+
+      '<span>'+month+'월 스케줄 변경 이력 ('+logs.length+'건)</span>'+
       '<i class="fas fa-chevron-down" style="color:#9ca3af;font-size:11px"></i>'+
       '</div>'+
       '<div class="change-log-body">'+items+'</div>'+
@@ -621,6 +666,7 @@ function render(d) {
     '<div class="header"><div style="display:flex;align-items:center;gap:10px"><div style="width:40px;height:40px;background:rgba(255,255,255,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-user" style="font-size:16px"></i></div><div><h1 style="font-size:17px;font-weight:800"><span style="opacity:.9;font-weight:500;font-size:14px">'+emp.name+'</span> 님의 근무표</h1><div class="sub">'+hospital.name+(emp.position?' · '+emp.position:'')+'</div></div></div></div>'+
     '<div class="month-nav"><button onclick="prev()"><i class="fas fa-chevron-left"></i></button><div class="month-label">'+year+'년 '+month+'월</div><button onclick="next()"><i class="fas fa-chevron-right"></i></button></div>'+
     '<div class="stats"><div class="stat-card"><div class="val">'+workDays+'</div><div class="lbl">근무일수</div></div>'+statsItems+'</div>'+
+    infoCard+
     '<div class="code-legend">'+legend+'</div>'+
     '<div class="calendar"><div class="cal-header"><div class="sun">일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="sat">토</div></div><div class="cal-grid">'+cells+'</div></div>'+
     changeHtml+

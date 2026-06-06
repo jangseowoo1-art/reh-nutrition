@@ -739,6 +739,15 @@ executive.get('/staff-labor/:year/:month', async (c) => {
 
   const byEmployee = Object.values(byEmpMap).filter(r => r.workDays > 0 || r.otHours > 0)
 
+  // ★ 우선순위3 STEP2: 야간/휴일 총시간 + 발생 직원 수 집계 (byEmployee 기반)
+  let totalNightHours = 0, totalHolidayHours = 0, nightEmpCount = 0, holidayEmpCount = 0
+  for (const r of byEmployee) {
+    if (r.nightHours > 0)   { totalNightHours   += r.nightHours;   nightEmpCount++ }
+    if (r.holidayHours > 0) { totalHolidayHours += r.holidayHours; holidayEmpCount++ }
+  }
+  totalNightHours   = Math.round(totalNightHours   * 100) / 100
+  totalHolidayHours = Math.round(totalHolidayHours * 100) / 100
+
   return c.json({
     period: { year: y, month: m },
     // 급여 공개 설정
@@ -757,6 +766,11 @@ executive.get('/staff-labor/:year/:month', async (c) => {
       totalOtDays,
       totalOtHours,
       totalLeaveDays,
+      // ★ 우선순위3 STEP2: 야간/휴일 총시간 + 발생 직원 수
+      totalNightHours,
+      totalHolidayHours,
+      nightEmpCount,
+      holidayEmpCount,
     },
     // 외부인력 현황
     externalSummary: {

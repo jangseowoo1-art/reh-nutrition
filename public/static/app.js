@@ -22423,12 +22423,24 @@ function renderAnalysisTabSimple(ad, year, month) {
     }
   })
 
-  // ── OT 발생 직원 집계 ────────────────────────────────────────
+  // ── OT / 야간 / 휴일 발생 직원 집계 (우선순위3 STEP1) ─────────
   const otByEmp = monthly.otByEmp || {}
   const otEntries = Object.entries(otByEmp)
     .filter(([, hrs]) => hrs > 0)
     .sort((a, b) => b[1] - a[1])
   const otCount = otEntries.length
+
+  const nightByEmp = monthly.nightByEmp || {}
+  const nightEntries = Object.entries(nightByEmp)
+    .filter(([, hrs]) => hrs > 0)
+    .sort((a, b) => b[1] - a[1])
+  const nightCount = nightEntries.length
+
+  const holidayByEmp = monthly.holidayByEmp || {}
+  const holidayEntries = Object.entries(holidayByEmp)
+    .filter(([, hrs]) => hrs > 0)
+    .sort((a, b) => b[1] - a[1])
+  const holidayCount = holidayEntries.length
 
   // ── 직원별 이달 근무 요약 (sched_map 기반) ───────────────────
   const sm   = scheduleMonthData?.sched_map || {}
@@ -22459,7 +22471,9 @@ function renderAnalysisTabSimple(ad, year, month) {
     const { remain: _annR } = CALC_ENGINE.calcAnnualRemain(leaveRow)
     const annualRemain  = _annR !== null ? _annR : '-'
     const otHrs         = otByEmp[e.name] || 0
-    return { name: e.name, position: e.position_name || '', workDays, restDays, annualUsed, annualRemain, otHrs }
+    const nightHrs      = nightByEmp[e.name] || 0
+    const holidayHrs    = holidayByEmp[e.name] || 0
+    return { name: e.name, position: e.position_name || '', workDays, restDays, annualUsed, annualRemain, otHrs, nightHrs, holidayHrs }
   })
 
   const riskLevel = shortCount > 5 ? 'high' : shortCount > 0 ? 'mid' : 'ok'
@@ -22514,45 +22528,71 @@ function renderAnalysisTabSimple(ad, year, month) {
         </div>`).join('')}
     </div>
 
-    <!-- OT 요약 배너 (발생 직원 있을 때만) -->
-    ${otCount > 0 ? `
-    <div class="bg-amber-50 border border-amber-200 rounded-2xl overflow-hidden">
-      <!-- 헤더 (클릭으로 펼침/접기) -->
-      <button onclick="this.closest('.ot-summary-card').querySelector('.ot-detail').classList.toggle('hidden')"
-        class="ot-summary-card w-full" style="display:block;background:none;border:none;padding:0;cursor:pointer;text-align:left">
-        <div class="ot-summary-card px-5 py-3 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <div class="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
-              <i class="fas fa-clock text-amber-600 text-sm"></i>
+    <!-- ★ 우선순위3 STEP1: OT/야간/휴일 발생 직원 수 KPI -->
+    <div class="grid grid-cols-3 gap-3">
+      ${[
+        { label:'OT 발생 직원', value: otCount,      color:'text-amber-700',  bg:'bg-amber-50',  icon:'fa-clock' },
+        { label:'야간근무 직원', value: nightCount,   color:'text-indigo-700', bg:'bg-indigo-50', icon:'fa-moon' },
+        { label:'휴일근무 직원', value: holidayCount, color:'text-rose-700',   bg:'bg-rose-50',   icon:'fa-calendar-day' },
+      ].map(c => `
+        <div class="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="w-8 h-8 rounded-lg ${c.bg} flex items-center justify-center">
+              <i class="fas ${c.icon} text-xs ${c.color}"></i>
             </div>
-            <div>
-              <div class="font-bold text-amber-800 text-sm">OT 발생 직원 <span class="text-amber-600">${otCount}명</span></div>
-              <div class="text-xs text-amber-600 mt-0.5">${otEntries.slice(0,3).map(([n]) => n).join(', ')}${otCount > 3 ? ` 외 ${otCount-3}명` : ''}</div>
+            <span class="text-xs text-gray-500">${c.label}</span>
+          </div>
+          <div class="text-2xl font-bold ${c.color}">${c.value}<span class="text-xs ml-0.5 font-normal">명</span></div>
+        </div>`).join('')}
+    </div>
+
+    <!-- ★ 우선순위3 STEP1: OT / 야간 / 휴일 발생 직원 알림 영역 -->
+    ${(otCount > 0 || nightCount > 0 || holidayCount > 0) ? `
+    <div class="space-y-3">
+      ${[
+        { entries: otEntries,      count: otCount,      title:'OT 발생 직원',     icon:'fa-clock',         theme:{ bg:'bg-amber-50',  border:'border-amber-200',  ico:'bg-amber-100',  iconTxt:'text-amber-600',  ttl:'text-amber-800',  sub:'text-amber-600',  badge:'bg-amber-100 text-amber-700',  chev:'text-amber-400', tag:'text-amber-500 bg-amber-100', det:'border-amber-100', detRow:'border-amber-50', usr:'text-amber-400' } },
+        { entries: nightEntries,   count: nightCount,   title:'야간근무 발생 직원', icon:'fa-moon',          theme:{ bg:'bg-indigo-50', border:'border-indigo-200', ico:'bg-indigo-100', iconTxt:'text-indigo-600', ttl:'text-indigo-800', sub:'text-indigo-600', badge:'bg-indigo-100 text-indigo-700', chev:'text-indigo-400', tag:'text-indigo-500 bg-indigo-100', det:'border-indigo-100', detRow:'border-indigo-50', usr:'text-indigo-400' } },
+        { entries: holidayEntries, count: holidayCount, title:'휴일근무 발생 직원', icon:'fa-calendar-day',  theme:{ bg:'bg-rose-50',   border:'border-rose-200',   ico:'bg-rose-100',   iconTxt:'text-rose-600',   ttl:'text-rose-800',   sub:'text-rose-600',   badge:'bg-rose-100 text-rose-700',   chev:'text-rose-400',  tag:'text-rose-500 bg-rose-100',   det:'border-rose-100',  detRow:'border-rose-50',  usr:'text-rose-400' } },
+      ].filter(b => b.count > 0).map(b => {
+        const t = b.theme
+        return `
+        <div class="${t.bg} border ${t.border} rounded-2xl overflow-hidden alw-summary-card">
+          <button onclick="this.closest('.alw-summary-card').querySelector('.alw-detail').classList.toggle('hidden')"
+            class="w-full" style="display:block;background:none;border:none;padding:0;cursor:pointer;text-align:left">
+            <div class="px-5 py-3 flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-lg ${t.ico} flex items-center justify-center flex-shrink-0">
+                  <i class="fas ${b.icon} ${t.iconTxt} text-sm"></i>
+                </div>
+                <div>
+                  <div class="font-bold ${t.ttl} text-sm">${b.title} <span class="${t.sub}">${b.count}명</span></div>
+                  <div class="text-xs ${t.sub} mt-0.5">${b.entries.slice(0,3).map(([n]) => n).join(', ')}${b.count > 3 ? ` 외 ${b.count-3}명` : ''}</div>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs ${t.tag} px-2 py-1 rounded-md">탭하여 상세 보기</span>
+                <i class="fas fa-chevron-down ${t.chev} text-xs"></i>
+              </div>
+            </div>
+          </button>
+          <div class="alw-detail hidden border-t ${t.det}">
+            <div class="px-5 py-3 space-y-2">
+              ${b.entries.map(([name, hrs]) => `
+              <div class="flex items-center justify-between py-1.5 border-b ${t.detRow} last:border-0">
+                <span class="text-sm font-medium text-gray-700"><i class="fas fa-user ${t.usr} mr-2 text-xs"></i>${name}</span>
+                <span class="text-sm font-bold px-2.5 py-0.5 rounded-full ${t.badge}">${Math.round(hrs*100)/100}시간</span>
+              </div>`).join('')}
+            </div>
+            <div class="px-5 pb-3 text-xs ${t.sub}">
+              <i class="fas fa-info-circle mr-1"></i>비용 상세는 관리자 인력비 탭에서 확인하세요.
             </div>
           </div>
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-amber-500 bg-amber-100 px-2 py-1 rounded-md">탭하여 상세 보기</span>
-            <i class="fas fa-chevron-down text-amber-400 text-xs"></i>
-          </div>
-        </div>
-      </button>
-      <!-- 펼침 상세 (기본 숨김) -->
-      <div class="ot-detail hidden border-t border-amber-100">
-        <div class="px-5 py-3 space-y-2">
-          ${otEntries.map(([name, hrs]) => `
-          <div class="flex items-center justify-between py-1.5 border-b border-amber-50 last:border-0">
-            <span class="text-sm font-medium text-gray-700"><i class="fas fa-user text-amber-400 mr-2 text-xs"></i>${name}</span>
-            <span class="text-sm font-bold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full">${hrs}시간</span>
-          </div>`).join('')}
-        </div>
-        <div class="px-5 pb-3 text-xs text-amber-500">
-          <i class="fas fa-info-circle mr-1"></i>비용 상세는 관리자 인력비 탭에서 확인하세요.
-        </div>
-      </div>
+        </div>`
+      }).join('')}
     </div>` : `
     <div class="bg-green-50 border border-green-100 rounded-2xl px-5 py-3 flex items-center gap-3">
       <i class="fas fa-clock text-green-500"></i>
-      <span class="text-sm text-green-700 font-medium">이달 OT 발생 직원 없음</span>
+      <span class="text-sm text-green-700 font-medium">이달 OT·야간·휴일 발생 직원 없음</span>
     </div>`}
 
     <!-- 직원별 이달 근무 요약 표 -->
@@ -22572,6 +22612,8 @@ function renderAnalysisTabSimple(ad, year, month) {
               <th class="px-3 py-2.5 text-center text-xs text-red-500 font-semibold">휴무일</th>
               <th class="px-3 py-2.5 text-center text-xs text-yellow-600 font-semibold">연차잔여</th>
               <th class="px-3 py-2.5 text-center text-xs text-amber-600 font-semibold">OT</th>
+              <th class="px-3 py-2.5 text-center text-xs text-indigo-600 font-semibold">야간</th>
+              <th class="px-3 py-2.5 text-center text-xs text-rose-600 font-semibold">휴일</th>
             </tr>
           </thead>
           <tbody>
@@ -22594,7 +22636,17 @@ function renderAnalysisTabSimple(ad, year, month) {
               </td>
               <td class="px-3 py-2.5 text-center">
                 ${r.otHrs > 0
-                  ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold"><i class="fas fa-clock text-[10px]"></i>${r.otHrs}h</span>`
+                  ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-bold"><i class="fas fa-clock text-[10px]"></i>${Math.round(r.otHrs*100)/100}h</span>`
+                  : `<span class="text-gray-300 text-xs">-</span>`}
+              </td>
+              <td class="px-3 py-2.5 text-center">
+                ${r.nightHrs > 0
+                  ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold"><i class="fas fa-moon text-[10px]"></i>${Math.round(r.nightHrs*100)/100}h</span>`
+                  : `<span class="text-gray-300 text-xs">-</span>`}
+              </td>
+              <td class="px-3 py-2.5 text-center">
+                ${r.holidayHrs > 0
+                  ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-xs font-bold"><i class="fas fa-calendar-day text-[10px]"></i>${Math.round(r.holidayHrs*100)/100}h</span>`
                   : `<span class="text-gray-300 text-xs">-</span>`}
               </td>
             </tr>`).join('')}

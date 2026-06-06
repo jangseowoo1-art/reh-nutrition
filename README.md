@@ -119,10 +119,30 @@ pm2 logs hospital-meal --nostream
 - **영향 없음**: 식단가 엔진 / 외부인력 엔진 / daily_orders / daily_meals (검증 완료)
 - **다음 단계**: B단계(OT/야간/휴일 수당 활성화 정책) · C단계(공휴일/대체휴일 세분화) 별도 진행 예정
 
+## 근무 스케줄 — OT 정책 / 야간·휴일 계산 [우선순위2]
+- **OT 자동생성 정책(`ot_auto_enabled`)**: 근무조(shift)별로 8h 초과분 자동 OT 생성 여부를 제어.
+  - `ot_auto_enabled=false`(정규 근무조): 자동 OT 미생성(0h). `true`: 기존대로 8h 초과분 자동 산출.
+  - **수동 OT 우선**: 사용자가 직접 입력한 OT(`overtime_hours`)가 있으면 자동 계산을 덮어쓰지 않고 우선 적용(`upsertScheduleWithCalc`).
+- **야간/휴일 계산 유지**: OT 정책과 무관하게 야간(22:00~06:00 교집합)·휴일(토/일/공휴일) 시간은 항상 계산·저장(`night_work_hours`/`holiday_work_hours`).
+- **copy-week 엔진 통합**: 주간 복사 시에도 동일한 `calcWorkHours`/`aggregateAllowanceHours` SSOT 엔진을 사용해 OT/야간/휴일 시간 정합성 보장.
+- **버그 수정**: `standard_hours`/`half_type` 저장 누락 버그 수정(셀 저장 시 정상 반영).
+
+## 근무 스케줄 — 운영분석/병원장/QR 강화 [우선순위3]
+- **STEP1 운영분석(영양사)**: 야간근무·휴일근무·OT **발생 직원 수** KPI 추가 / 직원별 요약표에 **OT·야간·휴일 시간** 컬럼 추가 / 알림 영역에 OT·야간·휴일 발생 직원 전체 표시(접이식 상세).
+  - 서버: `GET /api/schedule/analysis/:year/:month` → `monthly.nightByEmp`/`holidayByEmp`/`totalNightHours`/`totalHolidayHours` 추가(`night_work_hours>0`/`holiday_work_hours>0` 기준).
+- **STEP2 병원장**: 야간근무 총시간·휴일근무 총시간·**야간/휴일 발생 직원 수** 카드 추가 / **OT·야간·휴일 TOP 5 직원** 리스트 추가.
+  - 서버: `GET /api/executive/staff-labor/:year/:month` → `workSummary.totalNightHours`/`totalHolidayHours`/`nightEmpCount`/`holidayEmpCount` 추가(byEmployee 기반 합산, 기존 집계 미변경).
+- **STEP3 개인 QR 근무표(`/my-schedule/:token`)**:
+  - **변경이력 월필터 버그 수정**: 기존 `changed_at >= datetime('now','-30 days')`(절대 30일) → **조회 월의 `work_date` 범위** 기준으로 변경(다른 달 이력 노출 차단).
+  - **개인정보 카드 추가**: 보건증 만료일 / 남은 연차 / 이번달 OT·야간·휴일 시간 / 근무일수 / 휴무일수.
+  - **보건증 상태 배지**: 90일↑ 정상(초록) / 30~90일 주의(노랑) / 30일↓ 만료 임박(주황) / 만료 위험(빨강) / 미등록(회색).
+  - 서버: `GET /api/schedule/public/:token` → `stats`(workDays/restDays/otHours/nightHours/holidayHours/annualRemain/healthCert*) 필드 추가. 연차는 `employee_leaves` annual SSOT(`total + carried_over − initial_used − used`) 기준.
+- **영향 없음**: 식단가 엔진 / hospitalCalc.ts / 외부인력 엔진 / daily_orders / daily_meals (회귀 테스트 완료, 기존 필드 전부 유지).
+
 ## 배포
 - **플랫폼**: Cloudflare Pages (프로덕션: https://reh-nutrition.pages.dev)
 - **빌드**: Vite + Hono TypeScript
 - **상태**: ✅ 운영 중
-- **캐시 태그**: 20260603-ot-input
-- **최종 업데이트**: 2026-06-03 (A단계 OT 입력 기능)
+- **캐시 태그**: app.js `20260606-priority3` / executive.js `20260606-priority3`
+- **최종 업데이트**: 2026-06-06 (우선순위3 — 운영분석/병원장/QR 야간·휴일·보건증 강화)
 # Auto deploy test Sun Apr 12 17:04:05 UTC 2026

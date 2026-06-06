@@ -1792,6 +1792,7 @@ schedule.get('/public/:token', async (c) => {
 
   const tokenRow = await c.env.DB.prepare(`
     SELECT t.*, e.name as emp_name, e.position, e.hospital_id,
+           e.health_cert_expire,
            h.name as hospital_name
     FROM schedule_share_tokens t
     JOIN employees e ON e.id = t.employee_id
@@ -1811,6 +1812,7 @@ schedule.get('/public/:token', async (c) => {
 
   const schedRows = await c.env.DB.prepare(`
     SELECT ds.work_date, ds.shift_code, ds.leave_type,
+           ds.overtime_hours, ds.night_work_hours, ds.holiday_work_hours,
            ss.shift_name, ss.start_time, ss.end_time, ss.color
     FROM daily_schedules ds
     LEFT JOIN schedule_shifts ss ON ss.hospital_id = ? AND ss.shift_code = ds.shift_code
@@ -1822,27 +1824,73 @@ schedule.get('/public/:token', async (c) => {
   const schedMap: Record<string, any> = {}
   const codeCount: Record<string, number> = {}
   let workDays = 0
+  // ★ 우선순위3 STEP3: 개인 월간 통계 집계 (SSOT 9코드 휴무 기준 + 오전/오후 반차)
+  const REST_CODES_PUB = new Set(['휴','연','경조','병가','반차','대체','대휴','공가','무급'])
+  let restDays = 0, otHours = 0, nightHours = 0, holidayHours = 0
   for (const r of (schedRows.results || [])) {
     schedMap[r.work_date] = r
-    if (r.shift_code && r.shift_code !== '연' && r.shift_code !== '휴') {
-      workDays++
-      codeCount[r.shift_code] = (codeCount[r.shift_code] || 0) + 1
+    const code = r.shift_code || ''
+    if (code && code !== '-') {
+      if (REST_CODES_PUB.has(code) || code === '오전' || code === '오후') {
+        restDays++
+      } else {
+        workDays++
+        codeCount[code] = (codeCount[code] || 0) + 1
+      }
     }
+    if ((r.overtime_hours || 0)    > 0) otHours      += r.overtime_hours
+    if ((r.night_work_hours || 0)  > 0) nightHours   += r.night_work_hours
+    if ((r.holiday_work_hours || 0)> 0) holidayHours += r.holiday_work_hours
   }
+  otHours      = Math.round(otHours      * 100) / 100
+  nightHours   = Math.round(nightHours   * 100) / 100
+  holidayHours = Math.round(holidayHours * 100) / 100
 
   const shifts = await c.env.DB.prepare(`
     SELECT shift_code, shift_name, start_time, end_time, color
     FROM schedule_shifts WHERE hospital_id=? AND is_active=1 ORDER BY sort_order
   `).bind(tokenRow.hospital_id).all<any>()
 
-  // 최근 변경 이력 (최근 30일, 최대 20건)
+  // ★ 우선순위3 STEP3: 변경 이력 — 조회 월(work_date) 기준만 표시 (기존: 절대 30일 버그 수정)
   const changeLog = await c.env.DB.prepare(`
     SELECT work_date, old_shift_code, new_shift_code, changed_at
     FROM schedule_change_log
-    WHERE employee_id=? AND changed_at >= datetime('now', '-30 days')
-    ORDER BY changed_at DESC
-    LIMIT 20
-  `).bind(tokenRow.employee_id).all<any>()
+    WHERE employee_id=? AND work_date >= ? AND work_date <= ?
+    ORDER BY changed_at DESC, work_date DESC
+    LIMIT 50
+  `).bind(tokenRow.employee_id, fromDate, toDate).all<any>()
+
+  // ★ 우선순위3 STEP3: 남은 연차 조회 (employee_leaves annual — SSOT calcAnnualRemain 동일 기준)
+  //   remain = total_days + carried_over_days(allowance_paid 시 0) − initial_used_days − used_days
+  let annualRemain: number | null = null
+  try {
+    const leaveRow = await c.env.DB.prepare(`
+      SELECT total_days, used_days, carried_over_days, allowance_paid, initial_used_days
+      FROM employee_leaves
+      WHERE employee_id=? AND year=? AND leave_type='annual'
+    `).bind(tokenRow.employee_id, year).first<any>()
+    if (leaveRow && (leaveRow.total_days || 0) > 0) {
+      const carried = leaveRow.allowance_paid ? 0 : (leaveRow.carried_over_days || 0)
+      const prior   = leaveRow.initial_used_days || 0
+      const effective = (leaveRow.total_days || 0) + carried
+      annualRemain = Math.round(Math.max(0, effective - prior - (leaveRow.used_days || 0)) * 100) / 100
+    }
+  } catch (_) { /* 테이블 구조 차이 시 무시 — annualRemain=null */ }
+
+  // ★ 우선순위3 STEP3: 보건증 만료일 + 상태 배지 (90↑정상 / 30~90주의 / 30↓임박 / 만료위험)
+  const healthCertExpire: string | null = tokenRow.health_cert_expire || null
+  let healthCertStatus = 'none'   // none | normal | warning | imminent | expired
+  let healthCertDaysLeft: number | null = null
+  if (healthCertExpire) {
+    const today = new Date(); today.setHours(0,0,0,0)
+    const exp   = new Date(healthCertExpire); exp.setHours(0,0,0,0)
+    const daysLeft = Math.round((exp.getTime() - today.getTime()) / 86400000)
+    healthCertDaysLeft = daysLeft
+    if (daysLeft < 0)       healthCertStatus = 'expired'
+    else if (daysLeft <= 30) healthCertStatus = 'imminent'
+    else if (daysLeft <= 90) healthCertStatus = 'warning'
+    else                     healthCertStatus = 'normal'
+  }
 
   return c.json({
     employee: { id: tokenRow.employee_id, name: tokenRow.emp_name, position: tokenRow.position },
@@ -1851,6 +1899,12 @@ schedule.get('/public/:token', async (c) => {
     shifts: shifts.results || [],
     totalDays: lastDay,
     changeLog: changeLog.results || [],
+    // ★ 우선순위3 STEP3: 개인정보 카드용 통계
+    stats: {
+      workDays, restDays, otHours, nightHours, holidayHours,
+      annualRemain,
+      healthCertExpire, healthCertStatus, healthCertDaysLeft,
+    },
   })
 })
 
@@ -3902,7 +3956,11 @@ schedule.get('/analysis/:year/:month', async (c) => {
   const monthly = {
     totalWork: 0, totalRest: 0, totalAnnual: 0, totalHalfAM: 0, totalHalfPM: 0,
     totalEvent: 0, totalOT: 0, totalTempStaff: 0,
-    otByEmp: {} as Record<string, number>
+    // ★ 우선순위3 STEP1: 야간/휴일 시간 합계 + 발생 직원 수
+    totalNightHours: 0, totalHolidayHours: 0,
+    otByEmp:      {} as Record<string, number>,
+    nightByEmp:   {} as Record<string, number>,  // 직원별 야간 시간 합계
+    holidayByEmp: {} as Record<string, number>   // 직원별 휴일 시간 합계
   }
   for (const s of scheds) {
     const code = s.shift_code || ''
@@ -3916,11 +3974,24 @@ schedule.get('/analysis/:year/:month', async (c) => {
     else if (s.is_temp_staff)  { monthly.totalTempStaff++; monthly.totalWork++ }
     else if (code && code !== '-') monthly.totalWork++
 
+    const empKey = s.emp_name || String(s.employee_id)
     if (s.overtime_hours > 0) {
-      const empKey = s.emp_name || String(s.employee_id)
       monthly.otByEmp[empKey] = (monthly.otByEmp[empKey] || 0) + s.overtime_hours
     }
+    // ★ 야간 시간 집계 (실제 저장된 night_work_hours 기준)
+    if ((s.night_work_hours || 0) > 0) {
+      monthly.nightByEmp[empKey] = (monthly.nightByEmp[empKey] || 0) + s.night_work_hours
+      monthly.totalNightHours += s.night_work_hours
+    }
+    // ★ 휴일 시간 집계 (실제 저장된 holiday_work_hours 기준)
+    if ((s.holiday_work_hours || 0) > 0) {
+      monthly.holidayByEmp[empKey] = (monthly.holidayByEmp[empKey] || 0) + s.holiday_work_hours
+      monthly.totalHolidayHours += s.holiday_work_hours
+    }
   }
+  // 소수점 보정
+  monthly.totalNightHours   = Math.round(monthly.totalNightHours   * 100) / 100
+  monthly.totalHolidayHours = Math.round(monthly.totalHolidayHours * 100) / 100
 
   // 최소 인력 미달 날짜 감지
   const shortDates: Record<string, Array<{position: string, required: number, actual: number}>> = {}
