@@ -13,6 +13,30 @@ function getHospitalId(user: any, paramHospitalId?: string): number {
 }
 
 // ════════════════════════════════════════════════════════════════
+// 헬퍼: 스케줄 확정(publish) 상태 조회 — 우선순위4 STEP2
+// 변경이력 정책: "확정(published_at) 이후 변경분만 이력 기록·표시"
+// work_date(YYYY-MM-DD) → year/month 파싱 → 해당 병원·월 확정 시각 반환
+// 반환: published_at(ISO8601 string) | null(미확정)
+// ════════════════════════════════════════════════════════════════
+async function getPublishedAt(
+  db: D1Database, hospitalId: number, year: number, month: number,
+  cache?: Record<string, string | null>
+): Promise<string | null> {
+  const key = `${hospitalId}_${year}_${month}`
+  if (cache && key in cache) return cache[key]
+  const row = await db.prepare(
+    `SELECT published_at FROM schedule_publish WHERE hospital_id=? AND year=? AND month=?`
+  ).bind(hospitalId, year, month).first<any>()
+  const val = row?.published_at || null
+  if (cache) cache[key] = val
+  return val
+}
+function parseYearMonth(workDate: string): { year: number; month: number } {
+  const [y, m] = (workDate || '').split('-')
+  return { year: parseInt(y), month: parseInt(m) }
+}
+
+// ════════════════════════════════════════════════════════════════
 // 헬퍼: 근무시간 자동계산 (스케줄 기반)
 // ════════════════════════════════════════════════════════════════
 
@@ -1852,13 +1876,25 @@ schedule.get('/public/:token', async (c) => {
   `).bind(tokenRow.hospital_id).all<any>()
 
   // ★ 우선순위3 STEP3: 변경 이력 — 조회 월(work_date) 기준만 표시 (기존: 절대 30일 버그 수정)
-  const changeLog = await c.env.DB.prepare(`
-    SELECT work_date, old_shift_code, new_shift_code, changed_at
-    FROM schedule_change_log
-    WHERE employee_id=? AND work_date >= ? AND work_date <= ?
-    ORDER BY changed_at DESC, work_date DESC
-    LIMIT 50
-  `).bind(tokenRow.employee_id, fromDate, toDate).all<any>()
+  // ★ 우선순위4 STEP2: 확정(published_at) 이후 변경분만 표시.
+  //   - 미확정 월 → 빈 배열 (변경이력 비표시)
+  //   - 확정 월   → changed_at >= published_at 만 표시 (확정 전 최초 입력 이력 숨김)
+  //   ※ changed_at("YYYY-MM-DD HH:MM:SS")와 published_at(ISO "...T...Z") 형식이 달라
+  //     SQLite datetime()으로 양쪽 정규화 후 비교 (이중 안전장치: INSERT 게이트와 별개)
+  const pubAt = await getPublishedAt(c.env.DB, tokenRow.hospital_id, year, month)
+  let changeLog: { results: any[] }
+  if (pubAt) {
+    changeLog = await c.env.DB.prepare(`
+      SELECT work_date, old_shift_code, new_shift_code, changed_at
+      FROM schedule_change_log
+      WHERE employee_id=? AND work_date >= ? AND work_date <= ?
+        AND datetime(changed_at) >= datetime(?)
+      ORDER BY changed_at DESC, work_date DESC
+      LIMIT 50
+    `).bind(tokenRow.employee_id, fromDate, toDate, pubAt).all<any>()
+  } else {
+    changeLog = { results: [] }
+  }
 
   // ★ 우선순위3 STEP3: 남은 연차 조회 (employee_leaves annual — SSOT calcAnnualRemain 동일 기준)
   //   remain = total_days + carried_over_days(allowance_paid 시 0) − initial_used_days − used_days
@@ -2557,12 +2593,17 @@ schedule.post('/save', async (c) => {
   )
 
   // 변경 이력 기록 (내용이 실제로 바뀐 경우만)
+  // ★ 우선순위4 STEP2: 확정(published_at) 이후 변경분만 이력 기록 (확정 전 입력은 기록 안 함)
   const newCode = shiftCode || null
   if (oldCode !== newCode) {
-    await c.env.DB.prepare(
-      `INSERT INTO schedule_change_log (hospital_id, employee_id, work_date, old_shift_code, new_shift_code, changed_by)
-       VALUES (?,?,?,?,?,?)`
-    ).bind(emp.hospital_id, employeeId, workDate, oldCode, newCode, (user as any).id || null).run()
+    const { year: wy, month: wm } = parseYearMonth(workDate)
+    const publishedAt = await getPublishedAt(c.env.DB, emp.hospital_id, wy, wm)
+    if (publishedAt) {
+      await c.env.DB.prepare(
+        `INSERT INTO schedule_change_log (hospital_id, employee_id, work_date, old_shift_code, new_shift_code, changed_by)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(emp.hospital_id, employeeId, workDate, oldCode, newCode, (user as any).userId ?? (user as any).id ?? null).run()
+    }
   }
 
   return c.json({ success: true })
@@ -2576,6 +2617,8 @@ schedule.post('/save-batch', async (c) => {
 
   // 병원별 직원 캐시 (반복 조회 최소화)
   const empCache: Record<number, any> = {}
+  // ★ 우선순위4 STEP2: 확정 상태 캐시 (hospital_year_month → published_at) — 반복 조회 최소화
+  const publishCache: Record<string, string | null> = {}
 
   let count = 0
   for (const item of items) {
@@ -2620,12 +2663,17 @@ schedule.post('/save-batch', async (c) => {
     )
 
     // 변경 이력 기록 (내용 변경 시)
+    // ★ 우선순위4 STEP2: 확정(published_at) 이후 변경분만 이력 기록 (확정 전 입력은 기록 안 함)
     const newCode = shiftCode || null
     if (oldCode !== newCode) {
-      await c.env.DB.prepare(
-        `INSERT INTO schedule_change_log (hospital_id, employee_id, work_date, old_shift_code, new_shift_code, changed_by)
-         VALUES (?,?,?,?,?,?)`
-      ).bind(emp.hospital_id, employeeId, workDate, oldCode, newCode, (user as any).id || null).run()
+      const { year: wy, month: wm } = parseYearMonth(workDate)
+      const publishedAt = await getPublishedAt(c.env.DB, emp.hospital_id, wy, wm, publishCache)
+      if (publishedAt) {
+        await c.env.DB.prepare(
+          `INSERT INTO schedule_change_log (hospital_id, employee_id, work_date, old_shift_code, new_shift_code, changed_by)
+           VALUES (?,?,?,?,?,?)`
+        ).bind(emp.hospital_id, employeeId, workDate, oldCode, newCode, (user as any).userId ?? (user as any).id ?? null).run()
+      }
     }
 
     count++
